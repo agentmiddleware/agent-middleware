@@ -1,0 +1,6 @@
+Agent Middleware
+Copyright 2026 Christopher Sellers
+
+Files outside gateway/ are licensed under the Apache License, Version 2.0 (LICENSE).
+Files in gateway/ are licensed under the Functional Source License, Version 1.1,
+ALv2 Future License (gateway/LICENSE.md). See LICENSING.md.

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openai-agent-middleware"
+version = "0.1.0"
+description = "OpenAI function-calling and Agents SDK integration for Agent Middleware API (governed permit -> invoke -> receipt)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+# No dependency on the openai package: the runner accepts the tool-call shapes
+# OpenAI emits (Chat Completions tool_calls, Responses/Agents function_call
+# items) as plain attributes or dicts, so it works with any SDK version and is
+# testable without one.
+dependencies = [
+    "b2a-sdk>=0.4.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openai_b2a"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# Relative to this directory, so `pytest integrations/openai-agent-middleware/tests`
+# works from the repository root as well as from here. The bare `sdk/python/`
+# directory at the repository root would otherwise resolve as a namespace
+# package and shadow the real SDK under `sdk/python/src`.
+pythonpath = ["src", "../../sdk/python/src"]

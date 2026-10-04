@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langchain-agent-middleware"
+version = "0.1.0"
+description = "LangChain integration for Agent Middleware API (MCP + AWI)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "b2a-sdk>=0.4.0",
+    "langchain>=1.3.9",
+    "langgraph>=1.0.10",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/langchain_b2a"]
+
+[tool.ruff]
+line-length = 100

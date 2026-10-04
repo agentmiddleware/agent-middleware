@@ -1,0 +1,95 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "b2a-sdk"
+version = "0.5.0"
+description = "Python SDK for governed MCP permits, idempotent agent-tool calls, receipts, and audit evidence"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "agent-authorization",
+    "delegated-authorization",
+    "permits",
+    "idempotency",
+    "replay-protection",
+    "signed-receipts",
+    "audit",
+    "agent-governance",
+    "b2a",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "httpx>=0.27.0,<1",
+]
+
+[project.optional-dependencies]
+# Ed25519 verification of portable receipts. Kept out of the base install so
+# clients that only call tools do not pull a native dependency.
+# Floor matches the application's requirements.txt: 42.x–49.x carry known
+# advisories (e.g. GHSA-537c-gmf6-5ccf, PYSEC-2026-3553/3554); 50.0.0 is the
+# lowest version with none.
+verify = [
+    "cryptography>=50.0.0",
+]
+# Legacy serving (`python -m b2a_sdk.mcp serve`) imports FastMCP, which
+# mcp 2.x renamed to MCPServer. Standalone generation is retired.
+# Bound matches the application's requirements.txt.
+mcp = [
+    "mcp>=1.29.0,<2",
+]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+    "cryptography>=50.0.0",
+]
+
+[project.scripts]
+b2a-verify-receipt = "b2a_sdk.verify_cli:main"
+
+[project.urls]
+Homepage = "https://github.com/PetrefiedThunder/agent-middleware"
+Documentation = "https://github.com/PetrefiedThunder/agent-middleware"
+Repository = "https://github.com/PetrefiedThunder/agent-middleware"
+Issues = "https://github.com/PetrefiedThunder/agent-middleware/issues"
+Changelog = "https://github.com/PetrefiedThunder/agent-middleware/blob/main/sdk/python/CHANGELOG.md"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/b2a_sdk"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/b2a_sdk",
+    "tests",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

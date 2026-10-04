@@ -1,0 +1,5 @@
+{
+  "signature_b64_over_test_seed": "Ipxrv7VcxEJoEL5gLBLu0m43tsJehcXPATB6vLgfK/dczRPznce3vp3by7Ndzsptqqnkmsor3XzWKUvmhvwODA==",
+  "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"constraints_evaluated\":{\"allowed_tools\":[\"golden-path-echo\"],\"max_credits\":\"2.5\"},\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"0\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":null,\"outcome\":\"denied\",\"payload_hash\":\"4382f442c7150186cf873074c391738ea3af7313abebb7c0fcdb4dddff5ec6f1\",\"permit_id\":\"pmt_golden_0001\",\"reason_code\":\"permit_budget_exceeded\",\"receipt_id\":\"rcpt_golden_0002\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":null,\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
+  "signing_input_sha256": "68bf73823a75ee23e0ef8c3aabc9ed31fc6b4e49d0c2ca6295849cd0b2205971"
+}

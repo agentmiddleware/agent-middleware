@@ -1,0 +1,225 @@
+# Agent Middleware API — LLM-Readable Documentation
+
+**Agent-first:** You are the intended reader. This file is primary prose for autonomous agents and orchestrators. Before acting, fetch `GET /.well-known/agent.json`, then check `GET /health/dependencies` before assuming real side effects: HTTP 200 alone does not mean every dependency is ready.
+
+**Version:** use `version` from `GET /.well-known/agent.json` (this document may be cached).
+**Base URL:** {{PUBLIC_URL}}
+**Auth:** `X-API-Key` header on protected routes
+
+---
+
+## What This API Does
+
+Agent Middleware API is a **transaction-integrity boundary for consequential
+autonomous actions**. On the supported upstream-MCP path, one logical action
+binds scoped authority and configured consumption to at most one gateway
+dispatch and debit, explicit `delivery_uncertain`, and linked gateway evidence.
+
+This is a durable gateway state machine, not one distributed ACID transaction
+or proof of the downstream effect. IAM, budget controls, receipts, and audit
+chains are supporting mechanisms rather than separate product wedges.
+
+An accepted idempotency key binds one immutable invocation. Reusing that key
+with different tool input fails closed with an idempotency conflict; use a new
+key for each new invocation.
+
+The product loop is:
+
+```text
+logical action -> authorize -> reserve allowance -> debit -> claim dispatch
+-> confirmed outcome | delivery_uncertain -> receipt/audit
+-> authoritative external reconciliation required
+```
+
+Read `agent_first.positioning` on `GET /.well-known/agent.json` for the
+versioned product category, transaction semantics, and claim boundary.
+
+Supporting infrastructure:
+- **Identity & authority** — Wallet-scoped agents, API keys, and scoped permits
+- **Logical action** — Accepted idempotency key plus payload binding
+- **Execution state** — One-shot gateway dispatch and explicit uncertainty
+- **Configured accounting** — Wallet credits/call allowance and replay without double debit
+- **Evidence** — Signed receipts and audit linkage for external reconciliation
+- **Readiness** — `/health/dependencies` (dependency truth for the selected tool)
+
+---
+
+## Quick Start for Agents
+
+### 1. Discover What This API Offers
+
+```bash
+GET /.well-known/agent.json
+GET /llms.txt
+GET /mcp/tools.json
+GET /openapi.json
+```
+
+On production-like boots, GET /mcp/tools.json requires an operator-issued key and returns 401 without one. Local quickstart stays anonymous. GET /.well-known/agent.json, GET /llms.txt, and GET /openapi.json stay unauthenticated.
+
+`GET /llm.txt` remains available as a backward-compatible alias.
+
+Use `/v1/discover` as an optional expanded catalog after the bootstrap sequence.
+Treat `/mcp/tools.json` as authoritative for callable MCP tools.
+Before invoking, inspect the `/health/dependencies` JSON body: HTTP 200 alone
+does not mean every dependency is ready. Health never replaces authentication,
+permit authorization, or receipt verification.
+
+### 2. Get Operator-Provisioned Access
+
+There is no public signup or unauthenticated key mint. The operator provisions
+the sponsor/partner wallet, wallet-scoped API key, credits, and permit. Pass the
+key as `X-API-Key: your-key` on every protected request.
+
+### 3. Inspect the Published Live Proof
+
+The human site publishes one non-sensitive portable `partner.echo` receipt and
+the matching public-key snapshot:
+
+```bash
+GET https://www.thisisatest.tech/proof/receipt.json
+GET https://www.thisisatest.tech/proof/trust-keys.json
+```
+
+Use the offline CLI command on `https://www.thisisatest.tech/proof/`. A valid
+signature proves the receipt matches the supplied snapshot. Authenticate or
+pin that snapshot through a trusted channel before treating issuer identity as
+independently established.
+
+### 4. Governed Tool Loop
+
+Register one real partner tool through the operator path, then:
+
+```bash
+# Issue a scoped permit for that tool
+POST /v1/permits
+{"wallet_id": "...", "allowed_tools": ["partner.tool"], ...}
+
+# Invoke via MCP with permit + idempotency key
+POST /mcp/messages
+{"jsonrpc":"2.0","method":"tools/call","params":{...}}
+
+# Export the signed receipt for offline verification
+GET /v1/receipts/{receipt_id}/portable
+```
+
+`partner.notes.write` is a local-only dogfood fixture. Production keeps
+`ENABLE_DOGFOOD_TOOL=false`; do not use that fixture as evidence of a partner
+integration.
+
+The default available governed transport is `POST /mcp/messages`, a
+project-specific legacy JSON-RPC endpoint that does not implement standard MCP
+initialization. An operator may enable the standards-compliant Streamable HTTP
+transport at `POST /mcp`; do not assume that endpoint is available unless the
+deployment's discovery manifest lists it.
+
+---
+
+## MCP Tool Discovery
+
+```bash
+# List available tools
+GET /mcp/tools.json
+
+# Call a tool via MCP
+POST /mcp/messages
+{"jsonrpc": "2.0", "method": "tools/list", "id": 1}
+```
+
+---
+
+## Billing & Pricing
+
+### Credit System
+- Credits are a closed-loop metering unit for the pilot, not payment rails.
+- There is no public pricing tier, free-credit grant, SLA, or settlement claim.
+- Operators provision partner credits; public self-serve top-up is out of scope.
+
+### Rate Limits
+- Default: 120 requests/minute per API key, configurable by the operator.
+- No extra burst allowance. Check `/v1/discover` rate-limit metadata for the current limit.
+- Shared Redis counts fixed 60-second windows; the local in-memory fallback counts a rolling 60 seconds.
+
+### Velocity Monitoring
+Wallets are auto-frozen if spending exceeds:
+- 1000 credits/hour
+- 10000 credits/day
+
+---
+
+## SDKs
+
+Prefer the configured-upstream HTTP transaction loop above (logical action →
+permit → MCP invoke → receipt/audit → authoritative external reconciliation).
+Client libraries are optional and not required for the transaction-integrity
+boundary.
+
+### Python SDK (source checkout and release artifacts)
+
+Install the SDK from source in `sdk/python/`. The agent manifest's
+`integrations.python_sdk` reports both the source version and the available
+release tag; do not infer a package-index install from this document. The SDK
+is **not** published to PyPI. Install from a clone of
+https://github.com/PetrefiedThunder/agent-middleware (repository root):
+
+```bash
+pip install -e ./sdk/python
+```
+
+```python
+from b2a_sdk import AgentMiddlewareClient
+
+async with AgentMiddlewareClient(api_key="...", base_url="...") as client:
+    tools = await client.discover_tools()
+    result = await client.invoke_tool(
+        tools[0].name,
+        {"input": "..."},
+        wallet_id="...",
+        permit_id="...",
+        idempotency_key="caller-owned-key",
+    )
+```
+
+### TypeScript
+
+No published TypeScript SDK. Use `/mcp/messages` only with a project-specific
+JSON-RPC client, plus `/v1/permits` and `/v1/receipts`; standards-compliant MCP
+clients require `/mcp` after the operator enables the Streamable HTTP transport.
+
+---
+
+## Endpoints Summary
+
+| Category | Prefix | Auth |
+|----------|--------|------|
+| Discovery | `/v1/discover` | Required on production-like boots; anonymous for local-compatible quickstart |
+| Billing | `/v1/billing` | Required |
+| Permits | `/v1/permits` | Required |
+| Receipts | `/v1/receipts` | Required |
+| Audit | `/v1/audit` | Required |
+| MCP catalog | `GET /mcp/tools.json` | Required on production-like boots; anonymous for local quickstart |
+| Read-only public MCP | `POST /mcp/public` | None; public read-only tools only; opt-in local-compatible environments only, unavailable in production-like environments |
+| Governed legacy MCP invoke | `POST /mcp/messages` | Required; credentialed legacy JSON-RPC transport |
+| Health | `/health` | None |
+
+---
+
+## Error Codes
+
+| Code | Meaning |
+|------|---------|
+| 401 | Missing credentials, a malformed or too-short API key, or invalid bearer authentication. |
+| 403 | API key rejected, or an authenticated caller lacks required wallet/tenant, administrator, policy, or ACL access. |
+| 402 | Insufficient credits |
+| 429 | Rate limit exceeded |
+| 500 | Internal error |
+
+---
+
+## For More Information
+
+- API Docs: `/docs`
+- OpenAPI Spec: `/openapi.json`
+- Wedge: `/WEDGE.md`
+- Security limitations: `/SECURITY_LIMITATIONS.md`
+- GitHub: https://github.com/PetrefiedThunder/agent-middleware

@@ -1,0 +1,43 @@
+# Agent Middleware API - Dependencies
+# Python 3.11+
+
+# --- Core Framework ---
+fastapi>=0.141.1
+uvicorn[standard]>=0.53.0
+pydantic>=2.13.5
+pydantic-settings>=2.14.2
+email-validator>=2.3.0  # Keep FastAPI/Pydantic OpenAPI email schema stable in CI
+structlog>=24.1.0       # Structured startup/runtime logging
+
+# --- IoT Protocol Bridge ---
+aiomqtt>=2.5.1          # Async MQTT client
+aiocoap>=0.4.17          # CoAP protocol support
+
+# --- Telemetry / Autonomous PM ---
+httpx>=0.28.1,<0.29     # Upstream MCP DNS pinning relies on httpcore's sni_hostname extension contract
+httpcore==1.0.9         # Verified implementation of the DNS-pin + TLS SNI handoff; update only with its integration test
+anyio>=4.14.2           # Transitive via httpx/starlette; >=4.14.2 fixes CVE-2026-63374 (TLSStream IDNA 2003 cert spoofing, critical) and CVE-2026-64847 (process-pool stderr block)
+
+# --- Media Engine ---
+python-multipart>=0.0.32 # File upload support (>=0.0.30 fixes CVE-2026-53538/53539, >=0.0.31 fixes CVE-2026-53540)
+
+# --- Utilities ---
+python-dotenv>=1.2.3    # .env file loading
+cryptography>=50.0.0       # Ed25519 trust-plane signatures (>=50.0.0 fixes GHSA-g6cj-pr64-35w5)
+PyJWT>=2.15.0           # JWT auth (app/core/jwt.py, oidc_iga); explicit — previously only transitive via mcp's pyjwt[crypto]
+redis>=8.1.0            # Redis-backed rate limiting and runtime persistence
+asyncpg>=0.31.0         # PostgreSQL-backed runtime persistence
+greenlet>=3.5.6         # SQLAlchemy async engine support
+stripe>=15.6.1           # Stripe payment processing
+mcp>=1.29.0,<2         # MCP SDK; >=1.29.0 provides the pre-parse request-body guard used by public/partner transports; <2 is deliberate: 2.x renamed FastMCP to MCPServer, moved McpError, and changed the lowlevel Server internals that mcp_public/mcp_standard override. Dependabot major bumps are ignored (#460); lift only in a dedicated migration PR.
+
+# --- Database ---
+sqlmodel>=0.0.47,<0.0.48  # Naive-UTC mappings are qualified with this minor release.
+alembic>=1.20.0        # Database migrations
+aiosqlite>=0.22.1      # Async SQLite driver for testing
+
+# --- Development ---
+pytest>=9.1.1
+pytest-asyncio>=1.4.0
+pytest-cov>=7.1.0
+mypy>=2.3.1            # Type checking

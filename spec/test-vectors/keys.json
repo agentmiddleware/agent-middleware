@@ -1,0 +1,16 @@
+{
+  "_comment": "Public half of the fixed test seed bytes(range(32)). Test use only.",
+  "keys": [
+    {
+      "kid": "sk_golden_0001",
+      "alg": "Ed25519",
+      "status": "active",
+      "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+      "jwk": {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      }
+    }
+  ]
+}

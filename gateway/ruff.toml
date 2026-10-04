@@ -1,0 +1,7 @@
+target-version = "py311"
+
+[lint]
+# Pyflakes: unused imports/variables, undefined names, redefinitions.
+# Previously this file selected only E501 and then immediately ignored it,
+# so `ruff check` passed with zero rules actually enforced.
+select = ["F"]

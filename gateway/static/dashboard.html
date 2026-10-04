@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b1020">
+  <title>Agent Middleware API — Private experiment</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%20shape-rendering='crispEdges'%3E%3Crect%20width='16'%20height='16'%20fill='%230b1020'/%3E%3Cpath%20fill='%23e9edf8'%20d='M6%203h4v1H6zM5%204h1v1H5zm5%200h1v1h-1zM4%205h1v4H4zm7%200h1v4h-1zM5%209h6v1H5zM4%2010h1v3H4zm7%200h1v3h-1z'/%3E%3Crect%20x='12'%20y='2'%20width='2'%20height='2'%20fill='%23f0b43c'/%3E%3C/svg%3E">
+  <style>
+    /* Keep the shared tokens in sync with site/styles.css. The API serves
+       this page without a font route, so the same type roles use their
+       local fallbacks instead of requesting assets from another origin. */
+    :root {
+      color-scheme: dark;
+      --ink: #0b1020;
+      --panel: #121a30;
+      --rule-soft: #1f2b4a;
+      --line: rgba(156, 168, 203, 0.18);
+      --line-strong: rgba(156, 168, 203, 0.34);
+      --text: #e9edf8;
+      --text-dim: #9ca8cb;
+      --brass: #f0b43c;
+      --brass-bright: #ffd166;
+      --font-display: "Instrument Serif", Georgia, "Times New Roman", serif;
+      --font-title: "Libre Franklin", "Helvetica Neue", Arial, sans-serif;
+      --font-body: "Public Sans", "Segoe UI", system-ui, sans-serif;
+      --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --radius-xs: 3px;
+      --measure: 62ch;
+      --page-max: 1120px;
+      --pad-x: clamp(1.25rem, 4vw, 2.5rem);
+      --focus-ring: 2px solid var(--brass);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-padding-top: 5.5rem; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--ink);
+      color: var(--text);
+      font: 1.0625rem/1.65 var(--font-body);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+
+    ::selection { background: var(--brass); color: var(--ink); }
+
+    a { color: var(--brass); text-decoration: none; text-underline-offset: 0.18em; }
+    a:hover { color: var(--brass-bright); text-decoration: underline; }
+    p a { text-decoration: underline; }
+
+    main, footer {
+      width: 100%;
+      max-width: var(--page-max);
+      margin-inline: auto;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.85rem max(var(--pad-x), calc((100% - var(--page-max)) / 2 + var(--pad-x)));
+      background: rgba(11, 16, 32, 0.86);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      color: var(--text);
+      min-height: 44px;
+      font-family: var(--font-mono);
+      font-size: 0.92rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-decoration: none;
+    }
+
+    .brand:hover { text-decoration: none; }
+
+    .brand::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 2px;
+      background: var(--brass);
+      flex: none;
+    }
+
+    .label {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      padding: 0.3rem 0.75rem;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    main { padding: clamp(3.5rem, 8vw, 6rem) var(--pad-x); }
+
+    h1, h2 {
+      font-family: var(--font-display);
+      font-weight: 400;
+      letter-spacing: -0.012em;
+      line-height: 1.06;
+      text-wrap: balance;
+    }
+    h1 {
+      max-width: 22ch;
+      margin: 1rem 0 1.25rem;
+      font-size: clamp(2.5rem, 5.2vw, 3.9rem);
+    }
+    h2 { margin: 0 0 1.25rem; font-size: clamp(1.9rem, 3.2vw, 2.7rem); }
+    h3 {
+      margin: 0 0 1rem;
+      font-family: var(--font-title);
+      font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      line-height: 1.25;
+      text-wrap: balance;
+    }
+
+    p { margin: 0; max-width: var(--measure); }
+    .lede { color: var(--text-dim); font-size: 1.1rem; }
+
+    .notice {
+      margin-top: 1.5rem;
+      padding: 1rem 1.15rem;
+      border: 1px solid var(--brass);
+      border-radius: var(--radius-sm);
+      background: rgba(240, 180, 60, 0.08);
+      color: var(--brass);
+    }
+
+    section { margin-top: clamp(3.5rem, 8vw, 6rem); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+      margin-top: 1.25rem;
+    }
+
+    .card {
+      min-width: 0;
+      padding: 1.25rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+
+    .card p, .section-copy, li { color: var(--text-dim); }
+    .card .scope {
+      margin-top: 0.9rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--line);
+      color: var(--text-dim);
+      font: 0.8rem/1.6 var(--font-mono);
+      overflow-wrap: anywhere;
+    }
+
+    .links {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+      margin-top: 1.25rem;
+    }
+
+    .links a {
+      display: block;
+      min-height: 100%;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      text-decoration: none;
+      transition: border-color 140ms ease, background 140ms ease;
+    }
+
+    .links a:hover {
+      border-color: var(--line-strong);
+      background: var(--rule-soft);
+      text-decoration: none;
+    }
+
+    .links strong {
+      display: block;
+      margin-bottom: 0.3rem;
+      color: var(--text);
+      font-family: var(--font-title);
+      font-size: 1rem;
+      font-weight: 700;
+    }
+    .links span { color: var(--text-dim); font-size: 0.88rem; }
+
+    pre {
+      overflow-x: auto;
+      margin: 1rem 0 0;
+      padding: 1rem 1.15rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      color: var(--text);
+      font: 0.85rem/1.7 var(--font-mono);
+    }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.9em;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xs);
+      padding: 0.1em 0.4em;
+      overflow-wrap: anywhere;
+    }
+    pre code { font-size: inherit; border: 0; padding: 0; overflow-wrap: normal; }
+    ul { margin: 1rem 0 0; padding-left: 1.25rem; }
+    li + li { margin-top: 0.5rem; }
+
+    footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      padding: 1.5rem var(--pad-x) 2.5rem;
+      border-top: 1px solid var(--line);
+      color: var(--text-dim);
+      font-size: 0.9rem;
+    }
+
+    footer a { display: inline-flex; align-items: center; min-height: 44px; }
+
+    :focus-visible {
+      outline: var(--focus-ring);
+      outline-offset: 3px;
+    }
+
+    .skip-link {
+      position: absolute;
+      left: -9999px;
+      top: 0;
+      z-index: 100;
+      padding: 0.75rem 1.25rem;
+      border-radius: 0 0 var(--radius-sm) 0;
+      background: var(--brass);
+      color: var(--ink);
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    .skip-link:focus { left: 0; color: var(--ink); }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; }
+    }
+
+    @media (max-width: 760px) {
+      .grid, .links { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 560px) {
+      html { scroll-padding-top: 8.5rem; }
+      header { flex-wrap: wrap; row-gap: 0.25rem; }
+      .brand { font-size: 0.85rem; letter-spacing: 0; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header>
+    <a class="brand" href="https://www.thisisatest.tech/">Agent Middleware API</a>
+    <span class="label">Private experiment</span>
+  </header>
+
+  <main id="main-content" tabindex="-1">
+    <div class="label">Operator index</div>
+    <h1>Inspect the trust plane without invented telemetry.</h1>
+    <p class="lede">
+      This origin is a private experiment, not a public product. Tool catalogs
+      and invoke require an operator-issued key. This page only points at
+      runtime posture and portable verification keys.
+    </p>
+    <p class="notice">
+      No tenant records or aggregate customer counts are rendered here. This page
+      does not request API keys, make authenticated calls, or store credentials in
+      the browser.
+    </p>
+
+    <section aria-labelledby="posture-heading">
+      <h2 id="posture-heading">Core contract</h2>
+      <p class="section-copy">The governed path is intentionally narrow.</p>
+      <div class="grid">
+        <article class="card">
+          <h3>Scoped authorization</h3>
+          <p>Signed permits bind a subject, tool scope, budget, expiry, and nonce.</p>
+          <div class="scope">discover → authenticate → authorize</div>
+        </article>
+        <article class="card">
+          <h3>Idempotent metering</h3>
+          <p>Retries reuse the same operation boundary so one accepted action is charged once.</p>
+          <div class="scope">invoke → meter</div>
+        </article>
+        <article class="card">
+          <h3>Portable receipts</h3>
+          <p>Governed outcomes can be exported with the issuer key material required for offline verification.</p>
+          <div class="scope">receipt → verify</div>
+        </article>
+        <article class="card">
+          <h3>Durable evidence</h3>
+          <p>Dispatch state and account audit events are persisted for authenticated operator inspection.</p>
+          <div class="scope">audit → govern</div>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="evidence-heading">
+      <h2 id="evidence-heading">Status and evidence</h2>
+      <p class="section-copy">
+        The hosted proof is separately served, self-issued live gateway proof, not customer traction.
+      </p>
+      <div class="links">
+        <a href="https://www.thisisatest.tech/proof/">
+          <strong>Hosted portable receipt proof</strong>
+          <span>Artifact, matching key snapshot, and offline verification command.</span>
+        </a>
+        <a href="/health/dependencies">
+          <strong>Runtime truth</strong>
+          <span>Dependency posture, feature flags, build SHA, and metric scope metadata for the API origin serving this page.</span>
+        </a>
+        <a href="/.well-known/trust-keys.json">
+          <strong>Current trust keys</strong>
+          <span>Public issuer keys exposed by this API.</span>
+        </a>
+      </div>
+    </section>
+
+    <section aria-labelledby="discovery-heading">
+      <h2 id="discovery-heading">Machine discovery</h2>
+      <div class="links">
+        <a href="/.well-known/agent.json">
+          <strong>Agent manifest</strong>
+          <span>Bootstrap metadata. Tool lists on this origin require a key.</span>
+        </a>
+        <a href="/llms.txt">
+          <strong>llms.txt</strong>
+          <span>Machine-readable integration guidance.</span>
+        </a>
+      </div>
+    </section>
+
+    <section aria-labelledby="inspection-heading">
+      <h2 id="inspection-heading">Authenticated inspection</h2>
+      <p class="section-copy">
+        Inspect your own permits, receipts, and audit events from a trusted terminal.
+        Keep the key in your environment; do not paste it into a public web page.
+        Set <code>API_URL</code> to the origin serving this page, without a trailing slash;
+        the example below uses the local server default.
+      </p>
+      <pre tabindex="0" role="region" aria-label="Authenticated inspection commands"><code>export API_URL="http://127.0.0.1:8000"
+export AGENT_MIDDLEWARE_API_KEY='replace-in-your-terminal'
+
+curl --fail-with-body \
+  -H "X-API-Key: ${AGENT_MIDDLEWARE_API_KEY}" \
+  "${API_URL}/v1/me/permits"
+
+curl --fail-with-body \
+  -H "X-API-Key: ${AGENT_MIDDLEWARE_API_KEY}" \
+  "${API_URL}/v1/me/receipts"
+
+curl --fail-with-body \
+  -H "X-API-Key: ${AGENT_MIDDLEWARE_API_KEY}" \
+  "${API_URL}/v1/me/audit/events"</code></pre>
+    </section>
+
+    <section aria-labelledby="limits-heading">
+      <h2 id="limits-heading">How to read the runtime data</h2>
+      <ul>
+        <li><code>upstream_mcp.call_metrics</code> are process-local and reset on restart.</li>
+        <li><code>upstream_mcp.dispatch_metrics</code> summarize durable dispatch records.</li>
+        <li>A healthy dependency report is operational posture, not evidence of customer usage.</li>
+        <li>The public proof demonstrates one gateway-controlled action, not end-to-end exactly-once behavior for arbitrary upstream side effects.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <a href="https://www.thisisatest.tech/">Agent Middleware API</a>
+    <a href="https://www.thisisatest.tech/proof/">Hosted proof</a>
+    <a href="/health/dependencies">Runtime truth</a>
+  </footer>
+</body>
+</html>

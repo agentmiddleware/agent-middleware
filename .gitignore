@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+uv.lock
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+.env.production
+*.pem
+*.key
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+coverage.json
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Node
+node_modules/
+
+# Local demo state (gateway/data)
+gateway/data/
+.build_commit_sha
+
+# Retired production config files must not return
+docker-compose.prod.yml
+railway.json
+railway.toml
+.railway/

@@ -1,0 +1,5 @@
+{
+  "signature_b64_over_test_seed": "XCVDXs/Q7I5WBVt5DvWNKGu3O/EJDZ0lVAu2CTN7gHNJp/uO53mSniSr8hmCcKZXV4I3JDg/2O07J2uWa2OpCA==",
+  "signing_input": "{\"alg\":\"Ed25519\",\"allowed_tools\":[\"golden-path-echo\"],\"expires_at\":\"2026-09-16T13:00:00+00:00\",\"issued_at\":\"2026-09-16T12:00:00+00:00\",\"issuer_wallet_id\":\"agt-golden-issuer\",\"kid\":\"sk_golden_0001\",\"max_credits\":\"50\",\"nonce\":\"nonce_golden_0001\",\"payload_hash\":\"dbc43d163c80c2472a87cba4ae844e3a811e60e9ce068bedbebbcb950bf1eb90\",\"permit_id\":\"pmt_golden_0001\",\"scopes\":[\"tool:golden-path-echo:invoke\",\"billing:charge\"],\"status\":\"active\",\"subject_key_id\":\"key_golden_0001\",\"subject_wallet_id\":\"agt-golden-subject\"}",
+  "signing_input_sha256": "d9b3c6d71c4ad21500425f018e7393200cd53bcfb1e9e9b520d549839181d62e"
+}

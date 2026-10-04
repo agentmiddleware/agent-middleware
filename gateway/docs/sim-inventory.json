@@ -1,0 +1,86 @@
+{
+  "generated_at": "2026-09-19T14:30:49.664923+00:00",
+  "mcp_tool_count": 0,
+  "mcp_tools_local": [],
+  "services": [
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "agent_comms",
+      "settings_attribute": "SIMULATION_MODE_AGENT_COMMS"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "content_factory",
+      "settings_attribute": "SIMULATION_MODE_CONTENT_FACTORY"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "human_approval",
+      "settings_attribute": "SIMULATION_MODE_HUMAN_APPROVAL"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "iot_bridge",
+      "settings_attribute": "SIMULATION_MODE_IOT_BRIDGE"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "media_engine",
+      "settings_attribute": "SIMULATION_MODE_MEDIA_ENGINE"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "oracle",
+      "settings_attribute": "SIMULATION_MODE_ORACLE"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "protocol_gen",
+      "settings_attribute": "SIMULATION_MODE_PROTOCOL_GEN"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "red_team",
+      "settings_attribute": "SIMULATION_MODE_RED_TEAM"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "rtaas",
+      "settings_attribute": "SIMULATION_MODE_RTAAS"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "sandbox",
+      "settings_attribute": "SIMULATION_MODE_SANDBOX"
+    },
+    {
+      "current_simulated": true,
+      "default_simulated": true,
+      "runtime_service": "telemetry_pm",
+      "settings_attribute": "SIMULATION_MODE_TELEMETRY_PM"
+    }
+  ],
+  "simulation_modes": {
+    "agent_comms": true,
+    "content_factory": true,
+    "human_approval": true,
+    "iot_bridge": true,
+    "media_engine": true,
+    "oracle": true,
+    "protocol_gen": true,
+    "red_team": true,
+    "rtaas": true,
+    "sandbox": true,
+    "telemetry_pm": true
+  }
+}

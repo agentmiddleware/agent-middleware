@@ -69,7 +69,12 @@ jobs:
           enable-cache: false
       - name: Install
         run: |
-          if [ -f uv.lock ]; then
+          if [ "${{ matrix.project }}" = "gateway" ]; then
+            # The gateway is an application, not a wheel: install its pinned requirements
+            # plus the in-repo SDK it imports.
+            uv venv
+            uv pip install -r requirements.txt -e "../sdk/python[verify]" pytest-xdist pytest-timeout
+          elif [ -f uv.lock ]; then
             uv sync --locked --all-extras --dev
           else
             uv venv
@@ -92,7 +97,13 @@ jobs:
       - name: Test (pytest)
         run: |
           set +e
-          uv run --no-sync pytest -q
+          if [ "${{ matrix.project }}" = "gateway" ]; then
+            uv run --no-sync pytest -q -m "not production_trust" -n auto --timeout 300 &&
+            TRUST_MODE_ENABLED=true ALLOW_LEGACY_UNPERMITTED_MCP=false ENABLE_PROOF_SURFACES=false \
+              uv run --no-sync pytest -q -m production_trust --timeout 300
+          else
+            uv run --no-sync pytest -q
+          fi
           rc=$?
           # exit code 5 = no tests collected; don't fail packages that have none yet
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
@@ -110,7 +121,7 @@ jobs:
       fail-fast: false
       matrix:
         project: ${{ fromJSON(needs.detect.outputs.typescript) }}
-        node-version: ["20", "22", "24"]
+        node-version: ["22", "24"]  # tests run .ts directly (Node 22.18+ type stripping)
     defaults:
       run:
         working-directory: ${{ matrix.project }}

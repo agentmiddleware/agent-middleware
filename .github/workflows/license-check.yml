@@ -1,0 +1,135 @@
+# Dependency license gate for the Apache-2.0 parts of AMW.
+# Fails if any RUNTIME dependency of an Apache-licensed package is GPL/AGPL-only.
+# gateway/ (FSL-1.1-ALv2, own LICENSE.md) is excluded automatically by detect_projects.py.
+# LGPL and dual-licensed "X OR GPL" deps pass. Reviewed exceptions: .github/license-allowlist.txt
+name: License check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  schedule:
+    - cron: "41 9 * * 1" # weekly, Mondays 09:41 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: license-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PIP_LICENSES_VERSION: "5.5.5"
+  LICENSE_CHECKER_VERSION: "5.0.1" # license-checker-rseidelsohn
+
+jobs:
+  detect:
+    name: Detect Apache-2.0 projects
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      python: ${{ steps.d.outputs.python_apache }}
+      typescript: ${{ steps.d.outputs.typescript_apache }}
+      has_python: ${{ steps.d.outputs.has_python_apache }}
+      has_typescript: ${{ steps.d.outputs.has_typescript_apache }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: d
+        run: python3 .github/scripts/detect_projects.py
+
+  python:
+    name: Python licenses / ${{ matrix.project }}
+    needs: detect
+    if: needs.detect.outputs.has_python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.detect.outputs.python) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install runtime dependencies only
+        run: |
+          uv venv "$RUNNER_TEMP/licvenv"
+          uv pip install --python "$RUNNER_TEMP/licvenv/bin/python" "./${{ matrix.project }}"
+      - name: Collect licenses
+        run: |
+          uvx --from "pip-licenses==${PIP_LICENSES_VERSION}" pip-licenses \
+            --python "$RUNNER_TEMP/licvenv/bin/python" \
+            --from=mixed --format=json --with-urls \
+            --ignore-packages pip setuptools wheel \
+            > "$RUNNER_TEMP/py-licenses.json"
+      - name: Fail on GPL/AGPL
+        run: python3 .github/scripts/check_licenses.py pip "$RUNNER_TEMP/py-licenses.json" --allow .github/license-allowlist.txt
+
+  typescript:
+    name: npm licenses / ${{ matrix.project }}
+    needs: detect
+    if: needs.detect.outputs.has_typescript == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.detect.outputs.typescript) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Install production dependencies only
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            corepack enable pnpm && pnpm install --frozen-lockfile --prod --config.node-linker=hoisted --ignore-scripts
+          elif [ -f yarn.lock ]; then
+            corepack enable yarn
+            if ! yarn workspaces focus --all --production; then yarn install --immutable --mode=skip-build; fi
+          elif [ -f package-lock.json ]; then
+            npm ci --omit=dev --ignore-scripts
+          else
+            npm install --omit=dev --ignore-scripts --no-audit --no-fund
+          fi
+      - name: Collect licenses
+        run: |
+          npx --yes "license-checker-rseidelsohn@${LICENSE_CHECKER_VERSION}" \
+            --production --excludePrivatePackages --json \
+            --out "$RUNNER_TEMP/npm-licenses.json"
+      - name: Fail on GPL/AGPL
+        working-directory: .
+        run: python3 .github/scripts/check_licenses.py npm "$RUNNER_TEMP/npm-licenses.json" --allow .github/license-allowlist.txt
+
+  license-result:
+    name: License result
+    needs: [detect, python, typescript]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | grep -Eq '"(failure|cancelled)"'; then exit 1; fi

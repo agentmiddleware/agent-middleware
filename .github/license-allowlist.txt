@@ -1,0 +1,2 @@
+# Reviewed exceptions for .github/workflows/license-check.yml, one package name per line.
+# Only add a package after confirming its GPL/AGPL license doesn't affect the Apache-2.0 distribution.

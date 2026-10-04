@@ -1,0 +1,51 @@
+# Dependabot version updates. Directory globs only match dirs that exist, so new packages
+# under these roots are picked up automatically. Security updates are enabled separately
+# (repo Settings > Code security, or apply-protection.sh once public).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: pip
+    directories:
+      - "/spec"
+      - "/verifier"
+      - "/sdk/python"
+      - "/integrations/*"
+      - "/examples/*"
+      - "/gateway"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps(py)"
+
+  - package-ecosystem: npm
+    directories:
+      - "/spec"
+      - "/verifier"
+      - "/sdk/typescript"
+      - "/integrations/*"
+      - "/examples/*"
+      - "/gateway"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps(npm)"

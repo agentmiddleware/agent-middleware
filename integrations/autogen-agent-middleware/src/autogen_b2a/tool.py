@@ -1,10 +1,10 @@
 """AutoGen function tools for Agent Middleware API."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from autogen.agentchat.conversable_agent import ConversableAgent
 
+from autogen.agentchat.conversable_agent import ConversableAgent
 from b2a_sdk.models import PermitRequest
 
 from .client import B2AClient
@@ -22,7 +22,7 @@ class B2AFunctionTool:
         api_key: str,
         wallet_id: str,
         base_url: str = "https://api.thisisatest.tech",
-        permit_budget: Decimal = Decimal("100"),
+        permit_budget: Decimal = Decimal(100),
         permit_ttl_minutes: int = 30,
     ):
         self.client = B2AClient(
@@ -78,7 +78,7 @@ class B2AFunctionTool:
                 issuer_wallet_id=self.wallet_id,
                 subject_wallet_id=self.wallet_id,
                 max_credits=self.permit_budget,
-                expires_at=datetime.now(timezone.utc)
+                expires_at=datetime.now(UTC)
                 + timedelta(minutes=self.permit_ttl_minutes),
                 allowed_tools=[tool_name],
                 scopes=[f"tool:{tool_name}:invoke", "billing:charge"],

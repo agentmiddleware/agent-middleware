@@ -218,7 +218,9 @@ async def test_off_has_zero_calls_and_no_metadata(
 ):
     from app.services import receipts
 
-    lookup = AsyncMock(side_effect=AssertionError("Off mode must not load Jev metadata"))
+    lookup = AsyncMock(
+        side_effect=AssertionError("Off mode must not load Jev metadata")
+    )
     monkeypatch.setattr(receipts, "load_jev_guard_metadata", lookup)
     monkeypatch.setattr(mcp, "load_jev_guard_metadata", lookup, raising=False)
     assert (await _evaluate()).status == "off"
@@ -381,7 +383,9 @@ async def test_different_idempotency_key_gets_new_advice(
     agent, permit = await _setup(client)
     first = await _invoke(client, agent, permit, key="jev-first")
     assert first.status_code == 200, first.text
-    await _assert_metadata(first.json()["receipt"], agent["agent_wallet_id"], verdict="pass")
+    await _assert_metadata(
+        first.json()["receipt"], agent["agent_wallet_id"], verdict="pass"
+    )
     mock_jev.body = _response(injected=0.9)
     second = await _invoke(client, agent, permit, key="jev-second")
     assert second.status_code == 200, second.text
@@ -440,8 +444,7 @@ async def test_advisory_insert_race_uses_winning_escalation(
     pending = [event for event in events if event.error == "human_approval_pending"]
     assert len(pending) == ensure_approval.await_count == 2
     assert all(
-        event.metadata["jev_risk_guard"]["verdict"] == "escalate"
-        for event in pending
+        event.metadata["jev_risk_guard"]["verdict"] == "escalate" for event in pending
     )
     assert len(mock_jev.calls) == 1
     assert registered_tool == []
@@ -453,13 +456,18 @@ def test_advisory_identity_is_bounded_and_scoped():
     identity = jev_audit_id("wallet", "/mcp/invoke", "key")
     assert len(identity) <= 50
     assert identity == jev_audit_id("wallet", "/mcp/invoke", "key")
-    assert len({
-        identity,
-        jev_audit_id("other-wallet", "/mcp/invoke", "key"),
-        jev_audit_id("wallet", "/other-endpoint", "key"),
-        jev_audit_id("wallet", "/mcp/invoke", "other-key"),
-        jev_audit_id("wallet/mcp", "/invoke", "key"),
-    }) == 5
+    assert (
+        len(
+            {
+                identity,
+                jev_audit_id("other-wallet", "/mcp/invoke", "key"),
+                jev_audit_id("wallet", "/other-endpoint", "key"),
+                jev_audit_id("wallet", "/mcp/invoke", "other-key"),
+                jev_audit_id("wallet/mcp", "/invoke", "key"),
+            }
+        )
+        == 5
+    )
 
 
 @pytest.mark.anyio
@@ -790,7 +798,9 @@ async def test_upstream_terminal_metadata(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("reconcile_mode", [DuplicateGuardMode.LOG, DuplicateGuardMode.OFF])
+@pytest.mark.parametrize(
+    "reconcile_mode", [DuplicateGuardMode.LOG, DuplicateGuardMode.OFF]
+)
 async def test_upstream_crash_reconciliation_retains_advice(
     client, clean_database, mock_jev, monkeypatch, reconcile_mode
 ):
@@ -833,8 +843,12 @@ async def test_upstream_crash_reconciliation_retains_advice(
         if reconcile_mode == DuplicateGuardMode.OFF:
             from app.services import mcp_dispatch_reconciliation, receipts
 
-            lookup = AsyncMock(side_effect=AssertionError("Off mode must not load Jev metadata"))
-            monkeypatch.setattr(mcp_dispatch_reconciliation, "load_jev_guard_metadata", lookup)
+            lookup = AsyncMock(
+                side_effect=AssertionError("Off mode must not load Jev metadata")
+            )
+            monkeypatch.setattr(
+                mcp_dispatch_reconciliation, "load_jev_guard_metadata", lookup
+            )
             monkeypatch.setattr(receipts, "load_jev_guard_metadata", lookup)
         await get_mcp_dispatch_reconciliation_service().reconcile_attempt(
             attempt.attempt_id
@@ -842,7 +856,10 @@ async def test_upstream_crash_reconciliation_retains_advice(
         replay = await _invoke(client, agent, permit)
         assert replay.status_code == 200, replay.text
         if reconcile_mode == DuplicateGuardMode.OFF:
-            assert "jev_risk_guard" not in replay.json()["receipt"]["constraints_evaluated"]
+            assert (
+                "jev_risk_guard"
+                not in replay.json()["receipt"]["constraints_evaluated"]
+            )
             lookup.assert_not_awaited()
         else:
             await _assert_metadata(

@@ -121,7 +121,7 @@ b2a_tool = CrewAIB2ATool(
     api_key="your-api-key",
     wallet_id="agent-001",
     permit_budget=Decimal("50"),  # max 50 credits per permit
-    permit_ttl_minutes=15,         # permit expires in 15 minutes
+    permit_ttl_minutes=15,  # permit expires in 15 minutes
 )
 ```
 

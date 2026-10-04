@@ -24,3 +24,6 @@ dev = ["pytest", "pytest-asyncio", "ruff"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/autogen_b2a"]
+
+[tool.uv.sources]
+b2a-sdk = { path = "../../sdk/python", editable = true }

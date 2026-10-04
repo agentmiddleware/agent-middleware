@@ -2,7 +2,7 @@
 
 import ast
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -20,12 +20,12 @@ def _permit_payload() -> dict:
         "allowed_tools": ["partner.search"],
         "max_credits": "100",
         "spent_credits": "0",
-        "expires_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": datetime.now(UTC).isoformat(),
         "nonce": "nonce-1",
         "status": "active",
         "signature": "sig-permit-1",
         "key_id": "key-1",
-        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "issued_at": datetime.now(UTC).isoformat(),
         "revoked_at": None,
     }
 
@@ -47,7 +47,7 @@ def _receipt_payload(outcome: str = "success") -> dict:
         "credits_charged": "2",
         "outcome": outcome,
         "audit_event_id": "audit-1",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "signature": f"sig-{outcome}",
         "signature_key_id": "signing-key-1",
     }

@@ -11,7 +11,11 @@ from app.services.signing_keys import sha256_hex
 
 
 def jev_audit_id(wallet_id: str, endpoint: str, idempotency_key: str) -> str:
-    identity = {"wallet_id": wallet_id, "endpoint": endpoint, "idempotency_key": idempotency_key}
+    identity = {
+        "wallet_id": wallet_id,
+        "endpoint": endpoint,
+        "idempotency_key": idempotency_key,
+    }
     return f"audit-jev-{sha256_hex(identity)[:40]}"
 
 

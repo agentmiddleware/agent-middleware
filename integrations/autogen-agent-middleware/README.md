@@ -69,6 +69,7 @@ user_proxy = UserProxyAgent(
 )
 register_b2a_tools(user_proxy, b2a_tool)
 
+
 # Run the two-agent chat
 async def main():
     result = await user_proxy.a_initiate_chat(
@@ -76,6 +77,7 @@ async def main():
         message="Discover available MCP tools and check the wallet balance",
     )
     print(result.summary)
+
 
 asyncio.run(main())
 ```
@@ -90,6 +92,7 @@ tool = B2AFunctionTool(
     api_key="...",
     wallet_id="agent-001",
 )
+
 
 async def main():
     # Discover tools
@@ -110,6 +113,7 @@ async def main():
     # Check balance
     balance = await tool.get_wallet_balance()
     print(f"Balance: {balance} credits")
+
 
 asyncio.run(main())
 ```
@@ -158,7 +162,7 @@ tool = B2AFunctionTool(
     api_key="your-api-key",
     wallet_id="agent-001",
     permit_budget=Decimal("50"),  # max 50 credits per permit
-    permit_ttl_minutes=15,         # permit expires in 15 minutes
+    permit_ttl_minutes=15,  # permit expires in 15 minutes
 )
 ```
 

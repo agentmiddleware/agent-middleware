@@ -71,7 +71,12 @@ raise SystemExit(pytest.main([test_path, "-x", "-q"], plugins=[Probe()]))
     # Under pytest-xdist the parent's worker id and per-worker DATABASE_URL
     # would leak into the child run; the child must use its own defaults.
     if os.environ.get("PYTEST_XDIST_WORKER"):
-        for key in ("PYTEST_XDIST_WORKER", "PYTEST_XDIST_WORKER_COUNT", "PYTEST_XDIST_TESTRUNUID", "DATABASE_URL"):
+        for key in (
+            "PYTEST_XDIST_WORKER",
+            "PYTEST_XDIST_WORKER_COUNT",
+            "PYTEST_XDIST_TESTRUNUID",
+            "DATABASE_URL",
+        ):
             env.pop(key, None)
     for key in (
         "RUN_MCP_MULTIPROCESS_TESTS",

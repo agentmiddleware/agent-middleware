@@ -198,5 +198,3 @@ async def test_docs_index_gates_proof_services(client, proof_surfaces_off):
     assert "mcp-trust-plane" in service_ids
     assert "autonomous-pm" not in service_ids
     assert "iot-bridge" not in service_ids
-
-

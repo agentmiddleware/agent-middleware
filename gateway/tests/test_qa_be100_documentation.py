@@ -29,5 +29,3 @@ def test_be100_self_credentialing_scopes_retry_guarantees() -> None:
 
 def test_be100_tool_interface_scopes_retry_guarantees() -> None:
     _assert_scoped_retry_guidance("docs/tool-interface-authority.md")
-
-

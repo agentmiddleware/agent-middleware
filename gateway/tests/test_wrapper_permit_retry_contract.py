@@ -64,7 +64,9 @@ def _load_wrapper(monkeypatch, framework):
 
     # Isolated package names prevent replacing any application-imported wrapper.
     package_name = f"_retry_contract_{framework}"
-    source = ROOT.parent / f"integrations/{framework}-agent-middleware/src/{framework}_b2a"
+    source = (
+        ROOT.parent / f"integrations/{framework}-agent-middleware/src/{framework}_b2a"
+    )
     package = ModuleType(package_name)
     package.__path__ = [str(source)]
     monkeypatch.setitem(sys.modules, package_name, package)
@@ -83,8 +85,10 @@ def _load_wrapper(monkeypatch, framework):
         module,
         "datetime",
         SimpleNamespace(
-            now=lambda tz: datetime(2026, 10, 2, tzinfo=timezone.utc)
-            + timedelta(seconds=next(tick))
+            now=lambda tz: (
+                datetime(2026, 10, 2, tzinfo=timezone.utc)
+                + timedelta(seconds=next(tick))
+            )
         ),
     )
     return module

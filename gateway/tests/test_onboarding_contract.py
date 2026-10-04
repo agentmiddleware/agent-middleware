@@ -7,9 +7,7 @@ gates. These are cheap to re-break in a docs edit, so they are pinned.
 
 from __future__ import annotations
 
-import json
 import re
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -186,7 +184,9 @@ def test_framework_integrations_import_the_module_that_exists() -> None:
     """
 
     offenders = []
-    for path in (REPO_ROOT.parent / "integrations" / "framework_integrations").rglob("*"):
+    for path in (REPO_ROOT.parent / "integrations" / "framework_integrations").rglob(
+        "*"
+    ):
         if path.suffix not in {".md", ".py"}:
             continue
         for lineno, line in enumerate(path.read_text(errors="ignore").splitlines(), 1):
@@ -280,9 +280,9 @@ def test_wrappers_require_an_sdk_that_ships_the_trust_loop() -> None:
     """
 
     sdk_version = Version(
-        tomllib.loads((REPO_ROOT.parent / "sdk" / "python" / "pyproject.toml").read_text())[
-            "project"
-        ]["version"]
+        tomllib.loads(
+            (REPO_ROOT.parent / "sdk" / "python" / "pyproject.toml").read_text()
+        )["project"]["version"]
     )
     pyprojects = sorted((REPO_ROOT.parent / "integrations").glob("*/pyproject.toml"))
     assert pyprojects, "expected framework wrappers under wrappers/"
@@ -381,5 +381,3 @@ def test_troubleshooting_error_headings_match_raised_errors() -> None:
         assert message in source, (
             f"TROUBLESHOOTING.md quotes `{name}: {message}`, which app/ never raises"
         )
-
-

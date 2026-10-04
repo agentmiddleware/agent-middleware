@@ -88,9 +88,7 @@ async def main() -> None:
             idempotency_key="invoke-run-001",
         )
 
-        verification = await client.verify_receipt(
-            invocation.receipt.receipt_id
-        )
+        verification = await client.verify_receipt(invocation.receipt.receipt_id)
         evidence = await client.get_evidence(invocation.receipt.receipt_id)
         assert verification.valid and evidence.valid
 

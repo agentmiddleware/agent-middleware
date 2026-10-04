@@ -53,12 +53,14 @@ tool = mcp_tools[0]
 
 # Call an MCP tool with caller-supplied idempotency keys
 # The wrapper creates a permit, invokes the tool, and returns a signed receipt
-result = await tool.ainvoke({
-    "tool_name": "data-indexer",
-    "idempotency_key": "unique-invoke-123",  # REQUIRED: caller must supply
-    "permit_idempotency_key": "permit-invoke-123",  # REQUIRED: stable for replay
-    "arguments": {"documents": ["..."]},
-})
+result = await tool.ainvoke(
+    {
+        "tool_name": "data-indexer",
+        "idempotency_key": "unique-invoke-123",  # REQUIRED: caller must supply
+        "permit_idempotency_key": "permit-invoke-123",  # REQUIRED: stable for replay
+        "arguments": {"documents": ["..."]},
+    }
+)
 
 # Result includes signed receipt
 # {'content': [...], 'receipt_id': '...', 'credits_charged': '2', 'signature': '...'}
@@ -78,20 +80,24 @@ repeatable; it does not make a changed invocation an idempotent replay.
 
 ```python
 # First call: charges credits
-result1 = await tool.ainvoke({
-    "tool_name": "partner.search",
-    "idempotency_key": "search-abc-123",
-    "permit_idempotency_key": "permit-abc-123",
-    "arguments": {"query": "test"},
-})
+result1 = await tool.ainvoke(
+    {
+        "tool_name": "partner.search",
+        "idempotency_key": "search-abc-123",
+        "permit_idempotency_key": "permit-abc-123",
+        "arguments": {"query": "test"},
+    }
+)
 
 # Valid replay: same request returns the cached receipt, no additional charge
-result2 = await tool.ainvoke({
-    "tool_name": "partner.search",
-    "idempotency_key": "search-abc-123",  # same invoke key
-    "permit_idempotency_key": "permit-abc-123",  # same permit key
-    "arguments": {"query": "test"},  # same arguments
-})
+result2 = await tool.ainvoke(
+    {
+        "tool_name": "partner.search",
+        "idempotency_key": "search-abc-123",  # same invoke key
+        "permit_idempotency_key": "permit-abc-123",  # same permit key
+        "arguments": {"query": "test"},  # same arguments
+    }
+)
 ```
 
 ## Permit Configuration
@@ -105,7 +111,7 @@ tools = get_mcp_tools(
     client,
     wallet_id="agent-001",
     permit_budget=Decimal("50"),  # max 50 credits per permit
-    permit_ttl_minutes=15,         # permit expires in 15 minutes
+    permit_ttl_minutes=15,  # permit expires in 15 minutes
 )
 ```
 

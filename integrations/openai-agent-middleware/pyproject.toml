@@ -35,3 +35,6 @@ asyncio_mode = "auto"
 # directory at the repository root would otherwise resolve as a namespace
 # package and shadow the real SDK under `sdk/python/src`.
 pythonpath = ["src", "../../sdk/python/src"]
+
+[tool.uv.sources]
+b2a-sdk = { path = "../../sdk/python", editable = true }

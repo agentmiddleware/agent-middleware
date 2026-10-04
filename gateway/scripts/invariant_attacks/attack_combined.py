@@ -177,7 +177,10 @@ def verify(bundle_path, keys_path):
             keys_path,
         ],
         cwd=ROOT,
-        env={**os.environ, "PYTHONPATH": os.path.join(ROOT, "..", "sdk", "python", "src")},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.path.join(ROOT, "..", "sdk", "python", "src"),
+        },
         capture_output=True,
         text=True,
     )

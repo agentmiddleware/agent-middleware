@@ -1,12 +1,12 @@
 """CrewAI Tool for Agent Middleware API."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from crewai.tools import BaseTool
-from pydantic import BaseModel
 
 from b2a_sdk.models import PermitRequest
+from crewai.tools import BaseTool
+from pydantic import BaseModel
 
 from .client import B2AClient
 
@@ -38,18 +38,19 @@ class CrewAIB2ATool(BaseTool):
     base_url: str = "https://api.thisisatest.tech"
     api_key: str
     wallet_id: str
-    permit_budget: Decimal = Decimal("100")
+    permit_budget: Decimal = Decimal(100)
     permit_ttl_minutes: int = 30
     # Cache permits to avoid 409 on replay (server hashes full permit body including expires_at)
-    _permit_cache: dict[str, str] = {}  # permit_idempotency_key → permit_id
-    _permit_requests: dict[str, PermitRequest] = {}
+    # permit_idempotency_key -> permit_id
+    _permit_cache: dict[str, str] = {}  # noqa: RUF012
+    _permit_requests: dict[str, PermitRequest] = {}  # noqa: RUF012
 
     def __init__(
         self,
         api_key: str,
         wallet_id: str,
         base_url: str = "https://api.thisisatest.tech",
-        permit_budget: Decimal = Decimal("100"),
+        permit_budget: Decimal = Decimal(100),
         permit_ttl_minutes: int = 30,
         **kwargs,
     ):
@@ -83,7 +84,7 @@ class CrewAIB2ATool(BaseTool):
                 issuer_wallet_id=self.wallet_id,
                 subject_wallet_id=self.wallet_id,
                 max_credits=self.permit_budget,
-                expires_at=datetime.now(timezone.utc)
+                expires_at=datetime.now(UTC)
                 + timedelta(minutes=self.permit_ttl_minutes),
                 allowed_tools=[tool_name],
                 scopes=[f"tool:{tool_name}:invoke", "billing:charge"],
@@ -176,8 +177,8 @@ class CrewAIB2ATool(BaseTool):
             else:
                 return f"Unknown operation: {operation}"
 
-        except Exception as e:
-            return f"Error: {str(e)}"
+        except Exception as e:  # noqa: BLE001
+            return f"Error: {e!s}"
 
     async def _arun(
         self,
@@ -241,5 +242,5 @@ class CrewAIB2ATool(BaseTool):
             else:
                 return f"Unknown operation: {operation}"
 
-        except Exception as e:
-            return f"Error: {str(e)}"
+        except Exception as e:  # noqa: BLE001
+            return f"Error: {e!s}"

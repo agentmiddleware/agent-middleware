@@ -54,6 +54,7 @@ from b2a_sdk import AgentMiddlewareClient
 
 client = AgentMiddlewareClient(base_url="http://localhost:8000", api_key="key")
 
+
 async def agent_loop():
     while True:
         # Load previous state
@@ -63,7 +64,7 @@ async def agent_loop():
         decision = await client.decide(
             agent_id="agent-001",
             context=state or {"task": "start"},
-            options=["process", "wait", "report"]
+            options=["process", "wait", "report"],
         )
 
         # Store updated state
@@ -92,6 +93,7 @@ curl -X POST http://localhost:8000/v1/billing/wallets \
 from b2a_sdk.decorators import billable
 
 b2a = AgentMiddlewareClient(api_key="key")
+
 
 @billable(b2a, wallet_id="agent-001", service_category="content_factory", units=1.0)
 async def generate_report(data: dict) -> dict:
@@ -124,14 +126,14 @@ await client.register_service(
     service_id="data-indexer",
     name="Data Indexing Service",
     price_per_call=50,
-    provider_wallet_id="provider-001"
+    provider_wallet_id="provider-001",
 )
 
 # Invoke a service
 result = await client.invoke_service(
     service_id="data-indexer",
     caller_wallet_id="agent-001",
-    input_data={"documents": ["doc1.pdf", "doc2.pdf"]}
+    input_data={"documents": ["doc1.pdf", "doc2.pdf"]},
 )
 ```
 
@@ -144,15 +146,14 @@ result = await client.invoke_service(
 ```python
 # Register as available agent
 await client.register_agent(
-    agent_id="agent-001",
-    capabilities=["data-processing", "report-generation"]
+    agent_id="agent-001", capabilities=["data-processing", "report-generation"]
 )
 
 # Send message to another agent
 await client.send_message(
     from_agent_id="agent-001",
     to_agent_id="agent-002",
-    message={"task": "process_data", "data": {...}}
+    message={"task": "process_data", "data": {...}},
 )
 ```
 
@@ -179,7 +180,7 @@ for message in inbox.messages:
 await client.broadcast(
     from_agent_id="agent-001",
     capability_filter="data-processing",
-    message={"task": "batch_process", "dataset": "large"}
+    message={"task": "batch_process", "dataset": "large"},
 )
 ```
 
@@ -196,13 +197,9 @@ decision = await client.decide(
         "pending_tasks": ["email_response", "data_sync", "report_gen"],
         "current_load": 0.7,
         "battery_level": 0.4,
-        "time_of_day": "afternoon"
+        "time_of_day": "afternoon",
     },
-    options=[
-        "process_high_priority",
-        "defer_non_urgent",
-        "wait_for_resources"
-    ]
+    options=["process_high_priority", "defer_non_urgent", "wait_for_resources"],
 )
 
 print(f"Decision: {decision}")  # "process_high_priority"
@@ -217,12 +214,12 @@ decision = await client.decide(
         "tasks": [
             {"id": 1, "cost": 100, "reward": 500, "time_required": 60},
             {"id": 2, "cost": 50, "reward": 100, "time_required": 15},
-            {"id": 3, "cost": 200, "reward": 1000, "time_required": 120}
+            {"id": 3, "cost": 200, "reward": 1000, "time_required": 120},
         ],
         "budget": 300,
-        "deadline": "2024-12-31T23:59:59Z"
+        "deadline": "2024-12-31T23:59:59Z",
     },
-    options=["select_task_1", "select_task_2", "select_task_3", "select_multiple"]
+    options=["select_task_1", "select_task_2", "select_task_3", "select_multiple"],
 )
 ```
 
@@ -240,8 +237,8 @@ async def monitor_and_heal():
                 issue="High error rate detected",
                 context={
                     "error_log": health.get("recent_errors", []),
-                    "system_state": health
-                }
+                    "system_state": health,
+                },
             )
 
             if fix.get("action"):
@@ -265,8 +262,8 @@ await client.emit_telemetry(
         "task_type": "data_processing",
         "duration_ms": 1500,
         "records_processed": 10000,
-        "success": True
-    }
+        "success": True,
+    },
 )
 
 # Track agent behavior
@@ -276,8 +273,8 @@ await client.emit_telemetry(
     properties={
         "decision": "process_high_priority",
         "confidence": 0.95,
-        "reasoning": "High priority task with deadline approaching"
-    }
+        "reasoning": "High priority task with deadline approaching",
+    },
 )
 ```
 
@@ -285,10 +282,7 @@ await client.emit_telemetry(
 
 ```python
 # Check for anomalies
-anomalies = await client.get_anomalies(
-    agent_id="agent-001",
-    time_window_minutes=60
-)
+anomalies = await client.get_anomalies(agent_id="agent-001", time_window_minutes=60)
 
 for anomaly in anomalies:
     print(f"Anomaly: {anomaly.type}")
@@ -305,7 +299,7 @@ for anomaly in anomalies:
 ```python
 metrics = await client.get_metrics(
     agent_id="agent-001",
-    metrics=["tasks_completed", "errors", "credits_spent", "uptime"]
+    metrics=["tasks_completed", "errors", "credits_spent", "uptime"],
 )
 
 print(f"Tasks completed: {metrics['tasks_completed']}")
@@ -322,13 +316,14 @@ print(f"Credits spent: {metrics['credits_spent']}")
 ```python
 from b2a_sdk.decorators import mcp_tool
 
+
 @mcp_tool(
     service_id="image-processor",
     name="Image Processor",
     description="Process and transform images",
     category="media",
     credits_per_unit=10.0,
-    unit_name="image"
+    unit_name="image",
 )
 async def process_image(image_url: str, operations: list[str]) -> dict:
     """Your tool implementation."""
@@ -348,7 +343,10 @@ for tool in tools:
 # Call a tool
 result = await client.call_mcp_tool(
     name="image-processor",
-    arguments={"image_url": "https://example.com/photo.jpg", "operations": ["resize", "crop"]}
+    arguments={
+        "image_url": "https://example.com/photo.jpg",
+        "operations": ["resize", "crop"],
+    },
 )
 ```
 
@@ -370,8 +368,7 @@ permit, and caller-owned idempotency key.
 ```python
 # Start AWI session for web interaction
 session = await client.create_awi_session(
-    target_url="https://ecommerce.example.com",
-    max_steps=100
+    target_url="https://ecommerce.example.com", max_steps=100
 )
 
 print(f"Session ID: {session.session_id}")
@@ -382,8 +379,8 @@ result = await client.execute_awi_action(
     action="search_and_filter",
     parameters={
         "query": "laptops",
-        "filters": {"price_range": [500, 1500], "brand": "Dell"}
-    }
+        "filters": {"price_range": [500, 1500], "brand": "Dell"},
+    },
 )
 ```
 
@@ -392,20 +389,17 @@ result = await client.execute_awi_action(
 ```python
 # Get summary representation
 summary = await client.get_awi_representation(
-    session_id=session.session_id,
-    representation_type="summary"
+    session_id=session.session_id, representation_type="summary"
 )
 
 # Get detailed representation
 detailed = await client.get_awi_representation(
-    session_id=session.session_id,
-    representation_type="full"
+    session_id=session.session_id, representation_type="full"
 )
 
 # Get embedding for similarity search
 embedding = await client.get_awi_representation(
-    session_id=session.session_id,
-    representation_type="embedding"
+    session_id=session.session_id, representation_type="embedding"
 )
 ```
 
@@ -414,8 +408,7 @@ embedding = await client.get_awi_representation(
 ```python
 # Pause for human review
 await client.pause_awi_session(
-    session_id=session.session_id,
-    reason="High-value transaction requires approval"
+    session_id=session.session_id, reason="High-value transaction requires approval"
 )
 
 # Wait for human response
@@ -446,8 +439,7 @@ class SwarmCoordinator:
     async def register_agents(self, agent_configs: list[dict]):
         for config in agent_configs:
             await self.client.register_agent(
-                agent_id=config["id"],
-                capabilities=config["capabilities"]
+                agent_id=config["id"], capabilities=config["capabilities"]
             )
             self.agents[config["id"]] = config
 
@@ -455,7 +447,8 @@ class SwarmCoordinator:
         # Find best agent for task
         for capability in task["required_capabilities"]:
             suitable_agents = [
-                aid for aid, cfg in self.agents.items()
+                aid
+                for aid, cfg in self.agents.items()
                 if capability in cfg["capabilities"]
             ]
             if suitable_agents:
@@ -464,7 +457,7 @@ class SwarmCoordinator:
                 await self.client.send_message(
                     from_agent_id="coordinator",
                     to_agent_id=target_agent,
-                    message={"task": task}
+                    message={"task": task},
                 )
                 return target_agent
 
@@ -492,11 +485,7 @@ async def decompose_and_execute(task: str, budget: int):
     decomposition = await client.decide(
         agent_id="planner",
         context={"task": task, "budget": budget},
-        options=[
-            "decompose_simple",
-            "decompose_medium",
-            "decompose_complex"
-        ]
+        options=["decompose_simple", "decompose_medium", "decompose_complex"],
     )
 
     subtasks = await generate_subtasks(task, decomposition)
@@ -511,15 +500,14 @@ async def decompose_and_execute(task: str, budget: int):
             parent_wallet_id="planner",
             max_spend=per_task_credits,
             task_description=subtask,
-            ttl_seconds=3600
+            ttl_seconds=3600,
         )
         task_wallets.append({"subtask": subtask, "wallet": wallet})
 
     # Execute subtasks in parallel
-    results = await asyncio.gather(*[
-        execute_subtask(st["subtask"], st["wallet"])
-        for st in task_wallets
-    ])
+    results = await asyncio.gather(
+        *[execute_subtask(st["subtask"], st["wallet"]) for st in task_wallets]
+    )
 
     # Aggregate results
     return aggregate_results(results)
@@ -551,7 +539,7 @@ async def batch_process_with_rate_limit(items: list, rate_limit: int = 60):
         # Emit telemetry
         await client.emit_telemetry(
             event="batch_progress",
-            properties={"processed": processed, "total": len(items)}
+            properties={"processed": processed, "total": len(items)},
         )
 ```
 
@@ -585,10 +573,10 @@ async def process_with_idempotency(task_id: str, operation: callable):
     result = await operation()
 
     # Store result with idempotency key
-    await client.set_memory(f"processed:{task_id}", {
-        "result": result,
-        "processed_at": datetime.utcnow().isoformat()
-    })
+    await client.set_memory(
+        f"processed:{task_id}",
+        {"result": result, "processed_at": datetime.utcnow().isoformat()},
+    )
 
     return result
 ```

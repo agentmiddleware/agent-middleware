@@ -16,5 +16,3 @@ def test_legacy_database_guidance_requires_schema_and_data_review(name):
     assert "proven matching historical revision" in text
     assert "run `alembic stamp head` once" not in text
     assert "run **`alembic stamp head`** once" not in text
-
-

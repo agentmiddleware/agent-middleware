@@ -221,7 +221,7 @@ async def test_reconcile_budgets_does_not_erase_a_concurrent_reservation(
     monkeypatch.setattr(
         permits_module,
         "get_session_factory",
-        lambda: (lambda: _InterleavingFactory(real_factory())),
+        lambda: lambda: _InterleavingFactory(real_factory()),
     )
 
     # Observe the service's own logger object rather than stdlib capture:

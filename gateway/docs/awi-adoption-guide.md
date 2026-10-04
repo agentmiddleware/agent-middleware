@@ -73,12 +73,14 @@ app = FastAPI()
 # Mount AWI adapter
 awi = AWIAdapter(
     middleware_url="https://your-middleware.example.com",
-    api_key="your-middleware-api-key"
+    api_key="your-middleware-api-key",
 )
 app.mount("/awi", awi.router)
 
 # Serve the manifest
 from fastapi.responses import FileResponse
+
+
 @app.get("/.well-known/awi.json")
 async def awi_manifest():
     return FileResponse(".well-known/awi.json")
@@ -90,7 +92,7 @@ async def awi_manifest():
 awi = AWIAdapter(
     middleware_url="https://your-middleware.example.com",
     api_key="your-key",
-    require_kyc=True,      # Require KYC-verified wallets
+    require_kyc=True,  # Require KYC-verified wallets
     require_human_approval=["checkout", "purchase"],  # Actions needing approval
 )
 ```

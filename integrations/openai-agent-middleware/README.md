@@ -60,12 +60,13 @@ import asyncio
 from openai import AsyncOpenAI
 from openai_b2a import B2AClient, GovernedToolRunner, JsonFileOperationKeyStore
 
+
 async def main() -> None:
     trust = B2AClient(api_key="<wallet-scoped key>", base_url="http://127.0.0.1:8000")
     runner = GovernedToolRunner(
         trust,
         wallet_id="<your wallet id>",
-        run_id="job-2026-09-05-001",           # stable across a resume of this run
+        run_id="job-2026-09-05-001",  # stable across a resume of this run
         key_store=JsonFileOperationKeyStore("operations.json"),
     )
     tools = [
@@ -78,7 +79,9 @@ async def main() -> None:
 
     openai = AsyncOpenAI()
     messages = [{"role": "user", "content": "Write the note: shipped the fix."}]
-    completion = await openai.chat.completions.create(model="gpt-4o", messages=messages, tools=tools)
+    completion = await openai.chat.completions.create(
+        model="gpt-4o", messages=messages, tools=tools
+    )
     assistant = completion.choices[0].message
     messages.append(assistant)
 
@@ -86,6 +89,7 @@ async def main() -> None:
     for outcome in await runner.run_all(assistant.tool_calls or []):
         messages.append(outcome.as_tool_message())
         print(outcome.receipt.receipt_id, outcome.receipt.credits_charged)
+
 
 asyncio.run(main())
 ```
@@ -97,7 +101,7 @@ asyncio.run(main())
 a `function_call_output`:
 
 ```python
-outcome = await runner.run(item)                 # item.type == "function_call"
+outcome = await runner.run(item)  # item.type == "function_call"
 input_items.append(outcome.as_function_call_output())
 ```
 

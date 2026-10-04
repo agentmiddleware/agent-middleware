@@ -580,7 +580,9 @@ class McpDispatchReconciliationService:
             metadata["approval_id"] = attempt.approval_id
         if get_settings().JEV_RISK_GUARD != DuplicateGuardMode.OFF:
             jev = await load_jev_guard_metadata(
-                jev_audit_id(attempt.wallet_id, context.endpoint, context.idempotency_key),
+                jev_audit_id(
+                    attempt.wallet_id, context.endpoint, context.idempotency_key
+                ),
                 attempt.wallet_id,
             )
             if jev is not None:

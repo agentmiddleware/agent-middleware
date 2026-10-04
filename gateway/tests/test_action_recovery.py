@@ -683,7 +683,9 @@ print("offline action receipt verified; tamper/unknown key refused; native key s
 """
     env = {
         **os.environ,
-        "PYTHONPATH": str(Path.cwd().parent / "sdk/python/src") + os.pathsep + str(Path.cwd()),
+        "PYTHONPATH": str(Path.cwd().parent / "sdk/python/src")
+        + os.pathsep
+        + str(Path.cwd()),
     }
     run = subprocess.run(
         [sys.executable, "-c", script],

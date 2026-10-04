@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,10 +11,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_dogfood_trust_plane_writes_one_note_and_holds_loop():
+def test_dogfood_trust_plane_writes_one_note_and_holds_loop(tmp_path):
+    # Private files: other tests write the default data/ notes file in parallel.
+    env = {
+        **os.environ,
+        "DOGFOOD_NOTES_PATH": str(tmp_path / "notes.jsonl"),
+        "DOGFOOD_DB_PATH": str(tmp_path / "dogfood.db"),
+    }
     result = subprocess.run(
         [sys.executable, "scripts/dogfood_trust_plane.py", "--json"],
         cwd=ROOT,
+        env=env,
         check=False,
         capture_output=True,
         text=True,

@@ -23,8 +23,23 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-DOGFOOD_DB = ROOT / "data" / "dogfood_trust_plane.db"
-NOTES_FILE = ROOT / "data" / "dogfood_partner_notes.jsonl"
+DOGFOOD_DB = Path(
+    os.environ.get("DOGFOOD_DB_PATH") or ROOT / "data" / "dogfood_trust_plane.db"
+)
+NOTES_FILE = Path(
+    os.environ.get("DOGFOOD_NOTES_PATH")
+    or ROOT / "data" / "dogfood_partner_notes.jsonl"
+)
+
+
+def _notes_display() -> str:
+    """Notes path relative to the gateway root when it lives there, else absolute."""
+    try:
+        return str(NOTES_FILE.relative_to(ROOT))
+    except ValueError:
+        return str(NOTES_FILE)
+
+
 ADMIN_KEY = "dogfood-admin-key"
 DEMO_PRIVATE_KEY_B64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 ALLOWED_TOOL = "partner.notes.write"
@@ -100,7 +115,7 @@ def register_partner_tools() -> None:
             "status": "ok",
             "tool": ALLOWED_TOOL,
             "note": entry,
-            "notes_path": str(NOTES_FILE.relative_to(ROOT)),
+            "notes_path": str(_notes_display()),
             "note_count": len(read_notes()),
         }
 
@@ -208,7 +223,7 @@ async def run_dogfood(json_output: bool = False) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "allowed_tool": ALLOWED_TOOL,
         "blocked_tool": BLOCKED_TOOL,
-        "notes_path": str(NOTES_FILE.relative_to(ROOT)),
+        "notes_path": str(_notes_display()),
     }
 
     try:
@@ -315,7 +330,7 @@ async def run_dogfood(json_output: bool = False) -> dict[str, Any]:
             notes = read_notes()
             require(len(notes) == 1, f"expected 1 note on disk, got {notes}")
             require(notes[0]["text"] == note_text, f"note text mismatch: {notes[0]}")
-            step(f"note on disk: {NOTES_FILE.relative_to(ROOT)} → {notes[0]['text']!r}")
+            step(f"note on disk: {_notes_display()} → {notes[0]['text']!r}")
 
             step("verifying signed receipt")
             receipt_check = await post_json(
@@ -439,7 +454,7 @@ async def run_dogfood(json_output: bool = False) -> dict[str, Any]:
             )
             if PRINT_STEPS:
                 print(f"  tool: {ALLOWED_TOOL}")
-                print(f"  notes: {NOTES_FILE.relative_to(ROOT)}")
+                print(f"  notes: {_notes_display()}")
                 print(f"  note_count: {summary['note_count']}")
                 print(f"  receipt: {summary['success_receipt_id']}")
                 print(f"  denial: {denial_reason}")

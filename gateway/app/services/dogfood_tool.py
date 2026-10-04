@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -31,7 +32,10 @@ DOGFOOD_TOOL_ID = "partner.notes.write"
 DOGFOOD_TOOL_NAME = "Partner Notes Write"
 DOGFOOD_SECOND_TOOL_ID = "partner.notes.count"
 DOGFOOD_SECOND_TOOL_NAME = "Partner Notes Count"
-DOGFOOD_NOTES_PATH = Path("data") / "dogfood_partner_notes.jsonl"
+# Overridable so parallel test workers and scripted proofs do not share one file.
+DOGFOOD_NOTES_PATH = Path(
+    os.environ.get("DOGFOOD_NOTES_PATH") or Path("data") / "dogfood_partner_notes.jsonl"
+)
 DOGFOOD_CREDITS_PER_UNIT = 2.0
 DOGFOOD_MAX_TEXT_CHARS = 2_000
 DOGFOOD_MAX_NOTES = 1_000

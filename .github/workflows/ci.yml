@@ -56,6 +56,10 @@ jobs:
       matrix:
         project: ${{ fromJSON(needs.detect.outputs.python) }}
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+        exclude:
+          # crewai pulls chromadb, whose pydantic.v1 settings fail to import on 3.14.
+          - project: integrations/crewai-agent-middleware
+            python-version: "3.14"
     defaults:
       run:
         working-directory: ${{ matrix.project }}

@@ -1,0 +1,168 @@
+# CI for AMW (Agent Middleware).
+# Projects are discovered at runtime (.github/scripts/detect_projects.py), so jobs only run for
+# Python/TypeScript packages that actually exist under spec/, verifier/, sdk/python, sdk/typescript,
+# integrations/, examples/ and gateway/. No `paths:` filters on purpose: the "CI result" job must
+# always report, because branch protection requires it.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_COLOR: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  RUFF_VERSION: "0.16.10"
+  PYTEST_VERSION: "9.1.1"
+
+jobs:
+  detect:
+    name: Detect projects
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      python: ${{ steps.d.outputs.python }}
+      typescript: ${{ steps.d.outputs.typescript }}
+      has_python: ${{ steps.d.outputs.has_python }}
+      has_typescript: ${{ steps.d.outputs.has_typescript }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: d
+        run: python3 .github/scripts/detect_projects.py
+
+  python:
+    name: Python ${{ matrix.python-version }} / ${{ matrix.project }}
+    needs: detect
+    if: needs.detect.outputs.has_python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.detect.outputs.python) }}
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: false
+      - name: Install
+        run: |
+          if [ -f uv.lock ]; then
+            uv sync --locked --all-extras --dev
+          else
+            uv venv
+            uv pip install -e ".[dev]" 2>/dev/null || uv pip install -e .
+          fi
+          uv pip install "ruff==${RUFF_VERSION}" "pytest==${PYTEST_VERSION}"
+      - name: Lint (ruff)
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run --no-sync ruff check --output-format=github .
+          uv run --no-sync ruff format --check .
+      - name: Type check (mypy, if configured)
+        if: matrix.python-version == '3.12'
+        run: |
+          if grep -q '^\[tool\.mypy\]' pyproject.toml 2>/dev/null || [ -f mypy.ini ]; then
+            uv pip install mypy && uv run --no-sync mypy .
+          else
+            echo "mypy not configured; skipping"
+          fi
+      - name: Test (pytest)
+        run: |
+          set +e
+          uv run --no-sync pytest -q
+          rc=$?
+          # exit code 5 = no tests collected; don't fail packages that have none yet
+          if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
+          exit $rc
+
+  typescript:
+    name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
+    needs: detect
+    if: needs.detect.outputs.has_typescript == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.detect.outputs.typescript) }}
+        node-version: ["20", "22", "24"]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+      - name: Install
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            corepack enable pnpm && echo "PM=pnpm" >> "$GITHUB_ENV" && pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then
+            corepack enable yarn && echo "PM=yarn" >> "$GITHUB_ENV" && yarn install --immutable
+          elif [ -f package-lock.json ]; then
+            echo "PM=npm" >> "$GITHUB_ENV" && npm ci
+          else
+            echo "::warning::no lockfile in ${{ matrix.project }}; using npm install"
+            echo "PM=npm" >> "$GITHUB_ENV" && npm install --no-audit --no-fund
+          fi
+      - name: Lint
+        if: matrix.node-version == '22'
+        run: $PM run --if-present lint
+      - name: Type check
+        run: |
+          if node -e 'process.exit(require("./package.json").scripts?.typecheck ? 0 : 1)'; then
+            $PM run typecheck
+          elif [ -f tsconfig.json ]; then
+            $PM exec tsc --noEmit -p tsconfig.json
+          fi
+      - name: Build
+        run: $PM run --if-present build
+      - name: Test
+        run: $PM run --if-present test
+
+  ci-result:
+    # Single stable check name for branch protection, regardless of how the matrices expand.
+    name: CI result
+    needs: [detect, python, typescript]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Check job results
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | grep -Eq '"(failure|cancelled)"'; then
+            echo "::error::one or more CI jobs failed or were cancelled"; exit 1
+          fi

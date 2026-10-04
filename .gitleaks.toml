@@ -1,0 +1,36 @@
+# gitleaks config for AMW. Used by .github/workflows/secrets.yml and .pre-commit-config.yaml.
+title = "AMW gitleaks config"
+
+[extend]
+# Start from gitleaks' built-in ruleset (all default rules stay active).
+useDefault = true
+
+# AMW-specific: signing keys for permits/receipts must never be committed.
+[[rules]]
+id = "amw-private-key-material"
+description = "PEM/OpenSSH/age private key block"
+regex = '''-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY(?: BLOCK)?-----|AGE-SECRET-KEY-1[0-9A-Z]{58}'''
+keywords = ["private key", "age-secret-key"]
+
+[[rules]]
+id = "amw-env-secret-assignment"
+description = "Secret-looking value assigned to an AMW_* environment variable"
+regex = '''(?i)\bAMW_[A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD)[A-Z0-9_]*\s*[:=]\s*["']?([A-Za-z0-9_\-+/=]{20,})["']?'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["amw_"]
+
+# Narrow allowlist: only lockfiles (integrity hashes) and generated test vectors that are
+# explicitly marked as fake. Do NOT allowlist whole source dirs.
+[[allowlists]]
+description = "Lockfiles and vendored hashes"
+paths = [
+  '''(?:^|/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|uv\.lock|poetry\.lock|Cargo\.lock)$''',
+]
+
+[[allowlists]]
+description = "Clearly-fake placeholder values in docs, specs and tests"
+regexTarget = "match"
+regexes = [
+  '''(?i)(?:EXAMPLE|PLACEHOLDER|DUMMY|REDACTED|changeme|xxxxxxxx)''',
+]

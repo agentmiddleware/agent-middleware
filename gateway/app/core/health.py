@@ -138,6 +138,7 @@ LIVENESS_REDIS_TIMEOUT_SECONDS: float = 1.0
 LIVENESS_REDIS_CACHE_SECONDS: float = 2.0
 
 _liveness_client: Any = None
+_liveness_client_url: str | None = None
 _liveness_cache: tuple[float, str] | None = None
 # Single flight: when the cache expires under a burst of /health requests, one
 # coroutine pings and the rest wait for its verdict. Bound to the running loop.
@@ -155,12 +156,18 @@ def _liveness_single_flight() -> asyncio.Lock:
 def _liveness_redis_client(redis_url: str) -> Any:
     import redis.asyncio as redis
 
-    return redis.from_url(
-        redis_url,
-        decode_responses=True,
-        socket_connect_timeout=LIVENESS_REDIS_TIMEOUT_SECONDS,
-        socket_timeout=LIVENESS_REDIS_TIMEOUT_SECONDS,
-        health_check_interval=15,
+    from .rate_limiter import enforce_redis_timeouts
+
+    return enforce_redis_timeouts(
+        redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=LIVENESS_REDIS_TIMEOUT_SECONDS,
+            socket_timeout=LIVENESS_REDIS_TIMEOUT_SECONDS,
+            health_check_interval=15,
+        ),
+        connect_timeout=LIVENESS_REDIS_TIMEOUT_SECONDS,
+        read_timeout=LIVENESS_REDIS_TIMEOUT_SECONDS,
     )
 
 
@@ -191,31 +198,36 @@ async def check_redis_liveness() -> str:
     if not redis_url:
         return "not_configured"
 
-    cached = _cached_liveness()
+    cached = _cached_liveness(redis_url)
     if cached is not None:
         return cached
     async with _liveness_single_flight():
         # Another request may have refreshed the verdict while we waited.
-        cached = _cached_liveness()
+        cached = _cached_liveness(redis_url)
         if cached is not None:
             return cached
         return await _ping_liveness_redis(redis_url)
 
 
-def _cached_liveness() -> str | None:
-    if _liveness_cache is None:
+def _cached_liveness(redis_url: str) -> str | None:
+    if _liveness_cache is None or _liveness_client_url != redis_url:
         return None
     at, status = _liveness_cache
     return status if time.monotonic() - at < LIVENESS_REDIS_CACHE_SECONDS else None
 
 
 async def _ping_liveness_redis(redis_url: str) -> str:
-    global _liveness_client, _liveness_cache
+    global _liveness_client, _liveness_client_url, _liveness_cache
 
+    if _liveness_client is not None and _liveness_client_url != redis_url:
+        # REDIS_URL changed under a running process: never report the old
+        # endpoint's health for the new one.
+        await _drop_liveness_client()
     status = "up"
     try:
         if _liveness_client is None:
             _liveness_client = _liveness_redis_client(redis_url)
+            _liveness_client_url = redis_url
         await asyncio.wait_for(
             _liveness_client.ping(), timeout=LIVENESS_REDIS_TIMEOUT_SECONDS
         )

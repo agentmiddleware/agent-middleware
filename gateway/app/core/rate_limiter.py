@@ -42,6 +42,32 @@ REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS: float = 2.0
 REDIS_SOCKET_TIMEOUT_SECONDS: float = 2.0
 REDIS_HEALTH_CHECK_INTERVAL_SECONDS: int = 15
 
+
+def enforce_redis_timeouts(
+    client: Any,
+    *,
+    connect_timeout: float = REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+    read_timeout: float = REDIS_SOCKET_TIMEOUT_SECONDS,
+    health_check_interval: int = REDIS_HEALTH_CHECK_INTERVAL_SECONDS,
+) -> Any:
+    """Apply the timeouts even when REDIS_URL carries its own.
+
+    redis-py lets ``?socket_timeout=`` / ``?socket_connect_timeout=`` query
+    parameters in the URL override the keyword arguments given to
+    ``from_url``, which would silently lift the bound on a hung command. The
+    pool builds every new connection from ``connection_kwargs``.
+    """
+    pool = getattr(client, "connection_pool", None)
+    kwargs = getattr(pool, "connection_kwargs", None)
+    if isinstance(kwargs, dict):
+        kwargs.update(
+            socket_connect_timeout=connect_timeout,
+            socket_timeout=read_timeout,
+            health_check_interval=health_check_interval,
+        )
+    return client
+
+
 _PUBLIC_MCP_PATH = "/mcp/public"
 _PUBLIC_MCP_BUCKET_PREFIX = "route:mcp-public"
 _PUBLIC_MCP_GLOBAL_LIMIT_MULTIPLIER = 10
@@ -275,13 +301,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 return self._redis
             client = None
             try:
-                client = redis.from_url(
-                    self._redis_url,
-                    encoding="utf-8",
-                    decode_responses=True,
-                    socket_connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
-                    socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
-                    health_check_interval=REDIS_HEALTH_CHECK_INTERVAL_SECONDS,
+                client = enforce_redis_timeouts(
+                    redis.from_url(
+                        self._redis_url,
+                        encoding="utf-8",
+                        decode_responses=True,
+                        socket_connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+                        socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+                        health_check_interval=REDIS_HEALTH_CHECK_INTERVAL_SECONDS,
+                    )
                 )
                 await client.ping()
                 self._redis = client

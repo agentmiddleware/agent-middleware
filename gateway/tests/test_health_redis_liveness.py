@@ -71,6 +71,7 @@ def redis_url(monkeypatch):
     get_settings.cache_clear()
     health_module.reset_liveness_redis_cache()
     monkeypatch.setattr(health_module, "_liveness_client", None)
+    monkeypatch.setattr(health_module, "_liveness_client_url", None)
     try:
         yield _SECRET_URL
     finally:
@@ -353,3 +354,44 @@ def test_health_declares_its_503_in_openapi():
 
     responses = app.openapi()["paths"]["/health"]["get"]["responses"]
     assert "503" in responses
+
+
+def test_url_query_cannot_lift_the_timeouts():
+    """redis-py lets URL query params override from_url kwargs; we re-apply ours."""
+    import redis.asyncio as redis
+
+    url = "redis://localhost:6390/0?socket_timeout=120&socket_connect_timeout=120"
+    client = rate_limiter_module.enforce_redis_timeouts(
+        redis.from_url(url, socket_timeout=2.0, socket_connect_timeout=2.0)
+    )
+    kwargs = client.connection_pool.connection_kwargs
+    assert kwargs["socket_timeout"] == rate_limiter_module.REDIS_SOCKET_TIMEOUT_SECONDS
+    assert kwargs["socket_connect_timeout"] == (
+        rate_limiter_module.REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS
+    )
+    assert kwargs["health_check_interval"] == (
+        rate_limiter_module.REDIS_HEALTH_CHECK_INTERVAL_SECONDS
+    )
+    live = health_module._liveness_redis_client(url)
+    live_kwargs = live.connection_pool.connection_kwargs
+    assert live_kwargs["socket_timeout"] == health_module.LIVENESS_REDIS_TIMEOUT_SECONDS
+
+
+@pytest.mark.anyio
+async def test_redis_url_change_drops_client_and_verdict(monkeypatch, liveness_clients):
+    created, behaviour = liveness_clients
+    assert await health_module.check_redis_liveness() == "up"
+    other = "redis://default:other@redis-2.internal.example:6379/0"
+    monkeypatch.setenv("REDIS_URL", other)
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        health_module,
+        "_liveness_redis_client",
+        lambda url: (
+            created.append(_FakeRedis(fail=ConnectionError("new down"))) or created[-1]
+        ),
+    )
+    # Within the cache window, but the verdict belonged to the old URL.
+    assert await health_module.check_redis_liveness() == "down"
+    assert created[0].closed
+    assert len(created) == 2

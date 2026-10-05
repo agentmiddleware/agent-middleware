@@ -126,6 +126,88 @@ async def _check_redis() -> dict[str, Any]:
         await client.aclose()
 
 
+# ---------------------------------------------------------------------------
+# Liveness Redis ping (/health)
+# ---------------------------------------------------------------------------
+
+# /health is polled by Railway, uptime monitors, and the operator dashboard, so
+# it must answer fast even when Redis hangs: one PING bounded by a short
+# timeout, a reused client, and a result cached briefly so unauthenticated
+# polling cannot turn into Redis load.
+LIVENESS_REDIS_TIMEOUT_SECONDS: float = 1.0
+LIVENESS_REDIS_CACHE_SECONDS: float = 2.0
+
+_liveness_client: Any = None
+_liveness_cache: tuple[float, str] | None = None
+
+
+def _liveness_redis_client(redis_url: str) -> Any:
+    import redis.asyncio as redis
+
+    return redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_connect_timeout=LIVENESS_REDIS_TIMEOUT_SECONDS,
+        socket_timeout=LIVENESS_REDIS_TIMEOUT_SECONDS,
+        health_check_interval=15,
+    )
+
+
+async def _drop_liveness_client() -> None:
+    global _liveness_client
+    client, _liveness_client = _liveness_client, None
+    if client is None:
+        return
+    try:
+        await asyncio.wait_for(client.aclose(), timeout=LIVENESS_REDIS_TIMEOUT_SECONDS)
+    except Exception:
+        logger.debug("closing the liveness Redis client failed", exc_info=True)
+
+
+def reset_liveness_redis_cache() -> None:
+    """Forget the cached verdict (tests, and after configuration changes)."""
+    global _liveness_cache
+    _liveness_cache = None
+
+
+async def check_redis_liveness() -> str:
+    """PING Redis for /health. Returns ``up``, ``down``, or ``not_configured``.
+
+    Only the verdict is returned: error text names internal hosts and ports
+    and /health is unauthenticated, so details go to the server log only.
+    """
+    global _liveness_client, _liveness_cache
+
+    redis_url = (get_settings().REDIS_URL or "").strip()
+    if not redis_url:
+        return "not_configured"
+
+    now = time.monotonic()
+    if _liveness_cache is not None and now - _liveness_cache[0] < (
+        LIVENESS_REDIS_CACHE_SECONDS
+    ):
+        return _liveness_cache[1]
+
+    status = "up"
+    try:
+        if _liveness_client is None:
+            _liveness_client = _liveness_redis_client(redis_url)
+        await asyncio.wait_for(
+            _liveness_client.ping(), timeout=LIVENESS_REDIS_TIMEOUT_SECONDS
+        )
+    except Exception as exc:
+        status = "down"
+        logger.warning(
+            "liveness Redis ping failed (%s)", type(exc).__name__, exc_info=True
+        )
+        # A client whose socket died with Redis would keep failing after Redis
+        # recovers; start the next probe from a fresh connection.
+        await _drop_liveness_client()
+
+    _liveness_cache = (time.monotonic(), status)
+    return status
+
+
 async def _check_mqtt(simulation_modes: dict[str, bool]) -> dict[str, Any]:
     # iot_bridge is the sole MQTT consumer. If it's in sim mode the broker
     # isn't actually touched — don't probe and don't fail the health check

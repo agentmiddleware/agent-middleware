@@ -34,6 +34,14 @@ from .trust_mode import is_production_like_environment
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# Bound every Redis round trip. Without these, a connection left half-open by a
+# Redis restart blocks commands indefinitely, and the cached client is never
+# replaced. health_check_interval makes redis-py PING an idle connection before
+# reusing it, so a dead socket is noticed before a request depends on it.
+REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS: float = 2.0
+REDIS_SOCKET_TIMEOUT_SECONDS: float = 2.0
+REDIS_HEALTH_CHECK_INTERVAL_SECONDS: int = 15
+
 _PUBLIC_MCP_PATH = "/mcp/public"
 _PUBLIC_MCP_BUCKET_PREFIX = "route:mcp-public"
 _PUBLIC_MCP_GLOBAL_LIMIT_MULTIPLIER = 10
@@ -217,6 +225,14 @@ def _rate_limited_response(limit: int, reset_in: int, message: str) -> JSONRespo
     )
 
 
+async def _close_quietly(client: redis.Redis) -> None:
+    """Close a Redis client without letting a dead socket block or raise."""
+    try:
+        await asyncio.wait_for(client.aclose(), timeout=REDIS_SOCKET_TIMEOUT_SECONDS)
+    except Exception:
+        logger.debug("Closing a Redis rate-limiter client failed.", exc_info=True)
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
     Sliding window rate limiter keyed by API key.
@@ -257,15 +273,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         async with self._redis_lock:
             if self._redis is not None:
                 return self._redis
+            client = None
             try:
                 client = redis.from_url(
                     self._redis_url,
                     encoding="utf-8",
                     decode_responses=True,
+                    socket_connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+                    socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+                    health_check_interval=REDIS_HEALTH_CHECK_INTERVAL_SECONDS,
                 )
                 await client.ping()
                 self._redis = client
+                if self._redis_warned:
+                    logger.info("Redis rate limiter reconnected.")
+                # Re-arm the warning so the next outage is logged too.
+                self._redis_warned = False
             except Exception:
+                if client is not None:
+                    await _close_quietly(client)
                 mark_rate_limiter_memory_fallback()
                 if not self._redis_warned:
                     logger.exception(
@@ -279,6 +305,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     self._redis_warned = True
                 self._redis = None
             return self._redis
+
+    async def _reset_redis(self) -> None:
+        """Drop the cached client so the next request opens a fresh connection.
+
+        Called when a command fails on an already-established connection: a
+        Redis restart leaves the cached client pointing at a dead (or hung)
+        socket, and without a reset every later request keeps failing on it
+        long after Redis itself has recovered.
+        """
+        async with self._redis_lock:
+            client, self._redis = self._redis, None
+        if client is not None:
+            await _close_quietly(client)
 
     async def _check_limit_with_redis(
         self,
@@ -407,7 +446,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                             pass
                 return
             bucket_start = int(now // window_size) * window_size
-            await self._give_back(client, f"rate_limit:{bucket_key}:{bucket_start}")
+            try:
+                await self._give_back(client, f"rate_limit:{bucket_key}:{bucket_start}")
+            except Exception:
+                await self._reset_redis()
+                raise
         except Exception:
             logger.warning(
                 "Could not release the rate-limit reservation on %s.",
@@ -643,8 +686,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     },
                 )
             except Exception:
+                # A command failed on a connection we already had (connect
+                # failures surface as RateLimiterUnavailable above). Drop the
+                # cached client so the next request reconnects instead of
+                # failing on the same dead socket until the process restarts.
+                fail_closed = self._fail_closed_on_redis_outage()
+                logger.exception(
+                    "Redis rate limiter command failed; reset the cached "
+                    "connection and %s.",
+                    (
+                        "refused the request (production-like)"
+                        if fail_closed
+                        else "used the in-memory limiter for this request"
+                    ),
+                )
+                await self._reset_redis()
                 mark_rate_limiter_memory_fallback()
-                if self._fail_closed_on_redis_outage():
+                if fail_closed:
                     return JSONResponse(
                         status_code=503,
                         content={
@@ -663,10 +721,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                             "Retry-After": "30",
                         },
                     )
-                logger.exception(
-                    "Redis rate limiter failed; using in-memory rate limiter "
-                    "for this request."
-                )
                 if not preauth_reserved:
                     # Redis failed before the reservation landed; take it from
                     # memory so the ceiling does not vanish for the outage.

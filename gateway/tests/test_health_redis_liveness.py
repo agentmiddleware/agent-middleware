@@ -178,6 +178,23 @@ async def test_health_caches_verdict_and_recovers(monkeypatch, liveness_clients)
 
 
 @pytest.mark.anyio
+async def test_cached_down_verdict_expires(monkeypatch, liveness_clients):
+    created, behaviour = liveness_clients
+    behaviour["fail"] = ConnectionError("down")
+    assert await health_module.check_redis_liveness() == "down"
+    behaviour["fail"] = None
+    # Age the cached verdict past the window instead of clearing it.
+    at, status = health_module._liveness_cache
+    monkeypatch.setattr(
+        health_module,
+        "_liveness_cache",
+        (at - health_module.LIVENESS_REDIS_CACHE_SECONDS - 0.1, status),
+    )
+    assert await health_module.check_redis_liveness() == "up"
+    assert len(created) == 2
+
+
+@pytest.mark.anyio
 async def test_health_answers_while_limiter_redis_is_down(
     monkeypatch, liveness_clients
 ):

@@ -1159,6 +1159,14 @@ async def root(request: Request):
     "/health",
     tags=["Discovery"],
     summary="Liveness check",
+    responses={
+        503: {
+            "description": (
+                "Degraded: Redis (the shared rate limiter) is configured but "
+                "not answering, so /v1 requests are refused."
+            )
+        }
+    },
     description=(
         "Returns 200 with status `healthy` when the API is running and its "
         "Redis (shared rate limiter) answers a PING. Returns 503 with status "

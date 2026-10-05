@@ -5328,6 +5328,9 @@
                 "schema": {}
               }
             }
+          },
+          "503": {
+            "description": "Degraded: Redis (the shared rate limiter) is configured but not answering, so /v1 requests are refused."
           }
         }
       }

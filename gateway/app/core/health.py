@@ -139,6 +139,17 @@ LIVENESS_REDIS_CACHE_SECONDS: float = 2.0
 
 _liveness_client: Any = None
 _liveness_cache: tuple[float, str] | None = None
+# Single flight: when the cache expires under a burst of /health requests, one
+# coroutine pings and the rest wait for its verdict. Bound to the running loop.
+_liveness_lock: tuple[Any, asyncio.Lock] | None = None
+
+
+def _liveness_single_flight() -> asyncio.Lock:
+    global _liveness_lock
+    loop = asyncio.get_running_loop()
+    if _liveness_lock is None or _liveness_lock[0] is not loop:
+        _liveness_lock = (loop, asyncio.Lock())
+    return _liveness_lock[1]
 
 
 def _liveness_redis_client(redis_url: str) -> Any:
@@ -176,17 +187,30 @@ async def check_redis_liveness() -> str:
     Only the verdict is returned: error text names internal hosts and ports
     and /health is unauthenticated, so details go to the server log only.
     """
-    global _liveness_client, _liveness_cache
-
     redis_url = (get_settings().REDIS_URL or "").strip()
     if not redis_url:
         return "not_configured"
 
-    now = time.monotonic()
-    if _liveness_cache is not None and now - _liveness_cache[0] < (
-        LIVENESS_REDIS_CACHE_SECONDS
-    ):
-        return _liveness_cache[1]
+    cached = _cached_liveness()
+    if cached is not None:
+        return cached
+    async with _liveness_single_flight():
+        # Another request may have refreshed the verdict while we waited.
+        cached = _cached_liveness()
+        if cached is not None:
+            return cached
+        return await _ping_liveness_redis(redis_url)
+
+
+def _cached_liveness() -> str | None:
+    if _liveness_cache is None:
+        return None
+    at, status = _liveness_cache
+    return status if time.monotonic() - at < LIVENESS_REDIS_CACHE_SECONDS else None
+
+
+async def _ping_liveness_redis(redis_url: str) -> str:
+    global _liveness_client, _liveness_cache
 
     status = "up"
     try:

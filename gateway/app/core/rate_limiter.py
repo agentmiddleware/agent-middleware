@@ -306,18 +306,37 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 self._redis = None
             return self._redis
 
-    async def _reset_redis(self) -> None:
-        """Drop the cached client so the next request opens a fresh connection.
+    async def _reset_redis(self, failed: redis.Redis) -> None:
+        """Drop the cached client a command just failed on.
 
         Called when a command fails on an already-established connection: a
         Redis restart leaves the cached client pointing at a dead (or hung)
         socket, and without a reset every later request keeps failing on it
         long after Redis itself has recovered.
+
+        Only ``failed`` is dropped. During a restart, requests still in flight
+        on the old client fail at different times; by then another request
+        may already have reconnected, and that healthy client must survive.
         """
         async with self._redis_lock:
-            client, self._redis = self._redis, None
-        if client is not None:
-            await _close_quietly(client)
+            if self._redis is failed:
+                self._redis = None
+        await _close_quietly(failed)
+
+    async def _incr_window(self, client: redis.Redis, key: str) -> int:
+        """INCR a window counter (setting its TTL on first use).
+
+        A failure here means the connection we already had is broken: drop
+        that client before re-raising so the next request reconnects.
+        """
+        try:
+            count = int(await client.incr(key))
+            if count == 1:
+                await client.expire(key, int(self.window) + 2)
+            return count
+        except Exception:
+            await self._reset_redis(client)
+            raise
 
     async def _check_limit_with_redis(
         self,
@@ -347,9 +366,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         reset_in = max(1, (bucket_start + window_size) - int(now))
         key = f"rate_limit:{bucket_key}:{bucket_start}"
 
-        count = await client.incr(key)
-        if count == 1:
-            await client.expire(key, window_size + 2)
+        count = await self._incr_window(client, key)
 
         remaining = max(0, effective_limit - int(count))
         limited = int(count) > effective_limit
@@ -408,14 +425,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         bucket_start = int(now // window_size) * window_size
         reset_in = max(1, (bucket_start + window_size) - int(now))
         key = f"rate_limit:{bucket_key}:{bucket_start}"
-        count = await client.incr(key)
-        if count == 1:
-            await client.expire(key, window_size + 2)
+        count = await self._incr_window(client, key)
         if count > limit:
             # Refused, so hand the unit straight back: the counter has to keep
             # meaning "reservations currently held", or a caller that keeps
             # knocking would inflate it past any hope of draining.
-            await self._give_back(client, key)
+            try:
+                await self._give_back(client, key)
+            except Exception:
+                await self._reset_redis(client)
+                raise
             return True, reset_in
         return False, reset_in
 
@@ -449,7 +468,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             try:
                 await self._give_back(client, f"rate_limit:{bucket_key}:{bucket_start}")
             except Exception:
-                await self._reset_redis()
+                await self._reset_redis(client)
                 raise
         except Exception:
             logger.warning(
@@ -687,9 +706,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 )
             except Exception:
                 # A command failed on a connection we already had (connect
-                # failures surface as RateLimiterUnavailable above). Drop the
-                # cached client so the next request reconnects instead of
-                # failing on the same dead socket until the process restarts.
+                # failures surface as RateLimiterUnavailable above). The call
+                # site has already dropped that client (_incr_window), so the
+                # next request reconnects instead of failing on the same dead
+                # socket until the process restarts.
                 fail_closed = self._fail_closed_on_redis_outage()
                 logger.exception(
                     "Redis rate limiter command failed; reset the cached "
@@ -700,7 +720,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         else "used the in-memory limiter for this request"
                     ),
                 )
-                await self._reset_redis()
                 mark_rate_limiter_memory_fallback()
                 if fail_closed:
                     return JSONResponse(

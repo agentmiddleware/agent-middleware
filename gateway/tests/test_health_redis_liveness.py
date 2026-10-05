@@ -304,3 +304,35 @@ async def test_redis_client_is_built_with_timeouts(monkeypatch):
     )
     assert 0 < seen["socket_connect_timeout"] <= 5
     assert 0 < seen["socket_timeout"] <= 5
+
+
+@pytest.mark.anyio
+async def test_stale_failure_does_not_drop_a_newer_healthy_client(monkeypatch):
+    """A late failure from the old client must not close a reconnected one."""
+    limiter = _limited_app(monkeypatch, production_like=True)
+    old = _FakeRedis(fail=ConnectionError("old socket"))
+    fresh = _FakeRedis()
+    limiter._redis = fresh  # another request already reconnected
+    with pytest.raises(ConnectionError):
+        await limiter._incr_window(old, "rate_limit:k:0")
+    assert limiter._redis is fresh
+    assert not fresh.closed
+    assert old.closed
+
+
+@pytest.mark.anyio
+async def test_concurrent_health_cache_miss_sends_one_ping(liveness_clients):
+    created, behaviour = liveness_clients
+    behaviour["hang"] = False
+    results = await asyncio.gather(
+        *(health_module.check_redis_liveness() for _ in range(20))
+    )
+    assert set(results) == {"up"}
+    assert len(created) == 1 and created[0].pings == 1
+
+
+def test_health_declares_its_503_in_openapi():
+    from app.main import app
+
+    responses = app.openapi()["paths"]["/health"]["get"]["responses"]
+    assert "503" in responses

@@ -139,7 +139,8 @@ LIVENESS_REDIS_CACHE_SECONDS: float = 2.0
 
 _liveness_client: Any = None
 _liveness_client_url: str | None = None
-_liveness_cache: tuple[float, str] | None = None
+# (monotonic time, verdict, the REDIS_URL that verdict is for)
+_liveness_cache: tuple[float, str, str] | None = None
 # Single flight: when the cache expires under a burst of /health requests, one
 # coroutine pings and the rest wait for its verdict. Bound to the running loop.
 _liveness_lock: tuple[Any, asyncio.Lock] | None = None
@@ -210,9 +211,11 @@ async def check_redis_liveness() -> str:
 
 
 def _cached_liveness(redis_url: str) -> str | None:
-    if _liveness_cache is None or _liveness_client_url != redis_url:
+    if _liveness_cache is None:
         return None
-    at, status = _liveness_cache
+    at, status, url = _liveness_cache
+    if url != redis_url:
+        return None
     return status if time.monotonic() - at < LIVENESS_REDIS_CACHE_SECONDS else None
 
 
@@ -240,7 +243,7 @@ async def _ping_liveness_redis(redis_url: str) -> str:
         # recovers; start the next probe from a fresh connection.
         await _drop_liveness_client()
 
-    _liveness_cache = (time.monotonic(), status)
+    _liveness_cache = (time.monotonic(), status, redis_url)
     return status
 
 

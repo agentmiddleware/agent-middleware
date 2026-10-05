@@ -185,11 +185,11 @@ async def test_cached_down_verdict_expires(monkeypatch, liveness_clients):
     assert await health_module.check_redis_liveness() == "down"
     behaviour["fail"] = None
     # Age the cached verdict past the window instead of clearing it.
-    at, status = health_module._liveness_cache
+    at, status, url = health_module._liveness_cache
     monkeypatch.setattr(
         health_module,
         "_liveness_cache",
-        (at - health_module.LIVENESS_REDIS_CACHE_SECONDS - 0.1, status),
+        (at - health_module.LIVENESS_REDIS_CACHE_SECONDS - 0.1, status, url),
     )
     assert await health_module.check_redis_liveness() == "up"
     assert len(created) == 2
@@ -395,3 +395,17 @@ async def test_redis_url_change_drops_client_and_verdict(monkeypatch, liveness_c
     assert await health_module.check_redis_liveness() == "down"
     assert created[0].closed
     assert len(created) == 2
+
+
+@pytest.mark.anyio
+async def test_client_construction_failure_is_cached_too(monkeypatch, redis_url):
+    calls = []
+
+    def _broken(url):
+        calls.append(url)
+        raise ValueError("invalid Redis URL")
+
+    monkeypatch.setattr(health_module, "_liveness_redis_client", _broken)
+    assert await health_module.check_redis_liveness() == "down"
+    assert await health_module.check_redis_liveness() == "down"
+    assert calls == [redis_url]

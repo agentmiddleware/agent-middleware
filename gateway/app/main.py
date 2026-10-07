@@ -34,6 +34,7 @@ from .core.durable_state import (
 from .core.health import (
     CHECK_TIMEOUT_SECONDS,
     build_public_dependency_report,
+    check_redis_liveness,
     check_database_readiness,
     check_mqtt_readiness,
     gather_dependency_report,
@@ -1158,19 +1159,42 @@ async def root(request: Request):
     "/health",
     tags=["Discovery"],
     summary="Liveness check",
-    description="Returns 200 if the API is running. Use for Kubernetes livenessProbe.",
+    responses={
+        503: {
+            "description": (
+                "Degraded: Redis (the shared rate limiter) is configured but "
+                "not answering; production-like deployments refuse /v1 "
+                "requests in this state."
+            )
+        }
+    },
+    description=(
+        "Returns 200 with status `healthy` when the API is running and its "
+        "Redis (shared rate limiter) answers a PING, or when REDIS_URL is not "
+        "configured (no PING is sent). Returns 503 with status `degraded` when "
+        "Redis is configured but does not answer within 1 second; in "
+        "production-like environments the rate limiter then refuses /v1 "
+        "requests, so the API is not serving even though the process is up. "
+        "`checks.redis` is `up`, `down`, or `not_configured`."
+    ),
 )
 async def health():
-    return {
-        "status": "healthy",
-        "version": settings.APP_VERSION,
-        "commit_sha": get_build_commit_sha(),
-        # Same field /health/dependencies publishes, so the liveness probe
-        # alone says whether that SHA came through the documented release
-        # path. A bare SHA cannot be told apart from a stale stamp; a SHA
-        # plus "stamped" can only mean the deployment is behind main.
-        "build_provenance": get_build_provenance(),
-    }
+    redis_status = await check_redis_liveness()
+    healthy = redis_status != "down"
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "healthy" if healthy else "degraded",
+            "version": settings.APP_VERSION,
+            "commit_sha": get_build_commit_sha(),
+            # Same field /health/dependencies publishes, so the liveness probe
+            # alone says whether that SHA came through the documented release
+            # path. A bare SHA cannot be told apart from a stale stamp; a SHA
+            # plus "stamped" can only mean the deployment is behind main.
+            "build_provenance": get_build_provenance(),
+            "checks": {"redis": redis_status},
+        },
+    )
 
 
 @app.get(

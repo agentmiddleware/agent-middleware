@@ -24,6 +24,10 @@ ROOT = HERE.parent.parent
 GOLDEN = ROOT / "gateway" / "tests" / "fixtures" / "receipt_signing_golden"
 TEST_SEED = bytes(range(32))
 KID = "sk_golden_0001"
+# Envelope member the gateway's portable receipt endpoint also emits
+# (PortableReceiptResponse.canonicalization). The signature covers only
+# signing_input, so this member is unauthenticated envelope data.
+CANONICALIZATION = "awi-canonical-json/1"
 
 
 def b64(data: bytes) -> str:
@@ -62,6 +66,7 @@ def main() -> None:
             "receipt_id": payload["receipt_id"],
             "kid": payload["kid"],
             "alg": "Ed25519",
+            "canonicalization": CANONICALIZATION,
             "signing_input": signing_input,
             "signature": b64(signature),
         }

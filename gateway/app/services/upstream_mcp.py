@@ -941,6 +941,21 @@ class UpstreamMcpAdapter:
                     session,
                     response_guard=response_guard,
                 )
+                # ClientSession.call_tool lists tools when this name is
+                # absent from its output-schema cache, then may raise
+                # after the tool has already run. Every dispatch opens a
+                # fresh session, so that follow-up always happens on a
+                # successful call. A list that is missing, oversized, or
+                # shaped differently from the call body used to discard
+                # the result and report delivery-uncertain or
+                # response-rejected. An empty cache entry makes the
+                # helper return the tools/call body. This gateway
+                # canonicalizes that body itself. Done before the
+                # dispatch claim so a local cache update cannot be
+                # mistaken for a sent call.
+                schemas = getattr(session, "_tool_output_schemas", None)
+                if isinstance(schemas, dict):
+                    schemas[self.configuration.tool_name] = None
                 try:
                     await before_dispatch()
                 except UpstreamMcpDispatchClaimUnavailableError as exc:

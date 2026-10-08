@@ -15,6 +15,11 @@ migration performs an initial scrub, while the deploy workflow performs the
 same idempotent scrub and assertion again after Railway reports that only the
 new deployment is active. A later contract migration may drop the empty
 compatibility columns once no old binary can be running.
+
+Chain note: the shared "025" numeric filename prefix is sequential, not a
+branch. This revision applies immediately after 025_refresh_token_key_binding
+(down_revision = "025_refresh_token_key_binding"); apply the two in filename
+order and do not read the repeated prefix as a conflict.
 """
 
 from typing import Sequence, Union

@@ -1,7 +1,8 @@
-"""A refund agent with nothing between it and the money.
+"""DO NOT SHIP: a deliberately broken refund agent with nothing between it and the money.
 
 This is the *starting point* of the clean-room exercise, not a target to
-admire. It is deliberately short enough that nobody has to wonder what it
+admire and never a shipping example. Do not copy it into a product, a demo,
+or integrator documentation. It is deliberately short enough that nobody has to wonder what it
 does: it takes a refund intent, POSTs it straight at the refund tool with a
 long-lived bearer token, and — because a real agent runtime retries — calls
 the same endpoint again whenever an attempt does not come back.

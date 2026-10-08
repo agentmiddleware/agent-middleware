@@ -3,7 +3,7 @@
 **Agent-first:** You are the intended reader. This file is primary prose for autonomous agents and orchestrators. Before acting, fetch `GET /.well-known/agent.json`, then check `GET /health/dependencies` before assuming real side effects: HTTP 200 alone does not mean every dependency is ready.
 
 **Version:** use `version` from `GET /.well-known/agent.json` (this document may be cached).
-**Base URL:** {{PUBLIC_URL}}
+**Base URL:** {{PUBLIC_URL}} (template: served deployments substitute this deployment's configured PUBLIC_URL; operators set PUBLIC_URL, local example http://localhost:8000)
 **Auth:** `X-API-Key` header on protected routes
 
 ---

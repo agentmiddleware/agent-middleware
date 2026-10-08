@@ -668,10 +668,10 @@ async def pending_identity_session(client, api_headers, sponsor_wallet, monkeypa
         pytest.param("not-a-stripe-signature", id="unparseable-header"),
     ],
 )
-async def test_identity_webhook_rejects_bad_signature_with_400(
+async def test_identity_webhook_rejects_bad_signature_with_401(
     client, api_headers, pending_identity_session, signature
 ):
-    """A bad signature is a client error (400), not an unhandled 500, and changes nothing."""
+    """A bad signature is denied with 401, not an unhandled 500, and changes nothing."""
     payload = pending_identity_session["payload"]
     if signature == "forged":
         signature = _stripe_signature_header(payload, "whsec_attacker")
@@ -682,7 +682,7 @@ async def test_identity_webhook_rejects_bad_signature_with_400(
         headers={"stripe-signature": signature},
     )
 
-    assert resp.status_code == 400
+    assert resp.status_code == 401
     assert resp.json()["detail"] == "Invalid Stripe signature"
     status_resp = await client.get(
         f"/v1/kyc/status/{pending_identity_session['wallet_id']}",
@@ -695,7 +695,7 @@ async def test_identity_webhook_rejects_bad_signature_with_400(
 async def test_identity_webhook_rejects_signature_error_without_dispatch(
     client, pending_identity_session
 ):
-    """stripe.SignatureVerificationError is not a ValueError; it must still map to 400."""
+    """stripe.SignatureVerificationError is not a ValueError; it must still map to 401."""
     assert not issubclass(stripe.SignatureVerificationError, ValueError)
     with (
         patch(
@@ -714,15 +714,15 @@ async def test_identity_webhook_rejects_signature_error_without_dispatch(
             headers={"stripe-signature": "invalid_sig"},
         )
 
-    assert resp.status_code == 400
+    assert resp.status_code == 401
     mock_verified.assert_not_called()
 
 
 @pytest.mark.anyio
-async def test_identity_webhook_missing_signature_is_400(client):
+async def test_identity_webhook_missing_signature_is_401(client):
     resp = await client.post("/v1/webhooks/stripe/identity", content=b"{}")
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "Missing Stripe signature"
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid Stripe signature"
 
 
 @pytest.mark.anyio

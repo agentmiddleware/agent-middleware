@@ -28,6 +28,30 @@ from app.services.signing_keys import (
 _REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 
 
+#: Every outcome ``create_receipt`` may sign. Each value is attested by a
+#: governed caller: success and denial shapes from the MCP router, the
+#: charged-failure shapes from the dispatch reconciler, and
+#: insufficient_funds from the pre-dispatch budget check. Anything else has
+#: no defined meaning to budget release, refund, or evidence checks, so it
+#: is rejected rather than signed into a receipt that verifies.
+RECEIPT_OUTCOMES = frozenset(
+    {
+        "success",
+        "denied",
+        "insufficient_funds",
+        "failed_refunded",
+        "failed_unrefunded",
+        "delivery_uncertain",
+        "response_rejected",
+    }
+)
+
+#: Outcomes that refuse the call before money moves. Every governed denial
+#: path records zero charge; a refused call that claims a charge
+#: contradicts the ledger and has no defined consumer, so it is rejected.
+UNCHARGED_OUTCOMES = frozenset({"denied", "insufficient_funds"})
+
+
 class ReceiptError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -229,6 +253,10 @@ class ReceiptService:
         }
         if _action_binding(model) != (action_binding or {}):
             raise ReceiptError("receipt_action_binding_conflict")
+        if _loads_dict(model.constraints_evaluated_json) != (
+            constraints_evaluated or {}
+        ):
+            raise ReceiptError("receipt_idempotency_conflict")
         if any(getattr(model, name) != value for name, value in expected.items()):
             raise ReceiptError("receipt_idempotency_conflict")
 
@@ -297,6 +325,10 @@ class ReceiptService:
             for amount in (credits_authorized, credits_charged)
         ):
             raise ReceiptError("receipt_credits_invalid")
+        if outcome not in RECEIPT_OUTCOMES:
+            raise ReceiptError("receipt_outcome_invalid")
+        if outcome in UNCHARGED_OUTCOMES and credits_charged != Decimal("0"):
+            raise ReceiptError("receipt_denied_charge_invalid")
         # Reuse the existing signed JSON field; no receipt schema/migration.
         # The audit link also covers denial/refund/reconciliation helpers.
         if get_settings().JEV_RISK_GUARD != DuplicateGuardMode.OFF:

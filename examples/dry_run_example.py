@@ -20,18 +20,19 @@ import asyncio
 import os
 import sys
 
-# The SDK sources live under b2a_sdk/src; inserting the repo root instead makes
-# "b2a_sdk" resolve to the bare directory and the import fails.
-sys.path.insert(
-    0,
-    os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "b2a_sdk", "src"
-    ),
+# The package lives in sdk/python/src, the directory that contains b2a_sdk.
+# Inserting the repo root instead makes "b2a_sdk" resolve to a bare directory
+# and the import fails.
+_SDK_SRC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "sdk",
+    "python",
+    "src",
 )
+sys.path.insert(0, _SDK_SRC)
 
-from b2a_sdk import AgentMiddlewareClient
-from b2a_sdk.decorators import billable
-
+from b2a_sdk import AgentMiddlewareClient  # noqa: E402
+from b2a_sdk.decorators import billable  # noqa: E402
 
 b2a = AgentMiddlewareClient(
     api_key=os.getenv("B2A_API_KEY", "test-key"),
@@ -46,8 +47,8 @@ async def demo_simulation():
     print("=" * 60)
 
     # The server assigns the wallet id (e.g. "spn-bde42b5c4606"); it cannot be
-    # chosen by the caller. Everything below bills against this exact id —
-    # using a made-up one returns 404 wallet_not_found.
+    # chosen by the caller. Everything below bills against this exact id.
+    # Using a made-up one returns 404 wallet_not_found.
     wallet = await b2a.create_sponsor_wallet(
         sponsor_name="Demo Sponsor",
         email="demo@example.com",
@@ -155,25 +156,32 @@ async def demo_simulation():
 
     print(f"\nWorkflow A (3x video generation): {workflow_a_total} credits")
     print(f"Workflow B (3x IoT messages): {workflow_b_total} credits")
-
-    if workflow_a_total < workflow_b_total:
-        print("\n✅ Workflow A is more cost-effective!")
-    else:
-        print("\n✅ Workflow B is more cost-effective!")
+    print(f"\n✅ {_cheaper_label(workflow_a_total, workflow_b_total)}")
 
     print("\n" + "=" * 60)
     print("Demo complete!")
     print("=" * 60)
 
 
-async def main():
+def _cheaper_label(cost_a, cost_b) -> str:
+    """Name the cheaper workflow. Equal totals are a tie, not a win for B."""
+    if cost_a < cost_b:
+        return "Workflow A is more cost-effective!"
+    if cost_b < cost_a:
+        return "Workflow B is more cost-effective!"
+    return "Workflow A and workflow B cost the same."
+
+
+async def main() -> int:
     try:
         await demo_simulation()
     except Exception as e:
         print(f"\nError: {e}")
         print("Make sure the B2A API is running at http://localhost:8000")
         print("Or set B2A_API_URL environment variable.")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

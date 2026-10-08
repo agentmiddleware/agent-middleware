@@ -43,13 +43,19 @@ def receipt_id(result: dict) -> str | None:
     return receipt.get("receipt_id")
 
 
-async def main() -> None:
+async def main() -> int:
     api_key = os.environ["AGENT_API_KEY"]
     key = f"mcp-example-{uuid.uuid4()}"
     first = await call_once(api_key, key)
     retry = await call_once(api_key, key)  # same key: same receipt, no second charge
-    print("first receipt:", receipt_id(first), "outcome:", _outcome(first))
-    print("retry receipt:", receipt_id(retry), "outcome:", _outcome(retry))
+    first_id = receipt_id(first)
+    retry_id = receipt_id(retry)
+    print("first receipt:", first_id, "outcome:", _outcome(first))
+    print("retry receipt:", retry_id, "outcome:", _outcome(retry))
+    if not first_id or first_id != retry_id:
+        print("retry did not return the same receipt")
+        return 1
+    return 0
 
 
 def _outcome(result: dict) -> str | None:
@@ -58,4 +64,4 @@ def _outcome(result: dict) -> str | None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

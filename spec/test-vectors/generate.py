@@ -100,6 +100,58 @@ def main() -> None:
         "bundle": {"receipt_id": "r", "kid": KID, "signing_input": "{}"},
         "expect": "malformed",
     })
+
+    # alg and canonicalization are only trusted after the signature matches.
+    # Editing them in an otherwise valid bundle must stay "invalid", not
+    # "unsupported". A bundle the test key really signed with a different
+    # claim stays "unsupported".
+    signed = next(case["bundle"] for case in cases if case["name"].endswith(".valid"))
+    flipped_alg = signed["signing_input"].replace('"alg":"Ed25519"', '"alg":"RS256"', 1)
+    if flipped_alg == signed["signing_input"]:
+        raise SystemExit("vector generator found no alg field to edit")
+    cases.append({
+        "name": "downgrade.alg_edited",
+        "bundle": dict(signed, signing_input=flipped_alg),
+        "expect": "invalid",
+    })
+    flipped_canon = signed["signing_input"].replace(
+        '"alg":"Ed25519"',
+        '"alg":"Ed25519","canonicalization":"other/9"',
+        1,
+    )
+    cases.append({
+        "name": "downgrade.canonicalization_edited",
+        "bundle": dict(signed, signing_input=flipped_canon),
+        "expect": "invalid",
+    })
+    declared = json.loads(signed["signing_input"])
+    declared["alg"] = "RS256"
+    declared_input = json.dumps(
+        declared, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    cases.append({
+        "name": "downgrade.signer_declared_rs256",
+        "bundle": dict(
+            signed,
+            signing_input=declared_input,
+            signature=b64(key.sign(declared_input.encode("utf-8"))),
+        ),
+        "expect": "unsupported",
+    })
+    declared_canon = json.loads(signed["signing_input"])
+    declared_canon["canonicalization"] = "other/9"
+    declared_canon_input = json.dumps(
+        declared_canon, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    cases.append({
+        "name": "downgrade.signer_declared_canonicalization",
+        "bundle": dict(
+            signed,
+            signing_input=declared_canon_input,
+            signature=b64(key.sign(declared_canon_input.encode("utf-8"))),
+        ),
+        "expect": "unsupported",
+    })
     out = {
         "_comment": (
             "Receipt verification vectors. Each case is checked against keys.json "

@@ -73,7 +73,7 @@ Full trigger table: [`../gateway/docs/failure-semantics.md`](../gateway/docs/fai
 | `mismatch` | Signature verified, but envelope or caller expectation disagrees | reject |
 | `unknown_key` | Verifier does not hold the signed `kid` | cannot judge; refresh keys |
 | `malformed` | Bundle cannot be parsed | cannot judge |
-| `unsupported` | Signed `alg` or `canonicalization` not implemented | cannot judge |
+| `unsupported` | Signed `alg` or `canonicalization` not implemented, and the signature over `signing_input` checked out | cannot judge |
 
 Reference verifiers: Python (`sdk/python`, CLI `b2a-verify-receipt`) and
 TypeScript (`sdk/typescript`). Both pass [`test-vectors/`](test-vectors/).

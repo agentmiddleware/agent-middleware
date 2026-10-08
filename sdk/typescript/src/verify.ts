@@ -115,10 +115,10 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const p = payload as Record<string, unknown>;
   const kid = p.kid;
   if (typeof kid !== "string" || !kid) return fail("malformed", "signed payload has no kid", envKid);
+  // Judge these only after the signature check. Until then they are bytes an
+  // editor can change, and treating them as a capability gap hides tampering.
   const alg = p.alg ?? "Ed25519";
-  if (alg !== "Ed25519") return fail("unsupported", `unsupported signature algorithm: ${String(alg)}`, kid);
   const signedCanon = p.canonicalization;
-  if (typeof signedCanon === "string" && signedCanon !== CANONICALIZATION) return fail("unsupported", `unsupported canonicalization: ${signedCanon}`, kid);
 
   const sig = b64(sigB64);
   if (!sig) return fail("malformed", "signature is not valid base64", kid);
@@ -132,6 +132,11 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
     return fail("unknown_key", `no published key for kid ${kid}`, kid);
   }
   if (!edOk(raw, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
+
+  if (alg !== "Ed25519") return fail("unsupported", `unsupported signature algorithm: ${String(alg)}`, kid);
+  if (typeof signedCanon === "string" && signedCanon !== CANONICALIZATION) {
+    return fail("unsupported", `unsupported canonicalization: ${signedCanon}`, kid);
+  }
 
   if (envKid !== kid) return fail("mismatch", "bundle names a different kid than the signed payload", kid);
   if ((b.alg ?? "Ed25519") !== alg) return fail("mismatch", "bundle algorithm differs from the signed payload", kid);

@@ -120,6 +120,8 @@ def governed_tool(
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        if tool_name is not None and not tool_name.strip():
+            raise ValueError("tool_name must not be blank")
         name = tool_name or func.__name__
         signature = inspect.signature(func)
         receipt_var: contextvars.ContextVar[Receipt | None] = contextvars.ContextVar(
@@ -144,6 +146,10 @@ def governed_tool(
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
             arguments = dict(bound.arguments)
+            # idempotency_key is reserved for the governed loop (consumed
+            # above); a stub that declares a parameter of the same name must
+            # not leak it into the tool arguments sent to the server.
+            arguments.pop("idempotency_key", None)
             result = await session.invoke(
                 name,
                 arguments,

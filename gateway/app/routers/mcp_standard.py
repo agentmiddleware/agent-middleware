@@ -66,7 +66,6 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlsplit
 
 import anyio
 import mcp.types as mcp_types
@@ -80,6 +79,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import Message, Receive, Scope, Send
 
 from app.core.auth import AuthContext, get_auth_context
+from app.core.browser_origin import validate_browser_origin
 from app.services.audit_chain import AuditChainContendedError
 from app.services.receipts import ReceiptWriteContendedError
 from app.services.billing_engine import LedgerWriteContendedError
@@ -637,21 +637,7 @@ def _validate_origin(request: Request) -> None:
 
     Non-browser MCP clients send no Origin header and pass through.
     """
-    public_url = get_settings().PUBLIC_URL.rstrip("/")
-    request_origin = f"{request.url.scheme}://{request.url.netloc}"
-    if public_url and request.url.netloc != urlsplit(public_url).netloc:
-        raise HTTPException(status_code=421, detail={"error": "host_not_allowed"})
-
-    origin = request.headers.get("origin")
-    if not origin:
-        return
-    # A reverse proxy may expose its internal HTTP scheme through the ASGI
-    # request even though the canonical browser origin is HTTPS. Once an
-    # operator configures PUBLIC_URL, it is the only origin authority;
-    # request-derived origin is a local/unconfigured fallback only.
-    allowed = {public_url} if public_url else {request_origin}
-    if origin.rstrip("/") not in allowed:
-        raise HTTPException(status_code=403, detail={"error": "origin_not_allowed"})
+    validate_browser_origin(request)
 
 
 class _SdkTransportResponse(Response):

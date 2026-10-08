@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
+from urllib.parse import urlparse
 
 from sqlalchemy import case, func, or_, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -205,6 +206,32 @@ def _find_forbidden_field(arguments: Any, forbidden: set[str]) -> str | None:
         elif isinstance(node, (list, tuple)):
             stack.extend(node)
     return None
+
+
+def extract_recipient_identity(target: str) -> str:
+    """Reduce one recipient value to the identity the permit binds.
+
+    A URL contributes its hostname; a bare value with no host part (an
+    x402 pay_to chain address, a registered origin without a scheme) counts
+    as itself. This is the same reduction the upstream MCP path has always
+    applied before comparing against the permit's recipient constraint.
+    """
+    return urlparse(target).hostname or target
+
+
+def recipient_binding_matches(recipient_domain: str | None, target: str) -> bool:
+    """Check one recipient value against a permit's recipient constraint.
+
+    An unset constraint allows everything. Otherwise the target is reduced
+    with extract_recipient_identity and must equal the bound value
+    exactly. x402 callers pass the demand's pay_to address: x402 demands
+    name no resource host, so the payee address is the only recipient the
+    demand names, and a permit that binds x402 spending must carry that
+    address exactly as the demand presents it.
+    """
+    if not recipient_domain:
+        return True
+    return extract_recipient_identity(target) == recipient_domain
 
 
 def permit_model_to_response(model: PermitModel) -> PermitResponse:

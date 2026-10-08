@@ -117,10 +117,12 @@ from ..trust import (
     get_human_approval_service,
     get_idempotency_service,
     charge_units_for,
+    extract_recipient_identity,
     get_permit_service,
     get_quote_service,
     get_receipt_service,
     permit_constraints_snapshot,
+    recipient_binding_matches,
     record_audit_event,
     get_refund_reconciliation_service,
     resolve_client_idempotency_key,
@@ -2003,11 +2005,10 @@ async def _execute_registered_tool_inner(
         and execution_backend == "upstream_mcp"
     ):
         upstream_origin = str(service.get("upstream_origin", ""))
-        from urllib.parse import urlparse
-
-        parsed = urlparse(upstream_origin)
-        origin_domain = parsed.hostname or upstream_origin
-        if origin_domain != permit_model.recipient_domain:
+        origin_domain = extract_recipient_identity(upstream_origin)
+        if not recipient_binding_matches(
+            permit_model.recipient_domain, upstream_origin
+        ):
             audit_event = await _audit_mcp_invocation(
                 effects_committed=False,
                 decision=decision,

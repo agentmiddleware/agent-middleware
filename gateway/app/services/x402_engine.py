@@ -26,7 +26,7 @@ from typing import Any, Mapping
 from app.core.config import get_settings
 from app.schemas.billing import ServiceCategory
 from app.services.audit_log import record_audit_event
-from app.services.permits import get_permit_service
+from app.services.permits import get_permit_service, recipient_binding_matches
 from app.services.pricing import charge_units_for
 from app.services.receipts import ReceiptWriteContendedError, get_receipt_service
 from app.services.shadow_ledger import get_shadow_ledger
@@ -341,8 +341,8 @@ class X402PaymentHandler:
         key_id: str | None,
         requirement: X402PaymentRequirement,
         idempotency_key: str,
+        idempotency_record_id: str,
         payer: str | None = None,
-        idempotency_record_id: str | None = None,
     ) -> X402Settlement:
         """Authorize a 402 demand against a permit and record the settlement.
 
@@ -370,6 +370,18 @@ class X402PaymentHandler:
             raise X402Error("x402_payer_invalid")
 
         permits = get_permit_service()
+        # A permit bound to one recipient must never fund another payee.
+        # x402 demands name no resource host, only the pay_to chain address,
+        # so that address is the recipient compared here, with the same
+        # hostname-or-raw comparison the upstream MCP path enforces. This
+        # runs before authorize_and_reserve, so a mismatched demand is
+        # denied with no budget reserved. A missing permit is left for
+        # authorize_and_reserve to report as permit_not_found.
+        bound = await permits.get_permit(permit_id)
+        if bound is not None and not recipient_binding_matches(
+            bound.recipient_domain, requirement.pay_to
+        ):
+            raise X402Error("permit_recipient_domain_mismatch")
         validation = await permits.authorize_and_reserve(
             permit_id=permit_id,
             wallet_id=wallet_id,
@@ -377,7 +389,7 @@ class X402PaymentHandler:
             estimated_credits=credits,
             key_id=key_id,
             # pay_to / network / amount ride along so permit v2 constraints
-            # (forbidden_fields, and recipient checks where enforced) can bite.
+            # (forbidden_fields) can bite.
             arguments={
                 "pay_to": requirement.pay_to,
                 "network": requirement.network,
@@ -516,17 +528,16 @@ class X402PaymentHandler:
                 # prove rollback. Only the typed exhaustion above guarantees
                 # that no receipt was written and compensation is safe.
                 reason = "x402_settlement_needs_review"
-                if idempotency_record_id is not None:
-                    try:
-                        persisted = await get_receipt_service().get_receipt_by_idempotency_record_id(
-                            idempotency_record_id
-                        )
-                        if persisted is not None:
-                            reason = "x402_settled_unrecoverable_replay"
-                    except Exception:
-                        logger.exception(
-                            "x402 receipt lookup failed for %s", idempotency_record_id
-                        )
+                try:
+                    persisted = await get_receipt_service().get_receipt_by_idempotency_record_id(
+                        idempotency_record_id
+                    )
+                    if persisted is not None:
+                        reason = "x402_settled_unrecoverable_replay"
+                except Exception:
+                    logger.exception(
+                        "x402 receipt lookup failed for %s", idempotency_record_id
+                    )
                 raise X402SettlementUncertainError(reason) from exc
 
             compensation_complete = True

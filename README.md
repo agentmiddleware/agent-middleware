@@ -16,6 +16,11 @@ customers and no production deployments to point to. We are looking for design
 partners with one real consequential tool. Nothing here is published to PyPI or
 npm yet; install from source.
 
+Note for contributors: the canonical gateway copy is
+`agent-middleware-api/app`. This tree's `gateway/app` is synced from it, so
+policy and safety fixes should match that copy, and drift between the two is
+treated as a bug.
+
 ## See it in about a minute
 
 Prerequisites: Python 3.11+, [`uv`](https://docs.astral.sh/uv/), and `make`.

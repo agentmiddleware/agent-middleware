@@ -128,8 +128,9 @@ async def test_agent_json_sdk_integrations_are_honest(client):
     assert python_sdk["install"] == "pip install -e ./sdk/python"
     assert "pip install b2a-sdk" not in json.dumps(python_sdk)
     assert "not published" in python_sdk["note"].lower()
-    # No release has been cut from this repository yet.
-    assert python_sdk["latest_release_tag"] is None
+    # 0.4.0 was cut as tag python-sdk-v0.4.0 (see sdk/python/CHANGELOG.md);
+    # the source tree has since moved to an unreleased 0.5.0.
+    assert python_sdk["latest_release_tag"] == "python-sdk-v0.4.0"
 
     typescript_sdk = integrations["typescript_sdk"]
     assert isinstance(typescript_sdk, dict)

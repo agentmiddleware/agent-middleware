@@ -364,6 +364,46 @@ async def _mint_auto_permit(
     return permit.permit_id
 
 
+def _delivery_uncertain_tool_result(
+    exc: GovernedToolError, *, tool_name: str
+) -> dict[str, Any]:
+    """Build the model-readable result for an uncertain delivery.
+
+    The call was already charged and carries a signed receipt, so the
+    outcome is returned as a ``CallToolResult`` with ``isError`` set,
+    instead of a JSON-RPC error which reads as retryable. The text tells
+    the model not to resend, and the receipt plus outcome metadata give it
+    the identifiers needed to reconcile.
+    """
+    receipt = dict(exc.receipt) if exc.receipt else None
+    receipt_id = receipt.get("receipt_id") if receipt else None
+    reconcile = (
+        f" Reconcile with receipt '{receipt_id}' via GET /v1/receipts "
+        "before taking any further action."
+        if receipt_id
+        else " Reconcile via GET /v1/receipts before taking any further action."
+    )
+    text = (
+        f"Delivery uncertain for tool '{tool_name}': the call may already "
+        "have executed and the wallet was charged. Do not resend or retry "
+        "this call, with the same or a new idempotency key." + reconcile
+    )
+    meta: dict[str, Any] = {"outcome": "delivery_uncertain"}
+    if receipt is not None:
+        meta[_RECEIPT_META_KEY] = receipt
+    dispatch = exc.extra_data.get("dispatch")
+    if dispatch is not None:
+        meta["dispatch"] = dispatch
+    payload: dict[str, Any] = {
+        "content": [{"type": "text", "text": text}],
+        "isError": True,
+        "_meta": meta,
+    }
+    if receipt is not None:
+        payload["receipt"] = receipt
+    return payload
+
+
 async def _governed_tools_call(
     *,
     auth: AuthContext,
@@ -523,6 +563,12 @@ async def _governed_tools_call(
             denial_data["details"] = e.details
         raise _mcp_error(-32003, str(e), denial_data or None) from e
     except GovernedToolError as e:
+        if str(e) == "delivery_uncertain":
+            # An uncertain outcome is already charged and receipted, so it
+            # is returned as a model-readable tool result (isError) rather
+            # than a JSON-RPC error: an error on that channel reads as
+            # retryable, and a retry would risk a second charged dispatch.
+            return _delivery_uncertain_tool_result(e, tool_name=tool_name)
         data = dict(e.extra_data)
         if e.receipt:
             data["receipt"] = e.receipt
@@ -571,7 +617,9 @@ def _build_standard_mcp_server() -> Server:
         Registered directly (not through the ``@server.call_tool()``
         decorator) so governance denials keep their JSON-RPC error codes and
         receipt-bearing ``data`` instead of collapsing into an ``isError``
-        text result.
+        text result. The one exception is ``delivery_uncertain``: that
+        outcome is already charged and receipted, so it is returned as an
+        ``isError`` tool result telling the model not to resend.
         """
         ctx = server.request_context
         http_request = ctx.request if isinstance(ctx.request, Request) else None

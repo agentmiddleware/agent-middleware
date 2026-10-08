@@ -214,6 +214,12 @@ async def wallet_human_approval_required(wallet_id: str) -> bool:
         return (await session.execute(stmt)).first() is not None
 
 
+# Risk tiers form a ceiling: low < medium < high. A bundle's tier is the
+# maximum it allows, so a low-risk call passes under a high ceiling. A tier
+# label that is not one of these three, on either side, fails closed.
+_RISK_TIER_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+
 def _as_decimal(value: float | int | Decimal | None) -> Decimal | None:
     if value is None:
         return None
@@ -342,18 +348,24 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
-        if (
-            policy.daily_spend_limit is not None
-            and daily is not None
-            and est is not None
-            and daily + est > policy.daily_spend_limit
-        ):
-            return PolicyEvaluation(
-                False,
-                "daily_spend_limit_exceeded",
-                policy.policy_id,
-                {"evaluated": evaluated},
-            )
+        if policy.daily_spend_limit is not None:
+            if daily is None or est is None:
+                # Fail closed: when past spending or the estimate is
+                # unknown, the cap cannot be shown to hold, so the action
+                # is denied instead of skipping the check.
+                return PolicyEvaluation(
+                    False,
+                    "daily_spend_unknown",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
+            if daily + est > policy.daily_spend_limit:
+                return PolicyEvaluation(
+                    False,
+                    "daily_spend_limit_exceeded",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
         if policy.require_real_effects and simulation:
             return PolicyEvaluation(
                 False,
@@ -361,8 +373,19 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
-        if risk_tier is not None and policy.risk_tier != risk_tier:
-            constraints["requested_risk_tier"] = risk_tier
+        if policy.risk_tier is not None and risk_tier is not None:
+            ceiling = _RISK_TIER_ORDER.get(policy.risk_tier)
+            requested = _RISK_TIER_ORDER.get(risk_tier)
+            if ceiling is None or requested is None or requested > ceiling:
+                # Unknown labels fail closed, and a call above the
+                # bundle's ceiling is denied with a named reason.
+                constraints["requested_risk_tier"] = risk_tier
+                return PolicyEvaluation(
+                    False,
+                    "risk_tier_not_allowed",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
 
     return PolicyEvaluation(
         True, "allowed", models[0].policy_id, {"evaluated": evaluated}

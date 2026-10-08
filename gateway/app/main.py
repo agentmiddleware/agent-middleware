@@ -23,7 +23,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .core.auth import AuthContext, get_auth_context
+from .core.auth import AuthContext, debug_open_auth_armed, get_auth_context
 from .core.build_metadata import get_build_commit_sha, get_build_provenance
 from .core.config import get_settings
 from .core.durable_state import (
@@ -189,6 +189,17 @@ async def lifespan(app: FastAPI):
     # configuration already fails the boot (validated_public_contact raises at
     # import); complete absence is legal for local instances, so production
     # only gets this loud nudge.
+    # DEBUG open mode (DEBUG=true with no keys configured) authenticates
+    # unknown local callers as bootstrap admin. It is now loopback-bound,
+    # but a shared demo should still boot with real keys instead, so say so
+    # loudly whenever this boot leaves it reachable.
+    if debug_open_auth_armed(settings):
+        logger.warning(
+            "debug_open_auth_armed: DEBUG=true with no VALID_API_KEYS or "
+            "STATIC_DEV_API_KEYS, so unknown callers from this machine "
+            "authenticate as bootstrap admin (remote peers are refused). "
+            "Set VALID_API_KEYS before any shared or buyer-visible demo."
+        )
     if public_contact is None and is_production_like_environment(settings.ENVIRONMENT):
         logger.warning(
             "public_contact_not_configured: /.well-known/agent.json is "
@@ -492,6 +503,27 @@ async def lifespan(app: FastAPI):
     )
 
 
+def build_openapi_servers(public_url: str, environment: str) -> list[dict[str, str]]:
+    """Advertise only server entries the operator means.
+
+    An unset PUBLIC_URL used to fall back to a test domain labeled "Public
+    API", so generated clients pointed at a host the operator never
+    configured and manifests named the wrong issuer. The public entry now
+    appears only when PUBLIC_URL is set. Local-compatible environments always
+    keep the localhost entry, so a stock checkout still documents where it
+    actually serves; a production-like boot with no PUBLIC_URL advertises no
+    servers rather than a wrong one.
+    """
+    servers = (
+        [{"url": public_url, "description": "Public API"}] if public_url.strip() else []
+    )
+    if not is_production_like_environment(environment):
+        servers.append(
+            {"url": "http://localhost:8000", "description": "Local Development"}
+        )
+    return servers
+
+
 public_contact = _public_contact_metadata(settings)
 
 
@@ -541,17 +573,7 @@ app = FastAPI(
         "name": "Business Source License 1.1",
         "url": "https://github.com/PetrefiedThunder/agent-middleware/blob/main/LICENSE",
     },
-    servers=[
-        {
-            "url": settings.PUBLIC_URL or "https://api.thisisatest.tech",
-            "description": "Public API (set PUBLIC_URL)",
-        },
-        *(
-            []
-            if is_production_like_environment(settings.ENVIRONMENT)
-            else [{"url": "http://localhost:8000", "description": "Local Development"}]
-        ),
-    ],
+    servers=build_openapi_servers(settings.PUBLIC_URL, settings.ENVIRONMENT),
 )
 
 # --- Middleware Stack ---

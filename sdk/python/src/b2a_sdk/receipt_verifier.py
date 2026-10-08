@@ -1,9 +1,9 @@
-"""Offline verification of trust-plane receipts.
+"""Offline verification of trust-plane receipts and permits.
 
-A receipt is portable evidence when someone can check its signature using a
-public key they trust. Everything in this module therefore runs with no
-network, no database, and no credential: it takes a portable receipt bundle
-plus a caller-supplied key set and answers whether the signature holds. Key
+A receipt or permit is portable evidence when someone can check its signature
+using a public key they trust. Everything in this module therefore runs with
+no network, no database, and no credential: it takes a portable bundle plus
+a caller-supplied key set and answers whether the signature holds. Key
 distribution and issuer identity remain the caller's trust decision.
 
 Two rules keep that answer meaningful:
@@ -49,6 +49,7 @@ __all__ = [
     "key_set_from_document",
     "verify_bundle",
     "verify_ed25519",
+    "verify_permit_bundle",
 ]
 
 # The canonicalization contract these rules implement. A bundle declaring a
@@ -87,11 +88,12 @@ class VerificationError(Exception):
 
 @dataclass(frozen=True)
 class VerificationResult:
-    """Outcome of checking one receipt bundle."""
+    """Outcome of checking one receipt or permit bundle."""
 
     status: VerificationStatus
     reason: str | None = None
     receipt_id: str | None = None
+    permit_id: str | None = None
     key_id: str | None = None
     #: Fields parsed out of the signed bytes. Populated only when ``ok``.
     claims: dict[str, Any] = field(default_factory=dict)
@@ -291,37 +293,30 @@ def _fail(
     reason: str,
     *,
     receipt_id: str | None = None,
+    permit_id: str | None = None,
     key_id: str | None = None,
 ) -> VerificationResult:
     return VerificationResult(
         status=status,
         reason=reason,
         receipt_id=receipt_id,
+        permit_id=permit_id,
         key_id=key_id,
     )
 
 
-def verify_bundle(
+def _verify_signed_bundle(
     bundle: Any,
     key_set: dict[str, bytes],
     *,
+    id_field: str,
     expected_issuer: str | None = None,
 ) -> VerificationResult:
-    """Verify a portable receipt bundle against published public keys.
+    """Shared core behind :func:`verify_bundle` and :func:`verify_permit_bundle`.
 
-    Args:
-        bundle: The object returned by ``GET /v1/receipts/{id}/portable``,
-            either as a dict or a JSON string.
-        key_set: Mapping of key id to raw 32-byte Ed25519 public key, as
-            produced by :func:`key_set_from_document`.
-        expected_issuer: When given, the unauthenticated envelope's ``issuer``
-            label must match. This catches accidental relabeling but does not
-            authenticate the issuer; that requires a trusted public key.
-
-    Returns:
-        A :class:`VerificationResult`. Inspect ``status`` rather than only
-        ``ok`` when the difference between "invalid" and "cannot tell"
-        matters.
+    Receipts and permits are the same signed-envelope shape; only the id
+    member differs (``receipt_id`` vs ``permit_id``). Every other rule,
+    including the status taxonomy, is identical.
     """
     if isinstance(bundle, str | bytes):
         try:
@@ -539,30 +534,91 @@ def verify_bundle(
                 key_id=key_id,
             )
 
-    receipt_id = payload.get("receipt_id")
-    if not isinstance(receipt_id, str) or not receipt_id:
+    object_id = payload.get(id_field)
+    if not isinstance(object_id, str) or not object_id:
         return _fail(
             VerificationStatus.MALFORMED,
-            "signed payload has no receipt_id",
+            f"signed payload has no {id_field}",
             key_id=key_id,
         )
 
-    # Envelope fields are unauthenticated. If the bundle advertises a receipt
-    # id other than the signed one, whoever presented it is describing the
+    # Envelope fields are unauthenticated. If the bundle advertises an id
+    # other than the signed one, whoever presented it is describing the
     # evidence incorrectly — refuse rather than quietly trusting the signed
     # value and letting the mismatch pass unnoticed.
-    envelope_receipt_id = bundle.get("receipt_id")
-    if envelope_receipt_id is not None and envelope_receipt_id != receipt_id:
+    envelope_object_id = bundle.get(id_field)
+    if envelope_object_id is not None and envelope_object_id != object_id:
+        if id_field == "permit_id":
+            return _fail(
+                VerificationStatus.MISMATCH,
+                f"bundle {id_field} does not match the signed {id_field}",
+                permit_id=object_id,
+                key_id=key_id,
+            )
         return _fail(
             VerificationStatus.MISMATCH,
-            "bundle receipt_id does not match the signed receipt_id",
-            receipt_id=receipt_id,
+            f"bundle {id_field} does not match the signed {id_field}",
+            receipt_id=object_id,
             key_id=key_id,
         )
 
+    if id_field == "permit_id":
+        return VerificationResult(
+            status=VerificationStatus.VERIFIED,
+            permit_id=object_id,
+            key_id=key_id,
+            claims=payload,
+        )
     return VerificationResult(
         status=VerificationStatus.VERIFIED,
-        receipt_id=receipt_id,
+        receipt_id=object_id,
         key_id=key_id,
         claims=payload,
+    )
+
+
+def verify_bundle(
+    bundle: Any,
+    key_set: dict[str, bytes],
+    *,
+    expected_issuer: str | None = None,
+) -> VerificationResult:
+    """Verify a portable receipt bundle against published public keys.
+
+    Args:
+        bundle: The object returned by ``GET /v1/receipts/{id}/portable``,
+            either as a dict or a JSON string.
+        key_set: Mapping of key id to raw 32-byte Ed25519 public key, as
+            produced by :func:`key_set_from_document`.
+        expected_issuer: When given, the unauthenticated envelope's ``issuer``
+            label must match. This catches accidental relabeling but does not
+            authenticate the issuer; that requires a trusted public key.
+
+    Returns:
+        A :class:`VerificationResult`. Inspect ``status`` rather than only
+        ``ok`` when the difference between "invalid" and "cannot tell"
+        matters.
+    """
+    return _verify_signed_bundle(
+        bundle, key_set, id_field="receipt_id", expected_issuer=expected_issuer
+    )
+
+
+def verify_permit_bundle(
+    bundle: Any,
+    key_set: dict[str, bytes],
+    *,
+    expected_issuer: str | None = None,
+) -> VerificationResult:
+    """Verify a portable permit bundle against published public keys.
+
+    Same envelope shape and status taxonomy as :func:`verify_bundle`, with
+    ``permit_id`` in place of ``receipt_id``. The verified id is reported on
+    :attr:`VerificationResult.permit_id`. Like receipts, this checks the
+    signature only: expiry and revocation are enforced by the gateway at
+    validation time, so a verified permit must still be rechecked live
+    before it is honored.
+    """
+    return _verify_signed_bundle(
+        bundle, key_set, id_field="permit_id", expected_issuer=expected_issuer
     )

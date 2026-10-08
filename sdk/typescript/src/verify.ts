@@ -25,6 +25,7 @@ export interface VerificationResult {
   ok: boolean;
   reason?: string;
   receiptId?: string;
+  permitId?: string;
   keyId?: string;
   claims?: Record<string, unknown>;
 }
@@ -93,8 +94,17 @@ function edOk(raw: Buffer, sig: Buffer, msg: Buffer): boolean {
   }
 }
 
-/** Verify one portable receipt bundle against a caller-supplied key set. */
-export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: string): VerificationResult {
+/**
+ * Shared core behind verifyBundle and verifyPermitBundle. Receipts and
+ * permits are the same signed-envelope shape; only the id member differs
+ * ("receipt_id" vs "permit_id"). Every other rule is identical.
+ */
+function verifySignedBundle(
+  bundle: unknown,
+  keySet: KeySet,
+  idField: "receipt_id" | "permit_id",
+  expectedIssuer?: string,
+): VerificationResult {
   if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) return fail("malformed", "bundle must be a JSON object");
   const b = bundle as Record<string, unknown>;
   const signingInput = b.signing_input;
@@ -144,8 +154,28 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
     const computed = createHash("sha256").update(canonicalJson(inner), "utf8").digest("hex");
     if (computed !== p.payload_hash) return fail("mismatch", "payload_hash does not match the signed payload", kid);
   }
-  const receiptId = p.receipt_id;
-  if (typeof receiptId !== "string" || !receiptId) return fail("malformed", "signed payload has no receipt_id", kid);
-  if (b.receipt_id !== undefined && b.receipt_id !== receiptId) return fail("mismatch", "bundle receipt_id does not match the signed receipt_id", kid, receiptId);
-  return { status: "verified", ok: true, receiptId, keyId: kid, claims: p };
+  const objectId = p[idField];
+  if (typeof objectId !== "string" || !objectId) return fail("malformed", `signed payload has no ${idField}`, kid);
+  if (b[idField] !== undefined && b[idField] !== objectId)
+    return fail("mismatch", `bundle ${idField} does not match the signed ${idField}`, kid, objectId);
+  const done: VerificationResult = { status: "verified", ok: true, keyId: kid, claims: p };
+  if (idField === "permit_id") done.permitId = objectId;
+  else done.receiptId = objectId;
+  return done;
+}
+
+/** Verify one portable receipt bundle against a caller-supplied key set. */
+export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: string): VerificationResult {
+  return verifySignedBundle(bundle, keySet, "receipt_id", expectedIssuer);
+}
+
+/**
+ * Verify one portable permit bundle against a caller-supplied key set.
+ * Same envelope shape and status taxonomy as verifyBundle, with permit_id
+ * in place of receipt_id. Signature only: expiry and revocation are enforced
+ * by the gateway at validation time, so a verified permit must still be
+ * rechecked live before it is honored.
+ */
+export function verifyPermitBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: string): VerificationResult {
+  return verifySignedBundle(bundle, keySet, "permit_id", expectedIssuer);
 }

@@ -126,6 +126,7 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const msg = Buffer.from(signingInput, "utf8");
 
   const raw = keySet.get(kid);
+  if (raw && raw.length !== RAW_KEY_LEN) return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);
   if (!raw) {
     const envKey = envKid !== kid ? keySet.get(envKid) : undefined;
     if (envKey && edOk(envKey, sig, msg)) return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);

@@ -204,6 +204,55 @@ def test_explicit_route_headers_are_not_overridden() -> None:
     assert TestClient(app).get("/framed").headers["x-frame-options"] == "DENY"
 
 
+def test_question_mark_inside_the_path_is_not_public_discovery() -> None:
+    """``/health?not-health`` is not the cacheable ``/health`` document.
+
+    ``request.url.path`` reparses the path and drops everything after ``?``,
+    so this used to skip Cache-Control: no-store for a route that is not
+    public discovery.
+    """
+    import anyio
+    from starlette.requests import Request
+
+    async def always_ok(scope, receive, send):
+        await PlainTextResponse("no")(scope, receive, send)
+
+    middleware = SecurityHeadersMiddleware(always_ok)
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/health?not-the-health-route",
+        "raw_path": b"/health%3Fnot-the-health-route",
+        "query_string": b"",
+        "headers": [(b"host", b"test")],
+        "client": ("127.0.0.1", 9),
+        "server": ("test", 80),
+    }
+
+    async def run():
+        await middleware(scope, receive, send)
+
+    anyio.run(run)
+    start = next(
+        message for message in sent if message["type"] == "http.response.start"
+    )
+    cache = Request({"type": "http", "headers": start["headers"]}).headers.get(
+        "cache-control"
+    )
+    assert cache == "no-store"
+
+
 def test_middleware_is_registered_on_the_application() -> None:
     from app.main import app
 

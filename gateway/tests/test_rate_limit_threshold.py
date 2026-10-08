@@ -609,3 +609,58 @@ async def test_bucket_key_is_canonicalized_like_auth() -> None:
     assert first.status_code == 200
     assert second.status_code == 200
     assert third.status_code == 429
+
+
+async def _status_for(app, path: str) -> int:
+    """Drive one raw ASGI request and return the response status."""
+    seen: list[int] = []
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": b"",
+        "headers": [(b"host", b"test")],
+        "client": ("127.0.0.1", 5000),
+        "server": ("test", 80),
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            seen.append(message["status"])
+
+    await app(scope, receive, send)
+    return seen[0]
+
+
+@pytest.mark.anyio
+async def test_literal_question_mark_in_path_does_not_skip_the_limit() -> None:
+    """``/health?not-health`` is not the exempt ``/health`` route.
+
+    The server decodes ``%3F`` into the path. ``request.url.path`` then cuts
+    the string at the question mark, so the limiter used to see ``/health``
+    and skip the ceiling while routing still saw the original path.
+    """
+
+    async def ok(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    limited = RateLimitMiddleware(ok, requests_per_minute=1)
+    # Stay on the in-memory counter. This probe must not open a Redis client.
+    limited._redis_url = ""
+
+    weird = "/health?not-the-health-route"
+    assert await _status_for(limited, weird) == 200
+    assert await _status_for(limited, weird) == 429
+
+    # The real health route stays exempt.
+    exempt = RateLimitMiddleware(ok, requests_per_minute=1)
+    exempt._redis_url = ""
+    assert await _status_for(exempt, "/health") == 200
+    assert await _status_for(exempt, "/health") == 200

@@ -168,6 +168,20 @@ def _presented_rate_identity(request: Request) -> str | None:
     return f"jwt:{payload.key_id}"
 
 
+def _routing_path(request: Request) -> str:
+    """Return the path the router matches.
+
+    ``request.url.path`` reparses the path. A literal ``?`` or ``#`` in that
+    path (a client sends ``%3F`` or ``%23``, and the server decodes it into
+    the path) is cut off, so ``/health?not-health`` looks like the exempt
+    ``/health`` route while routing still sees the original path.
+    """
+    path = request.scope.get("path")
+    if isinstance(path, str):
+        return path
+    return request.url.path
+
+
 def _client_id(request: Request) -> str:
     """Return a non-spoofable client identifier for the supported ingress.
 
@@ -610,7 +624,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # API-key headers there so rotating bogus values cannot mint fresh
         # rate-limit buckets (and the local test-key bypass cannot be reached
         # from the Internet).
-        public_mcp_request = request.url.path.rstrip("/") == _PUBLIC_MCP_PATH
+        routing_path = _routing_path(request)
+        public_mcp_request = routing_path.rstrip("/") == _PUBLIC_MCP_PATH
         if public_mcp_request:
             client_id = _client_id(request)
             namespace = (
@@ -654,7 +669,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             "/DESIGN_PARTNER_GUIDE.md",
             "/docs/partner-api-key-bootstrap.md",
         )
-        if request.url.path in skip_paths:
+        if routing_path in skip_paths:
             response = await call_next(request)
             _credentials_were_rejected(response)  # strip the internal marker
             return response  # type: ignore[no-any-return]

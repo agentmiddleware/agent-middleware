@@ -43,6 +43,28 @@ def _too_large(limit: int) -> JSONResponse:
     )
 
 
+def _malformed_body() -> JSONResponse:
+    """400 when an http.request frame carries something other than bytes."""
+    return JSONResponse(
+        status_code=400,
+        content={"detail": "Request body frame is not bytes."},
+    )
+
+
+def _frame_chunk(message: Message) -> bytes | bytearray | memoryview | None:
+    """Return this frame's body, or None when the frame is not bytes.
+
+    A missing or null body is an empty frame. ASGI omits the key for that
+    case, and a null is the same empty frame rather than a crash.
+    """
+    if "body" not in message or message["body"] is None:
+        return b""
+    body = message["body"]
+    if isinstance(body, (bytes, bytearray, memoryview)):
+        return body
+    return None
+
+
 class RequestBodyLimitMiddleware:
     """Reject request bodies larger than ``max_body_size`` with a 413."""
 
@@ -83,10 +105,18 @@ class RequestBodyLimitMiddleware:
                 break
 
             saw_body = True
-            buffered.extend(message.get("body", b""))
-            if len(buffered) > self.max_body_size:
+            chunk = _frame_chunk(message)
+            if chunk is None:
+                await _malformed_body()(scope, receive, send)
+                return
+            # Count the frame before copying it. One ASGI message can carry
+            # the whole body, so copying first would ignore the ceiling.
+            incoming = len(chunk)
+            if len(buffered) + incoming > self.max_body_size:
                 await _too_large(self.max_body_size)(scope, receive, send)
                 return
+            if incoming:
+                buffered.extend(chunk)
             if not message.get("more_body", False):
                 complete = True
                 break

@@ -200,6 +200,112 @@ async def test_non_http_scopes_are_passed_through(limited_app):
     assert seen == ["lifespan", "websocket"]
 
 
+@pytest.mark.anyio
+async def test_oversized_chunk_is_rejected_without_being_copied(monkeypatch):
+    """One ASGI frame bigger than the ceiling must not be copied into the buffer.
+
+    The check used to extend first and measure after, so a single message
+    could force a copy of the whole frame. The ceiling is the bound.
+    """
+    import app.middleware.request_body_limit as body_limit
+
+    ceiling = 8
+    chunk = b"y" * 100
+
+    class GuardedBytearray(bytearray):
+        def extend(self, item):
+            incoming = len(item)
+            if len(self) + incoming > ceiling:
+                raise RuntimeError(f"copied {incoming} bytes past the ceiling")
+            super().extend(item)
+
+    # bytearray is a builtin, not a module global, until the test plants one.
+    monkeypatch.setattr(body_limit, "bytearray", GuardedBytearray, raising=False)
+
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "http.request", "body": chunk, "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    async def app(scope, receive, send):
+        raise AssertionError("oversized body reached the application")
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/echo",
+        "headers": [(b"host", b"test")],
+        "query_string": b"",
+    }
+    await body_limit.RequestBodyLimitMiddleware(app, ceiling)(scope, receive, send)
+
+    assert sent[0]["status"] == 413
+
+
+@pytest.mark.anyio
+async def test_null_body_frame_is_an_empty_body(limited_app):
+    """An explicit null body is the ASGI empty frame, not a server error."""
+    frames = [{"type": "http.request", "body": None, "more_body": False}]
+    sent: list[dict] = []
+
+    async def receive():
+        return frames.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/echo",
+        "headers": [(b"host", b"test")],
+        "query_string": b"",
+    }
+    await RequestBodyLimitMiddleware(limited_app, LIMIT)(scope, receive, send)
+
+    assert sent[0]["status"] == 200
+    raw = b"".join(
+        message.get("body", b"")
+        for message in sent
+        if message["type"] == "http.response.body"
+    )
+    assert b'"length":0' in raw or b'"length": 0' in raw
+
+
+@pytest.mark.anyio
+async def test_non_bytes_body_frame_is_rejected(limited_app):
+    """A body frame that is not bytes gets a 400, not an unhandled TypeError."""
+    frames = [{"type": "http.request", "body": ["not", "bytes"], "more_body": False}]
+    sent: list[dict] = []
+    reached = False
+
+    async def receive():
+        return frames.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    async def spy(scope, receive, send):
+        nonlocal reached
+        reached = True
+        await limited_app(scope, receive, send)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/echo",
+        "headers": [(b"host", b"test")],
+        "query_string": b"",
+    }
+    await RequestBodyLimitMiddleware(spy, LIMIT)(scope, receive, send)
+
+    assert sent[0]["status"] == 400
+    assert reached is False
+
+
 def test_the_real_app_registers_the_limit_from_settings():
     """The ceiling is wired into the shipped app, not just available to it."""
     limits = [

@@ -113,6 +113,129 @@ jobs:
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
           exit $rc
 
+  postgres:
+    # Runs the opt-in PostgreSQL suites that the matrix job above always
+    # skips: row-lock concurrency proofs, the asyncpg datetime-binding
+    # coverage, and the single-action and multiprocess crash harnesses.
+    # Several test modules name this job in their docstrings
+    # (RUN_POSTGRES_CONCURRENCY_TESTS, RUN_MCP_MULTIPROCESS_TESTS,
+    # TEST_POSTGRES_URL); without it that coverage never runs anywhere.
+    # Each step gets its own freshly created database and runs serially:
+    # the harnesses fail closed on any leftover row, so sharing one
+    # database across invocations is not reliable.
+    # The security fuzz battery is deliberately NOT run here yet: every
+    # database-touching test in it fails on PostgreSQL with
+    # "attached to a different loop" (asyncpg pool loop affinity vs the
+    # per-test event loops), while it passes on SQLite. See Notes in the
+    # QA PR that added this job; wire it in once that is fixed.
+    name: Postgres / gateway (opt-in suites)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sellers
+          POSTGRES_PASSWORD: sellers
+          POSTGRES_DB: amw_action_ci
+          # The action-database guard requires a passwordless sellers URL
+          # (ACTION_MIGRATION_DATABASE_URL), so the service trusts local
+          # connections. Throwaway container, loopback only.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 55439:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -r requirements.txt -e "../sdk/python[verify]" pytest-timeout
+          uv pip install "pytest==${PYTEST_VERSION}"
+      - name: Create migration database
+        run: |
+          psql -h 127.0.0.1 -p 55439 -U sellers -d amw_action_ci \
+            -c "CREATE DATABASE amw_action_mig_ci;"
+      # Each suite below gets a freshly created database. The action and
+      # multiprocess harnesses fail closed on any leftover row, and the
+      # datetime suite reloads app modules mid-process, so sharing one
+      # database across invocations is not reliable.
+      - name: Test (Postgres row-lock concurrency proofs)
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_concurrency
+          ENVIRONMENT: test
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+        run: |
+          psql -h 127.0.0.1 -p 55439 -U sellers -d amw_action_ci \
+            -c "DROP DATABASE IF EXISTS amw_action_concurrency;" \
+            -c "CREATE DATABASE amw_action_concurrency;"
+          DATABASE_URL="postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_concurrency" \
+            ENVIRONMENT=test uv run --no-sync alembic upgrade head
+          uv run --no-sync pytest -q --timeout 300 \
+            tests/test_permit_postgres_concurrency.py \
+            tests/test_duplicate_guard_postgres_concurrency.py
+      - name: Test (Postgres asyncpg datetime binding)
+        env:
+          TEST_POSTGRES_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_datetimes
+          ENVIRONMENT: test
+        run: |
+          psql -h 127.0.0.1 -p 55439 -U sellers -d amw_action_ci \
+            -c "DROP DATABASE IF EXISTS amw_action_datetimes;" \
+            -c "CREATE DATABASE amw_action_datetimes;"
+          uv run --no-sync pytest -q --timeout 300 \
+            tests/test_postgres_datetime_binding.py
+      - name: Test (Postgres single-action and multiprocess proofs)
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_proofs
+          ACTION_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_mig_ci
+          ENVIRONMENT: test
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+          RUN_MCP_MULTIPROCESS_TESTS: "1"
+          MCP_STRESS_DB_ISOLATED: "1"
+          STATE_BACKEND: postgres
+        run: |
+          psql -h 127.0.0.1 -p 55439 -U sellers -d amw_action_ci \
+            -c "DROP DATABASE IF EXISTS amw_action_proofs;" \
+            -c "CREATE DATABASE amw_action_proofs;" \
+            -c "DROP DATABASE IF EXISTS amw_action_mig_ci;" \
+            -c "CREATE DATABASE amw_action_mig_ci;"
+          DATABASE_URL="postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_proofs" \
+            ENVIRONMENT=test uv run --no-sync alembic upgrade head
+          uv run --no-sync pytest -q --timeout 300 \
+            tests/test_action_postgres.py \
+            tests/test_action_multiprocess.py \
+            tests/test_action_migrations.py
+      - name: Test (Postgres multiprocess crash harness)
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_stress
+          ENVIRONMENT: test
+          RUN_MCP_MULTIPROCESS_TESTS: "1"
+          MCP_STRESS_DB_ISOLATED: "1"
+          STATE_BACKEND: postgres
+        run: |
+          psql -h 127.0.0.1 -p 55439 -U sellers -d amw_action_ci \
+            -c "DROP DATABASE IF EXISTS amw_action_stress;" \
+            -c "CREATE DATABASE amw_action_stress;"
+          DATABASE_URL="postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_stress" \
+            ENVIRONMENT=test uv run --no-sync alembic upgrade head
+          uv run --no-sync pytest -q --timeout 300 \
+            tests/test_mcp_postgres_multiprocess.py
+
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
     needs: detect
@@ -167,7 +290,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript]
+    needs: [detect, python, typescript, postgres]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

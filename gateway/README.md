@@ -23,6 +23,15 @@ make test                   # the test suite (excluding proof-surface tests)
 Walkthrough: [`docs/quickstart.md`](docs/quickstart.md) and the shorter
 [`../QUICKSTART.md`](../QUICKSTART.md).
 
+## Agent bootstrap
+
+Autonomous clients discover the gateway without human help. Fetch these in
+order: `GET /.well-known/agent.json`, then `GET /llms.txt`
+(`/llm.txt` serves identical content as a legacy alias),
+`GET /mcp/tools.json`, and `GET /openapi.json`. The manifest names the
+transport, authentication (`X-API-Key` header), and dependency-readiness
+rules; start the full loop at [`docs/quickstart.md`](docs/quickstart.md).
+
 ## How it works
 
 ```text

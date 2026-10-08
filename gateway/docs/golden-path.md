@@ -56,7 +56,7 @@ export BOOTSTRAP_KEY=dev-bootstrap-key
 
 ```bash
 curl "$API_URL/.well-known/agent.json"
-curl "$API_URL/llm.txt"
+curl "$API_URL/llms.txt"
 curl "$API_URL/mcp/tools.json"
 ```
 
@@ -380,7 +380,8 @@ curl "$API_URL/v1/billing/wallets/$AGENT_WALLET_ID/velocity" \
 - Sponsor and agent wallets are created.
 - Agent API key authenticates.
 - Agent API key can access only its own wallet.
-- Dry-run simulation returns a cost estimate.
+- Dry-run simulation returns a cost estimate (local only; requires
+  `ENABLE_PROOF_SURFACES=true` and is not part of the production wedge path).
 - MCP manifest is available.
 - Signed permit creation binds wallet, key, tool, budget, and expiry.
 - Governed MCP invocation returns a signed receipt.
@@ -391,4 +392,6 @@ curl "$API_URL/v1/billing/wallets/$AGENT_WALLET_ID/velocity" \
 - Control-plane audit records are inspectable with the bootstrap key.
 - Operators can inspect the policy decision, audit event, ledger entry, and
   request/correlation ID for the scoped tool call.
-- Ledger and velocity endpoints are inspectable with the agent key.
+- The ledger endpoint is inspectable with the agent key; the velocity
+  endpoint is local only (requires `ENABLE_PROOF_SURFACES=true`) and is not
+  part of the production wedge path.

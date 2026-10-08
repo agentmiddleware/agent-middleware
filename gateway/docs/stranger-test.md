@@ -17,7 +17,7 @@ doc, an error message, or a discovery field — not a test.
 This is a usability and independent-verification test, not customer validation.
 A local tool, self-issued public proof, or friendly evaluator cannot satisfy the
 partner-owned pilot gate in
-`docs/30-day-customer-validation.md`.
+`docs/30-day-customer-validation.md` (not included in this repository).
 
 ## Ground rules
 

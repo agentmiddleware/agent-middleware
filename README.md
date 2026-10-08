@@ -16,6 +16,13 @@ customers and no production deployments to point to. We are looking for design
 partners with one real consequential tool. Nothing here is published to PyPI or
 npm yet; install from source.
 
+**Which repository is this?** This repository holds the reference gateway plus
+the protocol spec, SDKs, integrations, and the design-partner pilot loop
+(start with [QUICKSTART.md](QUICKSTART.md)). A separate repository,
+`agent-middleware-api`, exists outside this checkout and is not documented
+here; everything a partner needs to evaluate the pilot loop lives in this
+repository alone.
+
 ## See it in about a minute
 
 Prerequisites: Python 3.11+, [`uv`](https://docs.astral.sh/uv/), and `make`.

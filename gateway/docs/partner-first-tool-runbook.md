@@ -166,7 +166,9 @@ measured integration burden is recorded.
 the boundary were removed and commits an owner, next action, and decision date.
 A follow-up meeting or "cool demo" response alone is not validation. Apply the
 full gate in
-`docs/30-day-customer-validation.md`.
+`docs/30-day-customer-validation.md` (not included in this repository; the
+technical pass, commercial signal, and fail/stop criteria in this runbook are
+the in-repo record of that gate).
 
 **Fail / stop:** partner asks for settlement, KMS, multi-framework policy, or
 broad migration before the single-tool loop is trusted. Point to

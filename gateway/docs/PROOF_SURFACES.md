@@ -12,7 +12,7 @@ does not promote AWI, browser, passkey, DOM, or RAG capabilities into the
 supported product surface.
 
 Product wedge: [`WEDGE.md`](../WEDGE.md).  
-Remediation context: `tech-debt-remediation-plan.md` Phase 6.
+Remediation context: `tech-debt-remediation-plan.md` Phase 6 (not included in this repository).
 
 ## Mount gate
 

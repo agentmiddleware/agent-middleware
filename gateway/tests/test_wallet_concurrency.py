@@ -39,6 +39,7 @@ import pytest_asyncio
 from sqlalchemy import delete as sa_delete, update as sa_update
 
 from app.db.database import get_engine, get_session_factory
+from app.services.ownership import CallerIdentity
 from app.db.models import LedgerEntryModel, WalletModel
 from app.schemas.billing import WalletStatus
 from app.services.agent_money import (
@@ -146,7 +147,7 @@ async def test_delegation_refuses_a_parent_balance_that_moved_under_it(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"agent-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("400"),
-    )
+    caller=CallerIdentity.admin())
     _interfere_once(
         monkeypatch,
         "ensure_wallet_not_expired",
@@ -159,7 +160,7 @@ async def test_delegation_refuses_a_parent_balance_that_moved_under_it(
             child_agent_id=f"child-{uuid.uuid4().hex[:8]}",
             budget_credits=Decimal("200"),
             max_spend=Decimal("200"),
-        )
+        caller=CallerIdentity.admin())
 
     assert "insufficient" in str(excinfo.value).lower()
     assert await _balance(parent.wallet_id) == Decimal("50")
@@ -179,12 +180,12 @@ async def test_transfer_refuses_a_source_balance_that_moved_under_it(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"src-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("300"),
-    )
+    caller=CallerIdentity.admin())
     dest = await money.create_agent_wallet(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"dst-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("100"),
-    )
+    caller=CallerIdentity.admin())
     _interfere_once(
         monkeypatch,
         "ensure_wallet_not_expired",
@@ -196,7 +197,7 @@ async def test_transfer_refuses_a_source_balance_that_moved_under_it(
             from_wallet_id=source.wallet_id,
             to_wallet_id=dest.wallet_id,
             amount=Decimal("200"),
-        )
+        caller=CallerIdentity.admin())
 
     assert "insufficient" in str(excinfo.value).lower()
     assert await _balance(source.wallet_id) == Decimal("50")
@@ -226,7 +227,7 @@ async def test_sponsor_provisioning_refuses_a_balance_that_moved_under_it(
             sponsor_wallet_id=sponsor_wallet,
             agent_id=f"agent-{uuid.uuid4().hex[:8]}",
             budget_credits=Decimal("500"),
-        )
+        caller=CallerIdentity.admin())
 
     assert "insufficient" in str(excinfo.value).lower()
     # The competing debit stands; nothing was provisioned from credits that
@@ -262,7 +263,7 @@ async def test_delegation_refuses_a_parent_frozen_under_it(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"agent-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("400"),
-    )
+    caller=CallerIdentity.admin())
     _interfere_once(
         monkeypatch,
         "ensure_wallet_not_expired",
@@ -275,7 +276,7 @@ async def test_delegation_refuses_a_parent_frozen_under_it(
             child_agent_id=f"child-{uuid.uuid4().hex[:8]}",
             budget_credits=Decimal("200"),
             max_spend=Decimal("200"),
-        )
+        caller=CallerIdentity.admin())
 
     assert "frozen" in str(excinfo.value).lower()
     # Nothing was spent out of the frozen wallet.
@@ -314,12 +315,12 @@ async def test_transfer_reports_a_destination_that_vanished(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"src-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("300"),
-    )
+    caller=CallerIdentity.admin())
     dest = await money.create_agent_wallet(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"dst-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("100"),
-    )
+    caller=CallerIdentity.admin())
     _interfere_once(
         monkeypatch,
         "ensure_wallet_not_expired",
@@ -331,7 +332,7 @@ async def test_transfer_reports_a_destination_that_vanished(
             from_wallet_id=source.wallet_id,
             to_wallet_id=dest.wallet_id,
             amount=Decimal("50"),
-        )
+        caller=CallerIdentity.admin())
 
     assert dest.wallet_id in str(excinfo.value)
     # The debit rolled back with the aborted transaction.
@@ -373,7 +374,7 @@ async def test_zero_lifetime_cap_is_a_cap_not_an_absent_one(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"agent-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("400"),
-    )
+    caller=CallerIdentity.admin())
     await _set_child_cap(parent.wallet_id, Decimal("0"))
 
     with pytest.raises(ValueError) as excinfo:
@@ -382,7 +383,7 @@ async def test_zero_lifetime_cap_is_a_cap_not_an_absent_one(
             child_agent_id=f"child-{uuid.uuid4().hex[:8]}",
             budget_credits=Decimal("10"),
             max_spend=Decimal("10"),
-        )
+        caller=CallerIdentity.admin())
 
     assert "cap exceeded" in str(excinfo.value).lower()
     # The balance was never the problem, and none of it moved.
@@ -398,12 +399,12 @@ async def test_zero_lifetime_cap_refuses_a_transfer_as_a_cap(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"src-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("300"),
-    )
+    caller=CallerIdentity.admin())
     dest = await money.create_agent_wallet(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"dst-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("100"),
-    )
+    caller=CallerIdentity.admin())
     await _set_child_cap(source.wallet_id, Decimal("0"))
 
     with pytest.raises(ValueError) as excinfo:
@@ -411,7 +412,7 @@ async def test_zero_lifetime_cap_refuses_a_transfer_as_a_cap(
             from_wallet_id=source.wallet_id,
             to_wallet_id=dest.wallet_id,
             amount=Decimal("10"),
-        )
+        caller=CallerIdentity.admin())
 
     assert "cap exceeded" in str(excinfo.value).lower()
     assert await _balance(source.wallet_id) == Decimal("300")
@@ -443,7 +444,7 @@ async def test_negative_provisioning_budget_is_refused(
             sponsor_wallet_id=sponsor_wallet,
             agent_id=f"agent-{uuid.uuid4().hex[:8]}",
             budget_credits=budget,
-        )
+        caller=CallerIdentity.admin())
 
     assert await _balance(sponsor_wallet) == before
 
@@ -451,14 +452,14 @@ async def test_negative_provisioning_budget_is_refused(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"parent-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("200"),
-    )
+    caller=CallerIdentity.admin())
     with pytest.raises(ValueError, match="negative"):
         await money.create_child_wallet(
             parent_wallet_id=parent.wallet_id,
             child_agent_id=f"child-{uuid.uuid4().hex[:8]}",
             budget_credits=budget,
             max_spend=Decimal("50"),
-        )
+        caller=CallerIdentity.admin())
 
     assert await _balance(parent.wallet_id) == Decimal("200")
 
@@ -480,7 +481,7 @@ async def test_zero_provisioning_budget_opens_an_empty_wallet(
         sponsor_wallet_id=sponsor_wallet,
         agent_id=f"agent-{uuid.uuid4().hex[:8]}",
         budget_credits=Decimal("0"),
-    )
+    caller=CallerIdentity.admin())
 
     assert await _balance(agent.wallet_id) == Decimal("0")
     assert await _balance(sponsor_wallet) == before

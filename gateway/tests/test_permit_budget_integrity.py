@@ -24,6 +24,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.time import utc_now
+from app.services.ownership import CallerIdentity
 from app.db.database import get_session_factory
 from app.db.models import PermitModel
 from app.main import app
@@ -99,7 +100,7 @@ async def test_reserve_budget_refuses_a_permit_past_its_deadline(
     await _backdate_expiry(permit.permit_id)
 
     with pytest.raises(PermitError) as denied:
-        await get_permit_service().reserve_budget(permit.permit_id, Decimal("1"))
+        await get_permit_service().reserve_budget(permit.permit_id, Decimal("1"), caller=CallerIdentity.admin())
 
     assert denied.value.reason == "permit_expired"
     # And no budget moved on the way to the denial.
@@ -117,10 +118,10 @@ async def test_reserve_budget_reports_revocation_rather_than_exhaustion(
     operator to top up a permit that more money cannot revive.
     """
     _, permit = await _permit_with_budget(client)
-    await get_permit_service().revoke_permit(permit.permit_id)
+    await get_permit_service().revoke_permit(permit.permit_id, caller=CallerIdentity.admin())
 
     with pytest.raises(PermitError) as denied:
-        await get_permit_service().reserve_budget(permit.permit_id, Decimal("1"))
+        await get_permit_service().reserve_budget(permit.permit_id, Decimal("1"), caller=CallerIdentity.admin())
 
     assert denied.value.reason == "permit_revoked"
     assert await _spent(permit.permit_id) == Decimal("0")
@@ -133,9 +134,9 @@ async def test_reserve_budget_still_denies_a_genuine_cap_breach(
     """The added predicates must not swallow the reason they sit in front of."""
     _, permit = await _permit_with_budget(client, max_credits="5")
 
-    await get_permit_service().reserve_budget(permit.permit_id, Decimal("4"))
+    await get_permit_service().reserve_budget(permit.permit_id, Decimal("4"), caller=CallerIdentity.admin())
     with pytest.raises(PermitError) as denied:
-        await get_permit_service().reserve_budget(permit.permit_id, Decimal("2"))
+        await get_permit_service().reserve_budget(permit.permit_id, Decimal("2"), caller=CallerIdentity.admin())
 
     assert denied.value.reason == "permit_budget_exceeded"
     assert await _spent(permit.permit_id) == Decimal("4")

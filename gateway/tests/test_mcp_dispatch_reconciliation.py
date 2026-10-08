@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from app.core.time import utc_now
+from app.services.ownership import CallerIdentity
 from app.db.database import get_session_factory
 from app.db.models import (
     ControlPlaneAuditEventModel,
@@ -164,7 +165,7 @@ async def _seed_attempt(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=begun.record_id,
-        )
+        caller=CallerIdentity.admin())
         assert hasattr(charge, "entry_id")
         ledger_entry_id = charge.entry_id
         if attach_charge:
@@ -1105,15 +1106,15 @@ async def test_crash_after_budget_release_does_not_release_unrelated_reservation
     await get_agent_money().refund_charge(
         wallet_id=seed.wallet_id,
         charge_entry_id=seed.ledger_entry_id or "",
-    )
+    caller=CallerIdentity.admin())
     await dispatch.mark_debit_refunded(
         attempt_id=seed.attempt_id,
         ledger_entry_id=seed.ledger_entry_id or "",
     )
-    released = await get_permit_service().release_dispatch_budget_once(seed.attempt_id)
+    released = await get_permit_service().release_dispatch_budget_once(seed.attempt_id, caller=CallerIdentity.admin())
     assert released is True
     # A later reservation on the same permit must survive reconciliation.
-    await get_permit_service().reserve_budget(seed.permit_id, Decimal("2"))
+    await get_permit_service().reserve_budget(seed.permit_id, Decimal("2"), caller=CallerIdentity.admin())
     await _make_stale(seed.attempt_id)
 
     result = await get_mcp_dispatch_reconciliation_service().reconcile(idle_seconds=300)
@@ -1374,8 +1375,8 @@ async def test_concurrent_budget_release_decrements_exactly_once(
     spent_before = before.spent_credits
 
     results = await asyncio.gather(
-        permits.release_dispatch_budget_once(seed.attempt_id),
-        permits.release_dispatch_budget_once(seed.attempt_id),
+        permits.release_dispatch_budget_once(seed.attempt_id, caller=CallerIdentity.admin()),
+        permits.release_dispatch_budget_once(seed.attempt_id, caller=CallerIdentity.admin()),
         return_exceptions=True,
     )
     ok = [r for r in results if r is True]
@@ -1389,7 +1390,7 @@ async def test_concurrent_budget_release_decrements_exactly_once(
     assert after.spent_credits == spent_before - CREDITS
 
     # A third call is still a no-op.
-    assert await permits.release_dispatch_budget_once(seed.attempt_id) is False
+    assert await permits.release_dispatch_budget_once(seed.attempt_id, caller=CallerIdentity.admin()) is False
     final = await permits.get_permit(seed.permit_id)
     assert final is not None and final.spent_credits == after.spent_credits
 
@@ -1449,7 +1450,7 @@ async def test_dispatch_budget_release_is_once_only_under_a_stale_read(
                 )
                 state["second_result"] = await permits.release_dispatch_budget_once(
                     seed.attempt_id
-                )
+                , caller=CallerIdentity.admin())
             return await self._inner.execute(*args, **kwargs)
 
     class _StaleReadFactory:
@@ -1468,7 +1469,7 @@ async def test_dispatch_budget_release_is_once_only_under_a_stale_read(
         lambda: lambda: _StaleReadFactory(real_factory()),
     )
 
-    first_result = await permits.release_dispatch_budget_once(seed.attempt_id)
+    first_result = await permits.release_dispatch_budget_once(seed.attempt_id, caller=CallerIdentity.admin())
 
     assert state["fired"], "the interleave never ran — the test proved nothing"
     # Exactly one caller may claim the release.
@@ -1486,7 +1487,7 @@ async def test_release_dispatch_budget_rejects_a_missing_attempt(
 ) -> None:
     """An unknown attempt id must not move budget."""
     with pytest.raises(PermitError) as excinfo:
-        await get_permit_service().release_dispatch_budget_once("att-does-not-exist")
+        await get_permit_service().release_dispatch_budget_once("att-does-not-exist", caller=CallerIdentity.admin())
     assert excinfo.value.reason == "dispatch_attempt_not_found"
 
 
@@ -1512,7 +1513,7 @@ async def test_release_dispatch_budget_rejects_a_non_terminal_attempt(
     assert before is not None
 
     with pytest.raises(PermitError) as excinfo:
-        await permits.release_dispatch_budget_once(seed.attempt_id)
+        await permits.release_dispatch_budget_once(seed.attempt_id, caller=CallerIdentity.admin())
     assert excinfo.value.reason == "dispatch_budget_release_state_invalid"
 
     # And no budget moved on the way to the refusal.

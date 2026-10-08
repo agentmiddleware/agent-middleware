@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update as sa_update
 
 from app.core.config import get_settings
+from app.services.ownership import CallerIdentity
 from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import McpDispatchAttemptModel
@@ -257,7 +258,7 @@ async def test_live_claimed_attempt_inside_global_idle_window_waits_not_steal(
             / Decimal("1.5"),  # AGENT_COMMS pricing is 1.5 credits/unit
             request_path="/test",
             operation_key=begun.record_id,
-        )
+        caller=CallerIdentity.admin())
         await dispatch.attach_charge(
             attempt_id=attempt.attempt_id,
             ledger_entry_id=charge.entry_id,

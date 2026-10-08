@@ -18,11 +18,13 @@ from app.schemas.trust import (
     PermitVerifyResponse,
     ReceiptListResponse,
 )
+from app.services.ownership import CallerIdentity
 from app.trust import (
     AgentMoney,
     IdempotencyConflictError,
     IdempotencyCreationDisabledError,
     IdempotencyInProgressError,
+    PermitAccessDeniedError,
     PermitCreationRejectedError,
     PermitError,
     get_agent_money,
@@ -246,7 +248,11 @@ async def revoke_permit(
         raise HTTPException(status_code=404, detail="permit_not_found")
     auth.require_wallet_access(existing.issuer_wallet_id)
     try:
-        permit = await service.revoke_permit(permit_id)
+        permit = await service.revoke_permit(
+            permit_id, caller=CallerIdentity.from_auth(auth)
+        )
+    except PermitAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.reason)
     except PermitError as exc:
         raise HTTPException(status_code=404, detail=exc.reason)
     return permit

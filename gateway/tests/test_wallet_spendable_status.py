@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import func, select, update
 
 from app.db.database import get_session_factory
+from app.services.ownership import CallerIdentity
 from app.db.models import LedgerEntryModel, WalletModel
 from app.services.agent_money import get_agent_money
 
@@ -16,10 +17,10 @@ async def funded_wallets(clean_database):
     sponsor = await money.create_sponsor_wallet(
         "Status boundary", "status@example.test", Decimal("100")
     )
-    agent = await money.create_agent_wallet(sponsor.wallet_id, "source", Decimal("50"))
+    agent = await money.create_agent_wallet(sponsor.wallet_id, "source", Decimal("50"), caller=CallerIdentity.admin())
     receiver = await money.create_agent_wallet(
         sponsor.wallet_id, "receiver", Decimal("10")
-    )
+    , caller=CallerIdentity.admin())
     return sponsor.wallet_id, agent.wallet_id, receiver.wallet_id
 
 
@@ -47,13 +48,13 @@ async def _snapshot():
 async def _debit(operation, source_id, receiver_id):
     money = get_agent_money()
     if operation == "transfer":
-        return await money.transfer(source_id, receiver_id, Decimal("10"))
+        return await money.transfer(source_id, receiver_id, Decimal("10"), caller=CallerIdentity.admin())
     if operation == "agent":
-        return await money.create_agent_wallet(source_id, "new", Decimal("10"))
+        return await money.create_agent_wallet(source_id, "new", Decimal("10"), caller=CallerIdentity.admin())
     assert operation == "child"
     return await money.create_child_wallet(
         source_id, "new-child", Decimal("10"), Decimal("10")
-    )
+    , caller=CallerIdentity.admin())
 
 
 @pytest.mark.parametrize("operation", ["transfer", "agent", "child"])

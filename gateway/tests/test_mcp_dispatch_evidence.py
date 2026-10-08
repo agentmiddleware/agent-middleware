@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.db.database import get_session_factory
+from app.services.ownership import CallerIdentity
 from app.db.models import (
     ControlPlaneAuditEventModel,
     McpDispatchAttemptModel,
@@ -74,7 +75,7 @@ async def _seed_dispatch_receipt(
         units=Decimal("1"),
         request_path="/mcp/messages",
         operation_key=begun.record_id,
-    )
+    caller=CallerIdentity.admin())
     assert charge is not None
     await dispatch_service.attach_charge(
         attempt_id=attempt.attempt_id,
@@ -202,7 +203,7 @@ async def test_legacy_receipt_skips_dispatch_linkage_without_invalidating_eviden
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("1"),
         request_path="/mcp/messages",
-    )
+    caller=CallerIdentity.admin())
     assert charge is not None
     audit_event = await record_audit_event(
         event="mcp.invoke",

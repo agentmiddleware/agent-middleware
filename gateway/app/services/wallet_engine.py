@@ -343,6 +343,15 @@ class WalletEngine:
 
         No BEGIN/COMMIT here — the caller's transaction owns those.
         """
+        if initial_credits < Decimal("0"):
+            # A negative seed opens the wallet holding a negative balance
+            # with no ledger entry to explain it: the initial-credit row is
+            # only written for positive seeds, so the missing money would be
+            # invisible to every ledger-derived balance. The billing router
+            # refuses these through ``ge=0``; the service refuses them too,
+            # matching the agent and child wallet paths. Zero stays allowed:
+            # it opens an empty wallet to be topped up later.
+            raise ValueError("initial_credits cannot be negative")
         wallet_id = f"spn-{uuid.uuid4().hex[:12]}"
 
         wallet = WalletModel(

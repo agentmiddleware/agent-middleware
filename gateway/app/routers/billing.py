@@ -11,7 +11,6 @@ This is how the API generates revenue autonomously.
 from decimal import Decimal
 from typing import ClassVar, cast
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..core.auth import AuthContext, get_auth_context, verify_api_key
@@ -27,11 +26,7 @@ from ..services.agent_money import (
     WalletNotFoundError,
 )
 from ..services.governance import record_governed_action
-from ..services.idempotency import (
-    IdempotencyConflictError,
-    IdempotencyInProgressError,
-    get_idempotency_service,
-)
+
 from ..services.policies import evaluate_wallet_policy
 from ..services.velocity_monitor import WalletFrozenError
 from ..services.wallet_engine import WalletExpiredError
@@ -278,7 +273,7 @@ async def create_sponsor_wallet(
 )
 async def create_agent_wallet(
     request: CreateAgentWalletRequest,
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ):
@@ -298,7 +293,7 @@ async def create_agent_wallet(
     # with the same Idempotency-Key and gets the original wallet back instead
     # of funding a second one and paying twice.
     guard, replay = await _begin_idempotency(
-        idempotency_key=idempotency_key,
+        idempotency_key_lines=idempotency_key_lines,
         wallet_id=request.sponsor_wallet_id,
         endpoint="/v1/billing/wallets/agent",
         request_payload=request.model_dump(mode="json"),
@@ -600,7 +595,7 @@ async def charge_wallet(
     ),
     request_path: str | None = None,
     description: str | None = None,
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ):
@@ -641,50 +636,28 @@ async def charge_wallet(
 
     # Idempotency is opt-in via the Idempotency-Key header: a client that
     # retries a charge (e.g. after a timeout) with the same key gets the
-    # original outcome replayed instead of being billed twice.
-    idem = None
-    idem_key: str | None = None
-    if idempotency_key:
-        idem = get_idempotency_service()
-        idem_key = idempotency_key
-        try:
-            replay = await idem.begin(
-                wallet_id=wallet_id,
-                endpoint=endpoint,
-                idempotency_key=idem_key,
-                request_payload={
-                    "wallet_id": wallet_id,
-                    "service_category": category.value,
-                    "units": units,
-                    "request_path": request_path,
-                    "description": description,
-                },
-            )
-        except IdempotencyConflictError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"error": "idempotency_key_reused", "message": str(exc)},
-            ) from exc
-        except IdempotencyInProgressError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"error": "idempotency_in_progress", "message": str(exc)},
-            ) from exc
-        if replay is not None:
-            return JSONResponse(
-                status_code=replay.status_code, content=replay.response_json
-            )
+    # original outcome replayed instead of being billed twice. A header that
+    # is present but unusable is refused before the debit.
+    guard, replay = await _begin_idempotency(
+        idempotency_key_lines=idempotency_key_lines,
+        wallet_id=wallet_id,
+        endpoint=endpoint,
+        request_payload={
+            "wallet_id": wallet_id,
+            "service_category": category.value,
+            "units": units,
+            "request_path": request_path,
+            "description": description,
+        },
+    )
+    if replay is not None:
+        return replay
 
     async def _complete_idempotency(response_json: dict, status_code: int) -> None:
-        if not idem or not idem_key:
-            return
-        await idem.complete(
-            wallet_id=wallet_id,
-            endpoint=endpoint,
-            idempotency_key=idem_key,
+        await guard.complete(
+            response_json,
+            status_code,
             response_reference=response_json.get("entry_id"),
-            response_json=response_json,
-            status_code=status_code,
         )
 
     try:
@@ -1018,7 +991,7 @@ async def transfer_wallets(
         None,
         description="Optional ID to link related transfers",
     ),
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ):
@@ -1030,14 +1003,33 @@ async def transfer_wallets(
     """
     _require_wallet_access(auth, from_wallet_id)
     endpoint = "/v1/billing/transfer"
+    # The idempotency row's wallet_id references wallets. Opening one for an
+    # unknown source fails the foreign key and answers 500, while the same
+    # call without a key answers 404.
+    if await money.get_wallet(from_wallet_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=str(WalletNotFoundError(from_wallet_id)),
+        )
     # Opt-in idempotency: a retried transfer with the same Idempotency-Key
     # replays the original result instead of moving credits twice. Keyed on
-    # the source wallet (the debited side).
+    # the source wallet (the debited side). correlation_id is part of the
+    # stored transfer, so a reuse with a different one conflicts. The
+    # compatible payload is the hash written before that field was included,
+    # and it is only allowed to replay an existing row.
+    request_payload = {
+        "from_wallet_id": from_wallet_id,
+        "to_wallet_id": to_wallet_id,
+        "amount": str(amount),
+        "description": description,
+        "correlation_id": correlation_id,
+    }
     guard, replay = await _begin_idempotency(
-        idempotency_key=idempotency_key,
+        idempotency_key_lines=idempotency_key_lines,
         wallet_id=from_wallet_id,
         endpoint=endpoint,
-        request_payload={
+        request_payload=request_payload,
+        compatible_request_payload={
             "from_wallet_id": from_wallet_id,
             "to_wallet_id": to_wallet_id,
             "amount": str(amount),
@@ -1085,7 +1077,7 @@ async def transfer_wallets(
             error="wallet_not_found",
             metadata={"to_wallet_id": to_wallet_id},
         )
-        await guard.complete({"error": "wallet_not_found", "message": str(e)}, 404)
+        await guard.complete({"detail": str(e)}, 404)
         raise HTTPException(status_code=404, detail=str(e))
     except InsufficientFundsError as e:
         await _record_billing_governance(
@@ -1105,7 +1097,7 @@ async def transfer_wallets(
             "wallet_id": e.wallet_id,
             "shortfall": float(e.shortfall),
         }
-        await guard.complete(insufficient_detail, 402)
+        await guard.complete({"detail": insufficient_detail}, 402)
         raise HTTPException(
             status_code=402,
             detail=insufficient_detail,
@@ -1150,13 +1142,14 @@ async def transfer_wallets(
             error="transfer_error",
             metadata={"to_wallet_id": to_wallet_id, "message": str(e)},
         )
+        transfer_error = {"error": "transfer_error", "message": str(e)}
         await guard.complete(
-            {"error": "transfer_error", "message": str(e)},
+            {"detail": transfer_error},
             status.HTTP_400_BAD_REQUEST,
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "transfer_error", "message": str(e)},
+            detail=transfer_error,
         )
 
 

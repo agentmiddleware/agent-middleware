@@ -85,16 +85,65 @@ export function keySetFromDocument(doc: unknown): KeySet {
 }
 
 function edOk(raw: Buffer, sig: Buffer, msg: Buffer): boolean {
-  try {
-    const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: raw.toString("base64url") }, format: "jwk" });
-    return edVerify(null, msg, key, sig);
-  } catch {
-    return false;
-  }
+  // A thrown error here means the verifier itself failed. That must not be
+  // reported as a bad signature.
+  const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: raw.toString("base64url") }, format: "jwk" });
+  return edVerify(null, msg, key, sig);
 }
 
-/** Verify one portable receipt bundle against a caller-supplied key set. */
-export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: string): VerificationResult {
+function rawKeyBytes(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  return null;
+}
+
+function textFromBytes(value: Uint8Array): string | null {
+  const buf = Buffer.from(value);
+  const text = buf.toString("utf8");
+  // Invalid UTF-8 is replaced during the decode, so the bytes no longer match.
+  if (!text.isWellFormed() || !Buffer.from(text, "utf8").equals(buf)) return null;
+  return text;
+}
+
+/** True when a decoded JSON value contains a lone UTF-16 surrogate. */
+function containsInvalidUnicode(value: unknown): boolean {
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === "string") {
+      if (!current.isWellFormed()) return true;
+      continue;
+    }
+    if (Array.isArray(current)) {
+      for (let i = 0; i < current.length; i++) pending.push(current[i]);
+      continue;
+    }
+    if (current !== null && typeof current === "object") {
+      const obj = current as Record<string, unknown>;
+      for (const key of Object.keys(obj)) {
+        if (!key.isWellFormed()) return true;
+        pending.push(obj[key]);
+      }
+    }
+  }
+  return false;
+}
+
+/** Verify one portable receipt bundle against a caller-supplied key set.
+ *
+ * `keySet` is the map from `keySetFromDocument`, or any object with the same
+ * `get` lookup. Values are raw Ed25519 public keys (Buffer or Uint8Array).
+ */
+export function verifyBundle(bundle: unknown, keySet: { get(kid: string): unknown }, expectedIssuer?: string): VerificationResult {
+  if (typeof bundle === "string" || bundle instanceof Uint8Array) {
+    const text = typeof bundle === "string" ? bundle : textFromBytes(bundle);
+    if (text === null) return fail("malformed", "bundle is not valid JSON");
+    try {
+      bundle = JSON.parse(text);
+    } catch {
+      return fail("malformed", "bundle is not valid JSON");
+    }
+  }
   if (!bundle || typeof bundle !== "object" || Array.isArray(bundle)) return fail("malformed", "bundle must be a JSON object");
   const b = bundle as Record<string, unknown>;
   const signingInput = b.signing_input;
@@ -112,6 +161,9 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
     return fail("malformed", "signing_input is not valid JSON", envKid);
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return fail("malformed", "signing_input is not a JSON object", envKid);
+  // Node encodes a lone surrogate as U+FFFD. Verifying after that replacement
+  // would accept a different claim than the bytes that were signed.
+  if (containsInvalidUnicode(payload)) return fail("malformed", "signing_input contains invalid Unicode text", envKid);
   const p = payload as Record<string, unknown>;
   const kid = p.kid;
   if (typeof kid !== "string" || !kid) return fail("malformed", "signed payload has no kid", envKid);
@@ -123,13 +175,23 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const sig = b64(sigB64);
   if (!sig) return fail("malformed", "signature is not valid base64", kid);
   if (sig.length !== SIG_LEN) return fail("malformed", "signature is not a 64-byte Ed25519 signature", kid);
+  if (!signingInput.isWellFormed()) return fail("malformed", "signing_input is not valid UTF-8 text", kid);
   const msg = Buffer.from(signingInput, "utf8");
 
-  const raw = keySet.get(kid);
-  if (!raw) {
-    const envKey = envKid !== kid ? keySet.get(envKid) : undefined;
-    if (envKey && edOk(envKey, sig, msg)) return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);
+  const stored = keySet.get(kid);
+  if (stored === undefined) {
+    const envStored = envKid !== kid ? keySet.get(envKid) : undefined;
+    const envKey = envStored === undefined ? null : rawKeyBytes(envStored);
+    if (envKey && envKey.length === RAW_KEY_LEN && edOk(envKey, sig, msg)) {
+      return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);
+    }
     return fail("unknown_key", `no published key for kid ${kid}`, kid);
+  }
+  const raw = rawKeyBytes(stored);
+  // A key of the wrong length or type is a bad input, not proof the receipt
+  // was tampered with.
+  if (!raw || raw.length !== RAW_KEY_LEN) {
+    return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);
   }
   if (!edOk(raw, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
 
@@ -141,7 +203,16 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   if (typeof p.payload_hash === "string") {
     const inner: Record<string, unknown> = { ...p };
     delete inner.payload_hash;
-    const computed = createHash("sha256").update(canonicalJson(inner), "utf8").digest("hex");
+    let canonical: string;
+    try {
+      canonical = canonicalJson(inner);
+    } catch (err) {
+      if (err instanceof RangeError) {
+        return fail("malformed", "signed payload exceeds the supported JSON nesting depth", kid);
+      }
+      throw err;
+    }
+    const computed = createHash("sha256").update(canonical, "utf8").digest("hex");
     if (computed !== p.payload_hash) return fail("mismatch", "payload_hash does not match the signed payload", kid);
   }
   const receiptId = p.receipt_id;

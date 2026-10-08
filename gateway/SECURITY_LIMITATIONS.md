@@ -172,7 +172,10 @@ repo; do not Redeploy from GitHub source).
 
 ## CORS Posture
 
-The default `CORS_ORIGINS=*` is a deliberate decision, not an oversight:
+The default `CORS_ORIGINS` is empty: no origin receives CORS headers until
+the operator configures an explicit allowlist. A wildcard (`*`) remains
+available as an explicit opt-in, and it stays safe for the same reasons the
+old default was tolerated:
 
 - Every authenticated route takes explicit header credentials (`X-API-Key`
   or `Authorization: Bearer`), never cookies or other ambient browser

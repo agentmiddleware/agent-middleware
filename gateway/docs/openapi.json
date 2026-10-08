@@ -9,16 +9,6 @@
     },
     "version": "1.3.0"
   },
-  "servers": [
-    {
-      "url": "https://api.thisisatest.tech",
-      "description": "Public API (set PUBLIC_URL)"
-    },
-    {
-      "url": "http://localhost:8000",
-      "description": "Local Development"
-    }
-  ],
   "paths": {
     "/v1/audit/events": {
       "get": {

@@ -18,6 +18,7 @@ Covers the contract of request -> notify -> approve -> mint -> poll:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -47,6 +48,28 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+class _GateFirstSentinel:
+    """Blocks only the first create_approval so a second request can overlap it."""
+
+    def __init__(self) -> None:
+        self.inner = FakeSentinel()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    @property
+    def created(self) -> list:
+        return self.inner.created
+
+    async def create_approval(self, **kwargs):
+        if not self.entered.is_set():
+            self.entered.set()
+            await self.release.wait()
+        return await self.inner.create_approval(**kwargs)
+
+    async def get_approval(self, action_id: str):
+        return await self.inner.get_approval(action_id)
 
 
 class FakeSentinel:
@@ -384,6 +407,57 @@ async def test_same_idempotency_key_with_different_terms_conflicts(
     assert swapped.json()["detail"] == "permit_request_terms_conflict"
     # The human still only ever saw the original ask.
     assert len(sentinel.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_different_terms_conflict_without_a_second_page(
+    client, clean_database, monkeypatch, fresh_service
+):
+    """A second ask that arrives while the first is still paging must not page."""
+    _sentinel_env(monkeypatch, simulated=False)
+    gate = _GateFirstSentinel()
+    monkeypatch.setattr(fresh_service, "_sentinel", lambda: gate)
+    agent = await provision_agent_wallet(client)
+
+    first_task = asyncio.create_task(
+        _request(client, agent, idem="preq-race", max_credits=20)
+    )
+    await asyncio.wait_for(gate.entered.wait(), timeout=5)
+    second = await asyncio.wait_for(
+        _request(client, agent, idem="preq-race", max_credits=500),
+        timeout=5,
+    )
+    assert second.status_code == 409, second.text
+    assert second.json()["detail"] == "permit_request_terms_conflict"
+    assert gate.created == []
+    gate.release.set()
+    first = await asyncio.wait_for(first_task, timeout=5)
+    assert first.status_code == 202, first.text
+    assert len(gate.created) == 1
+    assert gate.created[0]["arguments"]["max_credits"] == "20"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_terms_page_the_human_once(
+    client, clean_database, monkeypatch, fresh_service
+):
+    _sentinel_env(monkeypatch, simulated=False)
+    gate = _GateFirstSentinel()
+    monkeypatch.setattr(fresh_service, "_sentinel", lambda: gate)
+    agent = await provision_agent_wallet(client)
+
+    first_task = asyncio.create_task(_request(client, agent, idem="preq-race-same"))
+    await asyncio.wait_for(gate.entered.wait(), timeout=5)
+    second = await asyncio.wait_for(
+        _request(client, agent, idem="preq-race-same"),
+        timeout=5,
+    )
+    gate.release.set()
+    first = await asyncio.wait_for(first_task, timeout=5)
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    assert first.json()["request_id"] == second.json()["request_id"]
+    assert len(gate.created) == 1
 
 
 @pytest.mark.asyncio

@@ -303,6 +303,15 @@ class WalletEngine:
             else self._settings.KYC_REQUIRED_FOR_TOPUP
         )
 
+        if not initial_credits.is_finite() or initial_credits < Decimal("0"):
+            # The HTTP schema refuses these with ge=0 and allow_inf_nan=False,
+            # but the SDK and composed callers (pods, dev keys) reach this
+            # method directly. A negative opening balance books a liability
+            # the ledger never recorded, and a non-finite one stores NaN or
+            # Infinity in a Numeric column and poisons every total read after.
+            # Zero stays allowed: it opens an empty wallet to top up later.
+            raise ValueError("initial_credits must be a finite non-negative number")
+
         if session is not None:
             return await self._create_sponsor_wallet_in(
                 session,
@@ -396,16 +405,20 @@ class WalletEngine:
         CALLER owns end to end — same contract as ``create_sponsor_wallet``.
         Omit it for the original standalone behavior.
         """
-        if budget_credits < Decimal("0"):
+        if not budget_credits.is_finite() or budget_credits < Decimal("0"):
             # A negative budget inverts the debit into a credit: the guard
             # ``balance >= budget_credits`` is trivially true for a negative
             # amount, so the sponsor would be paid and the new wallet opened
-            # holding a negative balance.
+            # holding a negative balance. A non-finite budget never reaches a
+            # clean decision: NaN raises InvalidOperation out of the
+            # comparison below, and Infinity escapes into an
+            # InsufficientFundsError carrying infinite amounts that downstream
+            # JSON cannot render.
             #
             # Zero is deliberately allowed. It debits nothing and opens an
             # empty wallet to be topped up later, which is what
             # SelfProvisionRequest.budget_credits (ge=0) offers callers.
-            raise ValueError("budget_credits cannot be negative")
+            raise ValueError("budget_credits must be a finite non-negative number")
 
         if session is not None:
             return await self._create_agent_wallet_in(
@@ -555,12 +568,20 @@ class WalletEngine:
     ) -> WalletResponse:
         """Spawn a child sub-agent wallet from a parent agent's balance."""
         _validate_child_wallet_ttl(ttl_seconds)
-        if budget_credits < Decimal("0"):
+        if not budget_credits.is_finite() or budget_credits < Decimal("0"):
             # Same inversion as the sponsor path, and worse: a child opened
             # with a negative balance cannot be unwound by a later reclaim,
             # which only credits the parent back a positive reclaim_amount.
             # Zero is allowed here too, for the same reason.
-            raise ValueError("budget_credits cannot be negative")
+            raise ValueError("budget_credits must be a finite non-negative number")
+        if not max_spend.is_finite() or max_spend <= Decimal("0"):
+            # The HTTP schema requires gt=0, but the SDK reaches here
+            # directly. A zero or negative cap bricks the wallet at birth
+            # (no charge can ever fit inside it), and a non-finite cap
+            # stores NaN or Infinity in a Numeric column: NaN raises
+            # InvalidOperation out of every later cap comparison, and
+            # Infinity silently disables the cap the parent thought it set.
+            raise ValueError("max_spend must be a finite number greater than zero")
         async with self._session_factory()() as session:
             async with session.begin():
                 # Lock parent wallet
@@ -864,8 +885,14 @@ class WalletEngine:
             InsufficientFundsError: If source has insufficient balance
             ValueError: If amount <= 0 or same wallet IDs
         """
-        if amount <= Decimal("0"):
-            raise ValueError("Transfer amount must be positive")
+        if not amount.is_finite() or amount <= Decimal("0"):
+            # The HTTP layer refuses these with gt=0 and allow_inf_nan=False,
+            # but the SDK reaches this method directly. NaN raises
+            # InvalidOperation out of the comparison (a 500-class leak, not a
+            # clean refusal), and Infinity passes it, then escapes into an
+            # InsufficientFundsError carrying infinite amounts that downstream
+            # JSON cannot render.
+            raise ValueError("Transfer amount must be a finite positive number")
 
         if from_wallet_id == to_wallet_id:
             raise ValueError("Cannot transfer to the same wallet")

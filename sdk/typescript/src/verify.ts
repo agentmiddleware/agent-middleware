@@ -84,6 +84,40 @@ export function keySetFromDocument(doc: unknown): KeySet {
   return keys;
 }
 
+/** True when decoded JSON contains a lone Unicode surrogate. */
+function hasLoneSurrogate(value: unknown): boolean {
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current === "string") {
+      for (let i = 0; i < current.length; i++) {
+        const code = current.charCodeAt(i);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          const next = current.charCodeAt(i + 1);
+          if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+          i += 1;
+        } else if (code >= 0xdc00 && code <= 0xdfff) {
+          return true;
+        }
+      }
+    } else if (Array.isArray(current)) {
+      if (seen.has(current)) continue;
+      seen.add(current);
+      for (const item of current) pending.push(item);
+    } else if (current !== null && typeof current === "object") {
+      if (seen.has(current)) continue;
+      seen.add(current);
+      const obj = current as Record<string, unknown>;
+      for (const key of Object.keys(obj)) {
+        pending.push(key);
+        pending.push(obj[key]);
+      }
+    }
+  }
+  return false;
+}
+
 function edOk(raw: Buffer, sig: Buffer, msg: Buffer): boolean {
   try {
     const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: raw.toString("base64url") }, format: "jwk" });
@@ -112,6 +146,12 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
     return fail("malformed", "signing_input is not valid JSON", envKid);
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return fail("malformed", "signing_input is not a JSON object", envKid);
+  // Same order as the Python verifier: unreadable text is malformed, and
+  // that decision is made before any signature check. A bad signature must
+  // not turn "cannot read the text" into "tampered".
+  if (hasLoneSurrogate(payload)) {
+    return fail("malformed", "signing_input contains invalid Unicode text", envKid);
+  }
   const p = payload as Record<string, unknown>;
   const kid = p.kid;
   if (typeof kid !== "string" || !kid) return fail("malformed", "signed payload has no kid", envKid);
@@ -126,9 +166,16 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const msg = Buffer.from(signingInput, "utf8");
 
   const raw = keySet.get(kid);
+  // A key that is present but the wrong length cannot be judged. Reporting
+  // that as invalid would call the receipt tampered.
+  if (raw && raw.length !== RAW_KEY_LEN) {
+    return fail("malformed", "public key is not a 32-byte Ed25519 key", kid);
+  }
   if (!raw) {
     const envKey = envKid !== kid ? keySet.get(envKid) : undefined;
-    if (envKey && edOk(envKey, sig, msg)) return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);
+    if (envKey && envKey.length === RAW_KEY_LEN && edOk(envKey, sig, msg)) {
+      return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);
+    }
     return fail("unknown_key", `no published key for kid ${kid}`, kid);
   }
   if (!edOk(raw, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
@@ -141,7 +188,12 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   if (typeof p.payload_hash === "string") {
     const inner: Record<string, unknown> = { ...p };
     delete inner.payload_hash;
-    const computed = createHash("sha256").update(canonicalJson(inner), "utf8").digest("hex");
+    let computed: string;
+    try {
+      computed = createHash("sha256").update(canonicalJson(inner), "utf8").digest("hex");
+    } catch {
+      return fail("malformed", "signing payload cannot be canonicalized", kid);
+    }
     if (computed !== p.payload_hash) return fail("mismatch", "payload_hash does not match the signed payload", kid);
   }
   const receiptId = p.receipt_id;

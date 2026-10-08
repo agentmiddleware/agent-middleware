@@ -18,6 +18,7 @@ from b2a_sdk import (
     PermitRequest,
     TransportError,
 )
+from b2a_sdk.errors import APIError
 from b2a_sdk.x402 import X402Client
 
 
@@ -206,6 +207,68 @@ async def test_invoke_tool_returns_typed_receipt_and_governed_context() -> None:
     assert result.receipt.dispatch_attempt_id == "dispatch-1"
     assert result.receipt.credits_charged == Decimal("2")
     assert result.structured_content == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_invoke_tool_rejects_a_receipt_for_a_different_call() -> None:
+    """A success body whose receipt names another tool is not this call's evidence."""
+    swapped = _receipt_payload()
+    swapped["tool"] = "other.tool"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": "invoke-key-1",
+                "result": {
+                    "content": [{"type": "text", "text": "{}"}],
+                    "isError": False,
+                    "receipt": swapped,
+                },
+            },
+        )
+
+    async with _client(handler) as client:
+        with pytest.raises(APIError, match="mcp_receipt_does_not_match_request"):
+            await client.invoke_tool(
+                "partner.search",
+                {},
+                wallet_id="wallet-1",
+                permit_id="permit-1",
+                idempotency_key="invoke-key-1",
+            )
+
+
+@pytest.mark.asyncio
+async def test_get_receipt_rejects_a_body_for_a_different_id() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = _receipt_payload()
+        body["receipt_id"] = "receipt-other"
+        return httpx.Response(200, json=body)
+
+    async with _client(handler) as client:
+        with pytest.raises(APIError, match="receipt_id_mismatch"):
+            await client.get_receipt("receipt-success")
+
+
+@pytest.mark.asyncio
+async def test_evidence_rejects_an_envelope_id_that_disagrees_with_the_receipt() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "receipt_id": "receipt-other",
+                "valid": True,
+                "receipt": _receipt_payload(),
+                "permit": None,
+                "verification": {"receipt_signature": "ok"},
+            },
+        )
+
+    async with _client(handler) as client:
+        with pytest.raises(APIError, match="evidence_receipt_id_mismatch"):
+            await client.get_evidence("receipt-success")
 
 
 @pytest.mark.asyncio

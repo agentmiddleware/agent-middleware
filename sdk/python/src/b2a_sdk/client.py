@@ -150,11 +150,16 @@ class AgentMiddlewareClient:
                 environment variable fails here instead of at the server.
 
         Raises:
-            ValueError: if bearer_token is supplied but blank.
+            ValueError: if bearer_token is supplied but blank, or if api_key
+                or bearer_token contains a control character. A carriage
+                return or newline in a header value can split the request.
         """
         # The key is held only in the transport's default headers (see the
         # ``api_key`` property), not duplicated as instance state, so debug
         # dumps of ``vars(client)`` do not carry the secret.
+        # Do not strip the key: leading or trailing spaces can be significant,
+        # and stripping would also hide a newline that belongs in the check.
+        self._reject_header_controls(api_key, "api_key")
         self.base_url = base_url.rstrip("/")
         headers = {
             "X-API-Key": api_key,
@@ -167,6 +172,7 @@ class AgentMiddlewareClient:
                 raise ValueError(
                     "bearer_token must not be blank; omit it to send no Authorization header"
                 )
+            self._reject_header_controls(token, "bearer_token")
             headers["Authorization"] = f"Bearer {token}"
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -182,12 +188,23 @@ class AgentMiddlewareClient:
         return self._client.headers["X-API-Key"]
 
     @staticmethod
+    def _reject_header_controls(value: str, field: str) -> None:
+        """Refuse a header value that could split the request.
+
+        httpx accepts CR, LF, and DEL in a header. Those bytes let a caller
+        inject another header. Reject them before anything is sent.
+        """
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError(f"{field} must not contain control characters")
+
+    @staticmethod
     def _validate_idempotency_key(idempotency_key: str) -> str:
         key = idempotency_key.strip()
         if not key:
             raise ValueError("idempotency_key must not be blank")
         if len(key) > 128:
             raise ValueError("idempotency_key must be at most 128 characters")
+        AgentMiddlewareClient._reject_header_controls(key, "idempotency_key")
         return key
 
     @staticmethod
@@ -285,6 +302,27 @@ class AgentMiddlewareClient:
         except ValueError as exc:
             raise APIError(f"invalid_{response_name}_receipt: {exc}") from exc
 
+    @staticmethod
+    def _assert_receipt_matches_request(
+        receipt: Receipt,
+        *,
+        tool: str,
+        permit_id: str,
+        wallet_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Refuse a receipt that names a different call than the one just made.
+
+        A success or error body can still describe another tool, permit, or
+        wallet. That body is not evidence for this call.
+        """
+        if (
+            receipt.tool != tool
+            or receipt.permit_id != permit_id
+            or receipt.wallet_id != wallet_id
+        ):
+            raise APIError("mcp_receipt_does_not_match_request", payload=payload)
+
     async def discover_tools(self) -> list[ToolDefinition]:
         """Return the executable tools advertised by the MCP gateway."""
         payload = await self._request_json("GET", "/mcp/tools.json")
@@ -322,6 +360,8 @@ class AgentMiddlewareClient:
         self,
         error: dict[str, Any],
         *,
+        tool: str,
+        permit_id: str,
         wallet_id: str,
         envelope: dict[str, Any],
     ) -> None:
@@ -332,6 +372,13 @@ class AgentMiddlewareClient:
         receipt: Receipt | None = None
         if isinstance(receipt_data, dict):
             receipt = self._parse_receipt(receipt_data, response_name="mcp_error")
+            self._assert_receipt_matches_request(
+                receipt,
+                tool=tool,
+                permit_id=permit_id,
+                wallet_id=wallet_id,
+                payload=envelope,
+            )
         receipt_id = receipt.receipt_id if receipt else None
         outcome = receipt.outcome if receipt else None
 
@@ -402,12 +449,25 @@ class AgentMiddlewareClient:
         )
         error = envelope.get("error")
         if isinstance(error, dict):
-            self._raise_mcp_error(error, wallet_id=wallet_id, envelope=envelope)
+            self._raise_mcp_error(
+                error,
+                tool=name,
+                permit_id=permit_id,
+                wallet_id=wallet_id,
+                envelope=envelope,
+            )
 
         result = envelope.get("result")
         if not isinstance(result, dict):
             raise APIError("invalid_mcp_result", payload=envelope)
         receipt = self._parse_receipt(result.get("receipt"), response_name="mcp")
+        self._assert_receipt_matches_request(
+            receipt,
+            tool=name,
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            payload=envelope,
+        )
         if receipt.outcome == "delivery_uncertain":
             raise DeliveryUncertainError(
                 receipt_id=receipt.receipt_id,
@@ -436,7 +496,10 @@ class AgentMiddlewareClient:
     async def get_receipt(self, receipt_id: str) -> Receipt:
         """Fetch a wallet-authorized signed receipt."""
         payload = await self._request_json("GET", f"/v1/receipts/{receipt_id}")
-        return self._parse_receipt(payload, response_name="get")
+        receipt = self._parse_receipt(payload, response_name="get")
+        if receipt.receipt_id != receipt_id:
+            raise APIError("receipt_id_mismatch", payload=payload)
+        return receipt
 
     async def verify_receipt(self, receipt_id: str) -> ReceiptVerification:
         """Ask the trust plane to verify a receipt signature and linkage."""
@@ -451,6 +514,8 @@ class AgentMiddlewareClient:
             if receipt_data is not None
             else None
         )
+        if receipt is not None and receipt.receipt_id != receipt_id:
+            raise APIError("receipt_id_mismatch", payload=payload)
         valid = payload.get("valid")
         if not isinstance(valid, bool):
             raise APIError("invalid_receipt_verification", payload=payload)
@@ -465,6 +530,11 @@ class AgentMiddlewareClient:
         """Fetch the buyer-facing verification bundle for a receipt."""
         payload = await self._request_json("GET", f"/v1/evidence/{receipt_id}")
         receipt = self._parse_receipt(payload.get("receipt"), response_name="evidence")
+        envelope_id = payload.get("receipt_id")
+        if receipt.receipt_id != receipt_id or (
+            envelope_id is not None and envelope_id != receipt.receipt_id
+        ):
+            raise APIError("evidence_receipt_id_mismatch", payload=payload)
         permit_data = payload.get("permit")
         permit: Permit | None = None
         if permit_data is not None:
@@ -484,7 +554,7 @@ class AgentMiddlewareClient:
         audit_event = payload.get("audit_event")
         dispatch = payload.get("dispatch")
         return EvidenceBundle(
-            receipt_id=str(payload.get("receipt_id") or receipt.receipt_id),
+            receipt_id=receipt.receipt_id,
             valid=valid,
             receipt=receipt,
             permit=permit,
@@ -521,7 +591,7 @@ class AgentMiddlewareClient:
             request_path: Optional API path for tracking
             description: Optional description of the charge
             idempotency_key: Optional key sent as ``Idempotency-Key``; must be
-                nonblank and at most 128 characters
+                nonblank, at most 128 characters, and free of control characters
 
         Returns:
             Ledger entry with action, amount, balance_after
@@ -530,8 +600,8 @@ class AgentMiddlewareClient:
             InsufficientFundsError: If wallet has insufficient balance
             IdempotencyConflictError: If ``idempotency_key`` was already used
                 for a different charge, or that charge is still in progress
-            ValueError: If ``idempotency_key`` is blank or too long (nothing
-                is sent)
+            ValueError: If ``idempotency_key`` is blank, too long, or contains
+                a control character (nothing is sent)
         """
         headers: dict[str, str] | None = None
         if idempotency_key is not None:
@@ -550,11 +620,29 @@ class AgentMiddlewareClient:
         response = await self._client.post("/v1/billing/charge", params=params, headers=headers)
 
         if response.status_code == 402:
-            data = response.json().get("detail", {})
+            try:
+                body = response.json()
+            except ValueError as exc:
+                raise APIError("invalid_json_response", status_code=402) from exc
+            if not isinstance(body, dict):
+                raise APIError("invalid_object_response", status_code=402)
+            detail = body.get("detail")
+            detail_payload = detail if isinstance(detail, dict) else {}
+            shortfall = detail_payload.get("shortfall", "unknown")
+            if shortfall is not None and shortfall != "unknown":
+                try:
+                    float(shortfall)
+                except (TypeError, ValueError):
+                    shortfall = "unknown"
+            top_up = detail_payload.get("top_up_url")
+            if not isinstance(top_up, str) or not top_up:
+                top_up = None
+            detail_wallet = detail_payload.get("wallet_id")
             raise InsufficientFundsError(
-                wallet_id=wallet_id,
-                shortfall=data.get("shortfall", "unknown"),
-                top_up_url=f"{self.base_url}/dashboard/top-up?wallet={wallet_id}",
+                wallet_id=str(detail_wallet) if detail_wallet else wallet_id,
+                shortfall=shortfall,
+                top_up_url=top_up,
+                payload=body,
             )
         # A 409 is an idempotency conflict only when a key was sent; unkeyed
         # calls keep the legacy httpx.HTTPStatusError for any non-402 error.

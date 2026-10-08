@@ -1,0 +1,6 @@
+# Recorded sample output: examples/mcp-client/call_with_retry.py
+# Local gateway (make quickstart), tool partner.notes.write, same
+# idempotency key on both calls. The retry returns the original signed
+# receipt instead of dispatching or charging again: both receipt ids match.
+first receipt: rcpt-9f2c41a7 outcome: success
+retry receipt: rcpt-9f2c41a7 outcome: success

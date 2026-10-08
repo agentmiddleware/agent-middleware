@@ -24,6 +24,43 @@ not the supported design-partner deployment path.
 
 ## Available Examples
 
+### `mcp-client/call_with_retry.py` — Golden-path idempotent retry demo
+
+This is the one demo to show a buyer next to `make quickstart`: call a
+governed tool through the standard MCP endpoint, then retry with the same
+idempotency key. The gateway returns the original signed receipt instead of
+dispatching or charging again.
+
+**Run:**
+
+```bash
+# From gateway/, boot a local server and mint a key per QUICKSTART.md, then:
+AGENT_API_KEY=<wallet-scoped-local-key> python examples/mcp-client/call_with_retry.py
+```
+
+Optional overrides: `AMW_MCP_URL` (default `http://127.0.0.1:8000/mcp`) and
+`AMW_TOOL` (default `partner.notes.write`).
+
+**Expected output** (receipt ids are identical across the retry):
+
+```text
+first receipt: rcpt-9f2c41a7 outcome: success
+retry receipt: rcpt-9f2c41a7 outcome: success
+```
+
+The full recorded sample lives in
+[`mcp-client/expected_output.txt`](mcp-client/expected_output.txt).
+Needs the official MCP Python SDK: `pip install "mcp>=1.29,<2"`.
+
+### `mcp-client/mcp.json` — local client config template
+
+Copy-paste starting point for connecting a standard MCP client to a local
+gateway. It is a template, not a working buyer config: replace
+`${AGENT_API_KEY}` with a real wallet-scoped key (and set a fresh
+`${AMW_IDEMPOTENCY_KEY}` per call), or export both variables if your client
+expands environment placeholders. The URL points at a local gateway
+(`http://127.0.0.1:8000/mcp`); point it at your deploy for anything else.
+
 ### `dry_run_example.py` — Legacy Billing Simulation
 
 Demonstrates safe cost estimation without affecting real wallet balances.
@@ -82,6 +119,19 @@ python examples/mcp_tool_example.py --generate
 # 4. Run standalone MCP server
 python examples/mcp_tool_example.py --serve
 ```
+
+---
+
+### `acta_receipt_interop.py` — Research experiment (not a product path)
+
+Executable research (see the module docstring for the research question):
+a signed portable receipt can be transcoded into the ACTA
+envelope (an individual Internet-Draft with no IETF standing) without
+changing the trust plane. It is not a product surface, route, or SDK
+export, the outer signature uses a throwaway generated key, and the demo
+entry point reads the API repo's `site/proof/` artifacts, which are not in
+this checkout. Do not show it as a buyer integration. Covered by
+`gateway/tests/test_acta_receipt_interop.py`.
 
 ---
 

@@ -162,13 +162,8 @@ def test_constant_test_loop_allows_http_loopback():
     )
 
 
-def test_constant_test_loop_validates_malformed_key():
-    """Validate that malformed key check exists in the code.
-
-    The actual validation happens during API fetch, so we can't easily test
-    it end-to-end without a running server. This test verifies the validation
-    logic exists by importing the module and checking the key derivation path.
-    """
+def _load_loop_module():
+    """Import the loop script as a module without running it."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -177,34 +172,34 @@ def test_constant_test_loop_validates_malformed_key():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-
-    # The validation is in run_constant_test when deriving key_prefix
-    # Verify the code path exists by checking the function signature
-    import inspect
-
-    source = inspect.getsource(module.run_constant_test)
-    assert "malformed API key" in source
-    assert "expected format <prefix>_<suffix>" in source
-
-    # Verify the key is not logged anywhere in the source
-    full_source = CONSTANT_TEST_LOOP.read_text()
-    # The key variable should never be printed or logged directly
-    assert "print(agent_key)" not in full_source
-    assert 'print(f"{agent_key}' not in full_source
+    return module
 
 
-def test_constant_test_loop_never_logs_keys():
+def test_constant_test_loop_validates_malformed_key(monkeypatch):
+    """A malformed key is refused by run_constant_test before any matching.
+
+    Source-grep asserts ("malformed API key" in source) passed when the
+    message existed anywhere, even on a dead path. This drives the real
+    function with stubbed API answers and asserts it raises.
+    """
+    module = _load_loop_module()
+
+    def fake_get_json(client, path, expected_status=200):
+        if path == "/v1/billing/wallets":
+            return {"wallets": [{"wallet_id": "w1"}]}
+        return {"keys": [{"key_prefix": "deadbeef", "key_id": "k1"}]}
+
+    monkeypatch.setattr(module, "_get_json", fake_get_json)
+    with pytest.raises(module.ConfigurationError, match="malformed API key"):
+        module.run_constant_test("http://127.0.0.1:9", "short", "", "")
+
+
+def test_constant_test_loop_never_logs_keys(capsys):
     """Smoke: keys are never printed to stdout/stderr."""
-    # This is a negative test: we can't prove a key is never logged by running
-    # a successful loop (that would require a real server). Instead, we verify
-    # that the script imports cleanly and the key-reading functions don't print.
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "constant_test_loop", CONSTANT_TEST_LOOP
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
+    # The old version noted it could not prove this and cited code review.
+    # This executes the key-reading path with a canary and asserts the
+    # canary never reaches captured output.
+    module = _load_loop_module()
 
     # Set a canary key
     canary_key = "canary_key_must_not_appear_in_logs"
@@ -220,15 +215,14 @@ def test_constant_test_loop_never_logs_keys():
     os.environ.update(test_env)
 
     try:
-        spec.loader.exec_module(module)
         agent_key, wallet_id, key_id = module._get_agent_key()
         assert agent_key == canary_key
         assert wallet_id == "wallet_id"
         assert key_id == "key_id"
 
-        # The _get_agent_key function should not print the key
-        # (We can't fully test this without capturing stdout, but the function
-        # is designed to never print/log the key - code review confirms this.)
+        captured = capsys.readouterr()
+        assert canary_key not in captured.out
+        assert canary_key not in captured.err
 
     finally:
         os.environ.clear()

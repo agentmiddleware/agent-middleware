@@ -1,7 +1,31 @@
 target-version = "py311"
 
 [lint]
-# Pyflakes: unused imports/variables, undefined names, redefinitions.
-# Previously this file selected only E501 and then immediately ignored it,
-# so `ruff check` passed with zero rules actually enforced.
-select = ["F"]
+# F (pyflakes) everywhere, plus PT (flake8-pytest-style) and B (bugbear).
+# Pattern 9 (tests that cannot fail): PT011 bans bare `pytest.raises` with no
+# `match`, PT006/PT007 pin parametrize shapes, B007 flags loop cases whose
+# expected value is never asserted, B023 flags late-bound loop closures.
+# Ruff has no per-path `select`, so the rules are on globally and the
+# pre-existing non-test patterns they were never written against are
+# baselined below, each with its reason. Tests carry the full bar except
+# the two documented baselines.
+select = ["F", "PT", "B"]
+
+[lint.per-file-ignores]
+# App code predates these rules and is out of scope for the test-quality
+# change. Each ignore names the idiom it grandfathers:
+# - B008: FastAPI requires calls in defaults (Query(...), Depends(...)).
+#   Flagging them would ban the framework's own idiom.
+# - B904: app handlers raise fresh errors without `from`; restyling 129
+#   sites is a separate change with its own review.
+# - B905/B007: four strict= omissions and three unused loop vars, grandfathered.
+"app/**" = ["B008", "B904", "B905", "B007"]
+# Operator scripts and the failure-lab harness are not the test suite;
+# their B023/B007/B904 shapes are recorded for a follow-up, not enforced here.
+"scripts/**" = ["B023", "B007", "B904"]
+"failure_lab/**" = ["B023", "B007", "B904"]
+# - PT018: a composite `assert a and b` still fails, only with a poorer
+#   message. Splitting 100 sites is message-quality churn, not vacuity,
+#   so new code splits asserts and old code is grandfathered.
+# - B008: test doubles that build FastAPI routes use Depends(...) like prod.
+"tests/**" = ["PT018", "B008"]

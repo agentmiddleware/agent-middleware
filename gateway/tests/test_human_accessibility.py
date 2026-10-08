@@ -55,7 +55,7 @@ async def test_dashboard_endpoint_returns_html(client):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "path,headers", [("/dashboard", {}), ("/", {"Accept": "text/html"})]
+    ("path", "headers"), [("/dashboard", {}), ("/", {"Accept": "text/html"})]
 )
 async def test_public_operator_index_has_no_fake_data_or_browser_key_handling(
     client, path, headers

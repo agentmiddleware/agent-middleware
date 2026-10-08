@@ -24,7 +24,7 @@ def _load_module():
     return module
 
 
-@pytest.fixture()
+@pytest.fixture
 def rotate():
     return _load_module()
 
@@ -115,7 +115,7 @@ def test_verify_rejects_unsafe_origins_before_probing(rotate, monkeypatch, targe
 
 
 @pytest.mark.parametrize(
-    "target, normalized",
+    ("target", "normalized"),
     [
         ("https://api.example.test/", "https://api.example.test"),
         ("https://api.thisisatest.tech", "https://api.thisisatest.tech"),

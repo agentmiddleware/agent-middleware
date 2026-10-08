@@ -59,7 +59,7 @@ def public_documentation_dns(monkeypatch):
 class TestOutboundUrlGuard:
     @pytest.mark.anyio
     @pytest.mark.parametrize(
-        "url,reason",
+        ("url", "reason"),
         [
             ("file:///etc/passwd", "scheme_not_allowed"),
             ("javascript:alert(1)", "scheme_not_allowed"),
@@ -497,7 +497,7 @@ class TestAWIEvaluateSink:
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
-        "direction,amount,expected",
+        ("direction", "amount", "expected"),
         [
             ("up", 300, "window.scrollBy(0, -300)"),
             ("up", -5, "window.scrollBy(0, 5)"),

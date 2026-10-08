@@ -397,7 +397,14 @@ class TestBehavioralSandboxEngine:
         metrics = state["metrics"]
 
         assert metrics["total_executions"] == 2
-        assert metrics["avg_execution_time_ms"] >= 0
+        # The outcome buckets must account for every execution: a counter
+        # that silently drops runs would still pass the total above.
+        assert (
+            metrics["successful_executions"]
+            + metrics["failed_executions"]
+            + metrics["timeout_count"]
+        ) == metrics["total_executions"]
+        assert isinstance(metrics["avg_execution_time_ms"], (int, float))
 
         await engine.destroy_environment(env.env_id)
 

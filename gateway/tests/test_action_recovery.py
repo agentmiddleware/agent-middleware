@@ -619,9 +619,9 @@ async def test_receipt_conflicts_include_action_binding(action_runtime):
     bad = original.model_copy(update={"action_payload_hash": "b" * 64})
     with pytest.raises(ReceiptError, match="receipt_action_binding_conflict"):
         await service.assert_action_receipt_binding(bad)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="incomplete_action_binding"):
         ActionPermitFields(action_contract_version=1)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unsupported_action_contract"):
         ActionPermitFields.model_validate({**expected, "action_contract_version": 2})
     # A syntactically valid binding with a valid signature for the wrong digest
     # must also be refused by reconciliation's adoption path.

@@ -2,6 +2,14 @@
 
 Use Agent Middleware API tools directly in LangGraph agents.
 
+## Status: use the governed wrapper first
+
+`framework_integrations.LangGraphGovernedTools` runs every call through the
+**permit -> invoke -> signed receipt** loop and is the path to show buyers.
+`get_langgraph_tools` below is a legacy ungoverned factory: its tools call the
+API with no permit, no idempotency key, and no signed receipt, and it emits a
+`DeprecationWarning`.
+
 ## Installation
 
 No PyPI package is published. Work from a checkout of this repository:

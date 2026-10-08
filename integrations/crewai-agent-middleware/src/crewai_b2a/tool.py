@@ -1,5 +1,8 @@
 """CrewAI Tool for Agent Middleware API."""
 
+import asyncio
+import threading
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -9,6 +12,38 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel
 
 from .client import B2AClient
+
+
+def run_blocking(coro_factory: Callable[[], Awaitable[Any]]) -> Any:
+    """Drive an async callable to completion from synchronous CrewAI code.
+
+    Uses ``asyncio.run`` on a fresh event loop when the caller has none, and
+    otherwise runs it on a fresh loop in a short-lived helper thread. This
+    keeps CrewAI's synchronous ``_run`` path working for repeated calls and
+    from inside an already running event loop, where ``loop.run_until_complete``
+    would fail with "This event loop is already running". The factory is
+    invoked inside the thread that will run the loop, so loop-bound resources
+    (HTTP connection pools) are created and used on the same loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_factory())
+
+    outcome: dict[str, Any] = {}
+
+    def _target() -> None:
+        try:
+            outcome["result"] = asyncio.run(coro_factory())
+        except BaseException as exc:  # noqa: BLE001  # re-raised in caller thread
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_target, daemon=True)
+    worker.start()
+    worker.join()
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("result")
 
 
 class MCPToolSchema(BaseModel):
@@ -100,6 +135,73 @@ class CrewAIB2ATool(BaseTool):
             )
         return request
 
+    def _new_sync_client(self) -> B2AClient:
+        # One client per synchronous drive, created inside the loop that will
+        # use it. The shared async client cannot be reused here: its HTTP
+        # connection pool is bound to the event loop that first used it, so a
+        # later sync call on a fresh loop would fail with "Event loop is
+        # closed". Permit state stays on the tool (permit ids are plain
+        # strings), so replays still reuse permits across drives.
+        return B2AClient(api_key=self.api_key, base_url=self.base_url)
+
+    async def _execute(
+        self,
+        operation: str,
+        client: B2AClient,
+        kwargs: dict[str, Any],
+    ) -> str:
+        """Shared governed flow for both the sync and async entry points."""
+        if operation == "discover_tools":
+            tools = await client.discover_tools()
+            return str([{"name": t.name, "description": t.description} for t in tools])
+
+        elif operation == "call_tool":
+            tool_name = kwargs.get("tool_name")
+            idempotency_key = kwargs.get("idempotency_key")
+            permit_idempotency_key = kwargs.get("permit_idempotency_key")
+            arguments = kwargs.get("arguments", {})
+
+            if not idempotency_key or not idempotency_key.strip():
+                return "Error: idempotency_key is required and must not be blank"
+
+            if not permit_idempotency_key or not permit_idempotency_key.strip():
+                return "Error: permit_idempotency_key is required and must not be blank"
+
+            request = self._permit_request(tool_name, permit_idempotency_key)
+            if permit_idempotency_key in self._permit_cache:
+                permit_id = self._permit_cache[permit_idempotency_key]
+            else:
+                permit = await client.create_permit(
+                    request, idempotency_key=permit_idempotency_key
+                )
+                permit_id = permit.permit_id
+                self._permit_cache[permit_idempotency_key] = permit_id
+
+            result = await client.invoke_tool(
+                tool_name,
+                arguments,
+                wallet_id=self.wallet_id,
+                permit_id=permit_id,
+                idempotency_key=idempotency_key,
+            )
+
+            return str(
+                {
+                    "content": result.content,
+                    "structured_content": result.structured_content,
+                    "receipt_id": result.receipt.receipt_id,
+                    "credits_charged": str(result.receipt.credits_charged),
+                    "signature": result.receipt.signature,
+                }
+            )
+
+        elif operation == "balance":
+            balance = await client.get_balance(self.wallet_id)
+            return f"Balance: {balance} credits"
+
+        else:
+            return f"Unknown operation: {operation}"
+
     def _run(
         self,
         operation: str,
@@ -111,72 +213,24 @@ class CrewAIB2ATool(BaseTool):
             operation: One of 'discover_tools', 'call_tool', 'balance'
             **kwargs: Operation-specific arguments
         """
-        import asyncio
+        if operation == "call_tool":
+            # Fail fast before opening any client or loop, as _arun does.
+            idempotency_key = kwargs.get("idempotency_key")
+            permit_idempotency_key = kwargs.get("permit_idempotency_key")
+            if not idempotency_key or not idempotency_key.strip():
+                return "Error: idempotency_key is required and must not be blank"
+            if not permit_idempotency_key or not permit_idempotency_key.strip():
+                return "Error: permit_idempotency_key is required and must not be blank"
 
-        client = self._get_client()
+        async def _drive() -> str:
+            client = self._new_sync_client()
+            try:
+                return await self._execute(operation, client, kwargs)
+            finally:
+                await client.close()
 
         try:
-            if operation == "discover_tools":
-                tools = asyncio.get_event_loop().run_until_complete(
-                    client.discover_tools()
-                )
-                return str(
-                    [{"name": t.name, "description": t.description} for t in tools]
-                )
-
-            elif operation == "call_tool":
-                tool_name = kwargs.get("tool_name")
-                idempotency_key = kwargs.get("idempotency_key")
-                permit_idempotency_key = kwargs.get("permit_idempotency_key")
-                arguments = kwargs.get("arguments", {})
-
-                if not idempotency_key or not idempotency_key.strip():
-                    return "Error: idempotency_key is required and must not be blank"
-
-                if not permit_idempotency_key or not permit_idempotency_key.strip():
-                    return "Error: permit_idempotency_key is required and must not be blank"
-
-                request = self._permit_request(tool_name, permit_idempotency_key)
-                if permit_idempotency_key in self._permit_cache:
-                    permit_id = self._permit_cache[permit_idempotency_key]
-                else:
-                    permit = asyncio.get_event_loop().run_until_complete(
-                        client.create_permit(
-                            request, idempotency_key=permit_idempotency_key
-                        )
-                    )
-                    permit_id = permit.permit_id
-                    self._permit_cache[permit_idempotency_key] = permit_id
-
-                result = asyncio.get_event_loop().run_until_complete(
-                    client.invoke_tool(
-                        tool_name,
-                        arguments,
-                        wallet_id=self.wallet_id,
-                        permit_id=permit_id,
-                        idempotency_key=idempotency_key,
-                    )
-                )
-
-                return str(
-                    {
-                        "content": result.content,
-                        "structured_content": result.structured_content,
-                        "receipt_id": result.receipt.receipt_id,
-                        "credits_charged": str(result.receipt.credits_charged),
-                        "signature": result.receipt.signature,
-                    }
-                )
-
-            elif operation == "balance":
-                balance = asyncio.get_event_loop().run_until_complete(
-                    client.get_balance(self.wallet_id)
-                )
-                return f"Balance: {balance} credits"
-
-            else:
-                return f"Unknown operation: {operation}"
-
+            return run_blocking(_drive)
         except Exception as e:  # noqa: BLE001
             return f"Error: {e!s}"
 
@@ -189,58 +243,6 @@ class CrewAIB2ATool(BaseTool):
         client = self._get_client()
 
         try:
-            if operation == "discover_tools":
-                tools = await client.discover_tools()
-                return str(
-                    [{"name": t.name, "description": t.description} for t in tools]
-                )
-
-            elif operation == "call_tool":
-                tool_name = kwargs.get("tool_name")
-                idempotency_key = kwargs.get("idempotency_key")
-                permit_idempotency_key = kwargs.get("permit_idempotency_key")
-                arguments = kwargs.get("arguments", {})
-
-                if not idempotency_key or not idempotency_key.strip():
-                    return "Error: idempotency_key is required and must not be blank"
-
-                if not permit_idempotency_key or not permit_idempotency_key.strip():
-                    return "Error: permit_idempotency_key is required and must not be blank"
-
-                request = self._permit_request(tool_name, permit_idempotency_key)
-                if permit_idempotency_key in self._permit_cache:
-                    permit_id = self._permit_cache[permit_idempotency_key]
-                else:
-                    permit = await client.create_permit(
-                        request, idempotency_key=permit_idempotency_key
-                    )
-                    permit_id = permit.permit_id
-                    self._permit_cache[permit_idempotency_key] = permit_id
-
-                result = await client.invoke_tool(
-                    tool_name,
-                    arguments,
-                    wallet_id=self.wallet_id,
-                    permit_id=permit_id,
-                    idempotency_key=idempotency_key,
-                )
-
-                return str(
-                    {
-                        "content": result.content,
-                        "structured_content": result.structured_content,
-                        "receipt_id": result.receipt.receipt_id,
-                        "credits_charged": str(result.receipt.credits_charged),
-                        "signature": result.receipt.signature,
-                    }
-                )
-
-            elif operation == "balance":
-                balance = await client.get_balance(self.wallet_id)
-                return f"Balance: {balance} credits"
-
-            else:
-                return f"Unknown operation: {operation}"
-
+            return await self._execute(operation, client, kwargs)
         except Exception as e:  # noqa: BLE001
             return f"Error: {e!s}"

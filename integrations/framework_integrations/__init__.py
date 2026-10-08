@@ -30,6 +30,12 @@ langgraph_tools = get_langgraph_tools(client)
 llamaindex_tools = get_llamaindex_tools(client)
 ```
 
+Legacy status: ``get_langgraph_tools``, ``get_llamaindex_tools`` and
+``get_autogen_tools`` are UNGOVERNED (no permit, no receipt) and emit a
+``DeprecationWarning``. Prefer the governed wrappers first:
+``CrewAIB2ATool``, the autogen / langchain / openai integrations, or
+``LangGraphGovernedTools`` / ``PydanticAIGovernedTools``.
+
 `get_crewai_tools` raises `NotImplementedError`: CrewAI runs each async tool
 on a fresh event loop, which the async `B2AClient` cannot survive between
 calls. Use the governed `CrewAIB2ATool` in `integrations/crewai-agent-middleware`.

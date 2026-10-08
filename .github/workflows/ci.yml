@@ -113,6 +113,155 @@ jobs:
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
           exit $rc
 
+  postgres-proofs:
+    # Runs the gateway tests that only prove their claim against a live
+    # database (row-lock concurrency, the real asyncpg driver, Alembic round
+    # trips). These skip on a normal run; this job provisions throwaway
+    # databases, sets every opt-in flag, and fails loudly on any skip via
+    # CI_STRICT=1 (see gateway/tests/support/db_gate.py).
+    name: Postgres proofs / gateway
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sellers
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          # 55439 is the fixed disposable-test profile the action-proof guard
+          # requires (user sellers, no password, amw_action_* database).
+          - 5432:5432
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U sellers -d sellers"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: gateway
+    env:
+      CI_STRICT: "1"
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -r requirements.txt -e "../sdk/python[verify]" pytest-xdist pytest-timeout
+          uv pip install "ruff==${RUFF_VERSION}" "pytest==${PYTEST_VERSION}"
+      - name: Wait for Postgres and create proof databases
+        run: |
+          uv run --no-sync python - <<'EOF'
+          import asyncio
+
+          import asyncpg
+
+          DATABASES = (
+              "amw_pg_concurrency",
+              "amw_action_pgproofs",
+              "amw_pg_pgloop",
+              "amw_action_migration",
+              "amw_action_dispatch",
+              "amw_pg_stress",
+              "amw_action_multiprocess",
+          )
+
+
+          async def main():
+              for attempt in range(30):
+                  try:
+                      conn = await asyncpg.connect(
+                          user="sellers", host="127.0.0.1", port=55439,
+                          database="postgres",
+                      )
+                      break
+                  except (OSError, asyncpg.PostgresError):
+                      await asyncio.sleep(2)
+              else:
+                  raise SystemExit("postgres service never became reachable")
+              try:
+                  for name in DATABASES:
+                      await conn.execute(f'DROP DATABASE IF EXISTS "{name}"')
+                      await conn.execute(f'CREATE DATABASE "{name}"')
+              finally:
+                  await conn.close()
+
+
+          asyncio.run(main())
+          EOF
+      - name: Migrate proof databases
+        run: |
+          for db in amw_pg_concurrency amw_action_pgproofs amw_pg_stress amw_action_multiprocess; do
+            DATABASE_URL="postgresql+asyncpg://sellers@127.0.0.1:55439/$db" \
+              uv run --no-sync python -m alembic upgrade head
+          done
+      - name: Run row-lock concurrency proofs
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_concurrency
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_permit_postgres_concurrency.py \
+            tests/test_duplicate_guard_postgres_concurrency.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-concurrency.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Run action accounting proofs
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_pgproofs
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_action_postgres.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-action.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Run migration round-trip proofs
+        env:
+          ACTION_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_migration
+          DISPATCH_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_dispatch
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            "tests/test_action_migrations.py::test_postgres_legacy_roundtrip_and_fail_closed_downgrade" \
+            tests/test_dispatch_call_slot_migration.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-migration.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Run asyncpg driver proofs
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_pgloop
+          TEST_POSTGRES_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_pgloop
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_postgres_datetime_binding.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-driver.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Run multiprocess crash proofs
+        env:
+          STATE_BACKEND: postgres
+          MCP_STRESS_DB_ISOLATED: "1"
+          RUN_MCP_MULTIPROCESS_TESTS: "1"
+        run: |
+          DATABASE_URL=postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_stress \
+            uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_mcp_postgres_multiprocess.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-stress.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+          DATABASE_URL=postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_multiprocess \
+            uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_action_multiprocess.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-action-mp.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Prove gated tests actually ran
+        working-directory: .
+        run: |
+          if grep -h "^SKIPPED" "$GITHUB_WORKSPACE"/proof-logs-*.txt; then
+            echo "::error::a database-gated proof skipped instead of running"
+            exit 1
+          fi
+          echo "no gated skips in proof logs"
+
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
     needs: detect
@@ -167,7 +316,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript]
+    needs: [detect, python, typescript, postgres-proofs]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

@@ -117,7 +117,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         bundle = _read_json(args.bundle)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
+        # ValueError covers JSONDecodeError and UnicodeDecodeError (a file
+        # that is not UTF-8 text); RecursionError covers pathological nesting.
+        # Both mean "cannot judge", never a crash.
         print(f"could not read bundle: {exc}", file=sys.stderr)
         return EXIT_UNDETERMINED
 

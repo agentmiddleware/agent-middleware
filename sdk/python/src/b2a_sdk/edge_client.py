@@ -43,6 +43,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -416,7 +417,10 @@ class LocalPermitValidator:
         try:
             payload = self.permit_signing_payload(target)
             signature = base64.b64decode(str(target["signature"]), validate=True)
-        except (KeyError, TypeError, ValueError, ArithmeticError):
+        except (KeyError, TypeError, ValueError, ArithmeticError, AttributeError):
+            # AttributeError covers non-mapping containers where a mapping is
+            # rebuilt (for example max_calls_per_tool as a list, which has no
+            # .items()): malformed input denies, never raises.
             return False
         raw_public_key = self._key_set.get(payload["kid"])
         if raw_public_key is None or len(raw_public_key) != 32:
@@ -477,6 +481,9 @@ class LocalPermitValidator:
         if estimated_credits > remaining:
             return LocalDecision(False, "permit_budget_exceeded")
         limits = permit.get("max_calls_per_tool") or {}
+        if not isinstance(limits, Mapping):
+            # Fail closed like the server: a cap we cannot read is a cap hit.
+            return LocalDecision(False, "permit_max_calls_exceeded")
         if tool_name in limits:
             try:
                 limit = int(limits[tool_name])

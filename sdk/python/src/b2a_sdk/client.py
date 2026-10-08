@@ -550,11 +550,24 @@ class AgentMiddlewareClient:
         response = await self._client.post("/v1/billing/charge", params=params, headers=headers)
 
         if response.status_code == 402:
-            data = response.json().get("detail", {})
+            # The status alone settles the meaning: the wallet was not
+            # charged. Parse the body defensively so a string detail, a
+            # non-object body, or an unreadable body still surfaces as the
+            # typed error instead of AttributeError/ValueError.
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            if not isinstance(body, dict):
+                body = {}
+            detail = body.get("detail", {})
+            if not isinstance(detail, dict):
+                detail = {}
             raise InsufficientFundsError(
                 wallet_id=wallet_id,
-                shortfall=data.get("shortfall", "unknown"),
+                shortfall=detail.get("shortfall", "unknown"),
                 top_up_url=f"{self.base_url}/dashboard/top-up?wallet={wallet_id}",
+                payload=body,
             )
         # A 409 is an idempotency conflict only when a key was sent; unkeyed
         # calls keep the legacy httpx.HTTPStatusError for any non-402 error.

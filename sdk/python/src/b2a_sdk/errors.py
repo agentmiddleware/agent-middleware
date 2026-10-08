@@ -86,7 +86,15 @@ class InsufficientFundsError(APIError):
         payload: dict[str, Any] | None = None,
     ) -> None:
         self.wallet_id = wallet_id
-        self.shortfall = None if shortfall is None or shortfall == "unknown" else float(shortfall)
+        # A display field only: garbage from the wire degrades to unknown
+        # rather than crashing the caller that is handling the denial.
+        if shortfall is None or shortfall == "unknown":
+            self.shortfall = None
+        else:
+            try:
+                self.shortfall = float(shortfall)
+            except (TypeError, ValueError):
+                self.shortfall = None
         self.top_up_url = top_up_url
         self.receipt_id = receipt_id
         message = f"Insufficient funds in wallet {wallet_id}. Shortfall: {self.shortfall} credits."

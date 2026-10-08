@@ -87,6 +87,61 @@ class GovernedToolWrapper:
         return self._receipt_var.get()
 
 
+def resolve_tool_name(func: Callable[..., Any], tool_name: str | None) -> str:
+    """Name sent to the server and published to the framework.
+
+    A blank override is refused. Falling through to the function name keeps
+    the model-facing name and the governed call on the same tool.
+    """
+    if tool_name is None:
+        resolved = getattr(func, "__name__", "") or ""
+    elif isinstance(tool_name, str):
+        resolved = tool_name.strip()
+    else:
+        resolved = ""
+    if not resolved or any(char in resolved for char in "\r\n\x00"):
+        raise ValueError("tool_name must be a non-blank string")
+    return resolved
+
+
+def _estimated_credits(credits_hint: Decimal | None) -> Decimal | None:
+    """Coerce a credit hint to Decimal before it touches the permit check.
+
+    A float hint compared with the validator's Decimal budget raises
+    TypeError inside the check. Reject non-finite and negative hints here.
+    """
+    if credits_hint is None:
+        return None
+    try:
+        credits = Decimal(str(credits_hint))
+    except (ArithmeticError, ValueError) as exc:
+        raise ValueError(
+            "credits_hint must be a finite non-negative decimal"
+        ) from exc
+    if not credits.is_finite() or credits < 0:
+        raise ValueError("credits_hint must be a finite non-negative decimal")
+    return credits
+
+
+def _caller_idempotency_key(supplied: object) -> str:
+    """Accept a caller-owned key, or mint one when the caller passed None."""
+    if supplied is None:
+        return uuid.uuid4().hex
+    if not isinstance(supplied, str):
+        raise ValueError(
+            "idempotency_key must be a string; omit it to derive a fresh key"
+        )
+    if any(char in supplied for char in "\r\n\x00"):
+        raise ValueError("idempotency_key contains an illegal header character")
+    if not supplied.strip():
+        raise ValueError(
+            "idempotency_key must not be blank; omit it to derive a fresh key"
+        )
+    if len(supplied) > 128:
+        raise ValueError("idempotency_key must be at most 128 characters")
+    return supplied
+
+
 def governed_tool(
     session: GovernedEdgeSession,
     *,
@@ -99,12 +154,13 @@ def governed_tool(
     raises ``RuntimeError`` at call time (matching ``b2a_sdk.decorators
     .billable``'s established behavior). On each call the wrapper:
 
-    1. consumes an ``idempotency_key`` keyword: a supplied non-blank key is
-       used as-is (retries that must replay — same receipt, no double
-       charge — need a caller-owned key); a supplied blank/whitespace key
-       raises ``ValueError`` rather than being silently replaced; when the
-       keyword is absent or ``None`` a fresh ``uuid4().hex`` is derived,
-       making that call a new invocation;
+    1. consumes an ``idempotency_key`` keyword: a supplied non-blank string
+       is used as-is (retries that must replay, same receipt, no second
+       charge, need a caller-owned key). A blank key, a non-string, a key
+       longer than 128 characters, or a key containing a line break raises
+       ``ValueError`` rather than being replaced. When the keyword is
+       absent or ``None`` a fresh ``uuid4().hex`` is derived, making that
+       call a new invocation;
     2. binds the remaining arguments to the stub's signature **with the
        stub's declared defaults applied**, so an omitted parameter travels
        to the server as the stub's contractual default rather than letting
@@ -120,7 +176,8 @@ def governed_tool(
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        name = tool_name or func.__name__
+        name = resolve_tool_name(func, tool_name)
+        estimated = _estimated_credits(credits_hint)
         signature = inspect.signature(func)
         receipt_var: contextvars.ContextVar[Receipt | None] = contextvars.ContextVar(
             f"governed_tool_last_receipt_{name}", default=None
@@ -129,16 +186,9 @@ def governed_tool(
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             if "idempotency_key" in kwargs:
-                supplied = kwargs.pop("idempotency_key")
-                if supplied is None:
-                    idempotency_key = uuid.uuid4().hex
-                else:
-                    idempotency_key = str(supplied)
-                    if not idempotency_key.strip():
-                        raise ValueError(
-                            "idempotency_key must not be blank; omit it to "
-                            "derive a fresh key"
-                        )
+                idempotency_key = _caller_idempotency_key(
+                    kwargs.pop("idempotency_key")
+                )
             else:
                 idempotency_key = uuid.uuid4().hex
             bound = signature.bind(*args, **kwargs)
@@ -148,7 +198,7 @@ def governed_tool(
                 name,
                 arguments,
                 idempotency_key=idempotency_key,
-                estimated_credits=credits_hint,
+                estimated_credits=estimated,
             )
             receipt_var.set(result.receipt)
             if result.structured_content is not None:
@@ -169,4 +219,4 @@ def governed_tool(
     return decorator
 
 
-__all__ = ["GovernedToolWrapper", "governed_tool"]
+__all__ = ["GovernedToolWrapper", "governed_tool", "resolve_tool_name"]

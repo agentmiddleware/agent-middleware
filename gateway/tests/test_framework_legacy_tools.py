@@ -82,7 +82,7 @@ _RESPONSES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/v1/telemetry/events"): {"event_id": "evt-1"},
     ("GET", f"/v1/billing/wallets/{WALLET_ID}"): {"balance": 42.5},
     ("POST", "/v1/comms/messages"): {"message_id": "msg-1"},
-    ("POST", "/v1/ai/decide"): {"decision": "b"},
+    ("POST", "/v1/ai/decide"): {"action": "b", "decision_id": "d1"},
     ("POST", "/v1/ai/heal"): {"action": "restart"},
     ("POST", "/v1/awi/sessions"): {"session_id": "awi-123"},
 }

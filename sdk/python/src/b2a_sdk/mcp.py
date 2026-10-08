@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 from typing import Any
+from urllib.parse import urlencode
 
 try:
     import httpx
@@ -44,12 +45,12 @@ def generate_manifest(
     """
     url = f"{api_url}/mcp/tools.json"
     if category:
-        url = f"{url}?category={category}"
+        url = f"{url}?{urlencode({'category': category})}"
 
     if httpx is None:
         raise RuntimeError("httpx required. Install: pip install httpx")
 
-    response = httpx.get(url, timeout=30.0)
+    response = httpx.get(url, timeout=30.0, follow_redirects=False)
     response.raise_for_status()
     manifest = response.json()
 
@@ -88,7 +89,8 @@ def list_tools(
     manifest = generate_manifest(api_url=api_url, category=category)
     tools = manifest.get("tools", [])
 
-    print(f"\\nAvailable MCP Tools ({len(tools)})")
+    print()
+    print(f"Available MCP Tools ({len(tools)})")
     print("=" * 60)
 
     for tool in tools:
@@ -98,12 +100,14 @@ def list_tools(
         unit = tool.get("annotations", {}).get("unitName", "call")
         cat = tool.get("annotations", {}).get("category", "custom")
 
-        print(f"\\n  {name}")
+        print()
+        print(f"  {name}")
         print(f"    Description: {desc[:60]}...")
         print(f"    Cost: {credits} credits/{unit}")
         print(f"    Category: {cat}")
 
-    print("\\n" + "=" * 60)
+    print()
+    print("=" * 60)
 
 
 async def serve_async(
@@ -131,7 +135,7 @@ async def serve_async(
     mcp = FastMCP("B2A Marketplace")
 
     async def call_tool(service_id: str, input_data: dict, wallet_id: str, api_key: str) -> dict:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=False) as client:
             response = await client.post(
                 f"{api_url}/v1/billing/services/{service_id}/invoke",
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
@@ -162,7 +166,8 @@ async def serve_async(
     print(f"Transport: {transport}")
     if transport == "sse":
         print(f"Port: {port}")
-    print("\\nConfigure with:")
+    print()
+    print("Configure with:")
     print("  export B2A_API_KEY=<your-key>")
     print("  export B2A_WALLET_ID=<your-wallet>")
     print(f"  export B2A_API_URL={api_url}")

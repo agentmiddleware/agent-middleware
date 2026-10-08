@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -232,6 +233,14 @@ class EvidenceBundle:
     raw: JsonObject = field(repr=False)
 
 
+# Fail closed on denomination. Uppercase is rejected, not folded, so the
+# value that would land in a permit matches the bytes the server accepts.
+_ACP_CURRENCIES = frozenset({"usd"})
+_INTENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_\-\.]{1,128}$")
+_HOSTNAME_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_MERCHANT_DOMAIN_PATTERN = re.compile(rf"^{_HOSTNAME_LABEL}(?:\.{_HOSTNAME_LABEL})+$")
+
+
 @dataclass(slots=True)
 class ACPLineItem:
     """One purchasable line of an ACP checkout, denominated in minor units."""
@@ -247,18 +256,30 @@ class ACPLineItem:
     def __post_init__(self) -> None:
         """Reject line items the server would refuse, before the SPT is sent.
 
-        Bounds mirror ``app/schemas/acp.py::ACPLineItem`` exactly. Catching
-        these here keeps a delegated payment credential off the wire on a
-        request that could only 422.
+        Bounds mirror ``app/schemas/acp.py::ACPLineItem``. ``to_payload``
+        repeats the check so a field changed after construction is refused
+        before the delegated payment credential is sent.
         """
-        if not 0 < self.quantity <= 10_000:
+        self._validate()
+
+    def _validate(self) -> None:
+        if not isinstance(self.name, str) or not 1 <= len(self.name) <= 256:
+            raise ValueError("acp line item name must be 1..256 characters")
+        if self.sku is not None and (not isinstance(self.sku, str) or len(self.sku) > 128):
+            raise ValueError("acp line item sku must be at most 128 characters")
+        # ``bool`` is an ``int`` subclass. ``type is int`` keeps True from
+        # passing a quantity check the server's integer field would reject.
+        if type(self.quantity) is not int or not 0 < self.quantity <= 10_000:
             raise ValueError(f"quantity must be in 1..10000, got {self.quantity!r}")
-        if not 0 <= self.unit_amount <= 10_000_000:
+        if type(self.unit_amount) is not int or not 0 <= self.unit_amount <= 10_000_000:
             raise ValueError(
                 f"unit_amount must be in 0..10000000 minor units, got {self.unit_amount!r}"
             )
+        if self.currency not in _ACP_CURRENCIES:
+            raise ValueError("acp_unsupported_currency")
 
     def to_payload(self) -> JsonObject:
+        self._validate()
         payload: JsonObject = {
             "name": self.name,
             "quantity": self.quantity,
@@ -285,7 +306,41 @@ class ACPCheckoutRequest:
     merchant_domain: str
     client_total: int
 
+    def __post_init__(self) -> None:
+        """Reject a checkout the server would refuse before the SPT is sent."""
+        self._validate()
+
+    def _validate(self) -> None:
+        if (
+            not isinstance(self.intent_id, str)
+            or _INTENT_ID_PATTERN.fullmatch(self.intent_id) is None
+        ):
+            raise ValueError("acp_intent_id_invalid")
+        items = self.line_items
+        if not isinstance(items, list) or not 1 <= len(items) <= 100:
+            raise ValueError("acp line_items must contain 1..100 items")
+        total = 0
+        for item in items:
+            if not isinstance(item, ACPLineItem):
+                raise ValueError("acp line_items must be ACPLineItem values")
+            item._validate()
+            total += item.quantity * item.unit_amount
+        if not isinstance(self.spt_token, str) or not 1 <= len(self.spt_token) <= 512:
+            raise ValueError("acp_spt_token_invalid")
+        domain = self.merchant_domain
+        if (
+            not isinstance(domain, str)
+            or len(domain) > 253
+            or _MERCHANT_DOMAIN_PATTERN.fullmatch(domain) is None
+        ):
+            raise ValueError("acp_merchant_domain_invalid")
+        if type(self.client_total) is not int or self.client_total < 0:
+            raise ValueError("acp client_total must be a non-negative integer")
+        if self.client_total != total:
+            raise ValueError("acp_total_mismatch")
+
     def to_payload(self) -> JsonObject:
+        self._validate()
         return {
             "intent_id": self.intent_id,
             "line_items": [item.to_payload() for item in self.line_items],

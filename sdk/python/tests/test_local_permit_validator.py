@@ -631,3 +631,162 @@ def test_absent_or_null_action_binding_preserves_legacy_signed_bytes():
     permit.update(dict.fromkeys(ACTION_BINDING))
     assert LocalPermitValidator.permit_signing_payload(permit) == original
     assert _validator(permit, keys).verify_permit()
+
+
+def test_stringified_cap_does_not_rebuild_the_signed_integer():
+    """A cap whose JSON type changed must not verify as the original integer."""
+    permit, key_document = _build_signed_permit(max_calls_per_tool={TOOL: 3})
+    tampered = dict(permit)
+    tampered["max_calls_per_tool"] = {TOOL: "3"}
+    assert _validator(tampered, key_document).verify_permit() is False
+
+    windowed, window_keys = _build_signed_permit(repeat_window_seconds=3600)
+    tampered_window = dict(windowed)
+    tampered_window["repeat_window_seconds"] = "3600"
+    assert _validator(tampered_window, window_keys).verify_permit() is False
+
+
+def test_non_integer_call_cap_fails_closed():
+    for limit in ("3", True, 1.5):
+        validator = LocalPermitValidator(_permit_dict(max_calls_per_tool={TOOL: limit}), {})
+        decision = validator.check(TOOL, Decimal("1"))
+        assert decision.allowed is False, limit
+        assert decision.reason == "permit_max_calls_exceeded"
+    allowed = LocalPermitValidator(_permit_dict(max_calls_per_tool={TOOL: 3}), {})
+    assert allowed.check(TOOL, Decimal("1")).allowed is True
+
+
+def test_check_denies_a_different_wallet_when_one_is_supplied():
+    validator = LocalPermitValidator(_permit_dict(), {})
+    decision = validator.check(TOOL, Decimal("1"), wallet_id="someone-elses-wallet")
+    assert decision.allowed is False
+    assert decision.reason == "permit_wallet_mismatch"
+    # Callers that do not know the wallet keep the previous result.
+    assert validator.check(TOOL, Decimal("1")).allowed is True
+
+    missing_subject = _permit_dict()
+    missing_subject.pop("subject_wallet_id")
+    denied = LocalPermitValidator(missing_subject, {}).check(
+        TOOL, Decimal("1"), wallet_id="wallet-1"
+    )
+    assert denied.reason == "permit_wallet_mismatch"
+
+
+def test_check_denies_a_nested_forbidden_field():
+    validator = LocalPermitValidator(_permit_dict(forbidden_fields=["password"]), {})
+    decision = validator.check(
+        TOOL,
+        Decimal("1"),
+        arguments={"profile": {"password": "secret"}},
+    )
+    assert decision.allowed is False
+    assert decision.reason == "permit_forbidden_field:password"
+    # The forbidden name as a value is not a field name.
+    assert validator.check(TOOL, Decimal("1"), arguments={"note": "password"}).allowed is True
+    # An empty argument object does not trip the check, matching the server.
+    assert validator.check(TOOL, Decimal("1"), arguments={}).allowed is True
+
+
+def test_record_use_does_not_loosen_the_budget_for_a_negative_amount():
+    validator = LocalPermitValidator(_permit_dict(max_credits="10", spent_credits="8"), {})
+    validator.record_use(TOOL, Decimal("-5"))
+    validator.record_use(TOOL, Decimal("NaN"))
+    assert validator.call_counts == {TOOL: 2}
+    assert validator.reserved_credits == Decimal("0")
+    denied = validator.check(TOOL, Decimal("3"))
+    assert denied.allowed is False
+    assert denied.reason == "permit_budget_exceeded"
+    assert validator.check(TOOL, Decimal("2")).allowed is True
+
+
+@pytest.mark.asyncio
+async def test_session_invoke_denies_wallet_mismatch_without_a_request():
+    permit, key_document = _build_signed_permit()
+    posts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        if request.url.path == "/v1/permits/permit-local-1":
+            return httpx.Response(200, json=permit)
+        if request.url.path == "/.well-known/trust-keys.json":
+            return httpx.Response(200, json=key_document)
+        posts += 1
+        raise AssertionError(request.url.path)
+
+    client = AgentMiddlewareClient(
+        api_key="test-key",
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        session = await GovernedEdgeSession.open(
+            client, permit_id="permit-local-1", wallet_id="other-wallet"
+        )
+        with pytest.raises(PermitDeniedError) as exc_info:
+            await session.invoke(TOOL, {"query": "x"}, idempotency_key="wallet-mismatch-1")
+        assert exc_info.value.reason == "permit_wallet_mismatch"
+        assert posts == 0
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_session_invoke_denies_nested_forbidden_field_without_a_request():
+    permit, key_document = _build_signed_permit(forbidden_fields=["password"])
+    posts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        if request.url.path == "/v1/permits/permit-local-1":
+            return httpx.Response(200, json=permit)
+        if request.url.path == "/.well-known/trust-keys.json":
+            return httpx.Response(200, json=key_document)
+        posts += 1
+        raise AssertionError(request.url.path)
+
+    client = AgentMiddlewareClient(
+        api_key="test-key",
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        session = await GovernedEdgeSession.open(
+            client, permit_id="permit-local-1", wallet_id="wallet-1"
+        )
+        with pytest.raises(PermitDeniedError) as exc_info:
+            await session.invoke(
+                TOOL,
+                {"profile": {"password": "hunter2"}},
+                idempotency_key="forbidden-1",
+            )
+        assert exc_info.value.reason == "permit_forbidden_field:password"
+        assert posts == 0
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_session_open_rejects_an_unsafe_permit_id_and_a_blank_wallet():
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(500, json={"detail": "should-not-send"})
+
+    client = AgentMiddlewareClient(
+        api_key="test-key",
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ValueError, match="permit_id"):
+            await GovernedEdgeSession.open(
+                client, permit_id="../admin", wallet_id="wallet-1"
+            )
+        with pytest.raises(ValueError, match="wallet_id"):
+            await GovernedEdgeSession.open(
+                client, permit_id="permit-local-1", wallet_id="   "
+            )
+        assert seen == []
+    finally:
+        await client.close()

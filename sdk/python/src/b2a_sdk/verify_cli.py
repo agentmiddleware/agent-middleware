@@ -31,6 +31,7 @@ import argparse
 import json
 import sys
 from typing import Any
+from urllib.parse import urlsplit
 
 from .receipt_verifier import (
     VerificationError,
@@ -52,6 +53,37 @@ def _read_json(path: str) -> Any:
         return json.load(handle)
 
 
+def _issuer_key_url(issuer: str) -> str:
+    """Build the origin trust-keys URL, or refuse a value that is not an origin.
+
+    Userinfo is refused because ``https://expected.example@evil.com`` fetches
+    the host after the ``@``. A path is not part of the origin: the fetch
+    always uses ``/.well-known/trust-keys.json`` on that origin.
+    """
+    if not isinstance(issuer, str):
+        raise VerificationError("issuer must be an http or https origin")
+    text = issuer.strip()
+    if not text or any(ord(char) < 32 or ord(char) == 127 for char in text):
+        raise VerificationError("issuer must be an http or https origin")
+    parsed = urlsplit(text)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise VerificationError(
+            "issuer must be an http or https origin with no userinfo, query, or fragment"
+        )
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+    return f"{parsed.scheme}://{netloc}{_KEYS_PATH}"
+
+
 def _fetch_key_document(issuer: str, timeout: float) -> Any:
     try:
         import httpx
@@ -59,8 +91,8 @@ def _fetch_key_document(issuer: str, timeout: float) -> Any:
         raise VerificationError(
             "Fetching a key set requires httpx; pass --keys to verify offline."
         ) from exc
-    url = issuer.rstrip("/") + _KEYS_PATH
-    response = httpx.get(url, timeout=timeout)
+    url = _issuer_key_url(issuer)
+    response = httpx.get(url, timeout=timeout, follow_redirects=False)
     response.raise_for_status()
     return response.json()
 

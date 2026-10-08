@@ -26,8 +26,9 @@ The replacement path for framework middleware lives here as well:
 
 * :class:`LocalPermitValidator` — verifies a permit's Ed25519 signature
   against the trust plane's published keys and mirrors the server's
-  per-call permit checks in-process (expiry, tool scope, budget,
-  per-tool call caps) with the server's own denial reason strings.
+  per-call permit checks in-process (expiry, wallet binding, tool scope,
+  budget, per-tool call caps, forbidden fields) with the server's own
+  denial reason strings.
 * :class:`GovernedEdgeSession` — fetches the permit and trust keys once,
   verifies the permit locally, then routes every call through the governed
   ``AgentMiddlewareClient.invoke_tool`` loop, skipping the server round
@@ -50,6 +51,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from .client import normalized_idempotency_key, require_path_segment, stripped_header_value
 from .errors import PermitDeniedError
 from .receipt_verifier import (
     VerificationError,
@@ -171,14 +173,8 @@ class B2AEdgeClient:
         the key when retrying one logical action. Raises ``ValueError``
         without sending anything when either value is unusable.
         """
-        permit = permit_id.strip() if isinstance(permit_id, str) else ""
-        if not permit:
-            raise ValueError("permit_id must not be blank")
-        key = idempotency_key.strip() if isinstance(idempotency_key, str) else ""
-        if not key:
-            raise ValueError("idempotency_key must not be blank")
-        if len(key) > 128:
-            raise ValueError("idempotency_key must be at most 128 characters")
+        permit = stripped_header_value(permit_id, "permit_id")
+        key = normalized_idempotency_key(idempotency_key)
         payload = {
             "session_id": session_id,
             "action": action,
@@ -200,8 +196,9 @@ class B2AEdgeClient:
         """Get wallet balance. Requires ``wallet_id`` set on the client."""
         if not self.wallet_id:
             raise ValueError("wallet_id required for balance check")
+        safe_wallet = require_path_segment(self.wallet_id, "wallet_id")
         response = await self._client.get(
-            f"{self.api_url}/v1/billing/wallets/{self.wallet_id}",
+            f"{self.api_url}/v1/billing/wallets/{safe_wallet}",
             headers=self._auth_headers(),
         )
         response.raise_for_status()
@@ -232,6 +229,25 @@ class LocalDecision:
     reason: str | None = None
 
 
+def _find_forbidden_field(arguments: Any, forbidden: set[str]) -> str | None:
+    """Return the first forbidden key found anywhere in the argument tree.
+
+    Walks nested dicts and lists. A forbidden name used only as a value is
+    not a match. Same walk as the server's permit check.
+    """
+    stack: list[Any] = [arguments]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if key in forbidden:
+                    return str(key)
+                stack.append(child)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+    return None
+
+
 class LocalPermitValidator:
     """Client-side mirror of the trust plane's permit checks.
 
@@ -244,14 +260,15 @@ class LocalPermitValidator:
       against the issuer's published keys? (Requires the ``cryptography``
       package: ``pip install "b2a-sdk[verify]"``.)
     * :meth:`check` — would the server's validation obviously deny this call
-      right now (expiry, status, tool scope, budget, per-tool call caps)?
+      right now (expiry, status, wallet binding, tool scope, budget,
+      per-tool call caps, forbidden fields)?
 
     Honesty about what this is: the local checks are an *optimistic mirror*
     kept for latency — they eliminate the RPC hop only for calls the cached
     permit already provably denies. The server's ``authorize_and_reserve``
     stays authoritative: it re-validates atomically under a row lock and can
     still deny a call the local mirror allowed (concurrent spend elsewhere,
-    revocation since the fetch, aggregate value caps, forbidden fields).
+    revocation since the fetch, aggregate value caps, lifetime call counters).
     ``spent_credits`` in the cached dict is a snapshot; :meth:`record_use`
     layers a local reservation counter on top of it so repeated calls in one
     session do not silently overrun the cached budget.
@@ -351,9 +368,17 @@ class LocalPermitValidator:
             payload["requires_human_approval"] = True
         max_calls = permit.get("max_calls_per_tool") or {}
         if max_calls:
-            payload["max_calls_per_tool"] = {
-                str(tool): int(limit) for tool, limit in max_calls.items()
-            }
+            if not isinstance(max_calls, dict):
+                raise ValueError("max_calls_per_tool must be an object of integers")
+            normalized_calls: dict[str, int] = {}
+            for tool, limit in max_calls.items():
+                # int() would turn "3" or True into the signed integer and a
+                # substituted cap would still verify. Only a real int matches
+                # the bytes the server signed.
+                if type(limit) is not int:
+                    raise ValueError("max_calls_per_tool values must be integers")
+                normalized_calls[str(tool)] = limit
+            payload["max_calls_per_tool"] = normalized_calls
         if permit.get("aggregate_value_cap") is not None:
             payload["aggregate_value_cap"] = cls._canonical_decimal(permit["aggregate_value_cap"])
         forbidden = permit.get("forbidden_fields") or []
@@ -364,7 +389,10 @@ class LocalPermitValidator:
         if permit.get("allow_identical_repeats"):
             payload["allow_identical_repeats"] = True
         if permit.get("repeat_window_seconds") is not None:
-            payload["repeat_window_seconds"] = int(permit["repeat_window_seconds"])
+            window = permit["repeat_window_seconds"]
+            if type(window) is not int:
+                raise ValueError("repeat_window_seconds must be an integer")
+            payload["repeat_window_seconds"] = window
         # Action bindings are additive signed fields. Match ActionPermitFields
         # without importing the server or adding an SDK runtime dependency.
         action_fields = (
@@ -434,6 +462,9 @@ class LocalPermitValidator:
         tool_name: str,
         estimated_credits: Decimal,
         now: datetime | None = None,
+        *,
+        wallet_id: str | None = None,
+        arguments: dict[str, Any] | None = None,
     ) -> LocalDecision:
         """Run the in-process permit checks for one prospective call.
 
@@ -441,10 +472,15 @@ class LocalPermitValidator:
         expiry, allowed tools, scopes (both ``tool:{name}:invoke`` and
         ``billing:charge``), remaining budget
         (``max_credits - spent_credits - locally reserved``), and
-        ``max_calls_per_tool`` against the local counter. Purely local — no
+        ``max_calls_per_tool`` against the local counter. Purely local: no
         network, no state change (use :meth:`record_use` after a completed
         call). Malformed expiry/amount fields fail closed with the matching
         denial reason. An allow here is advisory; the server still decides.
+
+        ``wallet_id``, when passed, must equal ``subject_wallet_id``. A
+        missing subject is a mismatch. ``arguments``, when non-empty, are
+        walked for ``forbidden_fields``. Both default to unset so older
+        positional callers keep their previous result.
         """
         permit = self._permit
         status = str(permit.get("status") or "active")
@@ -459,6 +495,8 @@ class LocalPermitValidator:
             return LocalDecision(False, "permit_expired")
         if expires_at <= moment:
             return LocalDecision(False, "permit_expired")
+        if wallet_id is not None and permit.get("subject_wallet_id") != wallet_id:
+            return LocalDecision(False, "permit_wallet_mismatch")
         # Mirror the server exactly (app/services/permits.py): an EMPTY
         # allowlist means unrestricted — only a non-empty list that omits the
         # tool denies. The scope check below still gates every tool.
@@ -476,15 +514,25 @@ class LocalPermitValidator:
         remaining = max_credits - spent - self._reserved
         if estimated_credits > remaining:
             return LocalDecision(False, "permit_budget_exceeded")
-        limits = permit.get("max_calls_per_tool") or {}
-        if tool_name in limits:
-            try:
-                limit = int(limits[tool_name])
-            except (TypeError, ValueError):
-                # Fail closed on a malformed limit, like the server does.
+        raw_limits = permit.get("max_calls_per_tool") or {}
+        if raw_limits:
+            # A string, bool, or float limit must not be coerced. int("3")
+            # would turn a substituted cap into a permissive integer.
+            if not isinstance(raw_limits, dict):
                 return LocalDecision(False, "permit_max_calls_exceeded")
-            if self._call_counts.get(tool_name, 0) >= limit:
-                return LocalDecision(False, "permit_max_calls_exceeded")
+            if tool_name in raw_limits:
+                limit = raw_limits[tool_name]
+                if type(limit) is not int:
+                    return LocalDecision(False, "permit_max_calls_exceeded")
+                if self._call_counts.get(tool_name, 0) >= limit:
+                    return LocalDecision(False, "permit_max_calls_exceeded")
+        forbidden = permit.get("forbidden_fields") or []
+        if forbidden and arguments:
+            if not isinstance(forbidden, list):
+                return LocalDecision(False, "permit_forbidden_field:malformed")
+            hit = _find_forbidden_field(arguments, {str(name) for name in forbidden})
+            if hit is not None:
+                return LocalDecision(False, f"permit_forbidden_field:{hit}")
         return LocalDecision(True, None)
 
     def record_use(self, tool_name: str, credits: Decimal) -> None:
@@ -494,10 +542,24 @@ class LocalPermitValidator:
         budget by :meth:`check`) and increments the tool's local call count.
         The mirror errs conservative: an idempotent replay that returns the
         same receipt still advances the local counters, under-estimating the
-        remaining budget rather than over-estimating it.
+        remaining budget rather than over-estimating it. A negative or
+        non-finite amount is not subtracted from the reservation, because
+        that would make a later local check allow more than the permit does.
+        The call count still advances.
         """
         self._call_counts[tool_name] = self._call_counts.get(tool_name, 0) + 1
-        self._reserved += credits
+        amount: Decimal | None
+        if isinstance(credits, bool) or credits is None:
+            amount = None
+        elif isinstance(credits, Decimal):
+            amount = credits
+        else:
+            try:
+                amount = Decimal(str(credits))
+            except (ArithmeticError, TypeError, ValueError):
+                amount = None
+        if amount is not None and amount.is_finite() and amount >= 0:
+            self._reserved += amount
 
 
 class GovernedEdgeSession:
@@ -559,6 +621,9 @@ class GovernedEdgeSession:
         so callers see the documented boundary error type without losing the
         diagnostic.
         """
+        require_path_segment(permit_id, "permit_id")
+        if not isinstance(wallet_id, str) or not wallet_id.strip():
+            raise ValueError("wallet_id must not be blank")
         permit = await client._request_json("GET", f"/v1/permits/{permit_id}")
         document = trust_keys_document
         if document is None:
@@ -596,6 +661,8 @@ class GovernedEdgeSession:
         decision = self.validator.check(
             name,
             estimated_credits if estimated_credits is not None else Decimal("0"),
+            wallet_id=self.wallet_id,
+            arguments=arguments,
         )
         if not decision.allowed:
             raise PermitDeniedError(decision.reason or "permit_denied")

@@ -283,6 +283,9 @@ async def test_planner_policy_rejects_actions(client, clean_database):
             "wallet_id": wallet_id,
             "name": "Only agent comms",
             "allowed_service_categories": ["agent_comms"],
+            # Tiered above the task tier below so this test keeps proving
+            # category denial, not the risk-tier ceiling (covered separately).
+            "risk_tier": "high",
         },
         headers={"X-API-Key": "test-key"},
     )
@@ -765,3 +768,233 @@ async def test_policy_fields_at_storage_limits_are_accepted(client, clean_databa
     assert patched.status_code == 200, patched.text
     assert patched.json()["risk_tier"] == "medium"
     assert patched.json()["daily_spend_limit"] == LARGEST_STORABLE_LIMIT
+
+
+# --- risk_tier ceiling -------------------------------------------------------
+#
+# The bundle's risk_tier is a ceiling over the planner's task tiers
+# (low < medium < high), enforced as a denial. Before the ceiling, a mismatch
+# only recorded requested_risk_tier and still allowed, so a buyer testing a
+# low-tier bundle against a high-tier task saw no enforcement.
+
+
+async def _ceiling_policy(client: AsyncClient, wallet_id: str, tier: str) -> dict:
+    created = await client.post(
+        "/v1/policies",
+        json={"wallet_id": wallet_id, "name": f"Ceiling {tier}", "risk_tier": tier},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+@pytest.mark.anyio
+async def test_policy_risk_tier_ceiling_denies_task_above_ceiling(
+    client, clean_database
+):
+    wallet_id = await _wallet(client, "policy-ceiling-deny")
+    policy = await _ceiling_policy(client, wallet_id, "low")
+
+    evaluation = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="policy-echo",
+        risk_tier="high",
+    )
+    assert evaluation.allowed is False
+    assert evaluation.reason == "risk_tier_not_allowed"
+    assert evaluation.policy_id == policy["policy_id"]
+    evaluated = evaluation.evaluated_constraints["evaluated"]
+    assert evaluated[0]["requested_risk_tier"] == "high"
+    assert evaluated[0]["risk_tier"] == "low"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "ceiling,task",
+    [
+        ("low", "low"),
+        ("medium", "low"),
+        ("medium", "medium"),
+        ("high", "low"),
+        ("high", "medium"),
+        ("high", "high"),
+    ],
+)
+async def test_policy_risk_tier_ceiling_allows_at_and_below_ceiling(
+    client, clean_database, ceiling, task
+):
+    wallet_id = await _wallet(client, f"policy-ceiling-{ceiling}-{task}")
+    await _ceiling_policy(client, wallet_id, ceiling)
+
+    evaluation = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="policy-echo",
+        risk_tier=task,
+    )
+    assert evaluation.allowed is True, (ceiling, task)
+    assert evaluation.reason == "allowed"
+
+
+@pytest.mark.anyio
+async def test_policy_risk_tier_missing_or_unknown_is_recorded_not_denied(
+    client, clean_database
+):
+    wallet_id = await _wallet(client, "policy-ceiling-unknown")
+    await _ceiling_policy(client, wallet_id, "low")
+
+    assert (
+        await evaluate_wallet_policy(wallet_id=wallet_id, tool_name="policy-echo")
+    ).allowed is True
+
+    evaluation = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="policy-echo",
+        risk_tier="critical",
+    )
+    assert evaluation.allowed is True
+    evaluated = evaluation.evaluated_constraints["evaluated"]
+    assert evaluated[0]["requested_risk_tier"] == "critical"
+
+    # task_context is untyped JSON, so the tier can be any value. A non-string
+    # cannot name a tier; it must be recorded, never crash the comparison.
+    non_string = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="policy-echo",
+        risk_tier=["high"],  # type: ignore[arg-type]
+    )
+    assert non_string.allowed is True
+    evaluated = non_string.evaluated_constraints["evaluated"]
+    assert evaluated[0]["requested_risk_tier"] == ["high"]
+
+
+@pytest.mark.anyio
+async def test_planner_rejects_task_above_policy_risk_ceiling(client, clean_database):
+    wallet_id = await _wallet(client, "policy-planner-ceiling")
+    policy = await client.post(
+        "/v1/policies",
+        json={
+            "wallet_id": wallet_id,
+            "name": "Low tier ceiling",
+            "risk_tier": "low",
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+    assert policy.status_code == 201
+
+    response = await client.post(
+        "/v1/planner/optimize",
+        json={
+            "state": {
+                "wallet_id": wallet_id,
+                "agent_id": "a1",
+                "task_id": "t1",
+                "request_id": "policy-ceiling-1",
+                "wallet_balance": 100,
+                "daily_spend_used": 0,
+                "daily_limit": 100,
+                "rate_limit_headroom": 1,
+                "service_health": {"agent_comms": "healthy"},
+                "simulation_flags": {"agent_comms": False},
+                "auth_scope": ["invoke"],
+                "task_context": {
+                    "tier": "high",
+                    "candidate_actions": [
+                        {
+                            "id": "comms-task",
+                            "service": "agent_comms",
+                            "credit_cost": 1,
+                            "latency_ms": 10,
+                            "risk_score": 0.01,
+                            "expected_value": 10,
+                            "reliability": 1,
+                        },
+                    ],
+                },
+                "remaining_budget": 10,
+                "slo_window_seconds": 1,
+            },
+            "max_actions": 2,
+        },
+        headers={"X-API-Key": "test-key", "X-Request-ID": "policy-ceiling-1"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["policy_reasons"]["comms-task"] == "risk_tier_not_allowed"
+    assert body["rejected_actions"][0]["policy_id"] == policy.json()["policy_id"]
+
+
+# --- daily_spend_unevaluated ---------------------------------------------------
+#
+# A daily spend cap only constrains calls whose cost figures are both known.
+# Money-moving paths always supply both; planning and pre-cost checks may not.
+# The skip used to be silent; it is now named in the evaluated constraints so
+# it shows up in audit metadata.
+
+
+async def _daily_policy(client: AsyncClient, wallet_id: str) -> dict:
+    created = await client.post(
+        "/v1/policies",
+        json={
+            "wallet_id": wallet_id,
+            "name": "Daily capped",
+            "daily_spend_limit": 10,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+@pytest.mark.anyio
+async def test_policy_daily_limit_names_missing_inputs_when_unevaluated(
+    client, clean_database
+):
+    wallet_id = await _wallet(client, "policy-daily-unknown")
+    await _daily_policy(client, wallet_id)
+
+    no_estimate = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="policy-echo",
+        daily_spend_used=1,
+    )
+    assert no_estimate.allowed is True
+    evaluated = no_estimate.evaluated_constraints["evaluated"]
+    assert evaluated[0]["daily_spend_unevaluated"] == ["estimated_cost"]
+
+    neither = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="policy-echo",
+    )
+    assert neither.allowed is True
+    evaluated = neither.evaluated_constraints["evaluated"]
+    assert evaluated[0]["daily_spend_unevaluated"] == [
+        "daily_spend_used",
+        "estimated_cost",
+    ]
+
+
+@pytest.mark.anyio
+async def test_policy_daily_limit_still_enforced_when_both_known(
+    client, clean_database
+):
+    wallet_id = await _wallet(client, "policy-daily-known")
+    await _daily_policy(client, wallet_id)
+
+    over = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="policy-echo",
+        estimated_cost=9,
+        daily_spend_used=2,
+    )
+    assert over.allowed is False
+    assert over.reason == "daily_spend_limit_exceeded"
+
+    within = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="policy-echo",
+        estimated_cost=9,
+        daily_spend_used=1,
+    )
+    assert within.allowed is True
+    evaluated = within.evaluated_constraints["evaluated"]
+    assert "daily_spend_unevaluated" not in evaluated[0]

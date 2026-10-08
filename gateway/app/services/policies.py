@@ -20,6 +20,12 @@ from app.schemas.policies import (
 
 logger = logging.getLogger(__name__)
 
+# Policy ``risk_tier`` is a ceiling over the planner's task tiers: a bundle
+# rated "low" admits only low-tier tasks, "medium" admits low and medium, and
+# "high" admits all three. Ordered comparison, not exact match, so raising a
+# wallet's ceiling never newly denies a task the wallet already allowed.
+_RISK_TIER_ORDER = {"low": 0, "medium": 1, "high": 2}
+
 
 @dataclass(frozen=True)
 class PolicyEvaluation:
@@ -241,6 +247,13 @@ async def evaluate_wallet_policy(
     (recorded in ``evaluated_constraints``) instead of denying — every OTHER
     constraint in the bundle is still enforced. Callers with no approval gate
     keep the fail-closed denial.
+
+    ``risk_tier`` is the caller's task tier (the planner supplies it; the
+    invoke path currently carries no tier signal and passes None). The
+    bundle's own ``risk_tier`` is enforced as a ceiling: a task tier above
+    the bundle's tier denies with ``risk_tier_not_allowed``. A missing tier,
+    or a tier outside low/medium/high on either side, cannot be compared,
+    so it is recorded in ``evaluated_constraints`` without denying.
     """
     stmt = (
         select(PolicyBundleModel)
@@ -342,6 +355,20 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
+        if policy.daily_spend_limit is not None and (daily is None or est is None):
+            # The daily cap cannot be checked without both figures, so this
+            # bundle does not constrain the call on spend. Record which input
+            # was missing so the skip is visible in audit metadata instead of
+            # silent. Money-moving paths always supply both; planning and
+            # pre-cost checks may not.
+            constraints["daily_spend_unevaluated"] = sorted(
+                name
+                for name, value in (
+                    ("daily_spend_used", daily),
+                    ("estimated_cost", est),
+                )
+                if value is None
+            )
         if (
             policy.daily_spend_limit is not None
             and daily is not None
@@ -361,8 +388,22 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
-        if risk_tier is not None and policy.risk_tier != risk_tier:
+        if risk_tier is not None:
             constraints["requested_risk_tier"] = risk_tier
+            # The tier arrives inside the planner's untyped task_context, so a
+            # caller can send any JSON value. Only strings can name a tier;
+            # anything else is recorded above and cannot be compared.
+            requested = (
+                _RISK_TIER_ORDER.get(risk_tier) if isinstance(risk_tier, str) else None
+            )
+            ceiling = _RISK_TIER_ORDER.get(policy.risk_tier)
+            if requested is not None and ceiling is not None and requested > ceiling:
+                return PolicyEvaluation(
+                    False,
+                    "risk_tier_not_allowed",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
 
     return PolicyEvaluation(
         True, "allowed", models[0].policy_id, {"evaluated": evaluated}

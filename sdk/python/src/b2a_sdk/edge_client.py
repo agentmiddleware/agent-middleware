@@ -402,6 +402,11 @@ class LocalPermitValidator:
         a malformed permit dict, an unknown/absent signing key, undecodable
         material, or a bad signature all return ``False``.
 
+        A ``True`` here says the signature is genuine, not that the permit is
+        still live: revocation is enforced by gateway validation, so a revoked
+        permit still verifies. Recheck live status (``POST /v1/permits/verify``)
+        before treating an exported permit as authority to act.
+
         Verifier failures are different:
         :class:`~b2a_sdk.receipt_verifier.VerificationError` propagates when
         the Ed25519 verifier itself is unavailable (``cryptography`` not

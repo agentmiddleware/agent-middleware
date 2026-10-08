@@ -51,7 +51,7 @@ gate is entirely ours:
 Adopting a second rail does not outsource any of that. It means re-implementing
 and re-testing all of it against a different rail's semantics. For scale: the
 existing single rail carries roughly 900 lines of dedicated negative-path
-tests, and `AGENTS.md` designates billing as security-critical, requiring
+tests, and `app/services/AGENTS.md` designates billing as security-critical, requiring
 invalid-input, unauthorized-access, and negative-path coverage.
 
 So the accurate framing is: **partner for the rail, build the verification.**
@@ -246,8 +246,8 @@ Against the checklist above, read the two surfaces this way:
 
 **This repository contains no settlement basis for either.** When this note
 was first written, the strings `x402`, `USDC`, `Payman`, and `stablecoin`
-appeared zero times outside it and its companion
-`PRODUCT_STRATEGY.md`. That has since changed for
+appeared zero times outside it and a companion strategy note that is not
+in this repository. That has since changed for
 `x402` and `USDC` — but only in the facilitation sense documented in the
 section above, where the trust plane authorizes and evidences a payment
 demand without executing it. There is still no rail dependency, no custody,

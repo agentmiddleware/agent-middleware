@@ -170,9 +170,15 @@ paused on an explicit human decision ([human-approval-gate.md](human-approval-ga
 
 **Posture: contained.** A rogue or runaway agent exhausts its permit and
 stops: spend caps and use counts bound total damage, expiry bounds duration,
-and every action — allowed or refused — is metered and receipted. Revocation
-is operational today via key retirement and rotation
-(`scripts/retire_owner_keys.py`, `scripts/rotate_api_keys.py`).
+and every action, allowed or refused, is metered and receipted. API-key
+revocation and rotation are operational today. Env bootstrap keys use
+`scripts/rotate_api_keys.py` plus a worker restart
+([api-key-rotation.md](api-key-rotation.md)). Wallet keys use
+`DELETE /v1/api-keys/{wallet_id}/{key_id}`,
+`POST /v1/api-keys/rotate` with `revoke_old` true, and
+`POST /v1/api-keys/emergency-revoke`. There is no separate retirement
+script in `scripts/`. Signing-key retirement is not operational: see
+[key-management.md](key-management.md).
 
 - Proof: the ASI02 budget-race fix (HELD on both engines);
   `tests/test_constant_loop_permit_budget.py`.

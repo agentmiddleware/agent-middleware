@@ -196,9 +196,8 @@ rate limiting.
 | `make trust-release-gate` | The offline Railway IaC contract first (lock-pinned package install with lifecycle scripts disabled, then fail-closed API-only graph validation), followed by the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates |
 
 CI runs `scripts/trust_release_gate.sh` as a dedicated required check
-(`trust_release_gate`) so `main` cannot advance past an unproven claim; the
-exact branch-protection settings are in
-`trust-release-gate-branch-protection.md`.
+(`trust_release_gate`) so `main` cannot advance past an unproven claim.
+Exact GitHub branch-protection settings are not stored in this repository.
 The [stranger test](stranger-test.md) is the human milestone that checks the
 same five claims are reachable and checkable from the published docs alone.
 

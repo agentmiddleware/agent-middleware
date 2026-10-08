@@ -116,6 +116,24 @@ def test_downstream_execution_needs_an_independent_observation(signed_bundle):
     assert "effect ledger" in observed.downstream_execution.reason
 
 
+@pytest.mark.parametrize("executions", [True, False, -1])
+def test_only_a_non_negative_integer_counts_as_executions(signed_bundle, executions):
+    """A JSON boolean is a Python bool, and bool is a subclass of int.
+
+    Treating true as one execution would establish downstream execution from
+    a flag, not from a count. A negative number is not a count either.
+    """
+    bundle, keys = signed_bundle
+    report = verify(
+        bundle,
+        keys,
+        downstream_observation={"executions": executions, "source": "effect ledger"},
+    )
+    assert report.signature.status is ClaimStatus.ESTABLISHED
+    assert report.downstream_execution.status is ClaimStatus.NOT_ESTABLISHED
+    assert "did not report an execution count" in report.downstream_execution.reason
+
+
 def test_a_success_receipt_contradicted_by_the_world_fails_that_claim(signed_bundle):
     bundle, keys = signed_bundle
     private = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))

@@ -8,6 +8,7 @@ traceability exercise worthless.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -20,6 +21,7 @@ from failure_lab.evidence import (
     assert_no_secret_leak,
     find_leaked_secrets,
     redact,
+    verify_bundle_integrity,
 )
 from failure_lab.telemetry import (
     CONVERSION_SOURCES,
@@ -238,3 +240,65 @@ class TestTheBundleRefusesToLeak:
             if path.is_file() and secret in path.read_text(errors="ignore")
         ]
         assert not survivors, survivors
+
+
+def _manifest(bundle, files):
+    (bundle / "manifest.json").write_text(json.dumps({"files": files}))
+
+
+def test_integrity_check_accepts_a_regular_file_inside_the_bundle(tmp_path):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    body = b"inside"
+    (bundle / "report.txt").write_bytes(body)
+    _manifest(
+        bundle,
+        [
+            {
+                "path": "report.txt",
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "bytes": len(body),
+            }
+        ],
+    )
+    report = verify_bundle_integrity(bundle)
+    assert report.ok, report.problems
+    assert report.checked == 1
+
+
+def test_integrity_check_does_not_hash_a_path_that_leaves_the_bundle(tmp_path):
+    """A manifest path of ../ or an absolute path is not a bundle file.
+
+    pathlib joins an absolute path by discarding the bundle directory, and
+    a matching hash would then make the check pass for bytes that are not
+    in the bundle.
+    """
+    outside = tmp_path / "outside.txt"
+    payload = b"not-in-the-bundle"
+    outside.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    entry = {"sha256": digest, "bytes": len(payload)}
+
+    parent_ref = tmp_path / "parent-ref"
+    parent_ref.mkdir()
+    _manifest(parent_ref, [{**entry, "path": "../outside.txt"}])
+    parent_report = verify_bundle_integrity(parent_ref)
+    assert not parent_report.ok
+    assert parent_report.checked == 0
+    assert any("not read" in problem for problem in parent_report.problems)
+
+    absolute = tmp_path / "absolute"
+    absolute.mkdir()
+    _manifest(absolute, [{**entry, "path": str(outside)}])
+    absolute_report = verify_bundle_integrity(absolute)
+    assert not absolute_report.ok
+    assert absolute_report.checked == 0
+
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "report.txt").symlink_to(outside)
+    _manifest(linked, [{**entry, "path": "report.txt"}])
+    linked_report = verify_bundle_integrity(linked)
+    assert not linked_report.ok
+    assert linked_report.checked == 0
+    assert outside.read_bytes() == payload

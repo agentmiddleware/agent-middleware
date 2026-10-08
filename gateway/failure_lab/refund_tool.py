@@ -306,7 +306,16 @@ def build_downstream_app(
 
     def _control_ok(request: Request) -> bool:
         provided = request.headers.get(CONTROL_HEADER)
-        return provided is not None and hmac.compare_digest(provided, control_token)
+        if not provided:
+            return False
+        try:
+            # compare_digest on str raises TypeError for non-ASCII. Compare
+            # UTF-8 bytes so a latin-1 header is a denial, not a 500.
+            return hmac.compare_digest(
+                provided.encode("utf-8"), control_token.encode("utf-8")
+            )
+        except (TypeError, ValueError, UnicodeError):
+            return False
 
     def _denied() -> JSONResponse:
         return JSONResponse({"detail": "failure_lab_control_denied"}, status_code=403)

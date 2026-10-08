@@ -163,7 +163,8 @@ class ClaimRecord:
         if reported is None:
             matches = bool(expected) and not rows_diverge
         else:
-            matches = bool(reported) and not rows_diverge
+            # Only a real boolean true counts. The string "false" is truthy.
+            matches = reported is True and not rows_diverge
         status, status_lines = _observed_status(
             str(document.get("status", "")), observed
         )

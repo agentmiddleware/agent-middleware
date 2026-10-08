@@ -377,7 +377,12 @@ def _downstream_claim(
         )
     executions = observation.get("executions")
     source = observation.get("source", "unspecified independent observer")
-    if not isinstance(executions, int):
+    # bool is a subclass of int. True would otherwise count as one execution.
+    if (
+        isinstance(executions, bool)
+        or not isinstance(executions, int)
+        or executions < 0
+    ):
         return Claim(
             "DOWNSTREAM_EXECUTION_ESTABLISHED",
             ClaimStatus.NOT_ESTABLISHED,

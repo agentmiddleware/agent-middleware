@@ -22,6 +22,57 @@ from failure_lab.identity import KeyPolicy, OperationIdentity, new_business_oper
 from failure_lab.refund_tool import RefundRequest
 
 
+def test_snapshot_does_not_mix_two_reads(tmp_path, monkeypatch):
+    """snapshot() must describe one read of the ledger.
+
+    A second read can include an operation the first read never counted.
+    Indexing the second read with the first read's counts raises KeyError
+    and, short of that, reports two different moments as one snapshot.
+    """
+    from failure_lab.effect_ledger import EffectRecord
+
+    ledger = EffectLedger(tmp_path / "effects.db")
+    common = dict(
+        request_id="req_1",
+        idempotency_key="k",
+        amount=5000,
+        currency="USD",
+        customer_id="cus",
+        payment_id="pay",
+        configuration="test",
+    )
+    ledger.execute(operation_id="refund:pay", **common)
+    original = ledger.effects
+    calls = {"n": 0}
+
+    def two_moments(operation_id=None):
+        calls["n"] += 1
+        rows = original(operation_id)
+        if calls["n"] == 1 or operation_id is not None:
+            return rows
+        late = EffectRecord(
+            effect_id="effect_late",
+            operation_id="refund:other",
+            request_id="req_2",
+            idempotency_key="k2",
+            amount=100,
+            currency="USD",
+            customer_id="cus",
+            payment_id="other",
+            executed_at=rows[0].executed_at,
+            worker_pid=rows[0].worker_pid,
+            configuration="test",
+            execution_ordinal=1,
+        )
+        return [*rows, late]
+
+    monkeypatch.setattr(ledger, "effects", two_moments)
+    rows = ledger.snapshot()
+    assert calls["n"] == 1
+    assert [row["operation_id"] for row in rows] == ["refund:pay"]
+    assert rows[0]["execution_count"] == 1
+
+
 def test_effect_ledger_is_duplicate_visible(tmp_path):
     ledger = EffectLedger(tmp_path / "effects.db")
     common = dict(
@@ -82,6 +133,77 @@ def test_identity_distinguishes_restart_policies():
     assert restarted.business_operation_id == attempt.business_operation_id
     assert restarted.agent_generation == 2
     assert restarted.request_id != attempt.request_id
+
+
+@pytest.mark.anyio
+async def test_non_ascii_control_header_is_denied(tmp_path):
+    """A control header compare must deny, not raise.
+
+    hmac.compare_digest rejects non-ASCII strings with TypeError. HTTP header
+    values are latin-1, so a client can send that byte. httpx refuses it
+    before the app runs. This calls the ASGI app with the raw header bytes.
+    """
+    import json
+
+    from failure_lab.faults import FaultInjector
+    from failure_lab.refund_tool import SimulatedRefundService, build_downstream_app
+
+    service = SimulatedRefundService(
+        EffectLedger(tmp_path / "effects.db"),
+        native_idempotency=False,
+        configuration="test",
+    )
+    downstream = build_downstream_app(
+        service,
+        FaultInjector(),
+        bearer_token="bearer-token-value",
+        control_token="control-token-value",
+    )
+
+    async def call(header: bytes) -> tuple[int, bytes]:
+        messages: list[dict] = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/__lab/health",
+            "raw_path": b"/__lab/health",
+            "query_string": b"",
+            "headers": [(b"x-failure-lab-control", header)],
+            "client": ("127.0.0.1", 1234),
+            "server": ("127.0.0.1", 80),
+        }
+        await downstream.asgi(scope, receive, send)
+        status = next(
+            message["status"]
+            for message in messages
+            if message["type"] == "http.response.start"
+        )
+        body = b"".join(
+            message.get("body", b"")
+            for message in messages
+            if message["type"] == "http.response.body"
+        )
+        return status, body
+
+    non_ascii = "caf\u00e9-not-the-token".encode("latin-1")
+    refused_status, refused_body = await call(non_ascii)
+    wrong_status, wrong_body = await call(b"nope")
+    ok_status, _ok_body = await call(b"control-token-value")
+    assert refused_status == 403
+    assert wrong_status == 403
+    assert json.loads(refused_body)["detail"] == "failure_lab_control_denied"
+    assert json.loads(wrong_body)["detail"] == "failure_lab_control_denied"
+    assert ok_status == 200
 
 
 def test_refund_request_is_strict_about_representation():

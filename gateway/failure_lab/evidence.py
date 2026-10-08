@@ -62,7 +62,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from failure_lab import TEST_DEFINITION_VERSION
@@ -1264,6 +1264,35 @@ class IntegrityReport:
         }
 
 
+def _unsafe_bundle_path(root: Path, relative: str) -> str | None:
+    """Reject a manifest path that is not a regular file inside the bundle.
+
+    Joining an absolute path, or a path with ``..``, drops the bundle
+    directory. A symlink can point at the same outside file. Either one
+    would let a matching hash pass for bytes that are not in the bundle.
+    """
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or relative.startswith(("/", "\\"))
+        or "\\" in relative
+        or "\x00" in relative
+    ):
+        return "path escapes the bundle and was not read"
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or ".." in pure.parts:
+        return "path escapes the bundle and was not read"
+    root_real = root.resolve()
+    candidate = root_real.joinpath(*pure.parts)
+    if candidate.is_symlink():
+        return "path is a symlink and was not read"
+    try:
+        candidate.resolve().relative_to(root_real)
+    except ValueError:
+        return "path escapes the bundle and was not read"
+    return None
+
+
 def verify_bundle_integrity(directory: Path | str) -> IntegrityReport:
     """Re-hash every file in a bundle against its manifest.
 
@@ -1308,10 +1337,17 @@ def verify_bundle_integrity(directory: Path | str) -> IntegrityReport:
     listed: set[str] = set()
 
     for entry in entries:
-        relative = str(entry.get("path", ""))
+        relative = entry.get("path", "")
+        if not isinstance(relative, str):
+            problems.append("path escapes the bundle and was not read")
+            continue
         listed.add(relative)
+        unsafe = _unsafe_bundle_path(root, relative)
+        if unsafe is not None:
+            problems.append(f"{relative}: {unsafe}")
+            continue
         path = root / relative
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             missing.append(relative)
             continue
         checked += 1

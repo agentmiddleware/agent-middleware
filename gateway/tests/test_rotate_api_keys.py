@@ -131,10 +131,11 @@ def test_verify_allows_safe_origins_and_disables_redirects(
     requests = []
 
     class Client:
-        def __init__(self, *, base_url, timeout, follow_redirects):
+        def __init__(self, *, base_url, timeout, follow_redirects, trust_env):
             assert base_url == normalized
             assert timeout == 30
             assert follow_redirects is False
+            assert trust_env is False
 
         def __enter__(self):
             return self

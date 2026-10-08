@@ -63,6 +63,24 @@ is receipted `delivery_uncertain` and never silently re-sent. See
 - Internal credit ledger only: not settlement, not a compliance record, not IAM.
 - MCP is the only governed adapter; one operator-configured upstream tool.
 
+## Money, pricing, and top-up
+
+- Credits are internal metering units, not money. The default rate is 1000
+  credits per 1.00 USD, and it is operator-configurable (`EXCHANGE_RATE`).
+  Each tool costs a fixed number of credits per call from one pricing table
+  (for example 2 credits per metered call on the demo tool, 0.1 credits base
+  platform fee); `GET /v1/billing/pricing` returns the table in effect.
+- The only fiat path is Stripe top-up, USD only, and only where the operator
+  configured Stripe keys. Sponsor wallets may require KYC before a top-up is
+  prepared. There is no second rail, no subscription or invoice flow, and no
+  settlement or payouts: x402 and ACP surfaces only prepare and receipt an
+  authorization against a permit budget, and the payer wallet still signs and
+  submits anything on chain.
+- Always send `Idempotency-Key` on money calls (wallet creation, charges,
+  transfers). A retry with the same key and the same payload returns the
+  original result; the same key with different arguments is refused with 409.
+  A retry without the header is a new operation and can charge twice.
+
 Read [`SECURITY_LIMITATIONS.md`](SECURITY_LIMITATIONS.md),
 [`TRUST_MODEL.md`](TRUST_MODEL.md), and [`docs/threat-model.md`](docs/threat-model.md)
 before evaluating it for real use. Reviewers: [`docs/security-review-kit.md`](docs/security-review-kit.md).

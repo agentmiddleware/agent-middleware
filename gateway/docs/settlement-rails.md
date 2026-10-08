@@ -312,6 +312,8 @@ ever appears:
 
 - Share one webhook signature-verification helper between the settlement and
   KYC handlers so both catch signature-verification failures identically.
+  (Done: `app/services/stripe_webhook_auth.py`, used by both handlers and
+  covered by `tests/test_stripe_webhook_auth.py`.)
 - Make `_handle_payment_failed` use the safe field accessor the other handlers
   use, rather than raw dictionary access.
 - Replace string-matched prior-refund detection with a structured reference.

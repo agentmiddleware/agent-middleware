@@ -75,6 +75,10 @@ SPONSOR_JSON=$(
     }'
 )
 
+Sponsor creation is a bootstrap operator step with no replay protection: if
+it times out, list wallets before retrying rather than re-posting blindly.
+The agent-wallet, charge, and transfer calls below honor `Idempotency-Key`.
+
 export SPONSOR_WALLET_ID=$(echo "$SPONSOR_JSON" | jq -r '.wallet_id')
 echo "$SPONSOR_WALLET_ID"
 ```
@@ -86,6 +90,7 @@ AGENT_JSON=$(
   curl -s -X POST "$API_URL/v1/billing/wallets/agent" \
     -H "X-API-Key: $BOOTSTRAP_KEY" \
     -H "Content-Type: application/json" \
+    -H "Idempotency-Key: golden-path-agent-001" \
     -d "{
       \"sponsor_wallet_id\": \"$SPONSOR_WALLET_ID\",
       \"agent_id\": \"research-agent-001\",
@@ -93,6 +98,12 @@ AGENT_JSON=$(
       \"daily_limit\": 250
     }"
 )
+
+Send an `Idempotency-Key` on every money call: a retry with the same key
+and the same payload returns the original wallet instead of provisioning
+and funding a second one, while the same key with different arguments is
+refused with 409. A retry with no header is a new operation and can move
+money twice.
 
 export AGENT_WALLET_ID=$(echo "$AGENT_JSON" | jq -r '.wallet_id')
 echo "$AGENT_WALLET_ID"

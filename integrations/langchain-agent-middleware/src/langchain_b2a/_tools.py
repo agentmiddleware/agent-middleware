@@ -53,12 +53,16 @@ def create_mcp_tool(
             On replay with same permit_idempotency_key, reuses the cached permit_id.
             This avoids 409 IdempotencyConflictError from different expires_at timestamps.
         """
-        if arguments is None:
-            arguments = {}
         if not idempotency_key or not idempotency_key.strip():
             raise ValueError("idempotency_key is required and must not be blank")
         if not permit_idempotency_key or not permit_idempotency_key.strip():
             raise ValueError("permit_idempotency_key is required and must not be blank")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            raise ValueError("tool_name is required and must not be blank")
+        if arguments is None:
+            arguments = {}
+        elif not isinstance(arguments, dict):
+            raise ValueError("arguments must be an object")
 
         # Snapshot before awaiting creation, including a response lost after
         # acceptance. Concurrent coroutines also see this same request body.

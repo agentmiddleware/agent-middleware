@@ -461,9 +461,12 @@ async def get_tools_json(
     Return the MCP tools.json manifest.
 
     This is an HTTP mirror of tool metadata exposed by this project's
-    governed JSON-RPC subset. Clients can obtain the same list by
-    sending ``tools/list`` to ``/mcp/messages``; that endpoint does not
-    implement the complete MCP initialization lifecycle.
+    governed tool surfaces. New integrations should invoke tools through
+    the standard Streamable HTTP endpoint at POST /mcp and can obtain the
+    same list via its ``tools/list`` method. Clients can also obtain the
+    list by sending ``tools/list`` to the legacy ``/mcp/messages``
+    endpoint; that endpoint does not implement the complete MCP
+    initialization lifecycle.
 
     On production-like boots the catalog requires the same credentials as
     invoke. Local-compatible environments keep it anonymous for quickstart.

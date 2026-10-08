@@ -130,6 +130,13 @@ class LLMService:
             }
 
         if provider == "anthropic":
+            # Anthropic uses a different tool format, so OpenAI-style tools
+            # cannot be forwarded. Fail closed instead of silently dropping
+            # them and returning plain chat the caller did not ask for.
+            if tools:
+                raise ValueError(
+                    "tools are not supported for the anthropic provider"
+                )
             # Anthropic format
             anthropic_messages = []
             for m in messages:

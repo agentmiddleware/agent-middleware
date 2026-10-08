@@ -422,6 +422,8 @@ class SandboxEngine:
                             "increment",
                             "invert",
                             "shift",
+                            "color",
+                            "swap",
                         ]
                     ):
                         return 10.0, "Correct transformation detected!", True

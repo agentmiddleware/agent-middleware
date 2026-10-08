@@ -549,7 +549,20 @@ class WebAuthnProvider:
 
         Returns:
             True if registered successfully.
+
+        Raises:
+            ValueError: If the credential ID is already registered to a
+                different user. Re-registering under another user would
+                silently steal the credential, so it is refused.
         """
+        existing = self._credentials.get(credential_id)
+        if existing is not None and existing.user_id != user_id:
+            logger.warning(
+                "refusing credential re-registration for a different user"
+            )
+            raise ValueError(
+                "credential ID is already registered to another user"
+            )
         self._credentials[credential_id] = CredentialRecord(
             credential_id=credential_id,
             user_id=user_id,
@@ -612,8 +625,13 @@ class WebAuthnProvider:
         }
 
     def _make_verification_key(self, session_id: str, action: str) -> str:
-        """Generate a unique key for storing verifications."""
-        return f"{session_id}:{action}"
+        """Generate a unique key for storing verifications.
+
+        The action is lowercased to match requires_passkey, which gates
+        case-insensitively: without this, verifying "Checkout" stores a key
+        that a later "checkout" status check never finds.
+        """
+        return f"{session_id}:{action.lower()}"
 
     async def _verify_authenticator_assertion(
         self,

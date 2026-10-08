@@ -1895,6 +1895,14 @@ class AWIPlaywrightBridge:
                 await asyncio.sleep(0.3)  # Allow render
 
             elif cmd_type == CommandType.GOTO:
+                # Revalidate at execution time: GOTO commands are built (and
+                # checked) in _handle_navigate_to but run later, so DNS may
+                # have rebound in between. Refuse rather than navigate.
+                goto_block_reason = await check_outbound_url(command.target)
+                if goto_block_reason:
+                    raise ValueError(
+                        f"navigation blocked ({goto_block_reason}): {command.target}"
+                    )
                 await page.goto(
                     command.target,
                     wait_until="networkidle",
@@ -2022,6 +2030,14 @@ class AWIPlaywrightBridge:
             logger.warning(f"No page available for session {session.session_id}")
             session.current_url = url
             return
+
+        # Revalidate immediately before navigation: the pre-flight check in
+        # create_session may have run long enough ago for DNS to rebind to
+        # an intranet address. The browser does its own resolution, so this
+        # last-moment check is the closest pinning available on this path.
+        block_reason = await check_outbound_url(url)
+        if block_reason:
+            raise ValueError(f"navigation blocked ({block_reason}): {url}")
 
         try:
             await session._page.goto(

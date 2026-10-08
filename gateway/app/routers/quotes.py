@@ -42,14 +42,16 @@ async def create_quote(
     if not service:
         raise HTTPException(status_code=404, detail="tool_not_found")
 
-    category = ServiceCategory(
-        service.get("category", ServiceCategory.PLATFORM_FEE.value)
-    )
     try:
+        category = ServiceCategory(
+            service.get("category", ServiceCategory.PLATFORM_FEE.value)
+        )
         quoted_credits = tool_price(service, category)
     except ValueError:
         # A price that is not a finite, non-negative number is never signed:
-        # the quote would be a durable promise no charge could honor.
+        # the quote would be a durable promise no charge could honor. An
+        # unknown stored category answers the same way: the registration row
+        # is corrupt, and that is a 400, never a 500.
         raise HTTPException(status_code=400, detail="tool_price_invalid")
     try:
         return await get_quote_service().create_quote(

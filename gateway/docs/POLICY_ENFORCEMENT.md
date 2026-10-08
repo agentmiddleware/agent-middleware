@@ -129,6 +129,7 @@ All monetary comparisons are done in `Decimal` end-to-end (thresholds stored as
 | `daily_spend_used + estimated > daily_spend_limit` | `daily_spend_limit_exceeded` |
 | Bundle requires real effects but the call is in simulation mode | `real_effects_required` |
 | `risk_tier` mismatch | *recorded on the decision, does not deny* |
+| Non-finite cost input (`NaN`, `Infinity`) for estimated cost or daily spend | `policy_cost_invalid` (denied; a cap that cannot be evaluated must not pass or crash) |
 
 Layer B (permit) and Layer C (wallet policy) are complementary: the permit is a
 per-delegation capability issued to one agent for one job; policy bundles are
@@ -282,6 +283,7 @@ authorization guarantee.
 | `max_cost_per_action_exceeded` | C | Per-action cost cap hit |
 | `daily_spend_limit_exceeded` | C | Daily spend cap hit |
 | `real_effects_required` | C | Real-effects policy vs simulation mode |
+| `policy_cost_invalid` | C | Non-finite estimated cost or daily spend cannot be compared against caps |
 | `human_approval_unavailable` | D | Approval service unreachable (**retryable**) |
 | `permit_recipient_domain_mismatch` | E | Upstream origin ≠ permit's bound domain |
 

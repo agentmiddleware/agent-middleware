@@ -111,6 +111,45 @@ class TestOutboundUrlGuard:
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
+        "url",
+        [
+            "http://2130706433/",  # decimal 127.0.0.1
+            "http://0x7f000001/",  # hex 127.0.0.1
+            "http://0x7f.0.0.1/",  # dotted hex 127.0.0.1
+            "http://0177.0.0.1/",  # octal 127.0.0.1
+            "http://017700000001/",  # single octal word 127.0.0.1
+            "http://127.1/",  # short form 127.0.0.1
+            "http://0/",  # 0.0.0.0
+        ],
+    )
+    async def test_legacy_ipv4_stays_blocked_when_dns_says_public(
+        self, monkeypatch, url
+    ):
+        """Browsers parse these as addresses and never ask DNS.
+
+        A resolver that answers every unknown name with a public address
+        (common captive-portal and filter DNS) must not make the guard allow
+        a host the browser will open as loopback or metadata.
+        """
+
+        async def resolve(_host):
+            return [(None, None, None, None, ("8.8.8.8", 0))]
+
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        assert await check_outbound_url(url) == "private_address_blocked"
+
+    @pytest.mark.anyio
+    async def test_public_legacy_ipv4_ignores_hostile_dns(self, monkeypatch):
+        """134744072 is 8.8.8.8. The browser connects there without DNS."""
+
+        async def resolve(_host):
+            return [(None, None, None, None, ("127.0.0.1", 0))]
+
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        assert await check_outbound_url("http://134744072/") is None
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
         "error",
         [
             socket.gaierror(socket.EAI_NONAME, "Name or service not known"),
@@ -150,6 +189,122 @@ class TestOutboundUrlGuard:
         monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", True)
         assert await check_outbound_url("http://127.0.0.1:8000/") is None
         assert await check_outbound_url("file:///etc/passwd") == "scheme_not_allowed"
+
+
+class TestBrowserNavigationGuard:
+    """The real browser must not fetch a target the URL guard rejected."""
+
+    @pytest.mark.anyio
+    async def test_goto_reports_the_url_the_page_landed_on(self, bridge):
+        class Page:
+            url = "https://93.184.216.34/landed"
+
+            async def goto(self, url, **kwargs):
+                self.url = "https://93.184.216.34/landed"
+
+            async def title(self):
+                return "Landed"
+
+        session = BridgeSession(
+            session_id="goto-url", current_url="https://93.184.216.34/start"
+        )
+        session._page = Page()
+        bridge._sessions[session.session_id] = session
+
+        result = await bridge.execute_commands(
+            session.session_id,
+            [
+                PlaywrightCommand(
+                    command_type=CommandType.GOTO,
+                    target="https://93.184.216.34/start",
+                )
+            ],
+        )
+
+        assert result.success is True
+        assert result.new_url == "https://93.184.216.34/landed"
+        assert session.current_url == "https://93.184.216.34/landed"
+
+    @pytest.mark.anyio
+    async def test_goto_command_refuses_a_private_target(self, bridge):
+        class Page:
+            def __init__(self):
+                self.urls = []
+                self.url = "https://example.com/"
+
+            async def goto(self, url, **kwargs):
+                self.urls.append(url)
+                self.url = url
+
+            async def title(self):
+                return "x"
+
+        session = BridgeSession(session_id="goto-block", current_url="https://example.com/")
+        page = Page()
+        session._page = page
+        bridge._sessions[session.session_id] = session
+
+        result = await bridge.execute_commands(
+            session.session_id,
+            [
+                PlaywrightCommand(
+                    command_type=CommandType.GOTO,
+                    target="http://169.254.169.254/latest/meta-data/",
+                )
+            ],
+        )
+
+        assert result.success is False
+        assert page.urls == []
+        assert "private_address_blocked" in (result.error or "")
+
+    @pytest.mark.anyio
+    async def test_browser_context_blocks_a_private_redirect(self, bridge):
+        class Context:
+            def __init__(self):
+                self.routes = []
+
+            async def route(self, pattern, handler):
+                self.routes.append((pattern, handler))
+
+            async def new_page(self):
+                return object()
+
+        class Browser:
+            def __init__(self):
+                self.context = Context()
+
+            async def new_context(self, **kwargs):
+                return self.context
+
+        class Route:
+            def __init__(self, url):
+                self.request = type("Req", (), {"url": url})()
+                self.aborted = False
+                self.continued = False
+
+            async def abort(self, error_code="failed"):
+                self.aborted = True
+
+            async def continue_(self):
+                self.continued = True
+
+        browser = Browser()
+        bridge._browser = browser
+        session = BridgeSession(session_id="redir")
+        await bridge._create_browser_context(session, None, None)
+
+        assert browser.context.routes, "every browser request must be screened"
+        _pattern, handler = browser.context.routes[0]
+        blocked = Route("http://169.254.169.254/latest/meta-data/")
+        await handler(blocked)
+        assert blocked.aborted is True
+        assert blocked.continued is False
+
+        local = Route("about:blank")
+        await handler(local)
+        assert local.aborted is False
+        assert local.continued is True
 
 
 class TestAWIScrollInjection:

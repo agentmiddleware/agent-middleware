@@ -34,7 +34,7 @@ from typing import Any, Optional, TYPE_CHECKING
 from uuid import uuid4
 
 from app.core.time import utc_now
-from app.core.url_guard import check_outbound_url
+from app.core.url_guard import browser_request_block_reason, check_outbound_url
 
 if TYPE_CHECKING:
     from playwright.async_api import Page, BrowserContext
@@ -712,9 +712,6 @@ class AWIPlaywrightBridge:
             try:
                 await self._execute_single_command(session, cmd)
                 executed += 1
-
-                if cmd.command_type == CommandType.GOTO:
-                    session.current_url = cmd.value
 
             except Exception as e:
                 error = str(e)
@@ -1895,6 +1892,11 @@ class AWIPlaywrightBridge:
                 await asyncio.sleep(0.3)  # Allow render
 
             elif cmd_type == CommandType.GOTO:
+                block_reason = await browser_request_block_reason(command.target)
+                if block_reason:
+                    raise ValueError(
+                        f"navigation blocked ({block_reason}): {command.target}"
+                    )
                 await page.goto(
                     command.target,
                     wait_until="networkidle",
@@ -2003,6 +2005,10 @@ class AWIPlaywrightBridge:
             },
             user_agent="Mozilla/5.0 (compatible; AWI-Client/1.0; +https://agent-middleware.dev)",
         )
+        # page.goto follows redirects. The URL checked before navigation is
+        # only the first hop, so every request, including the next hop and
+        # subresources, has to pass the same guard.
+        await context.route("**/*", self._guard_browser_route)
 
         page = await context.new_page()
 
@@ -2015,6 +2021,21 @@ class AWIPlaywrightBridge:
         logger.info(
             f"Created browser context {session.browser_context_id} for session {session.session_id}"
         )
+
+    async def _guard_browser_route(self, route: Any) -> None:
+        """Refuse a browser request the URL guard does not allow."""
+        url = getattr(getattr(route, "request", None), "url", "")
+        try:
+            reason = await browser_request_block_reason(str(url))
+        except Exception:
+            logger.warning("Browser URL guard failed closed.", exc_info=True)
+            await route.abort("blockedbyclient")
+            return
+        if reason:
+            logger.info("Blocked browser request (%s).", reason)
+            await route.abort("blockedbyclient")
+            return
+        await route.continue_()
 
     async def _navigate_to(self, session: BridgeSession, url: str) -> None:
         """Navigate to a URL."""

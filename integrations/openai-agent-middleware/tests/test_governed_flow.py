@@ -53,14 +53,14 @@ def _permit_payload(permit_id: str = "permit-1") -> dict:
     }
 
 
-def _receipt_payload(idempotency_key: str, receipt_id: str = "rcpt-1") -> dict:
+def _receipt_payload(idempotency_key: str, receipt_id: str = "rcpt-1", tool: str = TOOL) -> dict:
     return {
         "receipt_id": receipt_id,
         "idempotency_record_id": "idem-1",
         "permit_id": "permit-1",
         "wallet_id": WALLET,
         "key_id": "key-1",
-        "tool": TOOL,
+        "tool": tool,
         "request_hash": "a" * 64,
         "response_hash": "b" * 64,
         "ledger_entry_id": "ledger-1",
@@ -106,7 +106,7 @@ class FakeTrustPlane:
                         "content": [{"type": "text", "text": "ok"}],
                         "structuredContent": {"ok": True},
                         "isError": False,
-                        "receipt": _receipt_payload(key, receipt_id),
+                        "receipt": _receipt_payload(key, receipt_id, body["params"]["name"]),
                     },
                 },
             )
@@ -693,3 +693,289 @@ async def test_loaded_permit_identity_must_match_its_lookup_key_and_tool(
 
     assert store_path.read_bytes() == before
     assert plane.permit_requests == [] and plane.invoke_requests == []
+
+
+# ── argument binding, receipts, and local config ────────────────────────────
+
+
+@pytest.mark.parametrize("raw", ["null", "1", '"hi"', "true"])
+def test_non_object_argument_json_is_refused(raw):
+    with pytest.raises(TypeError):
+        normalize_tool_call({"id": "call_1", "function": {"name": "f", "arguments": raw}})
+
+
+def test_invalid_argument_json_is_refused():
+    with pytest.raises(ValueError):
+        normalize_tool_call({"id": "call_1", "function": {"name": "f", "arguments": "{"}})
+
+
+def test_tool_names_that_collapse_after_truncation_cannot_share_a_function():
+    runner = GovernedToolRunner(_client(FakeTrustPlane()), wallet_id=WALLET, run_id="run-1")
+    stem = "n" * 64
+    runner.register_tool(stem + ".one", description="first")
+    with pytest.raises(ValueError, match="already maps"):
+        runner.register_tool(stem + ".two", description="second")
+
+
+async def test_different_arguments_are_refused_before_any_new_network_call(tmp_path):
+    plane = FakeTrustPlane()
+    store_path = tmp_path / "operations.json"
+    runner = GovernedToolRunner(
+        _client(plane),
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    runner.register_tool(TOOL, description="Append a note")
+    await runner.run(_chat_tool_call("call_1", '{"text": "hi"}'))
+    before = store_path.read_bytes()
+    invokes = len(plane.invoke_requests)
+
+    changed = _chat_tool_call("call_1", '{"text": "bye"}')
+    with pytest.raises(ValueError, match="arguments"):
+        await runner.run(changed)
+
+    assert len(plane.invoke_requests) == invokes
+    assert store_path.read_bytes() == before
+    # A different call id is still its own action.
+    other = await runner.run(_chat_tool_call("call_2", '{"text": "bye"}'))
+    assert other.idempotency_key == "oai-call_2"
+
+
+async def test_json_distinct_arguments_that_python_treats_as_equal_are_refused():
+    """``True == 1`` in Python, but they are different JSON and a different action."""
+    plane = FakeTrustPlane()
+    runner = GovernedToolRunner(_client(plane), wallet_id=WALLET, run_id="run-1")
+    runner.register_tool(TOOL, description="Append a note")
+    await runner.run(_chat_tool_call("call_1", '{"n": 1}'))
+    invokes = len(plane.invoke_requests)
+    changed = SimpleNamespace(
+        id="call_1",
+        function=SimpleNamespace(name=function_name_for(TOOL), arguments={"n": True}),
+    )
+    with pytest.raises(ValueError, match="arguments"):
+        await runner.run(changed)
+    assert len(plane.invoke_requests) == invokes
+
+
+async def test_argument_snapshot_is_fixed_before_the_permit_request(tmp_path):
+    """The body is saved before the permit call. A crash there must not let a
+    resume commit different arguments under the same tool call id."""
+    store_path = tmp_path / "operations.json"
+    seen: list[str] = []
+
+    def failing(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        raise httpx.ConnectError("boom", request=request)
+
+    runner = GovernedToolRunner(
+        B2AClient(
+            api_key="test-key",
+            base_url="http://trust.test",
+            transport=httpx.MockTransport(failing),
+        ),
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    runner.register_tool(TOOL, description="Append a note")
+    with pytest.raises(TransportError):
+        await runner.run(_chat_tool_call("call_1", '{"b": 1, "a": 2}'))
+
+    saved = json.loads(store_path.read_text())
+    assert saved["operations"]["call_1"]["arguments_json"] == '{"a":2,"b":1}'
+    assert seen == ["/v1/permits"]
+
+    seen.clear()
+    refused = GovernedToolRunner(
+        B2AClient(
+            api_key="test-key",
+            base_url="http://trust.test",
+            transport=httpx.MockTransport(failing),
+        ),
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    refused.register_tool(TOOL, description="Append a note")
+    with pytest.raises(ValueError, match="arguments"):
+        await refused.run(_chat_tool_call("call_1", '{"a": 9}'))
+    assert seen == []
+
+    plane = FakeTrustPlane()
+    resumed = GovernedToolRunner(
+        _client(plane),
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    resumed.register_tool(TOOL, description="Append a note")
+    result = await resumed.run(_chat_tool_call("call_1", '{"a": 2, "b": 1}'))
+    assert result.idempotency_key == "oai-call_1"
+    invoke = json.loads(plane.invoke_requests[0].content)
+    assert invoke["params"]["arguments"] == {"a": 2, "b": 1}
+    assert len(plane.permit_requests) == 1
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [{"bad": {1}}, {"n": float("nan")}],
+    ids=["set", "nan"],
+)
+async def test_unserializable_arguments_are_refused_before_persistence(tmp_path, arguments):
+    plane = FakeTrustPlane()
+    store_path = tmp_path / "operations.json"
+    runner = GovernedToolRunner(
+        _client(plane),
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    runner.register_tool(TOOL, description="Append a note")
+    call = SimpleNamespace(
+        id="call_1",
+        function=SimpleNamespace(name=function_name_for(TOOL), arguments=arguments),
+    )
+    with pytest.raises(TypeError):
+        await runner.run(call)
+    assert not store_path.exists()
+    assert plane.permit_requests == [] and plane.invoke_requests == []
+
+
+def _response_with_receipt_field(plane: FakeTrustPlane, field: str, value: str):
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = plane(request)
+        if request.url.path != "/mcp/messages":
+            return response
+        payload = json.loads(response.content)
+        payload["result"]["receipt"][field] = value
+        return httpx.Response(200, json=payload)
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("wallet_id", "wallet-other"),
+        ("tool", "partner.notes.count"),
+        ("permit_id", "permit-other"),
+    ],
+)
+async def test_receipt_for_a_different_action_is_not_stored(tmp_path, field, value):
+    plane = FakeTrustPlane()
+    store_path = tmp_path / "operations.json"
+    runner = GovernedToolRunner(
+        B2AClient(
+            api_key="test-key",
+            base_url="http://trust.test",
+            transport=httpx.MockTransport(_response_with_receipt_field(plane, field, value)),
+        ),
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    runner.register_tool(TOOL, description="Append a note")
+    with pytest.raises(ValueError, match="receipt"):
+        await runner.run(_chat_tool_call("call_1"))
+    saved = json.loads(store_path.read_text())
+    assert saved["operations"]["call_1"]["receipt_id"] is None
+
+
+async def test_replayed_receipt_id_must_match_the_recorded_action(tmp_path):
+    plane = FakeTrustPlane()
+    store_path = tmp_path / "operations.json"
+    runner = GovernedToolRunner(
+        _client(plane),
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    runner.register_tool(TOOL, description="Append a note")
+    first = await runner.run(_chat_tool_call("call_1"))
+    assert first.receipt.receipt_id == "rcpt-1"
+
+    def different_receipt(request: httpx.Request) -> httpx.Response:
+        response = plane(request)
+        if request.url.path != "/mcp/messages":
+            return response
+        payload = json.loads(response.content)
+        payload["result"]["receipt"]["receipt_id"] = "rcpt-other"
+        return httpx.Response(200, json=payload)
+
+    resumed = GovernedToolRunner(
+        B2AClient(
+            api_key="test-key",
+            base_url="http://trust.test",
+            transport=httpx.MockTransport(different_receipt),
+        ),
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    resumed.register_tool(TOOL, description="Append a note")
+    with pytest.raises(ValueError, match="receipt"):
+        await resumed.run(_chat_tool_call("call_1"))
+    saved = json.loads(store_path.read_text())
+    assert saved["operations"]["call_1"]["receipt_id"] == "rcpt-1"
+
+
+async def test_operation_permit_id_must_match_the_permit_record(tmp_path):
+    plane = FakeTrustPlane()
+    store_path = tmp_path / "operations.json"
+    runner = GovernedToolRunner(
+        _client(plane),
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    runner.register_tool(TOOL, description="Append a note")
+    await runner.run(_chat_tool_call("call_1"))
+    persisted = json.loads(store_path.read_text())
+    persisted["operations"]["call_1"]["permit_id"] = "permit-other"
+    store_path.write_text(json.dumps(persisted))
+    before = store_path.read_bytes()
+    plane.invoke_requests.clear()
+    plane.permit_requests.clear()
+
+    with pytest.raises(ValueError, match="permit"):
+        await runner.run(_chat_tool_call("call_1"))
+
+    assert store_path.read_bytes() == before
+    assert plane.permit_requests == [] and plane.invoke_requests == []
+
+
+@pytest.mark.parametrize("wallet_id", ["", "   "])
+def test_blank_wallet_is_refused(wallet_id):
+    with pytest.raises(ValueError, match="wallet"):
+        GovernedToolRunner(_client(FakeTrustPlane()), wallet_id=wallet_id, run_id="run-1")
+
+
+def test_wallet_id_must_be_a_string():
+    with pytest.raises(TypeError, match="wallet"):
+        GovernedToolRunner(_client(FakeTrustPlane()), wallet_id=None, run_id="run-1")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "budget",
+    [Decimal(0), Decimal(-1), Decimal("0.000000001"), Decimal("NaN"), True],
+)
+def test_permit_budget_must_be_an_issuable_amount(budget):
+    with pytest.raises((TypeError, ValueError)):
+        GovernedToolRunner(
+            _client(FakeTrustPlane()),
+            wallet_id=WALLET,
+            run_id="run-1",
+            permit_budget=budget,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("ttl", [0, -1, True])
+def test_permit_ttl_must_be_a_positive_integer(ttl):
+    with pytest.raises(ValueError, match="permit_ttl"):
+        GovernedToolRunner(
+            _client(FakeTrustPlane()),
+            wallet_id=WALLET,
+            run_id="run-1",
+            permit_ttl_minutes=ttl,  # type: ignore[arg-type]
+        )

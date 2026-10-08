@@ -300,7 +300,10 @@ def billable(
     same logical call (derive it from a caller-supplied request or job id; a
     fresh UUID per call protects nothing). The server then replays the
     original charge instead of debiting twice. The decorated function itself
-    still runs on every call.
+    still runs on every call. Even without a factory the underlying
+    ``charge()`` always sends a key (minted fresh for that call) and reuses
+    it across its own internal retries; the factory is what makes retries of
+    the decorated function itself replay-safe.
 
     When called within a `simulate_session()` context, the charge is
     simulated without affecting real balance or triggering velocity monitoring.

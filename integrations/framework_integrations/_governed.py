@@ -23,8 +23,9 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import hashlib
 import inspect
-import uuid
+import json
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -39,6 +40,57 @@ except ImportError as exc:  # pragma: no cover - depends on checkout layout
 
 if TYPE_CHECKING:  # imported for annotations only; no runtime coupling
     from b2a_sdk.models import Receipt
+
+
+def derive_governed_idempotency_key(
+    *,
+    permit_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    action_id: str | None = None,
+) -> str:
+    """Derive the idempotency key for one logical governed tool call.
+
+    Key rule: the key is a deterministic ``gov-`` prefixed SHA-256 hash of
+    the stable identity of the logical call: the session's permit id, the
+    tool name, the canonical (key-sorted JSON) bound arguments, and the
+    caller-supplied action id when one is given. Retrying the same logical
+    call therefore reuses the same key, and the server replays the original
+    receipt instead of charging again. No randomness is used, so a retry
+    can never mint a fresh key by accident.
+
+    A different action needs a different key. Arguments alone do not always
+    distinguish two actions: pass ``action_id`` (for example the
+    framework's tool call id) whenever two calls can carry identical
+    arguments but must bill separately. Without ``action_id``, two calls
+    with identical permit, tool, and arguments share a key and the second
+    replays the first.
+
+    Raises:
+        ValueError: if ``permit_id`` or ``tool_name`` is blank, or a
+            supplied ``action_id`` is blank.
+    """
+    if not isinstance(permit_id, str) or not permit_id.strip():
+        raise ValueError("permit_id must not be blank")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        raise ValueError("tool_name must not be blank")
+    if action_id is not None and (
+        not isinstance(action_id, str) or not action_id.strip()
+    ):
+        raise ValueError("action_id must not be blank; omit it to derive without one")
+    canonical = json.dumps(
+        {
+            "permit_id": permit_id,
+            "tool": tool_name,
+            "args": arguments,
+            "action_id": action_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"gov-{digest}"
 
 
 class GovernedToolWrapper:
@@ -99,12 +151,20 @@ def governed_tool(
     raises ``RuntimeError`` at call time (matching ``b2a_sdk.decorators
     .billable``'s established behavior). On each call the wrapper:
 
-    1. consumes an ``idempotency_key`` keyword: a supplied non-blank key is
-       used as-is (retries that must replay — same receipt, no double
-       charge — need a caller-owned key); a supplied blank/whitespace key
-       raises ``ValueError`` rather than being silently replaced; when the
-       keyword is absent or ``None`` a fresh ``uuid4().hex`` is derived,
-       making that call a new invocation;
+    1. consumes an ``idempotency_key`` keyword and an ``action_id``
+       keyword (both are reserved: a stub parameter with either name is
+       consumed as key material, never sent to the server). A supplied
+       non-blank ``idempotency_key`` is used as-is: retries that must
+       replay (same receipt, no double charge) pass the same caller-owned
+       key. A supplied blank key raises ``ValueError`` rather than being
+       silently replaced. When the keyword is absent or ``None`` the key
+       is derived deterministically via
+       :func:`derive_governed_idempotency_key` from the session's permit
+       id, the tool name, the canonical bound arguments, and ``action_id``
+       when given, so retrying the same logical tool call reuses the key
+       instead of minting a fresh random one. Pass ``action_id`` (for
+       example the framework's tool call id) when two distinct actions
+       can carry identical arguments but must bill separately;
     2. binds the remaining arguments to the stub's signature **with the
        stub's declared defaults applied**, so an omitted parameter travels
        to the server as the stub's contractual default rather than letting
@@ -128,22 +188,37 @@ def governed_tool(
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            supplied_key: str | None = None
             if "idempotency_key" in kwargs:
                 supplied = kwargs.pop("idempotency_key")
-                if supplied is None:
-                    idempotency_key = uuid.uuid4().hex
-                else:
-                    idempotency_key = str(supplied)
-                    if not idempotency_key.strip():
+                if supplied is not None:
+                    supplied_key = str(supplied)
+                    if not supplied_key.strip():
                         raise ValueError(
                             "idempotency_key must not be blank; omit it to "
-                            "derive a fresh key"
+                            "derive a stable key"
                         )
-            else:
-                idempotency_key = uuid.uuid4().hex
+            action_id: str | None = None
+            if "action_id" in kwargs:
+                supplied_action = kwargs.pop("action_id")
+                if supplied_action is not None:
+                    action_id = str(supplied_action)
+                    if not action_id.strip():
+                        raise ValueError(
+                            "action_id must not be blank; omit it to derive without one"
+                        )
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
             arguments = dict(bound.arguments)
+            if supplied_key is not None:
+                idempotency_key = supplied_key
+            else:
+                idempotency_key = derive_governed_idempotency_key(
+                    permit_id=session.permit_id,
+                    tool_name=name,
+                    arguments=arguments,
+                    action_id=action_id,
+                )
             result = await session.invoke(
                 name,
                 arguments,
@@ -169,4 +244,4 @@ def governed_tool(
     return decorator
 
 
-__all__ = ["GovernedToolWrapper", "governed_tool"]
+__all__ = ["GovernedToolWrapper", "derive_governed_idempotency_key", "governed_tool"]

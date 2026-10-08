@@ -74,9 +74,10 @@ class TestB2AClient:
             "units": "10",
         }
         assert request.content == b""
-        # Legacy calls send no key: they are not replay-safe, and must not
-        # start sending one implicitly.
-        assert "idempotency-key" not in request.headers
+        # No caller key: the SDK mints one for this call and always sends it.
+        auto_key = request.headers["idempotency-key"]
+        assert auto_key.strip() != ""
+        assert len(auto_key) <= 128
 
     @pytest.mark.asyncio
     async def test_charge_sends_optional_request_path_and_description(self):
@@ -124,6 +125,93 @@ class TestB2AClient:
         async with client:
             with pytest.raises(ValueError, match=message):
                 await client.charge("wallet-123", "iot_bridge", idempotency_key=bad_key)
+
+        assert seen == []
+
+    def _flaky_charge_client(self, failures_before_success: int):
+        """Client whose charge route times out N times, then succeeds.
+
+        Returns the client plus the requests it actually sent.
+        """
+        seen: list[httpx.Request] = []
+        state = {"calls": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            state["calls"] += 1
+            if state["calls"] <= failures_before_success:
+                raise httpx.TimeoutException("simulated timeout")
+            return httpx.Response(
+                200,
+                json={"action": "debit", "amount": -20.0, "balance_after": 4980.0},
+            )
+
+        client = AgentMiddlewareClient(
+            api_key="test-key",
+            base_url="http://test",
+            transport=httpx.MockTransport(handler),
+        )
+        return client, seen
+
+    @pytest.mark.asyncio
+    async def test_charge_retry_reuses_same_minted_key(self):
+        """A timeout then retry sends the same auto-minted key on both tries."""
+        client, seen = self._flaky_charge_client(failures_before_success=1)
+        async with client:
+            result = await client.charge("wallet-123", "iot_bridge", max_attempts=2)
+
+        assert result["action"] == "debit"
+        assert len(seen) == 2
+        first_key = seen[0].headers["idempotency-key"]
+        assert first_key.strip() != ""
+        assert seen[1].headers["idempotency-key"] == first_key
+
+    @pytest.mark.asyncio
+    async def test_charge_retry_reuses_caller_key(self):
+        """A timeout then retry with a caller key reuses that key, not a new one."""
+        client, seen = self._flaky_charge_client(failures_before_success=1)
+        async with client:
+            await client.charge(
+                "wallet-123",
+                "iot_bridge",
+                idempotency_key="caller-key-9",
+                max_attempts=2,
+            )
+
+        assert len(seen) == 2
+        assert seen[0].headers["idempotency-key"] == "caller-key-9"
+        assert seen[1].headers["idempotency-key"] == "caller-key-9"
+
+    @pytest.mark.asyncio
+    async def test_charge_gives_up_after_max_attempts(self):
+        """Exhausted retries re-raise the transport error; nothing else is sent."""
+        client, seen = self._flaky_charge_client(failures_before_success=5)
+        async with client:
+            with pytest.raises(httpx.TimeoutException):
+                await client.charge("wallet-123", "iot_bridge", max_attempts=2)
+
+        assert len(seen) == 2
+        assert seen[0].headers["idempotency-key"] == seen[1].headers["idempotency-key"]
+
+    @pytest.mark.asyncio
+    async def test_charge_distinct_calls_get_distinct_keys(self):
+        """Two separate charges mint different keys: no accidental replay."""
+        client, seen = _recording_client(_CHARGE_OK)
+        async with client:
+            await client.charge("wallet-123", "iot_bridge")
+            await client.charge("wallet-123", "iot_bridge")
+
+        assert len(seen) == 2
+        assert seen[0].headers["idempotency-key"] != seen[1].headers["idempotency-key"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_attempts", [0, -1])
+    async def test_charge_rejects_non_positive_max_attempts(self, bad_attempts):
+        """max_attempts below 1 fails closed locally: no request, no charge."""
+        client, seen = _recording_client(_CHARGE_OK)
+        async with client:
+            with pytest.raises(ValueError, match="max_attempts"):
+                await client.charge("wallet-123", "iot_bridge", max_attempts=bad_attempts)
 
         assert seen == []
 

@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import json
 import os
+import uuid
 from typing import Any
 
 try:
@@ -106,6 +107,51 @@ def list_tools(
     print("\\n" + "=" * 60)
 
 
+async def invoke_service(
+    service_id: str,
+    input_data: dict,
+    wallet_id: str,
+    api_key: str,
+    *,
+    api_url: str = DEFAULT_API_URL,
+    idempotency_key: str | None = None,
+) -> dict:
+    """Invoke a marketplace service over the legacy billing path.
+
+    Sends an ``Idempotency-Key`` header: the caller key when given,
+    otherwise one minted for this call. Callers that retry one logical
+    invocation must reuse the key, or the retry is a second invocation.
+    Sending a key does not add the governed loop (no permit binding, no
+    signed receipt); it only lets the server deduplicate retries.
+
+    Raises:
+        ValueError: if a supplied key is blank or overlong (nothing is sent).
+    """
+    if httpx is None:
+        raise RuntimeError("httpx required. Install: pip install httpx")
+    if idempotency_key is None:
+        key = uuid.uuid4().hex
+    else:
+        key = idempotency_key.strip() if isinstance(idempotency_key, str) else ""
+        if not key:
+            raise ValueError("idempotency_key must not be blank")
+        if len(key) > 128:
+            raise ValueError("idempotency_key must be at most 128 characters")
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{api_url}/v1/billing/services/{service_id}/invoke",
+            headers={
+                "X-API-Key": api_key,
+                "Content-Type": "application/json",
+                "Idempotency-Key": key,
+            },
+            json={"caller_wallet_id": wallet_id, "input_data": input_data},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 async def serve_async(
     transport: str = "stdio",
     port: int = 8001,
@@ -130,16 +176,22 @@ async def serve_async(
 
     mcp = FastMCP("B2A Marketplace")
 
-    async def call_tool(service_id: str, input_data: dict, wallet_id: str, api_key: str) -> dict:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{api_url}/v1/billing/services/{service_id}/invoke",
-                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-                json={"caller_wallet_id": wallet_id, "input_data": input_data},
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            return response.json()
+    async def call_tool(
+        service_id: str,
+        input_data: dict,
+        wallet_id: str,
+        api_key: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        return await invoke_service(
+            service_id,
+            input_data,
+            wallet_id,
+            api_key,
+            api_url=api_url,
+            idempotency_key=idempotency_key,
+        )
 
     for tool in tools:
         name = tool.get("name", "unknown")

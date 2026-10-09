@@ -342,18 +342,25 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
-        if (
-            policy.daily_spend_limit is not None
-            and daily is not None
-            and est is not None
-            and daily + est > policy.daily_spend_limit
-        ):
-            return PolicyEvaluation(
-                False,
-                "daily_spend_limit_exceeded",
-                policy.policy_id,
-                {"evaluated": evaluated},
-            )
+        if policy.daily_spend_limit is not None:
+            if daily is None:
+                # Fail closed: without a trustworthy past-spend figure the
+                # cap cannot be enforced, so deny rather than skip the check.
+                # The planner route passes a client-supplied figure that can
+                # be missing; other routes pass the server-side total.
+                return PolicyEvaluation(
+                    False,
+                    "daily_spend_limit_exceeded",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
+            if est is not None and daily + est > policy.daily_spend_limit:
+                return PolicyEvaluation(
+                    False,
+                    "daily_spend_limit_exceeded",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
         if policy.require_real_effects and simulation:
             return PolicyEvaluation(
                 False,

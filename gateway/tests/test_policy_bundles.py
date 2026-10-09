@@ -221,6 +221,57 @@ async def test_mcp_policy_enforces_daily_spend_limit(client, clean_database):
 
 
 @pytest.mark.anyio
+async def test_daily_spend_limit_denies_when_past_spend_unknown(client, clean_database):
+    """A daily cap must fail closed when past spending is unknown.
+
+    The planner route passes a client-supplied daily_spend_used figure that
+    can be missing; the check used to skip the cap when it was None, so an
+    unknown spend silently allowed every action. Pin the fail-closed reading:
+    a missing figure denies just like an exceeded cap.
+    """
+    wallet_id = await _wallet(client, "policy-daily-unknown")
+    policy = await client.post(
+        "/v1/policies",
+        json={
+            "wallet_id": wallet_id,
+            "name": "Daily cap, unknown spend",
+            "daily_spend_limit": 100,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+    assert policy.status_code == 201
+
+    denied = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="anything",
+        estimated_cost=1,
+        daily_spend_used=None,
+    )
+    assert denied.allowed is False
+    assert denied.reason == "daily_spend_limit_exceeded"
+    assert denied.policy_id == policy.json()["policy_id"]
+
+    # Control: a known spend under the cap still allows the action, and a
+    # wallet with no daily cap is unaffected by a missing figure.
+    allowed = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="anything",
+        estimated_cost=1,
+        daily_spend_used=0,
+    )
+    assert allowed.allowed is True
+
+    plain_wallet_id = await _wallet(client, "policy-no-daily-cap")
+    uncapped = await evaluate_wallet_policy(
+        wallet_id=plain_wallet_id,
+        tool_name="anything",
+        estimated_cost=1,
+        daily_spend_used=None,
+    )
+    assert uncapped.allowed is True
+
+
+@pytest.mark.anyio
 async def test_billing_policy_denies_disallowed_category(client, clean_database):
     wallet_id = await _wallet(client, "policy-billing")
     policy = await client.post(

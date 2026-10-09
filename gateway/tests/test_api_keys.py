@@ -1564,3 +1564,147 @@ async def test_rotate_api_key_replays_on_idempotency_key(
     listed = await client.get(f"/v1/api-keys/{wallet_id}", headers=api_headers)
     active = [k["key_id"] for k in listed.json()["keys"] if k["status"] == "active"]
     assert active == [first.json()["new_key"]["key_id"]]
+
+
+@pytest.mark.anyio
+async def test_ordinary_wallet_key_cannot_revoke_or_rotate_siblings(
+    client, api_headers, sponsor_wallet, signing_key
+):
+    """A leaked ordinary key must not lock the owner out of the other keys.
+
+    Wallet membership used to be enough to revoke, rotate, or emergency-wipe
+    every sibling. An ordinary key may still revoke or rotate itself. Sibling
+    management requires a key created with can_manage_keys, or a bootstrap admin.
+    """
+    wallet_id = sponsor_wallet["wallet_id"]
+    owner = (
+        await client.post(
+            "/v1/api-keys",
+            json={"wallet_id": wallet_id, "key_name": "owner"},
+            headers=api_headers,
+        )
+    ).json()
+    leaked = (
+        await client.post(
+            "/v1/api-keys",
+            json={"wallet_id": wallet_id, "key_name": "agent"},
+            headers=api_headers,
+        )
+    ).json()
+    leaked_headers = {"X-API-Key": leaked["api_key"]}
+
+    revoke = await client.delete(
+        f"/v1/api-keys/{wallet_id}/{owner['key_id']}",
+        headers=leaked_headers,
+    )
+    assert revoke.status_code == 403, revoke.text
+    assert revoke.json()["detail"]["error"] == "key_cannot_manage_siblings"
+
+    rotate = await client.post(
+        "/v1/api-keys/rotate",
+        json={
+            "wallet_id": wallet_id,
+            "key_id": owner["key_id"],
+            "revoke_old": True,
+        },
+        headers=leaked_headers,
+    )
+    assert rotate.status_code == 403, rotate.text
+    assert rotate.json()["detail"]["error"] == "key_cannot_manage_siblings"
+
+    emergency = await client.post(
+        "/v1/api-keys/emergency-revoke",
+        json={"wallet_id": wallet_id, "reason": "lockout", "create_new_key": False},
+        headers=leaked_headers,
+    )
+    assert emergency.status_code == 403, emergency.text
+    assert emergency.json()["detail"]["error"] == "key_cannot_manage_siblings"
+
+    grant = await client.post(
+        "/v1/api-keys",
+        json={"wallet_id": wallet_id, "can_manage_keys": True},
+        headers=leaked_headers,
+    )
+    assert grant.status_code == 403, grant.text
+    assert grant.json()["detail"]["error"] == "key_cannot_grant_management"
+
+    token = await client.post("/v1/auth/token", json={"api_key": leaked["api_key"]})
+    assert token.status_code == 200, token.text
+    jwt_revoke = await client.delete(
+        f"/v1/api-keys/{wallet_id}/{owner['key_id']}",
+        headers={"Authorization": f"Bearer {token.json()['access_token']}"},
+    )
+    assert jwt_revoke.status_code == 403, jwt_revoke.text
+    assert jwt_revoke.json()["detail"]["error"] == "key_cannot_manage_siblings"
+
+    still_owner = await client.get(
+        f"/v1/billing/wallets/{wallet_id}",
+        headers={"X-API-Key": owner["api_key"]},
+    )
+    assert still_owner.status_code == 200
+    listed = await client.get(f"/v1/api-keys/{wallet_id}", headers=api_headers)
+    assert listed.json()["total_revoked"] == 0
+    assert listed.json()["total_active"] == 2
+
+    self_revoke = await client.delete(
+        f"/v1/api-keys/{wallet_id}/{leaked['key_id']}",
+        headers=leaked_headers,
+    )
+    assert self_revoke.status_code == 204, self_revoke.text
+    owner_after = await client.get(
+        f"/v1/billing/wallets/{wallet_id}",
+        headers={"X-API-Key": owner["api_key"]},
+    )
+    assert owner_after.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_management_key_can_revoke_a_sibling_and_keeps_the_role(
+    client, api_headers, sponsor_wallet
+):
+    """An explicit management key keeps sibling revocation, including after rotation."""
+    wallet_id = sponsor_wallet["wallet_id"]
+    manager = (
+        await client.post(
+            "/v1/api-keys",
+            json={
+                "wallet_id": wallet_id,
+                "key_name": "manager",
+                "can_manage_keys": True,
+            },
+            headers=api_headers,
+        )
+    ).json()
+    assert manager["can_manage_keys"] is True
+    sibling = (
+        await client.post(
+            "/v1/api-keys",
+            json={"wallet_id": wallet_id, "key_name": "workload"},
+            headers=api_headers,
+        )
+    ).json()
+    assert sibling["can_manage_keys"] is False
+
+    rotated = await client.post(
+        "/v1/api-keys/rotate",
+        json={
+            "wallet_id": wallet_id,
+            "key_id": manager["key_id"],
+            "revoke_old": True,
+        },
+        headers={"X-API-Key": manager["api_key"]},
+    )
+    assert rotated.status_code == 200, rotated.text
+    new_manager = rotated.json()["new_key"]
+    assert new_manager["can_manage_keys"] is True
+
+    revoke = await client.delete(
+        f"/v1/api-keys/{wallet_id}/{sibling['key_id']}",
+        headers={"X-API-Key": new_manager["api_key"]},
+    )
+    assert revoke.status_code == 204, revoke.text
+    dead = await client.get(
+        f"/v1/billing/wallets/{wallet_id}",
+        headers={"X-API-Key": sibling["api_key"]},
+    )
+    assert dead.status_code == 403

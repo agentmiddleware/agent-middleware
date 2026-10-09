@@ -677,6 +677,7 @@ async def test_unverified_algorithm_claim_is_unknown_key_not_unsupported(
     unsupported used to skip the key store and hide a tampered receipt whose
     key the gateway does hold.
     """
+    await get_signing_key_service().ensure_active_key()
     bundle = {**_unverifiable_bundle(), "signing_input": signing_input}
     resp = await client.post(
         PUBLIC_PATH,

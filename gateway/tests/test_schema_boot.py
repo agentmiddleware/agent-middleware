@@ -144,6 +144,62 @@ async def test_init_db_production_like_accepts_legacy_create_all_tables(
 
 
 @pytest.mark.asyncio
+async def test_init_db_production_like_rejects_missing_audit_signing_approval_tables(
+    tmp_path, monkeypatch
+):
+    """Boot must fail when only the four original trust tables are present.
+
+    Regression test for the audit finding: the old check accepted a database
+    with permits, receipts, idempotency_records and mcp_dispatch_attempts but
+    no audit, signing-key or approval tables.
+    """
+    db_path = tmp_path / "four_table_prod.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    get_settings.cache_clear()
+    await close_db()
+    await init_db()
+    await close_db()
+
+    dropped = (
+        "control_plane_audit_events",
+        "audit_chain_heads",
+        "signing_keys",
+        "human_approvals",
+    )
+    sync = create_engine(f"sqlite:///{db_path}")
+    with sync.begin() as connection:
+        for table in dropped:
+            connection.exec_driver_sql(f"DROP TABLE {table}")
+    remaining = set(inspect(sync).get_table_names())
+    sync.dispose()
+    assert {
+        "permits",
+        "receipts",
+        "idempotency_records",
+        "mcp_dispatch_attempts",
+    } <= remaining
+    assert not (set(dropped) & remaining)
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DEBUG", "false")
+    monkeypatch.setenv("ENABLE_PROOF_SURFACES", "false")
+    monkeypatch.setenv("ALLOW_METADATA_CREATE_ALL", "false")
+    get_settings.cache_clear()
+
+    with pytest.raises(
+        SchemaInitError, match="Required database tables missing"
+    ) as exc_info:
+        await init_db()
+    message = str(exc_info.value)
+    for table in dropped:
+        assert table in message
+
+    await close_db()
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("environment", ["local", "production"])
 @pytest.mark.parametrize(
     ("table_name", "column_name"),

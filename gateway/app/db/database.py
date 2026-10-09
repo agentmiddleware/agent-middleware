@@ -50,6 +50,13 @@ REQUIRED_TRUST_TABLES = frozenset(
         "receipts",
         "idempotency_records",
         "mcp_dispatch_attempts",
+        # Audit, signing-key and approval tables: the server must not boot
+        # when only the four tables above exist, since receipt verification,
+        # the audit trail and the approval gate depend on these rows.
+        "control_plane_audit_events",
+        "audit_chain_heads",
+        "signing_keys",
+        "human_approvals",
     }
 )
 REQUIRED_TRUST_COLUMNS = {

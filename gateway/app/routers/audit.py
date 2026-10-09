@@ -1,3 +1,16 @@
+"""Read-only control plane audit endpoints.
+
+This router serves audit event history under ``/v1/audit``: paginated event
+listing, aggregate summaries, and hash chain verification. It never records
+events, only reads them through the trust plane audit helpers.
+
+Key invariants: every endpoint is scoped by the caller auth context, so a
+bootstrap admin may read across wallets while a wallet key only sees its own
+wallet and an unscoped caller needs an operator key. Filters applied to a
+listing also apply to its counts and optional summary, so totals stay
+consistent with the rows returned.
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -63,6 +76,12 @@ async def get_audit_events(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> AuditEventListResponse:
+    """Return the paginated audit events matching the given filters.
+
+    Counts and the optional summary cover the same scoped rows as the
+    listing, and pagination uses limit and offset with next_offset set only
+    when more rows remain.
+    """
     wallet_id, key_id = _authorize_audit_events_request(
         auth=auth,
         wallet_id=wallet_id,
@@ -144,6 +163,11 @@ async def get_audit_summary(
     created_before: datetime | None = Query(None),
     auth: AuthContext = Depends(get_auth_context),
 ) -> AuditSummaryResponse:
+    """Return aggregate audit totals for the caller's scope.
+
+    Operators see cross-tenant totals while a wallet key sees the same shape
+    computed over its own wallet only.
+    """
     # Cross-tenant totals stay an operator view; a wallet key gets the same
     # shape computed over its own events only.
     wallet_id = None
@@ -164,6 +188,12 @@ async def verify_chain(
     request: AuditChainVerifyRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> AuditChainVerifyResponse:
+    """Verify the audit hash chain for one wallet scope.
+
+    An explicit wallet id needs access to that wallet, a caller with its own
+    wallet defaults to verifying that wallet, and anything else needs an
+    operator key.
+    """
     wallet_id = request.wallet_id
     if wallet_id:
         auth.require_wallet_access(wallet_id)

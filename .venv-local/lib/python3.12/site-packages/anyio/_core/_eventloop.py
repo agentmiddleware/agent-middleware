@@ -48,7 +48,7 @@ def run(
 
     :param func: a coroutine function
     :param args: positional arguments to ``func``
-    :param backend: name of the asynchronous event loop implementation – currently
+    :param backend: name of the asynchronous event loop implementation - currently
         either ``asyncio`` or ``trio``
     :param backend_options: keyword arguments to call the backend ``run()``
         implementation with (documented :ref:`here <backend options>`)

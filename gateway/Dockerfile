@@ -10,9 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Hash-pinned install. requirements.lock is the closed resolution of
+# requirements.txt. --require-hashes makes pip refuse any distribution
+# that is missing a hash, so a rebuild cannot swap in newer code.
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # Copy application code
 COPY . .

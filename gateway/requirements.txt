@@ -1,5 +1,11 @@
 # Agent Middleware API - Dependencies
 # Python 3.11+
+#
+# Direct packages and the oldest versions we accept. Image builds do not
+# install this file. They install requirements.lock, which pins every
+# distribution and its sha256 hashes. After changing a line here, regenerate
+# the lock from this directory:
+#   uv pip compile requirements.txt --universal --generate-hashes --output-file requirements.lock
 
 # --- Core Framework ---
 fastapi>=0.141.1

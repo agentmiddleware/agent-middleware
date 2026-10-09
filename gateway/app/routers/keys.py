@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+"""Transaction-evidence signing-key metadata endpoints.
+
+Trust model: these endpoints publish public verification metadata only
+(key id, algorithm, public key, status, timestamps). They never return
+private key material. The same keys are published without any credential
+at ``/.well-known/trust-keys.json`` (and ``/.well-known/jwks.json``), so
+that a party holding no credential here can still verify a receipt
+offline. The endpoints below therefore intentionally do not apply wallet
+scoping: any authenticated credential may read any key's metadata.
+Authentication is still required so anonymous callers learn nothing here
+and must use the well-known documents instead.
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import AuthContext, get_auth_context
@@ -25,7 +38,14 @@ def _key_response(key) -> SigningKeyResponse:
 async def get_active_signing_key(
     auth: AuthContext = Depends(get_auth_context),
 ) -> SigningKeyResponse:
-    """Return public metadata for the active transaction-evidence signing key."""
+    """Return public metadata for the active transaction-evidence signing key.
+
+    Public by design: the response carries only verification metadata
+    (key id, algorithm, public key, status, timestamps), never private
+    material. It is intentionally not wallet scoped, so any authenticated
+    credential may read it. The same key is also published without a
+    credential at ``/.well-known/trust-keys.json`` for offline verifiers.
+    """
 
     key = await get_signing_key_service().get_active_key()
     return _key_response(key)
@@ -36,7 +56,16 @@ async def get_signing_key(
     key_id: str,
     auth: AuthContext = Depends(get_auth_context),
 ) -> SigningKeyResponse:
-    """Return public metadata for an active or retired signing key."""
+    """Return public metadata for an active or retired signing key.
+
+    Public by design: the response carries only verification metadata
+    (key id, algorithm, public key, status, timestamps), never private
+    material. It is intentionally not wallet scoped, so any authenticated
+    credential may read any key's metadata, including keys belonging to
+    other wallets' receipts. Retired keys stay readable so historical
+    receipts remain verifiable. The same keys are also published without
+    a credential at ``/.well-known/trust-keys.json`` for offline verifiers.
+    """
 
     key = await get_signing_key_service().get_public_key(key_id)
     if not key:

@@ -317,8 +317,8 @@ async def test_wallet_cannot_drive_another_wallets_agent(client, clean_database)
         ),
     ]
     for resp in denied:
-        assert resp.status_code == 403
-        assert resp.json()["detail"]["error"] == "access_denied"
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["detail"]["error"] == "agent_not_found"
         _assert_no_leak(resp, "a-only", a["agent_wallet_id"])
 
     # The owner still reads and acknowledges its own inbox.
@@ -541,7 +541,8 @@ async def test_jwt_callers_from_different_wallets_do_not_share_ownership(
         ),
     ]
     for resp in denied:
-        assert resp.status_code == 403, resp.text
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["detail"]["error"] == "agent_not_found"
         _assert_no_leak(resp, "a-only")
 
     listed = await client.get("/v1/comms/agents", headers=b_jwt_headers)

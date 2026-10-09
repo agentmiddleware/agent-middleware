@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+"""Idempotency records for retryable gateway requests.
+
+Each record is keyed by wallet, endpoint, and a caller supplied key, and
+stores a hash of the request payload plus the response to replay. A retry
+with the same key and the same payload hash replays the stored response, a
+retry with the same key but a different payload hash is rejected as a
+conflict, and a retry that arrives before a response is stored is reported
+as in progress. Only records with no stored response and no recorded charge
+may be abandoned so a retry can start again.
+"""
+
 import asyncio
 import json
 import re
@@ -267,6 +278,8 @@ def resolve_client_idempotency_key(
 
 @dataclass(frozen=True)
 class IdempotencyReplay:
+    """Stored outcome returned to a retry with a matching request hash."""
+
     response_reference: str | None
     response_json: dict[str, Any] | None
     status_code: int
@@ -314,6 +327,8 @@ def _replay_from_record(
 
 
 class IdempotencyService:
+    """Creates, looks up, completes, and repairs idempotency records."""
+
     async def _try_reconcile_and_replay(
         self,
         session: AsyncSession,
@@ -489,6 +504,14 @@ class IdempotencyService:
         poll_interval_seconds: float = 0.05,
         allow_new_record: bool = True,
     ) -> IdempotencyBegin:
+        """Begin a request under the given key, creating the record or replaying it.
+
+        Looks up the record for wallet, endpoint, and key. When none exists,
+        creates one and returns it with no replay, unless allow_new_record is
+        False. When one exists, returns its stored response for a matching
+        payload hash, rejects a different payload hash as a conflict, and
+        waits or reports in progress when no response is stored yet.
+        """
         if wait_timeout_seconds < 0 or poll_interval_seconds <= 0:
             raise ValueError("idempotency_wait_invalid")
         request_hash = sha256_hex(request_payload)
@@ -674,6 +697,7 @@ class IdempotencyService:
         endpoint: str,
         idempotency_key: str,
     ) -> IdempotencyRecordModel | None:
+        """Return the record for wallet, endpoint, and key, or None when absent."""
         factory = get_session_factory()
         async with factory() as session:
             return (
@@ -707,6 +731,7 @@ class IdempotencyService:
         poll_interval_seconds: float = 0.05,
         allow_new_record: bool = True,
     ) -> IdempotencyBegin:
+        """Begin an action request under its identity derived key."""
         if identity.endpoint != ACTION_MCP_IDEMPOTENCY_ENDPOINT:
             raise ValueError("invalid_action_execution_namespace")
         if identity.request_payload.get("subject_wallet_id") != wallet_id:
@@ -731,6 +756,7 @@ class IdempotencyService:
         response_json: dict[str, Any] | None,
         status_code: int = 200,
     ) -> None:
+        """Store the action response under the dedicated action endpoint."""
         await self.complete(
             wallet_id=wallet_id,
             endpoint=ACTION_MCP_IDEMPOTENCY_ENDPOINT,
@@ -1250,6 +1276,7 @@ _service: IdempotencyService | None = None
 
 
 def get_idempotency_service() -> IdempotencyService:
+    """Return the shared IdempotencyService instance, creating it on first call."""
     global _service
     if _service is None:
         _service = IdempotencyService()

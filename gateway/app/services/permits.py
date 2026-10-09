@@ -1212,8 +1212,9 @@ class PermitService:
     async def release_budget(self, permit_id: str, amount: Decimal) -> None:
         """Hand budget back to a permit, clamped at zero, as one write.
 
-        A missing permit is a no-op. Never raises for contention; the write
-        retries transient conflicts internally.
+        A missing permit is a no-op. Retries transient write conflicts
+        internally, raising PermitWriteContendedError when retries are
+        exhausted.
         """
         factory = get_session_factory()
 

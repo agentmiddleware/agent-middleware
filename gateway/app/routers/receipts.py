@@ -1,3 +1,11 @@
+"""Read API for trust receipts and refund reconciliation.
+
+Lists and single reads are scoped to the caller's wallet unless the caller
+is a bootstrap admin. Retrying a refund reconciliation is operator only and
+both accepted and rejected retries are audited. A portable receipt bundle is
+refused when the stored signature does not verify.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -37,6 +45,7 @@ async def _authorize_receipt_list(
     wallet_id: str | None,
     permit_id: str | None,
 ) -> None:
+    """Enforce list access: permit parties, wallet owners, otherwise admin."""
     if permit_id:
         permit = await get_permit_service().get_permit(permit_id)
         if not permit:
@@ -67,6 +76,7 @@ async def list_receipts(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> ReceiptListResponse:
+    """List receipts with optional filters and limit and offset paging."""
     await _authorize_receipt_list(auth=auth, wallet_id=wallet_id, permit_id=permit_id)
     receipts, total = await get_receipt_service().list_receipts(
         permit_id=permit_id,
@@ -97,6 +107,7 @@ async def list_receipts_for_permit(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> ReceiptListResponse:
+    """List receipts for one permit with optional filters and paging."""
     await _authorize_receipt_list(auth=auth, wallet_id=wallet_id, permit_id=permit_id)
     receipts, total = await get_receipt_service().list_receipts(
         permit_id=permit_id,
@@ -127,6 +138,7 @@ async def list_refund_reconciliations(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> RefundReconciliationListResponse:
+    """List refund reconciliations, scoped to the caller wallet unless admin."""
     # Money owed back to a wallet is that wallet's business. Operators still
     # get the cross-tenant queue; a wallet key sees only its own items. The
     # retry below stays operator-only — it moves money, and this move is about
@@ -164,6 +176,7 @@ async def retry_refund_reconciliation(
     receipt_id: str,
     auth: AuthContext = Depends(get_auth_context),
 ) -> RefundReconciliationRetryResponse:
+    """Retry one refund reconciliation. Bootstrap admin only, outcome is audited."""
     auth.require_bootstrap_admin()
     service = get_refund_reconciliation_service()
     item = None
@@ -246,6 +259,7 @@ async def get_receipt(
     receipt_id: str,
     auth: AuthContext = Depends(get_auth_context),
 ) -> ReceiptResponse:
+    """Return one receipt by id after authorizing access."""
     receipt = await get_receipt_service().get_receipt(receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="receipt_not_found")
@@ -258,6 +272,7 @@ async def get_receipt_evidence(
     receipt_id: str,
     auth: AuthContext = Depends(get_auth_context),
 ) -> ReceiptEvidenceResponse:
+    """Return the evidence bundle for one receipt after authorizing access."""
     receipt = await get_receipt_service().get_receipt(receipt_id)
     if not receipt:
         raise HTTPException(status_code=404, detail="receipt_not_found")
@@ -305,6 +320,7 @@ async def verify_receipt(
     request: ReceiptVerifyRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> ReceiptVerifyResponse:
+    """Check a receipt signature and return whether it is valid."""
     valid, reason, receipt = await get_receipt_service().verify_receipt(
         request.receipt_id
     )

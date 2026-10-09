@@ -143,8 +143,10 @@ async def test_malformed_bundle_is_a_verdict_without_touching_keys(monkeypatch):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("field", ["signing_input", "garbage"])
-async def test_oversized_bundle_is_malformed_without_touching_keys(monkeypatch, field):
+@pytest.mark.parametrize("bundle_kind", ["signing_input", "string"])
+async def test_oversized_bundle_is_malformed_without_touching_keys(
+    monkeypatch, bundle_kind
+):
     async def fail_if_called():
         raise AssertionError("oversized input must not touch the key store")
 
@@ -153,10 +155,13 @@ async def test_oversized_bundle_is_malformed_without_touching_keys(monkeypatch, 
         "get_signing_key_service",
         lambda: SimpleNamespace(list_public_keys=fail_if_called),
     )
-    bundle = {
-        **_unverifiable_bundle(),
-        field: "x" * (mcp_public._MAX_SIGNING_INPUT_BYTES + 1),
-    }
+    if bundle_kind == "signing_input":
+        bundle: object = {
+            **_unverifiable_bundle(),
+            "signing_input": "x" * (mcp_public._MAX_SIGNING_INPUT_BYTES + 1),
+        }
+    else:
+        bundle = "x" * (mcp_public._MAX_SIGNING_INPUT_BYTES + 1)
     structured, text = await mcp_public._tool_verify_receipt({"bundle": bundle})
 
     assert structured["ok"] is False

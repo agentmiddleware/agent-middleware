@@ -23,13 +23,15 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 import redis.asyncio as redis
 
 from ..core.config import get_settings
 from ..core.durable_state import get_durable_state
 from ..core.trust_mode import UNSAFE_HOST_SANDBOX_BACKENDS
-from ..core.url_guard import check_outbound_url
+from ..core.url_guard import resolve_outbound_url
 from ..schemas.sandbox_behavioral import (
     ExecutionStatus,
     SandboxEnvironment,
@@ -54,6 +56,55 @@ def _limit_child_process(memory_limit_mb: int) -> None:
         resource.setrlimit(resource.RLIMIT_CPU, (5, 5))
     except (ValueError, OSError, AttributeError):
         logger.debug("Unable to apply CPU limit to sandbox subprocess")
+
+
+class _PinnedSandboxTransport(httpx.AsyncBaseTransport):
+    """Connect to one guard-validated address while keeping Host and TLS SNI.
+
+    Mirrors the upstream MCP pinned transport: the URL guard validates the
+    hostname's resolved addresses, and this transport connects to the first
+    of them instead of resolving the hostname again, so a name that
+    rebinds to an intranet address between the check and the fetch cannot
+    redirect the connection. The original authority stays in the Host
+    header and the TLS server name, so virtual hosting and certificates
+    keep working.
+    """
+
+    def __init__(
+        self,
+        *,
+        pinned_address: str,
+        host_header: str,
+        server_name: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._pinned_address = pinned_address
+        self._host_header = host_header
+        self._server_name = server_name
+        self._transport = transport or httpx.AsyncHTTPTransport(
+            verify=True,
+            retries=0,
+            trust_env=False,
+        )
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        extensions = dict(request.extensions)
+        extensions["sni_hostname"] = self._server_name
+        # Replace (not duplicate) the Host header: raw dict unpacking would
+        # keep the original casing variant alongside the new one.
+        headers = httpx.Headers(request.headers)
+        headers["Host"] = self._host_header
+        pinned_request = httpx.Request(
+            request.method,
+            request.url.copy_with(host=self._pinned_address),
+            headers=headers,
+            stream=request.stream,
+            extensions=extensions,
+        )
+        return await self._transport.handle_async_request(pinned_request)
+
+    async def aclose(self) -> None:
+        await self._transport.aclose()
 
 
 class BehavioralSandboxEngine:
@@ -628,7 +679,7 @@ print(json.dumps(result))
                 "success": False,
                 "error": "network_access is disabled for this environment",
             }
-        block_reason = await check_outbound_url(url)
+        block_reason, addresses = await resolve_outbound_url(url)
         if block_reason:
             return {
                 "success": False,
@@ -636,34 +687,47 @@ print(json.dumps(result))
             }
 
         try:
-            import aiohttp
-
-            async with aiohttp.ClientSession() as session:
+            parts = urlsplit(url)
+            host_header = httpx.URL(url).netloc.decode("ascii")
+            server_name = (parts.hostname or "").strip("[]").rstrip(".").lower()
+            if addresses:
+                # Pin the connection to a guard-validated address instead of
+                # resolving the hostname again: a name that rebinds between
+                # the check and the fetch cannot redirect this connection.
+                transport: httpx.AsyncBaseTransport = _PinnedSandboxTransport(
+                    pinned_address=addresses[0],
+                    host_header=host_header,
+                    server_name=server_name,
+                )
+            else:
+                # Local-dev escape hatch: nothing validated to pin to.
+                transport = httpx.AsyncHTTPTransport(
+                    verify=True,
+                    retries=0,
+                    trust_env=False,
+                )
+            async with httpx.AsyncClient(
+                transport=transport, trust_env=False
+            ) as client:
                 # Don't follow redirects: the URL guard only vetted the
                 # original target, so a 3xx to a loopback/metadata address
-                # would otherwise slip past it.
-                async with session.request(
+                # would otherwise slip past it. Stream without reading the
+                # body: only the status is reported, and buffering an
+                # unbounded body would exhaust memory.
+                async with client.stream(
                     method,
                     url,
-                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
-                    allow_redirects=False,
+                    headers={"Host": host_header},
+                    timeout=timeout_seconds,
+                    follow_redirects=False,
                 ) as resp:
-                    return {
-                        "success": True,
-                        "output": {
-                            "sandboxed": True,
-                            "status_code": resp.status,
-                            "url": str(resp.url),
-                        },
-                    }
-        except ImportError:
+                    status_code = resp.status_code
             return {
                 "success": True,
                 "output": {
                     "sandboxed": True,
-                    "mode": "http_proxy_mock",
+                    "status_code": status_code,
                     "url": url,
-                    "method": method,
                 },
             }
         except Exception as e:

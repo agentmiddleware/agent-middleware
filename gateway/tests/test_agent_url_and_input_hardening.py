@@ -33,7 +33,10 @@ from app.services.awi_playwright_bridge import (
     DOMElement,
     PlaywrightCommand,
 )
-from app.services.behavioral_sandbox import BehavioralSandboxEngine
+from app.services.behavioral_sandbox import (
+    BehavioralSandboxEngine,
+    _PinnedSandboxTransport,
+)
 
 
 @pytest.fixture
@@ -601,3 +604,175 @@ class TestSandboxHttpProxyGuard:
         )
         assert result["success"] is True
         assert result["output"]["dry_run"] is True
+
+
+class TestOutboundUrlPinning:
+    """The guard returns validated addresses so fetchers can pin them."""
+
+    @pytest.mark.anyio
+    async def test_resolve_returns_validated_addresses(self, public_documentation_dns):
+        reason, addresses = await url_guard.resolve_outbound_url(
+            "https://example.com/page"
+        )
+        assert reason is None
+        assert addresses == ["93.184.216.34"]
+
+    @pytest.mark.anyio
+    async def test_resolve_literal_returns_pinned_address(self):
+        reason, addresses = await url_guard.resolve_outbound_url(
+            "https://93.184.216.34/"
+        )
+        assert reason is None
+        assert addresses == ["93.184.216.34"]
+
+    @pytest.mark.anyio
+    async def test_resolve_blocked_url_returns_no_addresses(self):
+        reason, addresses = await url_guard.resolve_outbound_url(
+            "http://169.254.169.254/latest/meta-data/"
+        )
+        assert reason == "private_address_blocked"
+        assert addresses == []
+
+
+class TestSandboxHttpProxyPinning:
+    """The sandbox fetch must connect to the validated address, not re-resolve."""
+
+    @pytest.fixture
+    def engine(self):
+        return BehavioralSandboxEngine(redis_url="redis://localhost:6379")
+
+    @pytest.mark.anyio
+    async def test_http_proxy_connects_to_validated_address(
+        self, engine, monkeypatch, public_documentation_dns
+    ):
+        import httpx
+
+        captured = {}
+
+        class FakeStreamResponse:
+            status_code = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class FakeClient:
+            def __init__(self, *, transport=None, trust_env=True):
+                captured["transport"] = transport
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def stream(
+                self,
+                method,
+                url,
+                *,
+                headers=None,
+                timeout=None,
+                follow_redirects=True,
+            ):
+                captured.update(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    follow_redirects=follow_redirects,
+                )
+                return FakeStreamResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+        result = await engine._execute_http_proxy(
+            "http_get",
+            {"url": "https://example.com/path"},
+            False,
+            5,
+            network_access=True,
+        )
+        assert result["success"] is True
+        assert result["output"]["status_code"] == 200
+        assert result["output"]["url"] == "https://example.com/path"
+        assert captured["follow_redirects"] is False
+        transport = captured["transport"]
+        assert isinstance(transport, _PinnedSandboxTransport)
+        # The connection is pinned to the guard-time address even though the
+        # fetcher never resolves the hostname itself.
+        assert transport._pinned_address == "93.184.216.34"
+
+    @pytest.mark.anyio
+    async def test_pinned_transport_keeps_host_header_and_sni(self):
+        import httpx
+
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["host"] = request.headers.get("host")
+            seen["sni"] = request.extensions.get("sni_hostname")
+            return httpx.Response(200)
+
+        transport = _PinnedSandboxTransport(
+            pinned_address="93.184.216.34",
+            host_header="example.com",
+            server_name="example.com",
+            transport=httpx.MockTransport(handler),
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            response = await client.get("https://example.com/path")
+        assert response.status_code == 200
+        assert seen["url"] == "https://93.184.216.34/path"
+        assert seen["host"] == "example.com"
+        assert seen["sni"] == "example.com"
+
+
+class _RebindingPage:
+    """Fake page that lands on an intranet URL, as DNS rebinding would."""
+
+    def __init__(self, landing_url):
+        self._landing_url = landing_url
+        self.url = "https://example.com/"
+        self.closed = False
+
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.url = self._landing_url
+
+    async def title(self):
+        return "intranet"
+
+    async def close(self):
+        self.closed = True
+
+
+class TestNavigationRebinding:
+    """A rebound or redirected landing must fail closed with no live page."""
+
+    @pytest.mark.anyio
+    async def test_navigate_to_fails_closed_on_rebound_landing(
+        self, bridge, session, public_documentation_dns
+    ):
+        page = _RebindingPage("http://169.254.169.254/latest/meta-data/")
+        session._page = page
+        with pytest.raises(ValueError, match="navigation blocked"):
+            await bridge._navigate_to(session, "https://example.com/")
+        assert page.closed is True
+
+    @pytest.mark.anyio
+    async def test_goto_command_fails_closed_on_rebound_landing(
+        self, bridge, session, public_documentation_dns
+    ):
+        page = _RebindingPage("http://169.254.169.254/latest/meta-data/")
+        session._page = page
+        with pytest.raises(ValueError, match="navigation blocked"):
+            await bridge._execute_single_command(
+                session,
+                PlaywrightCommand(
+                    command_type=CommandType.GOTO,
+                    target="https://example.com/",
+                ),
+            )
+        assert page.closed is True
+        assert session.current_url == "https://example.com"

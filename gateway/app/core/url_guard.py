@@ -16,8 +16,16 @@ could not resolve, and the fetching client (a headless browser with its own
 resolver, or a later retry) may well resolve it — possibly to an intranet
 address. This matches the upstream MCP URL guard. Tests that exercise
 public hostnames pin ``_resolve_host`` instead of relying on live DNS. This
-is a pre-flight guard, not a substitute for network-level egress policy,
-and it intentionally does not try to defeat DNS rebinding.
+is a pre-flight guard, not a substitute for network-level egress policy.
+
+DNS rebinding (a name resolving to a public address here and to an
+intranet address when the fetcher resolves it) defeats any pre-flight
+check on its own. ``resolve_outbound_url`` therefore also returns the
+validated addresses, and every fetching caller must connect to one of
+those addresses instead of resolving the hostname again, mirroring the
+upstream MCP pinned transport. Callers that cannot pin their connection
+(a headless browser with its own resolver) must re-check the final URL
+after navigation and fail closed when it is blocked.
 
 Setting ``ALLOW_PRIVATE_NETWORK_TARGETS=true`` (local development against
 mock servers) skips only the private-address checks; non-http(s) schemes
@@ -57,43 +65,64 @@ async def _resolve_host(host: str):
     )
 
 
-async def check_outbound_url(url: str) -> str | None:
-    """Return a block reason for an agent-supplied outbound URL, or None."""
+async def resolve_outbound_url(url: str) -> tuple[str | None, list[str]]:
+    """Check an agent-supplied outbound URL and return validated addresses.
+
+    Returns a ``(block_reason, addresses)`` pair. ``block_reason`` follows
+    the ``check_outbound_url`` contract (``None`` when the URL is safe to
+    fetch). When the URL is allowed, ``addresses`` holds the validated
+    destination addresses the fetcher must connect to instead of resolving
+    the hostname again; connecting anywhere else re-opens DNS rebinding.
+    ``addresses`` is empty when there is nothing to pin (the local-dev
+    escape hatch, which skips resolution entirely).
+    """
     try:
         parts = urlsplit(url)
     except ValueError:
-        return "unparseable_url"
+        return "unparseable_url", []
 
     if parts.scheme.lower() not in _ALLOWED_SCHEMES:
-        return "scheme_not_allowed"
+        return "scheme_not_allowed", []
 
     host = parts.hostname
     if not host:
-        return "missing_host"
+        return "missing_host", []
 
     if get_settings().ALLOW_PRIVATE_NETWORK_TARGETS:
-        return None
+        return None, []
 
     host = host.strip("[]").rstrip(".").lower()
     if host in _BLOCKED_HOSTNAMES or host.endswith(_BLOCKED_SUFFIXES):
-        return "private_host_blocked"
-
-    if _address_blocked(host):
-        return "private_address_blocked"
+        return "private_host_blocked", []
 
     try:
-        ipaddress.ip_address(host)
+        literal = ipaddress.ip_address(host)
     except ValueError:
-        # A hostname, not a literal address: resolve it and require every
-        # resolved address to be globally routable.
-        try:
-            infos = await _resolve_host(host)
-        except (OSError, UnicodeError):
-            # socket.gaierror is an OSError; UnicodeError covers names the
-            # IDNA codec rejects (e.g. an over-long label). Fail closed.
-            return "dns_resolution_failed"
-        for info in infos:
-            if _address_blocked(str(info[4][0])):
-                return "private_address_blocked"
+        literal = None
+    if literal is not None:
+        if _address_blocked(host):
+            return "private_address_blocked", []
+        # A literal address needs no resolution; pin it as written.
+        return None, [str(literal)]
 
-    return None
+    # A hostname, not a literal address: resolve it and require every
+    # resolved address to be globally routable.
+    try:
+        infos = await _resolve_host(host)
+    except (OSError, UnicodeError):
+        # socket.gaierror is an OSError; UnicodeError covers names the
+        # IDNA codec rejects (e.g. an over-long label). Fail closed.
+        return "dns_resolution_failed", []
+    addresses = list(dict.fromkeys(str(info[4][0]) for info in infos))
+    if not addresses:
+        return "dns_resolution_failed", []
+    for address in addresses:
+        if _address_blocked(address):
+            return "private_address_blocked", []
+    return None, addresses
+
+
+async def check_outbound_url(url: str) -> str | None:
+    """Return a block reason for an agent-supplied outbound URL, or None."""
+    block_reason, _ = await resolve_outbound_url(url)
+    return block_reason

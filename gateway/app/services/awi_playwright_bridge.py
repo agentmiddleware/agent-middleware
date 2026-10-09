@@ -500,6 +500,14 @@ class AWIPlaywrightBridge:
         try:
             await self._create_browser_context(session, headless, viewport)
             await self._navigate_to(session, target_url)
+        except ValueError as e:
+            if "navigation blocked" in str(e):
+                # A rebinding or redirecting target passed pre-flight but
+                # landed somewhere blocked. Drop the session so the agent
+                # cannot keep driving an intranet page.
+                await self.destroy_session(session_id)
+                raise
+            logger.warning(f"Browser setup for session {session_id}: {e}")
         except Exception as e:
             logger.warning(f"Browser setup for session {session_id}: {e}")
 
@@ -1900,6 +1908,17 @@ class AWIPlaywrightBridge:
                     wait_until="networkidle",
                     timeout=self._default_timeout_ms,
                 )
+                # The browser resolves hostnames itself, so the pre-flight
+                # check in _handle_navigate_to cannot stop DNS rebinding or
+                # a redirect landing intranet-side. Re-check the final URL
+                # and fail closed instead of handing an intranet page to
+                # the agent.
+                landing_block_reason = await check_outbound_url(page.url)
+                if landing_block_reason:
+                    await self._close_browser_context(session)
+                    raise ValueError(
+                        f"navigation blocked ({landing_block_reason}): {page.url}"
+                    )
 
             elif cmd_type == CommandType.EVALUATE:
                 await page.evaluate(_SCROLL_SCRIPT, list(scroll_offsets or (0, 0)))
@@ -2028,9 +2047,19 @@ class AWIPlaywrightBridge:
                 url, wait_until="networkidle", timeout=self._default_timeout_ms
             )
             navigated_url = session._page.url
+            # Same re-check as the GOTO command path: the pre-flight check
+            # cannot stop DNS rebinding or a redirect landing intranet-side.
+            landing_block_reason = await check_outbound_url(navigated_url)
+            if landing_block_reason:
+                await self._close_browser_context(session)
+                raise ValueError(
+                    f"navigation blocked ({landing_block_reason}): {navigated_url}"
+                )
             session.current_url = url if navigated_url == f"{url}/" else navigated_url
             session.page_title = await session._page.title()
             logger.info(f"Navigated to {url} for session {session.session_id}")
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"Navigation failed for {session.session_id}: {e}")
             session.current_url = url

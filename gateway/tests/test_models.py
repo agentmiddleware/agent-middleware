@@ -11,7 +11,6 @@ from datetime import datetime
 from decimal import Decimal
 
 import pytest
-from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -114,19 +113,28 @@ def test_daily_balance_snapshot_defaults():
     assert snapshot.transaction_count == 0
 
 
-def test_wallet_missing_required_fields_raises():
-    with pytest.raises(ValidationError):
-        WalletModel()
+def test_wallet_missing_required_fields_rejected_on_commit(memory_session):
+    # SQLModel table models accept missing fields as None at construction;
+    # the NOT NULL constraint is enforced by the database on flush.
+    wallet = WalletModel()
+    assert wallet.wallet_id is None
+    assert wallet.wallet_type is None
+    memory_session.add(wallet)
+    with pytest.raises(IntegrityError):
+        memory_session.commit()
 
 
-def test_ledger_entry_missing_amount_raises():
-    with pytest.raises(ValidationError):
-        LedgerEntryModel(
-            entry_id="e1",
-            wallet_id="w1",
-            action="credit",
-            balance_after=Decimal("1"),
-        )
+def test_ledger_entry_missing_amount_rejected_on_commit(memory_session):
+    entry = LedgerEntryModel(
+        entry_id="e1",
+        wallet_id="w1",
+        action="credit",
+        balance_after=Decimal("1"),
+    )
+    assert entry.amount is None
+    memory_session.add(entry)
+    with pytest.raises(IntegrityError):
+        memory_session.commit()
 
 
 def test_main_tables_registered():

@@ -658,13 +658,8 @@ print(json.dumps(result))
                     }
         except ImportError:
             return {
-                "success": True,
-                "output": {
-                    "sandboxed": True,
-                    "mode": "http_proxy_mock",
-                    "url": url,
-                    "method": method,
-                },
+                "success": False,
+                "error": "http client is unavailable (aiohttp is not installed)",
             }
         except Exception as e:
             return {"success": False, "error": str(e)}

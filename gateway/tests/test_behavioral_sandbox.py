@@ -4,6 +4,7 @@ Tests for the Behavioral Sandbox Engine — Phase 6
 
 import asyncio
 import os
+import sys
 import pytest
 
 from httpx import ASGITransport, AsyncClient
@@ -270,6 +271,28 @@ class TestBehavioralSandboxEngine:
 
         assert result["success"] is False
         assert result["resources"]["reason"] == "docker_unavailable"
+
+    @pytest.mark.anyio
+    async def test_http_proxy_missing_client_reports_failure(self, engine, monkeypatch):
+        """A missing HTTP client fails instead of returning a passing mock."""
+
+        async def allow_url(url):
+            return None
+
+        monkeypatch.setattr(behavioral_sandbox, "check_outbound_url", allow_url)
+        monkeypatch.setitem(sys.modules, "aiohttp", None)
+
+        result = await engine._execute_http_proxy(
+            "fetch",
+            {"url": "https://example.com/resource", "method": "GET"},
+            False,
+            5,
+            network_access=True,
+        )
+
+        assert result["success"] is False
+        assert result.get("error"), "failure must carry an error message"
+        assert "output" not in result
 
     @pytest.mark.anyio
     async def test_dry_run_python_subprocess_does_not_execute_code(

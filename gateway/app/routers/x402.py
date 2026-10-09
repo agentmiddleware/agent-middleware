@@ -1,3 +1,17 @@
+"""HTTP routes for x402 payment requirements and settlement.
+
+POST /v1/x402/parse turns an observed HTTP 402 into a payment requirement.
+POST /v1/x402/settle authorizes that demand against a permit budget and
+records the settlement.
+
+Key invariants: both routes require authentication; parsing is
+tenant neutral while settling checks wallet access. Settling requires an
+Idempotency-Key header and replays the stored response for a repeated key.
+Settlement is facilitation only: budget is reserved on the permit and
+metered in the shadow ledger with a signed receipt, and no real ledger
+entry is written and no credits are minted.
+"""
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -43,6 +57,8 @@ class X402ParseRequest(BaseModel):
 
 
 class X402RequirementResponse(BaseModel):
+    """A payment demand parsed from an observed HTTP 402 response."""
+
     amount_usd: str
     pay_to: str
     network: str
@@ -50,6 +66,8 @@ class X402RequirementResponse(BaseModel):
 
 
 class X402SettleRequest(BaseModel):
+    """A request to authorize a payment demand against a permit."""
+
     permit_id: str
     wallet_id: str
     amount: Decimal
@@ -72,6 +90,8 @@ class X402AttestationResponse(BaseModel):
 
 
 class X402SettleResponse(BaseModel):
+    """A completed settlement, with receipt and shadow ledger references."""
+
     permit_id: str
     wallet_id: str
     network: str

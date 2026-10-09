@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.time import utc_now
 from tests.conftest import interleaving_factory, requires_sqlite_row_lock_noop
 from app.main import app
+from app.services.idempotency import InvalidIdempotencyKeyError
 from app.services.stripe_integration import StripeIntegration, StripeSettlementError
 
 
@@ -170,6 +171,80 @@ async def test_prepare_top_up_creates_payment_intent(
         assert call_kwargs["currency"] == "usd"
         assert call_kwargs["metadata"]["wallet_id"] == wallet_id
         assert call_kwargs["metadata"]["credits"] == "50000"
+        # No client key: this call must not invent a Stripe idempotency key.
+        assert "idempotency_key" not in call_kwargs
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_retry_sends_the_same_stripe_idempotency_key(
+    client, sponsor_wallet, api_headers
+):
+    """A retried prepare with the same client key must ask Stripe for the same intent.
+
+    Stripe replays a PaymentIntent only when the idempotency key and every
+    parameter match the first request. A fresh metadata id on the second call
+    would make the retry look like a different request.
+    """
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "topup-client-retry-1"}
+
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_retry_1",
+            client_secret="pi_retry_1_secret",
+            status="requires_payment_method",
+        )
+        url = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0"
+        first = await client.post(url, headers=headers)
+        second = await client.post(url, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["payment_intent_id"] == "pi_retry_1"
+    assert second.json()["payment_intent_id"] == "pi_retry_1"
+    assert mock_create.call_count == 2
+    first_kwargs = mock_create.call_args_list[0].kwargs
+    second_kwargs = mock_create.call_args_list[1].kwargs
+    assert first_kwargs["idempotency_key"] == "topup-client-retry-1"
+    assert second_kwargs["idempotency_key"] == "topup-client-retry-1"
+    assert first_kwargs["metadata"]["idempotency_key"] == "topup-client-retry-1"
+    assert second_kwargs["metadata"]["idempotency_key"] == "topup-client-retry-1"
+    assert first_kwargs["metadata"] == second_kwargs["metadata"]
+    assert first_kwargs["amount"] == second_kwargs["amount"] == 5000
+    assert first_kwargs["currency"] == second_kwargs["currency"] == "usd"
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_rejects_unusable_idempotency_key_before_stripe(
+    client, sponsor_wallet, api_headers
+):
+    """A key the gateway cannot honor must not open a PaymentIntent.
+
+    Treating it as an unkeyed top-up would silently drop the retry protection
+    the client asked for.
+    """
+    wallet_id = sponsor_wallet["wallet_id"]
+    too_long = "k" * 129
+    integration = StripeIntegration()
+
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        response = await client.post(
+            f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0",
+            headers={**api_headers, "Idempotency-Key": too_long},
+        )
+        with pytest.raises(InvalidIdempotencyKeyError):
+            await integration.create_top_up_intent(
+                wallet_id=wallet_id,
+                amount_fiat=Decimal("50"),
+                idempotency_key=" ",
+            )
+
+    assert response.status_code == 400
+    mock_create.assert_not_called()
 
 
 @pytest.mark.anyio

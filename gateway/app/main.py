@@ -582,19 +582,20 @@ def add_cors_middleware(application: FastAPI, origins: list[str]) -> None:
     application.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_credentials=not allow_all_origins,
+        allow_credentials=bool(origins) and not allow_all_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
 
 # CORS origins are configurable via the CORS_ORIGINS env var (comma-separated).
-# The default wildcard is a deliberate posture, not an accident: every
-# authenticated route takes explicit header credentials (X-API-Key / Bearer),
-# never cookies, and add_cors_middleware disables credentialed CORS under a
-# wildcard, so `*` here grants cross-origin reads of public discovery
-# surfaces and nothing else. Operators fronting a browser app that sends
-# credentials must set an explicit origin list instead. Decision documented
+# The default is empty (no cross-origin grant). Every authenticated route
+# takes explicit header credentials (X-API-Key / Bearer), never cookies,
+# and add_cors_middleware disables credentialed CORS under a wildcard or
+# an empty list, so `*` here would only grant credential-less cross-origin
+# reads of public discovery surfaces. Operators fronting a browser app that
+# sends credentials must set an explicit origin list instead. Production-like
+# boots refuse `*` via the trust-mode guardrails. Decision documented
 # in SECURITY_LIMITATIONS.md ("CORS posture").
 cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 add_cors_middleware(app, cors_origins)

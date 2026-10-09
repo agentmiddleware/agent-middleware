@@ -844,7 +844,11 @@ class PermitService:
                 False, "permit_key_mismatch", model, {"bound_to": "subject_key_id"}
             )
         allowed_tools = _loads_list(model.allowed_tools_json)
-        if allowed_tools and tool_name not in allowed_tools:
+        # Fail closed: an empty allowlist denies every tool. The old
+        # truthiness guard skipped this check for an empty list, so a
+        # permit with no allowed tools but explicit per-tool scopes
+        # passed validation for any scoped tool.
+        if tool_name not in allowed_tools:
             return PermitValidation(
                 False,
                 "permit_tool_not_allowed",

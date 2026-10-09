@@ -658,11 +658,15 @@ async def test_permit_service_validation_denial_reasons(client, clean_database):
         key_id=provisioned["key_id"],
     )
     assert validation.allowed is False
-    assert validation.reason == "permit_scope_missing"
+    # The tool check runs before the scope check and fails closed on an
+    # empty allowlist, so this reports the allowlist denial, not the
+    # missing per-tool scope.
+    assert validation.reason == "permit_tool_not_allowed"
 
     async with factory() as session:
         model = await session.get(PermitModel, permit.permit_id)
         assert model is not None
+        model.allowed_tools_json = json.dumps(["service-validate-tool"])
         model.scopes_json = json.dumps(
             ["tool:service-validate-tool:invoke", "billing:charge"]
         )
@@ -679,6 +683,41 @@ async def test_permit_service_validation_denial_reasons(client, clean_database):
     )
     assert validation.allowed is False
     assert validation.reason == "permit_signature_invalid"
+
+
+@pytest.mark.anyio
+async def test_empty_tool_allowlist_denies_despite_explicit_scopes(
+    client, clean_database
+):
+    """An empty allowlist must deny every tool, even with explicit scopes.
+
+    Regression: the tool check was guarded by the truthiness of the
+    allowlist, so a permit with ``allowed_tools=[]`` but explicit
+    per-tool scopes skipped the check and validated for any scoped tool.
+    """
+    provisioned = await provision_agent_wallet(client)
+    service = get_permit_service()
+    permit = await service.create_permit(
+        PermitCreateRequest(
+            issuer_wallet_id=provisioned["agent_wallet_id"],
+            subject_wallet_id=provisioned["agent_wallet_id"],
+            subject_key_id=provisioned["key_id"],
+            allowed_tools=[],
+            scopes=["tool:empty-allowlist-tool:invoke", "billing:charge"],
+            max_credits=Decimal("10"),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+        )
+    )
+
+    validation = await service.validate_for_action(
+        permit_id=permit.permit_id,
+        wallet_id=provisioned["agent_wallet_id"],
+        tool_name="empty-allowlist-tool",
+        estimated_credits=Decimal("1"),
+        key_id=provisioned["key_id"],
+    )
+    assert validation.allowed is False
+    assert validation.reason == "permit_tool_not_allowed"
 
 
 async def test_reserve_budget_refuses_an_expired_permit(

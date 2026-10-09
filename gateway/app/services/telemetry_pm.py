@@ -45,6 +45,12 @@ from ..schemas.telemetry import (
 
 logger = logging.getLogger(__name__)
 
+# Max event ids held in memory per round trip when EventStore.owners scans
+# for distinct owner partitions. The distinct set itself is tiny (one entry
+# per tenant), so paging keeps the background detection scan bounded no
+# matter how large the backlog grows.
+_OWNERS_SCAN_PAGE_SIZE = 500
+
 
 # ---------------------------------------------------------------------------
 # Tenant ownership
@@ -273,11 +279,19 @@ class EventStore:
         since: datetime | None = None,
     ) -> list[str | None]:
         """Distinct owner partitions holding matching events (``None`` =
-        unowned), so detection can run once per tenant."""
+        unowned), so detection can run once per tenant.
+
+        The scan is paged: only one page of event ids is held in memory
+        at a time, so a large backlog cannot exhaust memory or stall
+        detection. Pages are ordered by event id so offset paging is
+        stable while scanning.
+        """
         self._require_db()
         factory = get_session_factory()
 
-        stmt = select(col(TelemetryEventModel.event_id))
+        stmt = select(col(TelemetryEventModel.event_id)).order_by(
+            col(TelemetryEventModel.event_id)
+        )
         if event_type:
             stmt = stmt.where(col(TelemetryEventModel.event_type) == event_type.value)
         if since:
@@ -289,10 +303,26 @@ class EventStore:
                 >= to_naive_utc(since)
             )
 
+        found: set[str | None] = set()
+        offset = 0
         async with factory() as session:
-            event_ids = (await session.execute(stmt)).scalars().all()
+            while True:
+                page = (
+                    (
+                        await session.execute(
+                            stmt.limit(_OWNERS_SCAN_PAGE_SIZE).offset(offset)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if not page:
+                    break
+                found.update(event_owner(event_id) for event_id in page)
+                if len(page) < _OWNERS_SCAN_PAGE_SIZE:
+                    break
+                offset += _OWNERS_SCAN_PAGE_SIZE
 
-        found = {event_owner(event_id) for event_id in event_ids}
         return sorted(found, key=lambda o: (o is not None, o or ""))
 
     async def stats(self, owner: OwnerScope = ANY_OWNER) -> dict:

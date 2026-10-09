@@ -325,6 +325,53 @@ async def test_detector_builds_anomalies_per_owner_and_persists_owner():
 
 
 @pytest.mark.anyio
+async def test_owners_scan_is_paged(monkeypatch):
+    """The background owner scan must page instead of loading every id."""
+    import app.services.telemetry_pm as telemetry_pm_module
+
+    # Small pages keep this test fast; production uses a larger page.
+    monkeypatch.setattr(telemetry_pm_module, "_OWNERS_SCAN_PAGE_SIZE", 10)
+
+    store = EventStore()
+    await store.ingest([_event(source="a1") for _ in range(12)], "b-page-a", OWNER_A)
+    await store.ingest([_event(source="b1") for _ in range(8)], "b-page-b", OWNER_B)
+    await store.ingest([_event(source="ops") for _ in range(5)], "b-page-admin")
+
+    real_get_factory = telemetry_pm_module.get_session_factory
+    round_trips: list = []
+
+    def counting_factory():
+        maker = real_get_factory()
+
+        def make_session():
+            session = maker()
+            orig_execute = session.execute
+
+            async def counting_execute(statement, *args, **kwargs):
+                result = await orig_execute(statement, *args, **kwargs)
+                round_trips.append(statement)
+                return result
+
+            session.execute = counting_execute  # type: ignore[method-assign]
+            return session
+
+        return make_session
+
+    monkeypatch.setattr(telemetry_pm_module, "get_session_factory", counting_factory)
+
+    owners = await store.owners(event_type=TelemetryEventType.ERROR)
+
+    assert owners == sorted(
+        [None, OWNER_A, OWNER_B], key=lambda o: (o is not None, o or "")
+    )
+    # 25 matching rows at 10 per page must take several bounded round trips,
+    # never one unbounded fetch (the old code issued exactly one).
+    assert len(round_trips) > 1
+    for statement in round_trips:
+        assert "limit" in str(statement).lower()
+
+
+@pytest.mark.anyio
 async def test_persisted_anomaly_without_owner_is_admin_only():
     """An anomaly persisted before tenant scoping (or with a corrupt owner)
     fails closed: only an unscoped (bootstrap-admin) read sees it."""

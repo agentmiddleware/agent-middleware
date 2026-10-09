@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.core.config import get_settings
 from app.schemas.media import (
     AspectRatio,
     CaptionStyle,
@@ -108,7 +109,9 @@ async def test_detect_hooks_without_transcript_still_returns_hooks(caplog):
 
 
 async def test_detect_hooks_refuses_non_simulation_mode(monkeypatch):
-    monkeypatch.setenv("SIMULATION_MODE_MEDIA_ENGINE", "false")
+    # get_settings() is lru-cached, so setenv has no effect after startup;
+    # toggle the cached object like test_iot.py does.
+    monkeypatch.setattr(get_settings(), "SIMULATION_MODE_MEDIA_ENGINE", False)
     detector = HookDetector()
     with pytest.raises(NotImplementedError):
         await detector.detect_hooks(_video())
@@ -197,7 +200,7 @@ async def test_platform_urls_cover_every_platform():
 
 
 async def test_distribute_refuses_non_simulation_mode(monkeypatch):
-    monkeypatch.setenv("SIMULATION_MODE_MEDIA_ENGINE", "false")
+    monkeypatch.setattr(get_settings(), "SIMULATION_MODE_MEDIA_ENGINE", False)
     distributor = PlatformDistributor()
     renderer = ClipRenderer()
     clip = await renderer.render_clip(
@@ -302,9 +305,11 @@ async def test_distribute_denied_owner_matches_unknown_clip_response():
         optimize_schedule=False,
         owner_allowed=lambda owner: True,
     )
-    # The denied response never confirms the clip exists.
+    # The denied response never confirms the clip exists: same template as
+    # the unknown-id response, echoing only the caller-supplied id.
     assert denied[0].status == unknown[0].status == "failed"
-    assert denied[0].error == unknown[0].error
+    assert denied[0].error == f"Clip '{clip.clip_id}' not found"
+    assert unknown[0].error == "Clip 'no-such-clip' not found"
 
 
 async def test_distribute_allowed_owner_succeeds():

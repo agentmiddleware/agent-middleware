@@ -375,6 +375,63 @@ async def test_unregistered_agent_ids_fail_closed_for_wallet_callers(
     assert inbox.json()["count"] == 0
 
 
+def _not_found_shape(resp, agent_id: str) -> tuple:
+    body = resp.json()["detail"]
+    return (
+        resp.status_code,
+        body["error"],
+        body["message"].replace(agent_id, "<id>"),
+    )
+
+
+@pytest.mark.proof
+@pytest.mark.anyio
+async def test_foreign_agent_matches_unregistered_agent(client, clean_database):
+    """Acting on another wallet's agent must look like an unknown id.
+
+    A 403 access_denied told the caller the id was registered to someone
+    else. Inbox, send, ack, and handoff share one denial.
+    """
+    a = await provision_agent_wallet(client)
+    b = await provision_agent_wallet(client)
+    a_agent = await _register(client, a["agent_headers"], "a-hidden")
+    ghost = "agent-never-registered-probe"
+
+    async def probe(agent_id: str):
+        headers = b["agent_headers"]
+        return [
+            await client.get(f"/v1/comms/messages/{agent_id}/inbox", headers=headers),
+            await client.post(
+                f"/v1/comms/messages?from_agent={agent_id}",
+                json={"to_agent": a_agent, "subject": "spoof", "body": {}},
+                headers=headers,
+            ),
+            await client.post(
+                f"/v1/comms/messages/{agent_id}/ack/no-such-message",
+                headers=headers,
+            ),
+            await client.post(
+                f"/v1/comms/handoff?from_agent={agent_id}",
+                json={"capability": "x", "context": {}},
+                headers=headers,
+            ),
+        ]
+
+    foreign = await probe(a_agent)
+    missing = await probe(ghost)
+    for got, baseline in zip(foreign, missing, strict=True):
+        assert got.status_code == 404, got.text
+        assert _not_found_shape(got, a_agent) == _not_found_shape(baseline, ghost)
+        assert "access_denied" not in got.text
+        assert a["agent_wallet_id"] not in got.text
+
+    # The owner is unaffected.
+    own = await client.get(
+        f"/v1/comms/messages/{a_agent}/inbox", headers=a["agent_headers"]
+    )
+    assert own.status_code == 200
+
+
 @pytest.mark.proof
 @pytest.mark.anyio
 async def test_ownerless_agent_denied_to_wallet_callers(

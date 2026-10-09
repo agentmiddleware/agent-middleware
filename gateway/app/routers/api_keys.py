@@ -91,6 +91,78 @@ async def _refuse_bounded_minter(auth: AuthContext) -> None:
     )
 
 
+async def _caller_can_manage_keys(auth: AuthContext) -> bool:
+    """True when the caller may act on sibling keys of its wallet.
+
+    Bootstrap admins always may. Any other caller needs the management
+    flag on its own key record, which covers both database keys and JWTs
+    derived from them (the JWT carries the originating key id).
+    """
+    if auth.is_bootstrap_admin:
+        return True
+    return await get_api_key_service().key_can_manage_keys(auth.key_id)
+
+
+async def _require_sibling_management(
+    auth: AuthContext, target_key_id: str | None
+) -> None:
+    """Refuse sibling key management to ordinary keys with 403.
+
+    A key may always act on itself. Anything else needs management
+    rights or bootstrap admin rights. A missing caller key id fails
+    closed unless the caller is a bootstrap admin.
+    """
+    if auth.is_bootstrap_admin:
+        return
+    if (
+        target_key_id is not None
+        and auth.key_id is not None
+        and target_key_id == auth.key_id
+    ):
+        return
+    if await get_api_key_service().key_can_manage_keys(auth.key_id):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "key_cannot_manage_siblings",
+            "message": (
+                "This API key may only revoke or rotate itself. "
+                "A key with key management rights or a bootstrap admin "
+                "key is required to manage sibling keys."
+            ),
+        },
+    )
+
+
+async def _require_emergency_management(auth: AuthContext, wallet_id: str) -> None:
+    """Refuse wallet-wide emergency revocation to ordinary keys with 403.
+
+    Emergency revocation wipes every credential of the wallet. A caller
+    with management rights or a bootstrap admin may always do it. An
+    ordinary key may do it only when it is the wallet's sole remaining
+    ACTIVE credential, which harms no sibling and preserves the
+    self-service recovery path for single-credential wallets.
+    """
+    if auth.is_bootstrap_admin:
+        return
+    service = get_api_key_service()
+    if await service.key_can_manage_keys(auth.key_id):
+        return
+    if await service.has_other_active_keys(wallet_id, auth.key_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "key_cannot_manage_siblings",
+                "message": (
+                    "This API key may only revoke or rotate itself. "
+                    "A key with key management rights or a bootstrap admin "
+                    "key is required to revoke every key of the wallet."
+                ),
+            },
+        )
+
+
 async def _require_wallet_exists(wallet_id: str) -> None:
     """404 before an idempotency record is opened for an unknown wallet.
 
@@ -148,6 +220,18 @@ async def create_api_key(
     is never stored) instead of minting a second live key.
     """
     auth.require_wallet_access(request.wallet_id)
+    if request.can_manage_keys and not await _caller_can_manage_keys(auth):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "key_cannot_grant_management",
+                "message": (
+                    "This API key cannot grant key management rights. "
+                    "A key with key management rights or a bootstrap admin "
+                    "key is required."
+                ),
+            },
+        )
     await _refuse_bounded_minter(auth)
     await _require_wallet_exists(request.wallet_id)
     guard, replay = await begin_http_idempotency(
@@ -166,6 +250,7 @@ async def create_api_key(
             key_name=request.key_name,
             expires_in_days=request.expires_in_days,
             max_uses=request.max_uses,
+            can_manage_keys=request.can_manage_keys,
         )
         response = APIKeyWithSecret(
             key_id=result["key_id"],
@@ -177,6 +262,7 @@ async def create_api_key(
             created_at=result["created_at"],
             expires_at=result["expires_at"],
             max_uses=result["max_uses"],
+            can_manage_keys=result["can_manage_keys"],
         )
     except WalletNotFoundError as e:
         not_found = _not_found("wallet_not_found", str(e))
@@ -251,6 +337,10 @@ async def rotate_api_key(
         # bounded caller could adopt an unbounded sibling's authority (with
         # or without revoke_old). A bounded caller may rotate only itself.
         await _refuse_bounded_minter(auth)
+    if request.key_id is not None:
+        # Unbounded ordinary callers reach here and are refused below
+        # unless they carry sibling-management rights.
+        await _require_sibling_management(auth, request.key_id)
     await _require_wallet_exists(request.wallet_id)
     guard, replay = await begin_http_idempotency(
         idempotency_key=idempotency_key,
@@ -286,6 +376,7 @@ async def rotate_api_key(
                 created_at=result["new_key"]["created_at"],
                 expires_at=result["new_key"]["expires_at"],
                 max_uses=result["new_key"]["max_uses"],
+                can_manage_keys=result["new_key"]["can_manage_keys"],
             )
 
         response = RotationResponse(
@@ -331,6 +422,7 @@ async def revoke_api_key(
 ):
     """Revoke an API key immediately."""
     auth.require_wallet_access(wallet_id)
+    await _require_sibling_management(auth, key_id)
     service = get_api_key_service()
 
     try:
@@ -365,6 +457,7 @@ async def emergency_revoke(
     Optionally creates a new emergency key.
     """
     auth.require_wallet_access(request.wallet_id)
+    await _require_emergency_management(auth, request.wallet_id)
     if request.create_new_key:
         _refuse_jwt_minter(auth)
     service = get_api_key_service()
@@ -392,6 +485,7 @@ async def emergency_revoke(
                 created_at=result["new_key"]["created_at"],
                 expires_at=result["new_key"]["expires_at"],
                 max_uses=result["new_key"]["max_uses"],
+                can_manage_keys=result["new_key"]["can_manage_keys"],
             )
 
         return {

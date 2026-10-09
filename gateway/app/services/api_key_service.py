@@ -103,6 +103,30 @@ def mask_key(key: str) -> str:
     return f"{key[:6]}...{key[-4:]}"
 
 
+def _metadata_name(metadata_json: str | None) -> str:
+    """Human-readable key name stored in ``metadata_json``."""
+    if metadata_json:
+        try:
+            return json.loads(metadata_json).get("name", "default")
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return "default"
+
+
+def _metadata_can_manage(metadata_json: str | None) -> bool:
+    """Sibling-management flag stored in ``metadata_json``.
+
+    Stored beside the key name so no database migration is needed. Any
+    unreadable or missing value counts as no management rights.
+    """
+    if metadata_json:
+        try:
+            return bool(json.loads(metadata_json).get("can_manage_keys", False))
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return False
+
+
 def _key_is_live(key: APIKeyModel, now: datetime) -> bool:
     """True if ``key`` could authenticate at ``now``.
 
@@ -137,6 +161,7 @@ class APIKeyService:
         key_name: str = "default",
         expires_in_days: int | None = None,
         max_uses: int | None = None,
+        can_manage_keys: bool = False,
         session: AsyncSession | None = None,
     ) -> dict:
         """
@@ -198,7 +223,9 @@ class APIKeyService:
             key_hash=key_hash,
             key_prefix=key_prefix,
             status=APIKeyStatus.ACTIVE.value,
-            metadata_json=json.dumps({"name": key_name}),
+            metadata_json=json.dumps(
+                {"name": key_name, "can_manage_keys": bool(can_manage_keys)}
+            ),
             expires_at=(to_naive_utc(expires_at) if expires_at else None),
             max_uses=max_uses,
         )
@@ -223,6 +250,7 @@ class APIKeyService:
             "created_at": now,
             "expires_at": expires_at,
             "max_uses": max_uses,
+            "can_manage_keys": bool(can_manage_keys),
         }
 
     async def get_keys(self, wallet_id: str) -> dict:
@@ -279,6 +307,7 @@ class APIKeyService:
                     "expires_at": key.expires_at,
                     "max_uses": key.max_uses,
                     "use_count": key.use_count,
+                    "can_manage_keys": bool(metadata.get("can_manage_keys", False)),
                 }
             )
 
@@ -386,6 +415,44 @@ class APIKeyService:
         if key is None:
             return True
         return key.max_uses is not None or key.expires_at is not None
+
+    async def key_can_manage_keys(self, key_id: str | None) -> bool:
+        """True if this key carries sibling-management rights.
+
+        Reads the flag stored in the key record. A missing or unknown
+        key_id counts as no rights (fail closed).
+        """
+        if key_id is None:
+            return False
+        async with self._session_factory()() as session:
+            result = await session.execute(
+                select(APIKeyModel).where(col(APIKeyModel.key_id) == key_id)
+            )
+            key = result.scalar_one_or_none()
+        if key is None:
+            return False
+        return _metadata_can_manage(key.metadata_json)
+
+    async def has_other_active_keys(self, wallet_id: str, key_id: str | None) -> bool:
+        """True if the wallet holds another ACTIVE key besides ``key_id``.
+
+        Scopes emergency revocation: wiping the wallet while other
+        credentials exist locks their holders out, so only a management
+        key or a bootstrap admin may do it. A sole credential harms no
+        sibling, so it keeps the self-service recovery path. A missing
+        caller key fails closed.
+        """
+        async with self._session_factory()() as session:
+            result = await session.execute(
+                select(APIKeyModel.key_id).where(
+                    col(APIKeyModel.wallet_id) == wallet_id,
+                    col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
+                )
+            )
+            ids = list(result.scalars().all())
+        if key_id is None:
+            return True
+        return any(other != key_id for other in ids)
 
     async def validate_key(self, api_key: str) -> Optional[APIKeyModel]:
         """
@@ -514,6 +581,7 @@ class APIKeyService:
             inherited_expires_at = None
             inherited_max_uses = None
             inherited_name = "rotated_key"
+            inherited_can_manage = False
 
             if key_id:
                 # FOR UPDATE so a concurrent validate_key cannot consume a
@@ -573,6 +641,7 @@ class APIKeyService:
                         )
                     except json.JSONDecodeError:
                         pass
+                inherited_can_manage = _metadata_can_manage(old_key.metadata_json)
 
             full_key, key_hash, key_prefix = generate_api_key()
             new_key_id = f"key_{uuid4().hex[:12]}"
@@ -586,7 +655,12 @@ class APIKeyService:
                 status=APIKeyStatus.ACTIVE.value,
                 expires_at=inherited_expires_at,
                 max_uses=inherited_max_uses,
-                metadata_json=json.dumps({"name": inherited_name}),
+                metadata_json=json.dumps(
+                    {
+                        "name": inherited_name,
+                        "can_manage_keys": inherited_can_manage,
+                    }
+                ),
             )
             session.add(new_key)
 
@@ -633,6 +707,7 @@ class APIKeyService:
             "created_at": now,
             "expires_at": inherited_expires_at,
             "max_uses": inherited_max_uses,
+            "can_manage_keys": inherited_can_manage,
         }
 
         logger.info(
@@ -843,7 +918,9 @@ class APIKeyService:
                     key_hash=key_hash,
                     key_prefix=key_prefix,
                     status=APIKeyStatus.ACTIVE.value,
-                    metadata_json=json.dumps({"name": "emergency_key"}),
+                    metadata_json=json.dumps(
+                        {"name": "emergency_key", "can_manage_keys": False}
+                    ),
                     expires_at=emergency_expires_at,
                     max_uses=emergency_max_uses,
                 )
@@ -858,6 +935,7 @@ class APIKeyService:
                     "created_at": now,
                     "expires_at": emergency_expires_at,
                     "max_uses": emergency_max_uses,
+                    "can_manage_keys": False,
                 }
 
             await session.commit()

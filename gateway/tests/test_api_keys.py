@@ -1212,12 +1212,16 @@ async def test_bounded_wallet_key_cannot_rotate_an_unbounded_sibling(
 async def test_unbounded_wallet_key_rotating_a_bounded_sibling_inherits_its_bounds(
     client, api_headers, sponsor_wallet
 ):
-    """Control: an unbounded caller may rotate any key of its wallet."""
+    """Control: a management caller may rotate any key of its wallet."""
     wallet_id = sponsor_wallet["wallet_id"]
     manager = (
         await client.post(
             "/v1/api-keys",
-            json={"wallet_id": wallet_id, "key_name": "management"},
+            json={
+                "wallet_id": wallet_id,
+                "key_name": "management",
+                "can_manage_keys": True,
+            },
             headers=api_headers,
         )
     ).json()
@@ -1266,7 +1270,12 @@ async def test_bounded_caller_emergency_key_takes_only_its_own_bounds(
     bounded = (
         await client.post(
             "/v1/api-keys",
-            json={"wallet_id": wallet_id, "max_uses": 5, "expires_in_days": 1},
+            json={
+                "wallet_id": wallet_id,
+                "max_uses": 5,
+                "expires_in_days": 1,
+                "can_manage_keys": True,
+            },
             headers=api_headers,
         )
     ).json()

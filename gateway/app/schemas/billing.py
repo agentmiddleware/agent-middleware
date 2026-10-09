@@ -796,6 +796,13 @@ class CreateAPIKeyRequest(BaseModel):
         gt=0,
         description="Optional max uses. None = unlimited.",
     )
+    can_manage_keys: bool = Field(
+        default=False,
+        description=(
+            "Grant sibling key management to the new key. Only a caller "
+            "with management rights or a bootstrap admin may grant it."
+        ),
+    )
 
 
 class APIKeyResponse(BaseModel):
@@ -813,6 +820,7 @@ class APIKeyResponse(BaseModel):
     expires_at: datetime | None = None
     max_uses: int | None = None
     use_count: int = 0
+    can_manage_keys: bool = False
 
 
 class APIKeyWithSecret(BaseModel):
@@ -827,6 +835,7 @@ class APIKeyWithSecret(BaseModel):
     created_at: datetime
     expires_at: datetime | None = None
     max_uses: int | None = None
+    can_manage_keys: bool = False
     warning: str = "Store this key securely. It will not be shown again."
 
 

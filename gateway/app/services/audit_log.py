@@ -1,3 +1,13 @@
+"""Record, list, count, and summarize control-plane audit events.
+
+Callers use record_audit_event to persist an event and list, count, or
+summarize helpers to read events back. Key invariants: writes are persisted
+through the hash chained append in audit_chain, metadata is stored as JSON
+and read back as a dict, datetimes are kept as naive UTC, and the policy
+reason bucket in summaries is tallied from a bounded scan of the newest
+events while the other buckets cover all matching events.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,6 +32,8 @@ AUDIT_SUMMARY_SCAN_LIMIT = 10_000
 
 @dataclass(frozen=True)
 class AuditEvent:
+    """One audit event read back from storage, with chain fields included."""
+
     event_id: str
     created_at: datetime
     event: str
@@ -44,6 +56,8 @@ class AuditEvent:
 
 @dataclass(frozen=True)
 class AuditEventCount:
+    """Number of matching events for one (event, wallet, outcome) group."""
+
     event: str
     wallet_id: str | None
     ok: bool
@@ -97,6 +111,7 @@ async def record_audit_event(
     error: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> AuditEvent:
+    """Persist one audit event through the hash chained append and return it."""
     if event_id is not None and (not event_id or len(event_id) > 50):
         raise ValueError("audit_event_id_invalid")
     model_kwargs: dict[str, Any] = {
@@ -140,6 +155,7 @@ async def list_audit_events(
     limit: int = 50,
     offset: int = 0,
 ) -> list[AuditEvent]:
+    """Return matching events newest first, with limit and offset paging."""
     stmt = (
         select(ControlPlaneAuditEventModel)
         .order_by(
@@ -181,6 +197,7 @@ async def count_audit_events(
     created_after: datetime | None = None,
     created_before: datetime | None = None,
 ) -> int:
+    """Return how many stored events match the given filters."""
     stmt = select(func.count()).select_from(ControlPlaneAuditEventModel)
     stmt = _apply_audit_filters(
         stmt,

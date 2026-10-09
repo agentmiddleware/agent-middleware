@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Idempotency records for retryable gateway requests.
 
 Each record is keyed by wallet, endpoint, and a caller supplied key, and
@@ -10,6 +8,8 @@ conflict, and a retry that arrives before a response is stored is reported
 as in progress. Only records with no stored response and no recorded charge
 may be abandoned so a retry can start again.
 """
+
+from __future__ import annotations
 
 import asyncio
 import json

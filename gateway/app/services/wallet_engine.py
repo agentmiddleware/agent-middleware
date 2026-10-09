@@ -50,6 +50,14 @@ class WalletExpiredError(RuntimeError):
         super().__init__(f"Wallet {wallet_id} expired at {expires_at.isoformat()}")
 
 
+class TransferIdempotencyConflictError(Exception):
+    """Raised when a transfer correlation id is reused with different details.
+
+    The id already identifies a completed transfer between other wallets or
+    for another amount, so the retry is a conflict rather than a new payment.
+    """
+
+
 def _validate_child_wallet_ttl(ttl_seconds: int | None) -> None:
     """Keep service callers within the persisted PostgreSQL INTEGER range."""
     if ttl_seconds is None:
@@ -854,14 +862,20 @@ class WalletEngine:
             to_wallet_id: Destination wallet
             amount: Credits to transfer (must be > 0)
             description: Optional description of the transfer
-            correlation_id: Optional ID to link related transfers
+            correlation_id: Optional identity for the transfer. Repeating a
+                recorded id with the same wallets and amount replays the
+                original receipt; repeating it with different details fails.
 
         Returns:
-            Transfer receipt with both wallet balances
+            Transfer receipt with both wallet balances. A retry that repeats
+            a correlation_id already recorded for the same wallets and amount
+            returns the original receipt without moving credits again.
 
         Raises:
             WalletNotFoundError: If either wallet doesn't exist
             InsufficientFundsError: If source has insufficient balance
+            TransferIdempotencyConflictError: If correlation_id was already
+                used for a transfer with different wallets or amount
             ValueError: If amount <= 0 or same wallet IDs
         """
         if amount <= Decimal("0"):
@@ -886,6 +900,61 @@ class WalletEngine:
                     raise self._wallet_not_found_error(from_wallet_id)
                 if not dest:
                     raise self._wallet_not_found_error(to_wallet_id)
+
+                # The correlation id is the transfer's identity: a retry
+                # that repeats it must replay the original receipt instead
+                # of debiting and crediting again. The wallets are already
+                # locked, so concurrent retries serialize here.
+                if correlation_id:
+                    prior = (
+                        (
+                            await session.execute(
+                                select(LedgerEntryModel).where(
+                                    LedgerEntryModel.correlation_id == correlation_id,
+                                    LedgerEntryModel.action
+                                    == LedgerAction.TRANSFER.value,
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    if prior:
+                        debit = next(
+                            (
+                                row
+                                for row in prior
+                                if row.wallet_id == from_wallet_id and row.amount < 0
+                            ),
+                            None,
+                        )
+                        credit = next(
+                            (
+                                row
+                                for row in prior
+                                if row.wallet_id == to_wallet_id and row.amount > 0
+                            ),
+                            None,
+                        )
+                        if (
+                            debit is not None
+                            and credit is not None
+                            and debit.amount == -amount
+                            and credit.amount == amount
+                        ):
+                            return {
+                                "transfer_id": correlation_id,
+                                "from_wallet_id": from_wallet_id,
+                                "to_wallet_id": to_wallet_id,
+                                "amount": amount,
+                                "from_balance_after": debit.balance_after,
+                                "to_balance_after": credit.balance_after,
+                                "status": "completed",
+                            }
+                        raise TransferIdempotencyConflictError(
+                            f"correlation_id {correlation_id!r} was already "
+                            "used for a different transfer"
+                        )
 
                 if source.status not in SPENDABLE_WALLET_STATUSES:
                     raise ValueError(

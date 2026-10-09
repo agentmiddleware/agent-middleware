@@ -34,7 +34,10 @@ from ..services.idempotency import (
 )
 from ..services.policies import evaluate_wallet_policy
 from ..services.velocity_monitor import WalletFrozenError
-from ..services.wallet_engine import WalletExpiredError
+from ..services.wallet_engine import (
+    TransferIdempotencyConflictError,
+    WalletExpiredError,
+)
 from ..services.stripe_integration import get_stripe_integration
 from ..services.shadow_ledger import SimulatedChargeResult, get_shadow_ledger
 from ..services.acp_bridge import (
@@ -1046,13 +1049,25 @@ async def transfer_wallets(
     )
     if replay is not None:
         return replay
+    # The header replay row is a separate, lossy guard: if it is ever absent
+    # when a retry arrives (a crash between commit and record, or a deleted
+    # row), the ledger itself still identifies the transfer. Fall back to
+    # the header as the transfer identity so a header-only retry cannot pay
+    # twice. Keys longer than the ledger column keep header-only protection.
+    transfer_correlation_id = correlation_id
+    if (
+        transfer_correlation_id is None
+        and idempotency_key is not None
+        and len(idempotency_key) <= 100
+    ):
+        transfer_correlation_id = idempotency_key
     try:
         result = await money.transfer(
             from_wallet_id=from_wallet_id,
             to_wallet_id=to_wallet_id,
             amount=Decimal(str(amount)),
             description=description or "",
-            correlation_id=correlation_id,
+            correlation_id=transfer_correlation_id,
         )
         await _record_billing_governance(
             event="billing.transfer",
@@ -1136,6 +1151,28 @@ async def transfer_wallets(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=expired_detail,
+        )
+    except TransferIdempotencyConflictError as e:
+        conflict_detail = {
+            "error": "idempotency_key_reused",
+            "message": str(e),
+        }
+        await _record_billing_governance(
+            event="billing.transfer",
+            auth=auth,
+            wallet_id=from_wallet_id,
+            service_category="transfer",
+            endpoint="/v1/billing/transfer",
+            request_id=correlation_id,
+            estimated_cost=amount,
+            ok=False,
+            error="idempotency_key_reused",
+            metadata={"to_wallet_id": to_wallet_id, "message": str(e)},
+        )
+        await guard.complete(conflict_detail, status.HTTP_409_CONFLICT)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=conflict_detail,
         )
     except ValueError as e:
         await _record_billing_governance(

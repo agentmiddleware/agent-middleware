@@ -484,7 +484,9 @@ async def lifespan(app: FastAPI):
     await close_db()
     await close_durable_state()
 
-    await asyncio.sleep(2)  # Allow in-flight requests to drain
+    # Connection draining is the server's job: uvicorn waits for
+    # in-flight connections before lifespan shutdown runs, so no fixed
+    # sleep here.
     logger.info(
         "app_shutdown",
         phase="complete",

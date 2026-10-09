@@ -29,6 +29,7 @@ from ..core.time import utc_now
 from ..core.resilience import run_with_write_conflict_retry
 from ..schemas.billing import AlertSeverity, AlertType, WalletStatus
 from .agent_money import WalletNotFoundError
+from .idempotency import IDEMPOTENCY_KEY_HEADER_SOURCE, validate_client_idempotency_key
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -89,6 +90,7 @@ class StripeIntegration:
         wallet_id: str,
         amount_fiat: Decimal,
         currency: str = "usd",
+        idempotency_key: str | None = None,
     ) -> dict:
         """
         Create a Stripe PaymentIntent for fiat top-up.
@@ -97,6 +99,8 @@ class StripeIntegration:
             wallet_id: The wallet to credit after successful payment
             amount_fiat: Amount in fiat currency (e.g., 50.00 for $50)
             currency: ISO 4217 currency code (default: usd)
+            idempotency_key: Optional client replay key, sent to Stripe
+                unchanged so a retry asks for the same intent.
 
         Returns:
             {
@@ -143,15 +147,31 @@ class StripeIntegration:
             int(credits) if credits == credits.to_integral_value() else float(credits)
         )
 
+        validated_key: str | None = None
+        if idempotency_key is not None:
+            validated_key = validate_client_idempotency_key(
+                idempotency_key, source=IDEMPOTENCY_KEY_HEADER_SOURCE
+            )
+
         def _create_top_up_payment_intent() -> Any:
+            metadata = {
+                "wallet_id": wallet_id,
+                "credits": credits_metadata,
+                "idempotency_key": (
+                    validated_key if validated_key is not None else str(uuid4())
+                ),
+            }
+            if validated_key is not None:
+                return stripe.PaymentIntent.create(
+                    amount=amount_cents,
+                    currency=SUPPORTED_TOP_UP_CURRENCY,
+                    metadata=metadata,
+                    idempotency_key=validated_key,
+                )
             return stripe.PaymentIntent.create(
                 amount=amount_cents,
                 currency=SUPPORTED_TOP_UP_CURRENCY,
-                metadata={
-                    "wallet_id": wallet_id,
-                    "credits": credits_metadata,
-                    "idempotency_key": str(uuid4()),
-                },
+                metadata=metadata,
             )
 
         # The Stripe SDK call is synchronous network I/O; run it on a worker

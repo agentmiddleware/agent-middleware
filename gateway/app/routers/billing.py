@@ -30,6 +30,7 @@ from ..services.governance import record_governed_action
 from ..services.idempotency import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
+    InvalidIdempotencyKeyError,
     get_idempotency_service,
 )
 from ..services.policies import evaluate_wallet_policy
@@ -928,6 +929,7 @@ async def prepare_top_up(
         description="Amount in fiat currency (USD)",
     ),
     currency: str = Query("USD", description="Fiat currency code"),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ):
     _require_wallet_access(auth, wallet_id)
@@ -980,10 +982,16 @@ async def prepare_top_up(
             wallet_id=wallet_id,
             amount_fiat=Decimal(str(amount_fiat)),
             currency=currency,
+            idempotency_key=idempotency_key,
         )
         return result
     except WalletNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except InvalidIdempotencyKeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": str(e), **e.as_error_data()},
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -90,7 +90,10 @@ async def test_simulate_charge_records_charges_cumulatively():
     )
     stored = await ledger.get_session(session.session_id)
     assert len(stored.simulated_charges) == 2
-    assert stored.total_simulated == Decimal("100") - result.simulated_balance_after
+    assert stored.total_simulated == Decimal("5.0")
+    assert (
+        stored.total_simulated == stored.real_balance - result.simulated_balance_after
+    )
 
 
 async def test_simulate_charge_insufficient_funds_records_nothing():

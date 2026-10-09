@@ -25,7 +25,7 @@ from typing import Any, Mapping
 
 from app.core.config import get_settings
 from app.schemas.billing import ServiceCategory
-from app.services.audit_log import record_audit_event
+from app.services.audit_log import list_audit_events, record_audit_event
 from app.services.permits import get_permit_service
 from app.services.pricing import charge_units_for
 from app.services.receipts import ReceiptWriteContendedError, get_receipt_service
@@ -80,6 +80,23 @@ _EVM_NETWORKS: dict[str, tuple[int, str, str]] = {
 _SOLANA_NETWORKS = frozenset({"solana", "solana-devnet"})
 
 SUPPORTED_NETWORKS = frozenset(_EVM_NETWORKS) | _SOLANA_NETWORKS
+
+# Networks whose traffic is test-only. Testnet and mainnet settlements draw
+# from the same permit budget accounting, so test traffic can consume real
+# limits (or mask real spend). A permit is therefore bound to the network
+# class of its first settlement; later settlements from the other class are
+# refused before any budget is reserved (see _refuse_cross_class_settle).
+_TESTNET_NETWORKS = frozenset({"base-sepolia", "solana-devnet"})
+
+
+def _network_class(network: str) -> str | None:
+    """Return "testnet" or "mainnet" for a supported network, else None."""
+    if network in _TESTNET_NETWORKS:
+        return "testnet"
+    if network in SUPPORTED_NETWORKS:
+        return "mainnet"
+    return None
+
 
 _EVM_ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]{40}\Z")
 # Base58 alphabet (no 0, O, I, l), the shape of a Solana account address.
@@ -333,6 +350,60 @@ class X402PaymentHandler:
             authorization["payer"] = payer
         return authorization
 
+    async def _refuse_cross_class_settle(
+        self,
+        *,
+        permit_id: str,
+        wallet_id: str,
+        network: str,
+    ) -> None:
+        """Refuse a settlement whose network class differs from the permit's.
+
+        The permit budget is one shared pool, so the permit is bound to the
+        network class (testnet vs mainnet) of its first completed x402
+        settlement. Completed settlements are read back from the wallet's
+        x402.settlement audit events, whose metadata carries the permit id
+        and network (receipts keep only payload hashes, so they cannot
+        answer this). A history-store failure fails closed: without the
+        history the class cannot be proven, so nothing is reserved.
+        """
+        current = _network_class(network)
+        if current is None:
+            raise X402Error("x402_network_unsupported")
+        try:
+            limit = 200
+            offset = 0
+            while True:
+                events = await list_audit_events(
+                    event="x402.settlement",
+                    wallet_id=wallet_id,
+                    limit=limit,
+                    offset=offset,
+                )
+                for evt in events:
+                    metadata = evt.metadata or {}
+                    if metadata.get("permit_id") != permit_id:
+                        continue
+                    prior = _network_class(str(metadata.get("network", "")))
+                    if prior is None or prior != current:
+                        raise X402Error(
+                            "x402_network_class_mismatch",
+                            {
+                                "permit_id": permit_id,
+                                "network": network,
+                            },
+                        )
+                if len(events) < limit:
+                    return
+                offset += limit
+        except X402Error:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "x402 network-class history unreadable for permit %s", permit_id
+            )
+            raise X402Error("x402_settlement_failed") from exc
+
     async def settle(
         self,
         *,
@@ -368,6 +439,16 @@ class X402PaymentHandler:
                 raise X402Error("x402_payer_invalid")
         elif payer is not None and not _SOLANA_ADDRESS_RE.fullmatch(payer.strip()):
             raise X402Error("x402_payer_invalid")
+
+        # Partition budgets by network class before touching the permit: a
+        # permit bound to testnet (or mainnet) by an earlier settlement
+        # cannot spend from the other class, so test traffic can neither
+        # consume real limits nor mask real spend.
+        await self._refuse_cross_class_settle(
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            network=requirement.network,
+        )
 
         permits = get_permit_service()
         validation = await permits.authorize_and_reserve(

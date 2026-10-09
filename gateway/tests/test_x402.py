@@ -300,6 +300,120 @@ async def test_x402_settle_solana_rejects_malformed_payer(client, clean_database
     assert await _permit_spent(client, permit["permit_id"]) == Decimal("0")
 
 
+@pytest.mark.anyio
+async def test_x402_permit_budget_partitioned_by_network_class(client, clean_database):
+    """Testnet and mainnet settlements must not share one permit budget: the
+    first settlement binds the permit to its network class, and a later
+    settlement from the other class is refused with no budget movement."""
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    permit = await create_tool_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        tool_name="x402.payment",
+        max_credits=100,
+        idem_key="x402-netclass-permit",
+    )
+    permit_id = permit["permit_id"]
+
+    # First settlement on a testnet network binds the permit to testnet.
+    first = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            amount="0.03",
+            network="base-sepolia",
+        ),
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": "x402-netclass-test-1",
+        },
+    )
+    assert first.status_code == 200
+    assert Decimal(first.json()["credits"]) == Decimal("30")
+    assert await _permit_spent(client, permit_id) == Decimal("30")
+
+    # A mainnet settlement against the same permit is refused, and the
+    # refusal reserves nothing: the test budget cannot consume real limits.
+    second = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            amount="0.03",
+            network="base",
+        ),
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": "x402-netclass-live-1",
+        },
+    )
+    assert second.status_code == 400
+    assert second.json()["detail"] == "x402_network_class_mismatch"
+    assert await _permit_spent(client, permit_id) == Decimal("30")
+
+    # Same-class traffic still settles: the partition blocks only crossing.
+    third = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            amount="0.03",
+            network="base-sepolia",
+        ),
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": "x402-netclass-test-2",
+        },
+    )
+    assert third.status_code == 200
+    assert await _permit_spent(client, permit_id) == Decimal("60")
+
+    # The reverse direction holds too: a mainnet-bound permit refuses
+    # testnet traffic.
+    live_permit = await create_tool_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        tool_name="x402.payment",
+        max_credits=100,
+        idem_key="x402-netclass-live-permit",
+    )
+    live_permit_id = live_permit["permit_id"]
+    live_first = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=live_permit_id,
+            wallet_id=wallet_id,
+            amount="0.03",
+            network="base",
+        ),
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": "x402-netclass-live-2",
+        },
+    )
+    assert live_first.status_code == 200
+    live_second = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=live_permit_id,
+            wallet_id=wallet_id,
+            amount="0.03",
+            network="base-sepolia",
+        ),
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": "x402-netclass-test-3",
+        },
+    )
+    assert live_second.status_code == 400
+    assert live_second.json()["detail"] == "x402_network_class_mismatch"
+    assert await _permit_spent(client, live_permit_id) == Decimal("30")
+
+
 # ---------------------------------------------------------------------------
 # Parsing and transfer-authorization shapes
 # ---------------------------------------------------------------------------

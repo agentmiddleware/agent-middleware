@@ -66,6 +66,14 @@ class Settings(BaseSettings):
 
     # --- Authentication ---
     API_KEY_HEADER: str = "X-API-Key"
+    # Server-side pepper mixed into wallet API key hashes (SHA-256 over
+    # pepper + key, see app/services/api_key_service.hash_api_key). Set this
+    # to a long random string and keep it out of the database and logs, so a
+    # database leak alone does not hand out crackable hashes. Empty by
+    # default, which keeps the legacy plain SHA-256 hashes. Set it once: keys
+    # issued under a previous pepper stop validating when it changes, while
+    # pre-pepper keys keep validating until rotation replaces them.
+    API_KEY_PEPPER: str = ""
     # Comma-separated list of valid API keys (use a secrets manager in production)
     VALID_API_KEYS: str = ""
     # Comma-separated static development/training keys for local testing.

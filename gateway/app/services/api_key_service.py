@@ -5,7 +5,7 @@ Handles API key creation, rotation, and revocation for compromised wallets.
 Supports automatic rotation on suspicious activity detection.
 
 Architecture:
-1. Keys are stored hashed (SHA-256) in the database
+1. Keys are stored hashed (SHA-256 over the server pepper plus the key) in the database
 2. Only the key prefix and masked key are ever shown
 3. Rotation creates new key and optionally revokes old ones
 4. Emergency revocation immediately invalidates all keys
@@ -24,6 +24,7 @@ from sqlalchemy import case, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
+from ..core.config import get_settings
 from ..core.time import to_naive_utc, utc_now
 from ..db.database import get_session_factory
 from ..db.models import (
@@ -83,6 +84,21 @@ class InvalidRotationRequestError(APIKeyError):
     pass
 
 
+def hash_api_key(api_key: str, pepper: str | None = None) -> str:
+    """Hash a raw API key for storage and lookup.
+
+    The digest is SHA-256 over the server pepper concatenated with the key,
+    so a database leak alone does not give an attacker a hash that can be
+    attacked without the pepper. The pepper comes from the API_KEY_PEPPER
+    setting and is never stored in the database. An empty pepper reproduces
+    the legacy plain SHA-256 digest, which keeps keys issued before the
+    pepper was configured valid until rotation replaces them.
+    """
+    if pepper is None:
+        pepper = get_settings().API_KEY_PEPPER or ""
+    return hashlib.sha256((pepper + api_key).encode()).hexdigest()
+
+
 def generate_api_key() -> tuple[str, str, str]:
     """
     Generate a new API key.
@@ -91,7 +107,7 @@ def generate_api_key() -> tuple[str, str, str]:
         tuple: (full_key, key_hash, key_prefix)
     """
     full_key = f"b2a_{secrets.token_urlsafe(API_KEY_LENGTH)}"
-    key_hash = hashlib.sha256(full_key.encode()).hexdigest()
+    key_hash = hash_api_key(full_key)
     key_prefix = full_key[:API_KEY_PREFIX_LENGTH]
     return full_key, key_hash, key_prefix
 
@@ -401,7 +417,15 @@ class APIKeyService:
             return None
 
         key_prefix = api_key[:API_KEY_PREFIX_LENGTH]
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        pepper = get_settings().API_KEY_PEPPER or ""
+        key_hash = hash_api_key(api_key, pepper)
+        candidate_hashes = [key_hash]
+        if pepper:
+            # Keys issued before the pepper was configured keep validating
+            # until rotation replaces them, so no migration is needed.
+            legacy_hash = hashlib.sha256(api_key.encode()).hexdigest()
+            if legacy_hash != key_hash:
+                candidate_hashes.append(legacy_hash)
 
         async with self._session_factory()() as session:
             # Look up by the indexed full digest, not the prefix alone: the
@@ -412,7 +436,7 @@ class APIKeyService:
             # failed every request for both keys with a 500.
             result = await session.execute(
                 select(APIKeyModel).where(
-                    col(APIKeyModel.key_hash) == key_hash,
+                    col(APIKeyModel.key_hash).in_(candidate_hashes),
                     col(APIKeyModel.key_prefix) == key_prefix,
                     col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
                 )
@@ -422,7 +446,10 @@ class APIKeyService:
             if not key:
                 return None
 
-            if not hmac.compare_digest(key.key_hash, key_hash):
+            if not any(
+                hmac.compare_digest(key.key_hash, candidate)
+                for candidate in candidate_hashes
+            ):
                 return None
 
             now = utc_now()

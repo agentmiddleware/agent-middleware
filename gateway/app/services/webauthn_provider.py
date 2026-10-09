@@ -22,6 +22,7 @@ Architecture:
 """
 
 import base64
+import json
 import logging
 import os
 import secrets
@@ -168,6 +169,7 @@ class WebAuthnProvider:
         challenge_expiry_seconds: int = 300,
         verification_validity_seconds: int = 300,
         allowed_origins: list[str] | None = None,
+        credential_store_path: str | None = None,
     ):
         """
         Initialize the WebAuthn provider.
@@ -179,6 +181,13 @@ class WebAuthnProvider:
             challenge_expiry_seconds: How long a challenge remains valid (default 5min).
             verification_validity_seconds: How long a verified action remains valid (default 5min).
             allowed_origins: List of allowed origins for verification (e.g., ["https://example.com"]).
+            credential_store_path: Optional path to a JSON file used to persist
+                registered credentials (public keys) and authenticator sign
+                counters across restarts. Without it, credentials live only in
+                memory: a restart forgets every credential and resets every
+                replay counter, which weakens cloned-credential detection.
+                Challenges and short-lived verifications stay in memory on
+                purpose; losing them on restart only forces clients to retry.
         """
         self._rp_id = rp_id
         self._rp_name = rp_name
@@ -186,12 +195,15 @@ class WebAuthnProvider:
         self._challenge_expiry = challenge_expiry_seconds
         self._verification_validity = verification_validity_seconds
         self._allowed_origins = allowed_origins or [f"https://{rp_id}"]
+        self._credential_store_path = credential_store_path
 
         self._challenges: dict[str, WebAuthnChallenge] = {}
         self._verifications: dict[str, VerificationRecord] = {}
         self._credentials: dict[
             str, CredentialRecord
         ] = {}  # credential_id -> CredentialRecord
+        if credential_store_path:
+            self._load_credentials()
 
     async def requires_passkey(self, session_id: str, action: str) -> bool:
         """
@@ -526,6 +538,84 @@ class WebAuthnProvider:
         """Get a stored challenge for route-level ownership checks."""
         return self._challenges.get(challenge_id)
 
+    def _load_credentials(self) -> None:
+        """Load persisted credentials and sign counters from disk.
+
+        Corrupt or unreadable store content is ignored (fail closed with an
+        empty credential set) so a damaged file cannot grant access or crash
+        boot; the damage is logged for the operator.
+        """
+        path = self._credential_store_path
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as handle:
+                raw = json.load(handle)
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            logger.warning("Ignoring unreadable WebAuthn credential store: %s", exc)
+            return
+        if not isinstance(raw, dict):
+            logger.warning(
+                "Ignoring malformed WebAuthn credential store: not an object"
+            )
+            return
+        loaded = 0
+        for credential_id, entry in raw.items():
+            if not isinstance(entry, dict):
+                continue
+            try:
+                public_key = base64.b64decode(entry["public_key_b64"])
+                sign_count = int(entry.get("sign_count", 0))
+                created_at_raw = entry.get("created_at")
+                created_at = (
+                    datetime.fromisoformat(created_at_raw)
+                    if created_at_raw
+                    else utc_now()
+                )
+                self._credentials[credential_id] = CredentialRecord(
+                    credential_id=credential_id,
+                    user_id=str(entry.get("user_id", "")),
+                    public_key=public_key,
+                    sign_count=max(sign_count, 0),
+                    created_at=created_at,
+                    name=str(entry.get("name", "")),
+                )
+                loaded += 1
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("Skipping malformed credential entry: %s", exc)
+        logger.info("Loaded %d WebAuthn credentials from store", loaded)
+
+    def _save_credentials(self) -> None:
+        """Persist credentials and sign counters to disk (best effort).
+
+        Writes atomically via a temporary file plus rename, and restricts the
+        file to owner-only access. Failures are logged, never raised, so a
+        read-only disk cannot break verification itself.
+        """
+        path = self._credential_store_path
+        if not path:
+            return
+        payload = {
+            credential_id: {
+                "user_id": record.user_id,
+                "public_key_b64": base64.b64encode(record.public_key).decode("ascii"),
+                "sign_count": record.sign_count,
+                "created_at": record.created_at.isoformat(),
+                "name": record.name,
+            }
+            for credential_id, record in self._credentials.items()
+        }
+        try:
+            tmp_path = f"{path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+        except OSError as exc:
+            logger.warning("Could not persist WebAuthn credentials: %s", exc)
+
     async def register_credential(
         self,
         user_id: str,
@@ -538,7 +628,8 @@ class WebAuthnProvider:
         Register a new WebAuthn credential for a user.
 
         This stores the credential's public key for later verification.
-        In production, credentials would be stored in a persistent database.
+        When a credential store path is configured, the record is persisted
+        to disk so it survives restarts.
 
         Args:
             user_id: The user identifier.
@@ -550,6 +641,12 @@ class WebAuthnProvider:
         Returns:
             True if registered successfully.
         """
+        existing = self._credentials.get(credential_id)
+        if existing is not None:
+            # Never roll the replay counter backwards: re-registering a known
+            # credential (for example after a restart) keeps the highest seen
+            # sign count so cloned-credential detection is not weakened.
+            sign_count = max(sign_count, existing.sign_count)
         self._credentials[credential_id] = CredentialRecord(
             credential_id=credential_id,
             user_id=user_id,
@@ -557,6 +654,7 @@ class WebAuthnProvider:
             sign_count=sign_count,
             name=name,
         )
+        self._save_credentials()
         logger.info(f"Registered credential {credential_id[:20]}... for user {user_id}")
         return True
 
@@ -687,6 +785,9 @@ class WebAuthnProvider:
             # Update stored sign count to prevent cloned credential attacks
             new_sign_count = result.new_sign_count
             stored_credential.sign_count = new_sign_count
+            # Persist immediately: if the process restarts before the next
+            # save, a stale counter would accept a replayed assertion.
+            self._save_credentials()
 
             logger.info(
                 f"WebAuthn verification successful for credential {credential_id[:20]}..."
@@ -709,12 +810,19 @@ def get_webauthn_provider() -> WebAuthnProvider:
 
         settings = get_settings()
 
+        # Optional durable credential store. Read live from the environment
+        # so tests can point the singleton at a temp file, and operators can
+        # set it without a code change. When unset, credentials stay in
+        # memory only and are lost on restart.
+        store_path = os.getenv("WEBAUTHN_CREDENTIAL_STORE") or None
+
         _webauthn_provider = WebAuthnProvider(
             rp_id=settings.WEBAUTHN_RP_ID,
             rp_name=settings.WEBAUTHN_RP_NAME,
             timeout_ms=settings.WEBAUTHN_TIMEOUT_MS,
             challenge_expiry_seconds=settings.WEBAUTHN_CHALLENGE_EXPIRY,
             verification_validity_seconds=settings.WEBAUTHN_VERIFICATION_VALIDITY,
+            credential_store_path=store_path,
         )
 
     return _webauthn_provider

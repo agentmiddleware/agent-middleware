@@ -235,19 +235,20 @@ async def test_replay_with_changed_arguments_returns_idempotency_conflict():
         permit_idempotency_key="permit-replay-key",
         arguments={"query": "first"},
     )
-    conflict = await tool._arun(
-        operation="call_tool",
-        tool_name="partner.search",
-        idempotency_key="replay-key",
-        permit_idempotency_key="permit-replay-key",
-        arguments={"query": "second"},
-    )
+    with pytest.raises(IdempotencyConflictError) as exc_info:
+        await tool._arun(
+            operation="call_tool",
+            tool_name="partner.search",
+            idempotency_key="replay-key",
+            permit_idempotency_key="permit-replay-key",
+            arguments={"query": "second"},
+        )
 
     assert gateway.invoke_keys == [("replay-key", "replay-key")] * 2
     assert gateway.permit_requests == 1
     assert gateway.charges == 1
     assert ast.literal_eval(first)["receipt_id"] == "receipt-charge-1"
-    assert conflict == "Error: idempotency_key_reused"
+    assert "idempotency_key_reused" in str(exc_info.value)
 
     await base_client.close()
 

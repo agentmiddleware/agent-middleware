@@ -4,6 +4,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from b2a_sdk.errors import (
+    DeliveryUncertainError,
+    IdempotencyConflictError,
+    InsufficientFundsError,
+    PermitDeniedError,
+)
 from b2a_sdk.models import PermitRequest
 from crewai.tools import BaseTool
 from pydantic import BaseModel
@@ -177,6 +183,13 @@ class CrewAIB2ATool(BaseTool):
             else:
                 return f"Unknown operation: {operation}"
 
+        except (
+            InsufficientFundsError,
+            PermitDeniedError,
+            DeliveryUncertainError,
+            IdempotencyConflictError,
+        ):
+            raise
         except Exception as e:  # noqa: BLE001
             return f"Error: {e!s}"
 
@@ -242,5 +255,12 @@ class CrewAIB2ATool(BaseTool):
             else:
                 return f"Unknown operation: {operation}"
 
+        except (
+            InsufficientFundsError,
+            PermitDeniedError,
+            DeliveryUncertainError,
+            IdempotencyConflictError,
+        ):
+            raise
         except Exception as e:  # noqa: BLE001
             return f"Error: {e!s}"

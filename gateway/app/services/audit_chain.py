@@ -1,3 +1,15 @@
+"""Tamper-evident audit event chain for control plane actions.
+
+Each wallet gets its own append-only sequence, plus one wallet-less chain
+for system and denied-action records. Every event links to the previous
+event hash and carries a signature from the active signing key, so edits or
+reordering break verification. Concurrent appends serialize through a
+per-wallet head row with optimistic concurrency, so a writer that loses a
+race retries against the new head instead of forking the chain. Verification
+recomputes payload hashes, link hashes and signatures, and compares the tail
+of the loaded chain against the head row to catch deleted events.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -36,6 +48,7 @@ def audit_payload(
     metadata_json: str | None,
     previous_hash: str | None,
 ) -> dict[str, Any]:
+    """Build the canonical payload dict hashed and signed for one audit event."""
     return {
         "event_id": event_id,
         "created_at": created_at,
@@ -358,6 +371,14 @@ async def append_chained_audit_event(
 
 @dataclass(frozen=True)
 class AuditChainVerification:
+    """Result of verifying one chain or, for a global check, all chains.
+
+    valid is True only when every checked event linked, hashed and verified
+    correctly and the tail matched the recorded head row. reason names the
+    first failure found and broken_event_id points at the event where the
+    check stopped.
+    """
+
     valid: bool
     checked_events: int
     first_event_id: str | None = None
@@ -372,6 +393,13 @@ async def verify_audit_chain(
     created_after: datetime | None = None,
     created_before: datetime | None = None,
 ) -> AuditChainVerification:
+    """Verify stored audit chains and report the first failure found.
+
+    Pass a wallet id to check that wallet chain, or None to check every
+    chain including the wallet-less chain. created_after and created_before
+    optionally limit which events are loaded; the head-row truncation check
+    only applies when no time window is given.
+    """
     if wallet_id is None:
         # Global verification: walk every per-wallet chain, INCLUDING the
         # wallet-less chain (events whose wallet_id IS NULL -- system and

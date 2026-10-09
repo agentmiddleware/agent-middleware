@@ -45,7 +45,7 @@ class BlobBackend(ABC):
     async def put(
         self, key: str, data: bytes, content_type: str = "application/octet-stream"
     ) -> str:
-        """Store ``data`` under ``key``. Return a URL or path callers can store."""
+        """Store ``data`` under ``key``. Return an opaque reference callers can store."""
 
     @abstractmethod
     async def get(self, key: str) -> bytes:
@@ -57,7 +57,7 @@ class BlobBackend(ABC):
 
     @abstractmethod
     async def url(self, key: str) -> str:
-        """Return a URL or path reference for ``key`` without fetching it."""
+        """Return an opaque reference for ``key`` without fetching it."""
 
 
 class LocalFilesystemBlob(BlobBackend):
@@ -68,6 +68,9 @@ class LocalFilesystemBlob(BlobBackend):
     Keys are hashed to avoid path traversal: a caller supplying
     ``../../etc/passwd`` gets a hex digest inside the blob root. The
     original key is recorded in a sidecar for debugging.
+
+    ``put`` and ``url`` return ``blob:<digest>``. That reference does not
+    include the blob directory, so callers do not learn the server layout.
     """
 
     def __init__(self, root: Optional[Path] = None):
@@ -122,7 +125,8 @@ class LocalFilesystemBlob(BlobBackend):
 
     @staticmethod
     def _to_url(path: Path) -> str:
-        return f"file://{path}"
+        """Reference callers can store. Only the hash, never the host directory."""
+        return f"blob:{path.name}"
 
 
 class _UnimplementedBlob(BlobBackend):

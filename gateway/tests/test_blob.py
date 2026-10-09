@@ -7,6 +7,7 @@ surface is frozen — tests pin that contract so the stubs do not silently
 succeed.
 """
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,9 @@ def _clear_backend_cache():
 async def test_local_backend_put_get_round_trip(local_blob):
     payload = b"hello world"
     url = await local_blob.put("my-video.mp4", payload, "video/mp4")
-    assert url.startswith("file://")
+    assert url.startswith("blob:")
+    assert "file://" not in url
+    assert str(local_blob.root) not in url
 
     got = await local_blob.get("my-video.mp4")
     assert got == payload
@@ -84,6 +87,26 @@ async def test_local_backend_delete_returns_whether_removed(local_blob):
 async def test_local_backend_get_missing_raises(local_blob):
     with pytest.raises(FileNotFoundError):
         await local_blob.get("never-stored")
+
+
+@pytest.mark.anyio
+async def test_local_backend_refs_do_not_expose_host_path(local_blob):
+    """put and url must hand back an opaque ref, not the server directory."""
+    key = "campaign-42/thumbnail.jpg"
+    payload = b"frame"
+    stored = await local_blob.put(key, payload, "image/jpeg")
+    looked_up = await local_blob.url(key)
+
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    root = str(local_blob.root)
+    for ref in (stored, looked_up):
+        assert ref == f"blob:{digest}"
+        assert root not in ref
+        assert "file://" not in ref
+        assert "/" not in ref
+        assert ".." not in ref
+
+    assert await local_blob.get(key) == payload
 
 
 # ---------------------------------------------------------------------------

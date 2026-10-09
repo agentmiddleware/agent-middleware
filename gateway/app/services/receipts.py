@@ -1,3 +1,30 @@
+"""Signed receipts for governed tool invocations.
+
+This module creates, stores, reads, and verifies receipts, which are the
+signed record of what a governed invoke decided and charged. Each receipt is
+signed with Ed25519 through the signing key service, and verification
+recomputes the same payload the signature covers.
+
+Key invariants, each enforced by the code below:
+
+- One idempotency record links to at most one receipt. Repeating a create
+  with the same values returns the existing receipt, while reuse of the link
+  for different values raises ReceiptError.
+- Optional linkage fields (idempotency, dispatch, approval, evaluated
+  constraints) are signed only when present, so receipts written before a
+  field existed still verify.
+- Request identity comes from exactly one of request_payload or
+  request_hash, never both and never neither.
+- A reason_code is allowed only on non-success outcomes and must match the
+  reason code pattern.
+- Caller mistakes raise ReceiptError. A receipt insert that loses write
+  conflicts for its whole retry budget raises ReceiptWriteContendedError,
+  which is deliberately not a ReceiptError subclass.
+- Signatures made before the idempotency linkage fields existed verify
+  only when the backfilled link is unambiguous (one matching record with
+  the same wallet and request hash); anything else fails closed.
+"""
+
 from __future__ import annotations
 
 import re
@@ -29,6 +56,13 @@ _REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
 
 
 class ReceiptError(RuntimeError):
+    """Caller mistake about a receipt's contents or linkage.
+
+    The ``reason`` string names the failed check (for example a conflicting
+    idempotent replay or an invalid reason code) and is also used as the
+    exception message.
+    """
+
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
@@ -71,6 +105,7 @@ def _action_binding(model: PermitModel | ReceiptModel) -> dict[str, Any]:
 
 
 def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
+    """Convert a stored receipt row to its API response shape."""
     return ReceiptResponse(
         **_action_binding(model),
         receipt_id=model.receipt_id,
@@ -97,6 +132,8 @@ def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
 
 
 class ReceiptService:
+    """Creates, reads, lists, and verifies signed receipts."""
+
     @staticmethod
     def _verification_payload(
         model: ReceiptModel,
@@ -251,6 +288,10 @@ class ReceiptService:
     async def action_binding_for_permit(
         self, permit_id: str, *, session: AsyncSession | None = None
     ) -> dict[str, Any]:
+        """Return the action binding snapshot stored on a permit.
+
+        Returns an empty dict when the permit does not exist.
+        """
         if session is None:
             async with get_session_factory()() as owned_session:
                 return await self.action_binding_for_permit(
@@ -260,6 +301,11 @@ class ReceiptService:
         return _action_binding(permit) if permit is not None else {}
 
     async def assert_action_receipt_binding(self, receipt: ReceiptResponse) -> None:
+        """Check that a receipt's action fields match its permit.
+
+        Raises ReceiptError when the fields differ or when the receipt
+        carries action fields the permit does not have.
+        """
         expected = await self.action_binding_for_permit(receipt.permit_id)
         actual = {name: getattr(receipt, name) for name in expected}
         if actual != expected or any(
@@ -292,6 +338,14 @@ class ReceiptService:
         constraints_evaluated: dict[str, Any] | None = None,
         prepared_signing_key_id: str | None = None,
     ) -> ReceiptResponse:
+        """Build, sign, store, and return a receipt.
+
+        Repeating the call with the same idempotency record and the same
+        values returns the existing receipt instead of writing a second
+        row. Raises ReceiptError for invalid input or conflicting reuse of
+        the idempotency link, and ReceiptWriteContendedError when the
+        insert loses write conflicts for its whole retry budget.
+        """
         if not all(
             credit_amount_fits_storage(amount)
             for amount in (credits_authorized, credits_charged)
@@ -575,6 +629,7 @@ class ReceiptService:
             raise
 
     async def get_receipt(self, receipt_id: str) -> ReceiptResponse | None:
+        """Fetch a receipt by id, or None when it does not exist."""
         factory = get_session_factory()
         async with factory() as session:
             model = await session.get(ReceiptModel, receipt_id)
@@ -603,6 +658,7 @@ class ReceiptService:
         self,
         idempotency_record_id: str,
     ) -> ReceiptResponse | None:
+        """Fetch the receipt linked to an idempotency record, if one exists."""
         factory = get_session_factory()
         async with factory() as session:
             model = await self._get_by_idempotency_record(
@@ -621,6 +677,10 @@ class ReceiptService:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[ReceiptResponse], int]:
+        """List receipts with optional filters, newest first.
+
+        Returns the page of receipts and the total count of matches.
+        """
         stmt = select(ReceiptModel)
         count_stmt = select(func.count()).select_from(ReceiptModel)
 
@@ -659,6 +719,11 @@ class ReceiptService:
         self,
         receipt_id: str,
     ) -> tuple[bool, str | None, ReceiptResponse | None]:
+        """Verify a stored receipt's signature.
+
+        Returns whether the signature is valid, a reason code when it is
+        not, and the receipt itself.
+        """
         factory = get_session_factory()
         async with factory() as session:
             model = await session.get(ReceiptModel, receipt_id)
@@ -758,6 +823,7 @@ _service: ReceiptService | None = None
 
 
 def get_receipt_service() -> ReceiptService:
+    """Return the shared ReceiptService instance."""
     global _service
     if _service is None:
         _service = ReceiptService()

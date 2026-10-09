@@ -1,3 +1,11 @@
+"""Agent self inspection endpoints under ``/v1/me``.
+
+Read-only views scoped to the caller's own wallet. Every endpoint requires
+a DB-backed wallet API key and rejects bootstrap admin keys with
+``wallet_key_required``. List endpoints paginate with limit and offset
+and never change stored state.
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -33,6 +41,7 @@ router = APIRouter(prefix="/v1/me", tags=["Agent Self Inspection"])
 
 
 def _require_wallet_key(auth: AuthContext) -> tuple[str, str | None]:
+    """Return the caller's wallet id and key id, rejecting admin keys."""
     if auth.is_bootstrap_admin or not auth.wallet_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -50,6 +59,11 @@ async def list_my_alerts(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> AlertListResponse:
+    """Billing alerts for the caller's own wallet, paginated.
+
+    Read-only. Returns the total alert count and the number still
+    unacknowledged alongside the requested page.
+    """
     wallet_id, _ = _require_wallet_key(auth)
     money = get_agent_money()
     alerts = await money.get_alerts(wallet_id)
@@ -142,6 +156,11 @@ async def list_my_permits(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitListResponse:
+    """Permits held by the caller's own wallet and key, paginated.
+
+    Read-only. Optional filters narrow by status and creation or expiry
+    window. Listing never grants, renews, or revokes a permit.
+    """
     wallet_id, key_id = _require_wallet_key(auth)
     permits, total = await get_permit_service().list_permits(
         wallet_id=wallet_id,
@@ -233,6 +252,10 @@ async def list_my_receipts(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> ReceiptListResponse:
+    """Spending receipts for the caller's own wallet, paginated.
+
+    Read-only. Optional filters narrow by permit, tool, or outcome.
+    """
     wallet_id, _ = _require_wallet_key(auth)
     receipts, total = await get_receipt_service().list_receipts(
         permit_id=permit_id,
@@ -267,6 +290,11 @@ async def list_my_audit_events(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> AuditEventListResponse:
+    """Audit events for the caller's own wallet and key, paginated.
+
+    Read-only. Optional filters narrow by event, tool, endpoint, related
+    ids, result, or creation window.
+    """
     wallet_id, key_id = _require_wallet_key(auth)
     events = await list_audit_events(
         event=event,

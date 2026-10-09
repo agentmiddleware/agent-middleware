@@ -1,3 +1,11 @@
+"""HTTP routes for trust permits and action permits.
+
+This module exposes listing, issuance, inspection, revocation, and
+verification endpoints. Key invariants: every read or mutation checks that
+the caller may act for the relevant wallet, and every issuance path is
+guarded by an idempotency key so retries return the original response.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -63,6 +71,7 @@ async def list_permits(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitListResponse:
+    """List permits visible to the caller with optional filters and paging."""
     if wallet_id:
         auth.require_wallet_access(wallet_id)
     elif auth.wallet_id:
@@ -104,6 +113,7 @@ async def create_permit(
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ) -> PermitResponse:
+    """Issue a new permit for the requested issuer and subject wallets."""
     if request.action_contract_version is not None:
         raise HTTPException(
             status_code=400, detail="action_permit_requires_trusted_issuance"
@@ -189,6 +199,7 @@ async def get_permit(
     permit_id: str,
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitResponse:
+    """Return one permit by id when the caller may inspect it."""
     permit = await get_permit_service().get_permit(permit_id)
     if not permit:
         raise HTTPException(status_code=404, detail="permit_not_found")
@@ -209,6 +220,7 @@ async def list_permit_receipts(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> ReceiptListResponse:
+    """List receipts recorded against one permit with optional filters."""
     permit = await get_permit_service().get_permit(permit_id)
     if not permit:
         raise HTTPException(status_code=404, detail="permit_not_found")
@@ -240,6 +252,7 @@ async def revoke_permit(
     permit_id: str,
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitResponse:
+    """Revoke one permit when the caller may act for the issuer wallet."""
     service = get_permit_service()
     existing = await service.get_permit(permit_id)
     if not existing:
@@ -257,6 +270,7 @@ async def verify_permit(
     request: PermitVerifyRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitVerifyResponse:
+    """Report whether the described action would be admitted by the permit."""
     if request.wallet_id:
         auth.require_wallet_access(request.wallet_id)
     estimated = request.estimated_credits or Decimal("0")
@@ -318,6 +332,7 @@ async def issue_action_permit(
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitResponse:
+    """Issue a trusted action permit after authorizing the issuer."""
     from app.services.action_permits import (
         authorize_action_issuer,
         create_action_permit,

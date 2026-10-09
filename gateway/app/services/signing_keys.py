@@ -1,3 +1,12 @@
+"""Trust-plane Ed25519 signing keys and receipt signature helpers.
+
+This module covers canonical JSON serialization, payload hashing, and
+DB-backed public key metadata for signing and verifying receipts. Key
+invariants: a key id always maps to one public key, retired keys stay
+verifiable, and disabled keys are rejected for signing and verification.
+Verification fails closed by returning False on malformed stored data.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -98,6 +107,11 @@ def canonical_json(
 
 
 def sha256_hex(payload: dict[str, Any] | str | bytes) -> str:
+    """Return the SHA-256 hex digest for the given payload.
+
+    Dict payloads are serialized with canonical_json first. str payloads
+    are UTF-8 encoded. bytes payloads are hashed directly.
+    """
     if isinstance(payload, dict):
         data = canonical_json(payload).encode()
     elif isinstance(payload, str):
@@ -165,6 +179,12 @@ class SigningKeyService:
             raise SigningKeyError("signing_key_disabled")
 
     async def ensure_active_key(self) -> SigningKeyModel:
+        """Ensure the configured key has an active metadata row and return it.
+
+        Creates the row when missing and reactivates it when it exists but
+        is not active. Rejects rows bound to different key material and
+        rows that are disabled.
+        """
         factory = get_session_factory()
         public_key_b64 = self._public_key_b64()
         async with factory() as session:
@@ -249,6 +269,12 @@ class SigningKeyService:
         *,
         session: AsyncSession | None = None,
     ) -> SigningKeyModel | None:
+        """Return public key metadata for key_id, or None when unknown.
+
+        Uses the given session when provided, otherwise opens a short
+        lived session. Refreshes the row so a recently disabled key is not
+        reported as active from a stale cache.
+        """
         # Refresh caller-owned identity-map rows so disabling a key cannot
         # retain a cached active verdict inside a larger transaction.
         query = (
@@ -329,6 +355,11 @@ class SigningKeyService:
         return key
 
     async def sign_payload(self, payload: dict[str, Any]) -> tuple[str, str, str]:
+        """Sign payload with the active key and return signature metadata.
+
+        Ensures the active key first, then signs. Returns a tuple of
+        base64 signature, key id, and payload hash.
+        """
         key = await self.ensure_active_key()
         return self.sign_payload_with_key_id(payload, key.key_id)
 
@@ -382,6 +413,12 @@ class SigningKeyService:
         key_id: str,
         session: AsyncSession | None = None,
     ) -> bool:
+        """Verify a signature against stored public key metadata.
+
+        Returns True when the signature is valid for the canonical payload
+        bytes. Returns False when the key is unknown or disabled, or when
+        decoding or verification fails.
+        """
         key = await self.get_public_key(key_id, session=session)
         if not key or key.status == "disabled":
             return False
@@ -409,6 +446,7 @@ _signing_key_service: SigningKeyService | None = None
 
 
 def get_signing_key_service() -> SigningKeyService:
+    """Return the shared SigningKeyService instance, creating it on first use."""
     global _signing_key_service
     if _signing_key_service is None:
         _signing_key_service = SigningKeyService()

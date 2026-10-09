@@ -93,6 +93,9 @@ def _payload_matching_stored_hash(
     body that omits it. A rewritten sequence on a new signature matches
     neither, which is what makes the number tamper-evident.
     """
+    current = _event_audit_payload(event, seq=event.seq)
+    if event.payload_hash == sha256_hex(current):
+        return current
     legacy = _event_audit_payload(event, seq=None)
     if event.payload_hash == sha256_hex(legacy):
         return legacy
@@ -116,7 +119,7 @@ def _sign_with_previous(
     # The caller passes the predecessor. Copy it onto the model before hashing
     # so a retry against a newer head does not sign the previous attempt.
     model.previous_hash = previous_hash
-    payload = _event_audit_payload(model, seq=None)
+    payload = _event_audit_payload(model, seq=model.seq)
     payload_hash = sha256_hex(payload)
     payload["payload_hash"] = payload_hash
     signature, signature_key_id, _ = get_signing_key_service().sign_payload_with_key_id(

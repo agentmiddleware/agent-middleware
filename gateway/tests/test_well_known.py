@@ -117,7 +117,10 @@ def test_build_awi_manifest_shape():
 
 def test_b64_to_b64url_rejects_invalid_input():
     assert _b64_to_b64url("!!!not-base64!!!") is None
-    assert _b64_to_b64url("") is None
+
+
+def test_b64_to_b64url_empty_string_round_trips_to_empty():
+    assert _b64_to_b64url("") == ""
 
 
 def test_b64_to_b64url_round_trip_has_no_padding():

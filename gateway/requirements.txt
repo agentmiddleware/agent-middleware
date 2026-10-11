@@ -28,7 +28,7 @@ PyJWT>=2.15.1           # JWT auth (app/core/jwt.py, oidc_iga); explicit — pre
 redis>=8.1.0            # Redis-backed rate limiting and runtime persistence
 asyncpg>=0.31.0         # PostgreSQL-backed runtime persistence
 greenlet>=3.5.6         # SQLAlchemy async engine support
-stripe>=15.6.1           # Stripe payment processing
+stripe>=16.0.0           # Stripe payment processing
 mcp>=1.29.0,<2         # MCP SDK; >=1.29.0 provides the pre-parse request-body guard used by public/partner transports; <2 is deliberate: 2.x renamed FastMCP to MCPServer, moved McpError, and changed the lowlevel Server internals that mcp_public/mcp_standard override. Dependabot major bumps are ignored (#460); lift only in a dedicated migration PR.
 
 # --- Database ---

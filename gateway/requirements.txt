@@ -40,4 +40,4 @@ aiosqlite>=0.22.1      # Async SQLite driver for testing
 pytest>=9.1.1
 pytest-asyncio>=1.4.0
 pytest-cov>=7.1.0
-mypy>=2.3.1            # Type checking
+mypy>=2.4.0            # Type checking

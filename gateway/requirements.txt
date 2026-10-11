@@ -22,7 +22,7 @@ anyio>=4.14.2           # Transitive via httpx/starlette; >=4.14.2 fixes CVE-202
 python-multipart>=0.0.32 # File upload support (>=0.0.30 fixes CVE-2026-53538/53539, >=0.0.31 fixes CVE-2026-53540)
 
 # --- Utilities ---
-python-dotenv>=1.2.3    # .env file loading
+python-dotenv>=1.2.4    # .env file loading
 cryptography>=50.0.0       # Ed25519 trust-plane signatures (>=50.0.0 fixes GHSA-g6cj-pr64-35w5)
 PyJWT>=2.15.1           # JWT auth (app/core/jwt.py, oidc_iga); explicit — previously only transitive via mcp's pyjwt[crypto]
 redis>=8.1.0            # Redis-backed rate limiting and runtime persistence

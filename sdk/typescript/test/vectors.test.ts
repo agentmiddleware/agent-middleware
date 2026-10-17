@@ -21,7 +21,7 @@ test("canonical JSON sorts keys and escapes non-ASCII", () => {
 });
 
 test("a caller-supplied key of the wrong length is malformed, not invalid", () => {
-  const valid = cases.find((c) => c.expect === "verified");
+  const valid = cases.find((c: any) => c.expect === "verified");
   const signedKid = JSON.parse(valid.bundle.signing_input).kid;
   const shortKey = new Map([[signedKid, Buffer.alloc(16)]]);
 

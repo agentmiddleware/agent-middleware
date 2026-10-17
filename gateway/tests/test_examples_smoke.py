@@ -60,22 +60,28 @@ def test_sdk_imports_fail_with_install_hint() -> None:
 
 def _load_retry_module() -> types.ModuleType:
     """Load call_with_retry without the third-party MCP SDK installed."""
-    mcp = types.ModuleType("mcp")
-    client_pkg = types.ModuleType("mcp.client")
-    stream_pkg = types.ModuleType("mcp.client.streamable_http")
+    inserted: list[str] = []
+    if "mcp" not in sys.modules:
+        mcp = types.ModuleType("mcp")
+        client_pkg = types.ModuleType("mcp.client")
+        stream_pkg = types.ModuleType("mcp.client.streamable_http")
 
-    class _ClientSession:  # pragma: no cover - import-time stub only
-        def __init__(self, *args, **kwargs):
+        class _ClientSession:  # pragma: no cover - import-time stub only
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("network stub must not be used in tests")
+
+        def _streamablehttp_client(*args, **kwargs):  # pragma: no cover
             raise AssertionError("network stub must not be used in tests")
 
-    def _streamablehttp_client(*args, **kwargs):  # pragma: no cover
-        raise AssertionError("network stub must not be used in tests")
-
-    mcp.ClientSession = _ClientSession
-    stream_pkg.streamablehttp_client = _streamablehttp_client
-    sys.modules.setdefault("mcp", mcp)
-    sys.modules.setdefault("mcp.client", client_pkg)
-    sys.modules.setdefault("mcp.client.streamable_http", stream_pkg)
+        mcp.ClientSession = _ClientSession
+        stream_pkg.streamablehttp_client = _streamablehttp_client
+        for name, mod in (
+            ("mcp", mcp),
+            ("mcp.client", client_pkg),
+            ("mcp.client.streamable_http", stream_pkg),
+        ):
+            sys.modules[name] = mod
+            inserted.append(name)
     try:
         spec = importlib.util.spec_from_file_location(
             "example_call_with_retry", MCP_CLIENT / "call_with_retry.py"
@@ -85,7 +91,7 @@ def _load_retry_module() -> types.ModuleType:
         spec.loader.exec_module(module)
         return module
     finally:
-        for name in ("mcp", "mcp.client", "mcp.client.streamable_http"):
+        for name in inserted:
             sys.modules.pop(name, None)
 
 

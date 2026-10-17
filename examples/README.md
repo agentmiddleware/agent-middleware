@@ -34,23 +34,24 @@ dispatching or charging again.
 **Run:**
 
 ```bash
-# From gateway/, boot a local server and mint a key per QUICKSTART.md, then:
-AGENT_API_KEY=<wallet-scoped-local-key> python examples/mcp-client/call_with_retry.py
+# From gateway/, after `make quickstart` and the key mint in QUICKSTART.md:
+AGENT_API_KEY=<wallet-scoped-local-key> uv run --with "mcp>=1.29,<2" python ../examples/mcp-client/call_with_retry.py
 ```
 
 Optional overrides: `AMW_MCP_URL` (default `http://127.0.0.1:8000/mcp`) and
 `AMW_TOOL` (default `partner.notes.write`).
 
-**Expected output** (receipt ids are identical across the retry):
+**Output shape** (both receipt ids match; a real id is `rcpt-` plus 16 hex characters):
 
 ```text
-first receipt: rcpt-9f2c41a7 outcome: success
-retry receipt: rcpt-9f2c41a7 outcome: success
+first receipt: rcpt-9f2c41a7b6e04d21 outcome: success
+retry receipt: rcpt-9f2c41a7b6e04d21 outcome: success
 ```
 
-The full recorded sample lives in
+An illustrative copy of that shape lives in
 [`mcp-client/expected_output.txt`](mcp-client/expected_output.txt).
-Needs the official MCP Python SDK: `pip install "mcp>=1.29,<2"`.
+`uv run --with "mcp>=1.29,<2"` supplies the MCP SDK for that one command.
+`outcome: success` is the receipt field the gateway writes on a successful call.
 
 ### `mcp-client/mcp.json` — local client config template
 

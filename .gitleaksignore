@@ -27,6 +27,7 @@ gateway/tests/test_constant_test_loop.py:generic-api-key:744
 gateway/tests/test_failure_lab_diagnostic.py:amw-private-key-material:492
 gateway/tests/test_failure_lab_scenarios.py:generic-api-key:35
 gateway/tests/test_failure_lab_stateful.py:generic-api-key:27
+gateway/tests/test_gateway_auth_breakit.py:generic-api-key:32
 gateway/tests/test_iga_policy.py:generic-api-key:1060
 gateway/tests/test_iga_policy.py:generic-api-key:1124
 gateway/tests/test_iga_policy.py:generic-api-key:1201

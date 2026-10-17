@@ -233,9 +233,9 @@ class TestPermitExample:
 
     def test_example_matches_gateway_golden_bytes(self):
         raw = _code_block(SPEC / "permit-v0.1.md")
-        golden = json.loads(
-            (PERMIT_GOLDEN / "active_minimal.json").read_text()
-        )["signing_input"]
+        golden = json.loads((PERMIT_GOLDEN / "active_minimal.json").read_text())[
+            "signing_input"
+        ]
         assert raw == golden
 
     def test_example_signature_verifies_under_test_seed(self):
@@ -390,8 +390,14 @@ class TestKeySetDoc:
                 "x": base64.urlsafe_b64encode(b"2" * 32).decode().rstrip("="),
             },
         }
-        doc = {"keys": [_published_key(active), _published_key(retired),
-                        _published_key(disabled), jwk_only]}
+        doc = {
+            "keys": [
+                _published_key(active),
+                _published_key(retired),
+                _published_key(disabled),
+                jwk_only,
+            ]
+        }
         # Every gateway entry carries the members the spec doc names.
         for entry in doc["keys"][:3]:
             assert {"kid", "alg", "status", "public_key_b64", "jwk"} <= set(entry)
@@ -413,9 +419,7 @@ class TestReceiptVectors:
         assert cases
         failures = []
         for case in cases:
-            case_keys = (
-                key_set_from_document(case["keys"]) if "keys" in case else keys
-            )
+            case_keys = key_set_from_document(case["keys"]) if "keys" in case else keys
             actual = verify_bundle(case["bundle"], case_keys).status.value
             if actual != case["expect"]:
                 failures.append((case["name"], actual, case["expect"]))
@@ -462,7 +466,8 @@ class TestReceiptVectors:
         # break the signature, not produce a second valid receipt.
         _, cases = self._load()
         linked = next(
-            c for c in cases
+            c
+            for c in cases
             if c["expect"] == "verified"
             and "idempotency_record_id" in json.loads(c["bundle"]["signing_input"])
         )
@@ -478,7 +483,8 @@ class TestReceiptVectors:
     def test_denied_receipts_move_no_money(self):
         _, cases = self._load()
         denied = [
-            c for c in cases
+            c
+            for c in cases
             if c["expect"] == "verified"
             and json.loads(c["bundle"]["signing_input"])["outcome"]
             in ("denied", "insufficient_funds")

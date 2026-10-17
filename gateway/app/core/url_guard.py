@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import re
 import socket
 from urllib.parse import urlsplit
 
@@ -36,6 +37,71 @@ from app.core.config import get_settings
 _ALLOWED_SCHEMES = {"http", "https"}
 _BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal"}
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal")
+# libc and browsers parse these as IPv4. ipaddress rejects them, so a guard
+# that only calls ip_address() then DNS will follow a public DNS answer
+# while the client dials the embedded private address (2130706433 is
+# 127.0.0.1, 0177.0.0.1 is octal loopback, 127.1 is shorthand loopback).
+_LEGACY_IPV4 = re.compile(
+    r"^(?:0[xX][0-9a-fA-F]+|[0-9]+)(?:\.(?:0[xX][0-9a-fA-F]+|[0-9]+)){0,3}$"
+)
+# Deprecated IPv4-compatible form (::/96) and the well-known NAT64 prefix.
+# DNS64 publishes public IPv4 destinations inside 64:ff9b::/96, so the whole
+# prefix must not be refused: only an embedded address that is itself blocked.
+_IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+# RFC 2765 SIIT form. Not IPv4-mapped (::ffff:0:0/96). is_global stays true
+# on Python 3.11 through 3.14, including when the low 32 bits are metadata.
+_IPV4_TRANSLATED = ipaddress.IPv6Network("::ffff:0:0:0/96")
+
+
+def _embedded_ipv4_literal(
+    ip: ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | None:
+    """Return the IPv4 a stack may dial for a compatible, translated, or NAT64 literal.
+
+    IPv4-mapped addresses (``::ffff:0:0/96``) are omitted. ``is_global``
+    already follows the mapped IPv4 for those. IPv4-translated addresses
+    (``::ffff:0:0:0/96``) are not mapped, and ``is_global`` is true for them.
+    """
+    if ip.ipv4_mapped is not None:
+        return None
+    if ip in _IPV4_COMPATIBLE or ip in _NAT64_WELL_KNOWN or ip in _IPV4_TRANSLATED:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return None
+
+
+def address_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True when this address must not be fetched or dialed.
+
+    ``is_global`` misses multicast (it can be global), deprecated site-local
+    ``fec0::/10``, and IPv6 literals whose embedded IPv4 is private or
+    link-local. ``::169.254.169.254``, ``::ffff:0:169.254.169.254``, and
+    ``64:ff9b::10.0.0.1`` are ``is_global`` and still name metadata or
+    RFC1918. A public embedding such as ``64:ff9b::8.8.8.8`` stays allowed
+    so DNS64 can publish an IPv4-only host.
+    """
+    if ip.is_multicast or bool(getattr(ip, "is_site_local", False)) or not ip.is_global:
+        return True
+    if isinstance(ip, ipaddress.IPv6Address):
+        embedded = _embedded_ipv4_literal(ip)
+        if embedded is not None and address_is_blocked(embedded):
+            return True
+    return False
+
+
+def is_ambiguous_ipv4_literal(host: str) -> bool:
+    """True for a numeric host that is not a canonical IP address.
+
+    Callers use this after ``ip_address`` rejects ``host``. Canonical
+    addresses such as ``8.8.8.8`` parse and return False.
+    """
+    if _LEGACY_IPV4.fullmatch(host) is None:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return False
 
 
 def _address_blocked(address: str) -> bool:
@@ -43,10 +109,7 @@ def _address_blocked(address: str) -> bool:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return False
-    # is_global is False for loopback, RFC1918/ULA, link-local (including
-    # 169.254.169.254 metadata), CGNAT shared space, reserved, and unspecified
-    # addresses. Multicast needs an explicit check: it can be classified global.
-    return ip.is_multicast or not ip.is_global
+    return address_is_blocked(ip)
 
 
 async def _resolve_host(host: str):
@@ -84,6 +147,10 @@ async def check_outbound_url(url: str) -> str | None:
     try:
         ipaddress.ip_address(host)
     except ValueError:
+        # Reject before DNS. A public answer must not hide an octal, hex,
+        # decimal, or shortened IPv4 literal the client will dial directly.
+        if is_ambiguous_ipv4_literal(host):
+            return "private_address_blocked"
         # A hostname, not a literal address: resolve it and require every
         # resolved address to be globally routable.
         try:

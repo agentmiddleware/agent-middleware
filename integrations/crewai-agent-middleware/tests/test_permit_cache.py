@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
+
 from crewai_b2a import B2AClient, CrewAIB2ATool
 
 

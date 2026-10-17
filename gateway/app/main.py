@@ -601,9 +601,9 @@ cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()
 add_cors_middleware(app, cors_origins)
 if "*" in cors_origins:
     logger.info(
-        "cors_wildcard_active: credential-less wildcard CORS is the documented "
-        "default for this header-authenticated API; set CORS_ORIGINS to an "
-        "explicit list to change it (see SECURITY_LIMITATIONS.md)"
+        "cors_wildcard_active: credential-less wildcard CORS is an explicit "
+        "opt-in, not the default; production-like boots refuse it "
+        "(see SECURITY_LIMITATIONS.md)"
     )
 
 # Baseline response hardening (nosniff, framing, referrer, CSP, no-store

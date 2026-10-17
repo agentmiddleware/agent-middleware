@@ -161,7 +161,8 @@ class CrewAIB2ATool(BaseTool):
                 issuer_wallet_id=self.wallet_id,
                 subject_wallet_id=self.wallet_id,
                 max_credits=self.permit_budget,
-                expires_at=datetime.now(UTC) + timedelta(minutes=self.permit_ttl_minutes),
+                expires_at=datetime.now(UTC)
+                + timedelta(minutes=self.permit_ttl_minutes),
                 allowed_tools=[tool_name],
                 scopes=expected_scopes,
             )
@@ -176,7 +177,9 @@ class CrewAIB2ATool(BaseTool):
             or list(request.scopes) != expected_scopes
             or self._permit_ttls.get(permit_key) != self.permit_ttl_minutes
         ):
-            raise ValueError("permit_idempotency_key reused with different permit terms")
+            raise ValueError(
+                "permit_idempotency_key reused with different permit terms"
+            )
         return request
 
     def _drive(self, coro: Any) -> Any:
@@ -219,7 +222,9 @@ class CrewAIB2ATool(BaseTool):
             client = self._get_client()
             if operation == "discover_tools":
                 tools = await client.discover_tools()
-                return str([{"name": t.name, "description": t.description} for t in tools])
+                return str(
+                    [{"name": t.name, "description": t.description} for t in tools]
+                )
 
             if operation == "call_tool":
                 tool_name = _required_text(kwargs.get("tool_name"), "tool_name")
@@ -235,7 +240,9 @@ class CrewAIB2ATool(BaseTool):
                 if permit_key in self._permit_cache:
                     permit_id = self._permit_cache[permit_key]
                 else:
-                    permit = await client.create_permit(request, idempotency_key=permit_key)
+                    permit = await client.create_permit(
+                        request, idempotency_key=permit_key
+                    )
                     permit_id = permit.permit_id
                     self._permit_cache[permit_key] = permit_id
 

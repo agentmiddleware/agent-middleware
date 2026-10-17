@@ -236,7 +236,9 @@ async def test_non_object_arguments_do_not_create_a_permit():
         if request.url.path == "/mcp/messages":
             body = json.loads(request.content)
             if body["params"]["arguments"] != {}:
-                return httpx.Response(400, json={"detail": "arguments must be an object"})
+                return httpx.Response(
+                    400, json={"detail": "arguments must be an object"}
+                )
             return httpx.Response(200, json=_invoke_response())
         return httpx.Response(404, json={"detail": "missing"})
 
@@ -454,7 +456,9 @@ async def test_balance_and_discovery_use_this_tools_identity(monkeypatch):
     real_client = B2AClient
 
     class _CaptureClient(real_client):
-        def __init__(self, api_key: str, base_url: str = "https://api.thisisatest.tech", **kwargs):
+        def __init__(
+            self, api_key: str, base_url: str = "https://api.thisisatest.tech", **kwargs
+        ):
             captured["constructed_key"] = api_key
             captured["constructed_url"] = base_url
             super().__init__(
@@ -533,9 +537,18 @@ async def test_permit_key_reuse_rejects_changed_terms_without_a_second_invoke():
         await client.close()
 
     assert "receipt-success" in first
-    assert changed_tool == "Error: permit_idempotency_key reused with different permit terms"
-    assert changed_budget == "Error: permit_idempotency_key reused with different permit terms"
-    assert changed_wallet == "Error: permit_idempotency_key reused with different permit terms"
+    assert (
+        changed_tool
+        == "Error: permit_idempotency_key reused with different permit terms"
+    )
+    assert (
+        changed_budget
+        == "Error: permit_idempotency_key reused with different permit terms"
+    )
+    assert (
+        changed_wallet
+        == "Error: permit_idempotency_key reused with different permit terms"
+    )
     assert unknown == "Unknown operation: nope"
     assert invokes["n"] == 1
 
@@ -662,4 +675,7 @@ async def test_copied_tool_does_not_spend_the_original_permit_on_another_wallet(
 
     assert "receipt-success" in original
     assert ("wallet-2", "permit-wallet-1") not in invokes
-    assert "permit_idempotency_key reused" in moved or ("wallet-2", "permit-wallet-2") in invokes
+    assert (
+        "permit_idempotency_key reused" in moved
+        or ("wallet-2", "permit-wallet-2") in invokes
+    )

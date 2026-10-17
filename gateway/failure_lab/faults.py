@@ -302,10 +302,15 @@ def classify_request(
             params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
         )
         meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
-        operation_id = arguments.get("operation_id")
+        # Only a string names a business operation. Anything else (a number, a
+        # bool, a nested object) is malformed, and str() coercion would turn it
+        # into a plausible-looking identifier that silently matches no fault
+        # plan while reading as observed. Leave it unidentified instead.
+        raw_operation_id = arguments.get("operation_id")
+        operation_id = raw_operation_id if isinstance(raw_operation_id, str) else None
         return (
             KIND_TOOLS_CALL,
-            str(operation_id) if operation_id is not None else None,
+            operation_id,
             request_id_text,
             meta.get(_IDEMPOTENCY_META_KEY),
             meta.get(_INVOCATION_META_KEY),
@@ -313,10 +318,10 @@ def classify_request(
     if normalized == REST_PATH:
         if not isinstance(payload, dict):
             return None, None, None, None, None
-        operation_id = payload.get("operation_id")
+        raw_operation_id = payload.get("operation_id")
         return (
             KIND_REFUND_REST,
-            str(operation_id) if operation_id is not None else None,
+            raw_operation_id if isinstance(raw_operation_id, str) else None,
             headers.get("x-request-id"),
             headers.get("idempotency-key"),
             None,
@@ -398,7 +403,35 @@ class FaultInjectionMiddleware:
             await self.app(scope, receive, send)
             return
 
-        body = await _read_body(receive)
+        try:
+            body = await _read_body(receive)
+        except ValueError:
+            # An unbounded read would let one malformed request exhaust the
+            # harness; an unhandled raise would surface as an ambiguous
+            # transport error the gateway cannot classify. Refuse it as 413
+            # without touching the tool, and record the refusal so a run that
+            # never delivered a body cannot read as a run that did.
+            self.injector._record(
+                kind="unclassified",
+                path=path,
+                operation_id=None,
+                request_id=None,
+                idempotency_key=None,
+                invocation_id=None,
+                fault="oversized_body_rejected",
+                reached_tool=False,
+                tool_status=None,
+                delivered=True,
+            )
+            await _send_json(
+                send,
+                413,
+                {
+                    "error": "failure_lab_body_too_large",
+                    "fault": "oversized_body_rejected",
+                },
+            )
+            return
         headers = _headers(scope)
         kind, operation_id, request_id, idempotency_key, invocation_id = (
             classify_request(path, body, headers)

@@ -113,6 +113,9 @@ class TestOutboundUrlGuard:
             "http://[64:ff9b::169.254.169.254]/",
             "http://[64:ff9b::10.0.0.1]/",
             "http://[64:ff9b::7f00:1]/",
+            "http://[::ffff:0:169.254.169.254]/",
+            "http://[::ffff:0:10.0.0.1]/",
+            "http://[::ffff:0:7f00:1]/",
             "http://[fec0::1]/",
         ],
     )
@@ -121,11 +124,11 @@ class TestOutboundUrlGuard:
     ):
         """Addresses the stdlib marks global must still be blocked.
 
-        IPv4-compatible IPv6 (::169.254.169.254, ::10.0.0.1) and the
-        well-known NAT64 prefix (64:ff9b::/96) are is_global, and stacks
-        still deliver them to the embedded private IPv4, including
-        link-local metadata. Deprecated site-local fec0::/10 is is_global
-        too.
+        IPv4-compatible (::169.254.169.254), IPv4-translated
+        (::ffff:0:169.254.169.254), and well-known NAT64 (64:ff9b::/96)
+        are is_global, and stacks still deliver them to the embedded
+        private IPv4, including link-local metadata. Deprecated site-local
+        fec0::/10 is is_global too.
         """
         monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", False)
         assert await check_outbound_url(url) == "private_address_blocked"
@@ -162,7 +165,13 @@ class TestOutboundUrlGuard:
     @pytest.mark.anyio
     @pytest.mark.parametrize(
         "address",
-        ["::169.254.169.254", "64:ff9b::10.0.0.1", "fec0::1", "::10.0.0.1"],
+        [
+            "::169.254.169.254",
+            "64:ff9b::10.0.0.1",
+            "fec0::1",
+            "::10.0.0.1",
+            "::ffff:0:169.254.169.254",
+        ],
     )
     async def test_dns_to_reserved_or_site_local_is_blocked(
         self, monkeypatch, address
@@ -193,6 +202,7 @@ class TestOutboundUrlGuard:
         monkeypatch.setattr(url_guard, "_resolve_host", resolve)
         assert await check_outbound_url("https://[64:ff9b::8.8.8.8]/") is None
         assert await check_outbound_url("https://[::8.8.8.8]/") is None
+        assert await check_outbound_url("https://[::ffff:0:8.8.8.8]/") is None
         assert await check_outbound_url("https://ipv4-only.example/") is None
 
     @pytest.mark.anyio

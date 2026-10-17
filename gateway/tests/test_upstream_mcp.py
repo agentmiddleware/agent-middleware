@@ -418,6 +418,8 @@ async def test_url_guard_allows_only_public_https_or_local_loopback_http() -> No
         "https://[::127.0.0.1]/mcp",
         "https://[64:ff9b::169.254.169.254]/mcp",
         "https://[64:ff9b::10.0.0.1]/mcp",
+        "https://[::ffff:0:169.254.169.254]/mcp",
+        "https://[::ffff:0:10.0.0.1]/mcp",
         "https://[fec0::1]/mcp",
     ],
 )
@@ -431,7 +433,13 @@ async def test_upstream_rejects_literals_stdlib_calls_global(url: str) -> None:
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "address",
-    ["::169.254.169.254", "64:ff9b::10.0.0.1", "fec0::1", "::10.0.0.1"],
+    [
+        "::169.254.169.254",
+        "64:ff9b::10.0.0.1",
+        "fec0::1",
+        "::10.0.0.1",
+        "::ffff:0:10.0.0.1",
+    ],
 )
 async def test_upstream_rejects_dns_to_address_stdlib_calls_global(
     address: str,
@@ -488,6 +496,14 @@ async def test_upstream_allows_public_nat64_embedding() -> None:
     )
     pinned = await validate_upstream_url(literal, resolver=resolve)
     assert ipaddress.ip_address(pinned) == ipaddress.ip_address("64:ff9b::8.8.8.8")
+    translated = _configuration(
+        MCP_UPSTREAM_URL="https://[::ffff:0:8.8.8.8]/mcp",
+        ENVIRONMENT="production",
+    )
+    pinned_translated = await validate_upstream_url(translated, resolver=resolve)
+    assert ipaddress.ip_address(pinned_translated) == ipaddress.ip_address(
+        "::ffff:0:8.8.8.8"
+    )
 
 
 @pytest.mark.anyio

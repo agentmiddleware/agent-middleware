@@ -409,7 +409,7 @@ async def validate_upstream_url(
             "MCP_UPSTREAM_URL must use https except for loopback local/test servers"
         )
     # is_global alone admits multicast, site-local fec0::/10, and IPv6
-    # literals that embed a private IPv4 (IPv4-compatible and NAT64).
+    # literals that embed a private IPv4 (compatible, translated, NAT64).
     # address_is_blocked is the same predicate the outbound URL guard uses.
     if not loopback_exception and any(
         address_is_blocked(address) for address in parsed_addresses

@@ -49,19 +49,27 @@ _LEGACY_IPV4 = re.compile(
 # prefix must not be refused: only an embedded address that is itself blocked.
 _IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+# RFC 2765 SIIT form. Not IPv4-mapped (::ffff:0:0/96). is_global stays true
+# on Python 3.11 through 3.14, including when the low 32 bits are metadata.
+_IPV4_TRANSLATED = ipaddress.IPv6Network("::ffff:0:0:0/96")
 
 
 def _embedded_ipv4_literal(
     ip: ipaddress.IPv6Address,
 ) -> ipaddress.IPv4Address | None:
-    """Return the IPv4 a stack may dial for a compatible or NAT64 literal.
+    """Return the IPv4 a stack may dial for a compatible, translated, or NAT64 literal.
 
     IPv4-mapped addresses (``::ffff:0:0/96``) are omitted. ``is_global``
-    already follows the mapped IPv4 for those.
+    already follows the mapped IPv4 for those. IPv4-translated addresses
+    (``::ffff:0:0:0/96``) are not mapped, and ``is_global`` is true for them.
     """
     if ip.ipv4_mapped is not None:
         return None
-    if ip in _IPV4_COMPATIBLE or ip in _NAT64_WELL_KNOWN:
+    if (
+        ip in _IPV4_COMPATIBLE
+        or ip in _NAT64_WELL_KNOWN
+        or ip in _IPV4_TRANSLATED
+    ):
         return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     return None
 
@@ -71,10 +79,10 @@ def address_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> boo
 
     ``is_global`` misses multicast (it can be global), deprecated site-local
     ``fec0::/10``, and IPv6 literals whose embedded IPv4 is private or
-    link-local. ``::169.254.169.254`` and ``64:ff9b::10.0.0.1`` are both
-    ``is_global`` and still name metadata or RFC1918. A public embedding
-    such as ``64:ff9b::8.8.8.8`` stays allowed so DNS64 can publish an
-    IPv4-only host.
+    link-local. ``::169.254.169.254``, ``::ffff:0:169.254.169.254``, and
+    ``64:ff9b::10.0.0.1`` are ``is_global`` and still name metadata or
+    RFC1918. A public embedding such as ``64:ff9b::8.8.8.8`` stays allowed
+    so DNS64 can publish an IPv4-only host.
     """
     if (
         ip.is_multicast

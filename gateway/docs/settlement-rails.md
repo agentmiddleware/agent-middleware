@@ -110,10 +110,9 @@ enforces, generalized.
 **Authenticity**
 1. Settlement notifications are cryptographically verifiable against a secret
    or key the operator holds, and verification failure is a hard rejection.
-2. Verification is shared code, not re-implemented per consumer. (The
-   repository currently fails this: the KYC webhook handler and the settlement
-   handler verify the same signing secret with different exception handling and
-   no shared helper.)
+2. Verification is shared code, not re-implemented per consumer. (Met:
+   `app/services/stripe_webhook_auth.py`, used by the settlement and KYC
+   handlers, with `tests/test_stripe_webhook_auth.py`.)
 
 **Settlement validity — separate from authenticity**
 3. The credited amount is re-derivable from fields the *rail* controls, never

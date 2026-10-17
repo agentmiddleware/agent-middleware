@@ -7,7 +7,8 @@ against the calling wallet, with one ledger entry per charge.
 
 Credits are internal metering units, topped up through verified Stripe
 webhooks where configured (or by explicit admin-gated operator issuance).
-This router performs no merchant settlement and no payouts.
+Core routes do not pay merchants out. ACP checkout, on the expansion
+router, charges a Stripe Shared Payment Token and mints no credits.
 """
 
 from decimal import Decimal

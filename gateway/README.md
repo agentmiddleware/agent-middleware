@@ -67,19 +67,28 @@ is receipted `delivery_uncertain` and never silently re-sent. See
 
 - Credits are internal metering units, not money. The default rate is 1000
   credits per 1.00 USD, and it is operator-configurable (`EXCHANGE_RATE`).
-  Each tool costs a fixed number of credits per call from one pricing table
-  (for example 2 credits per metered call on the demo tool, 0.1 credits base
-  platform fee); `GET /v1/billing/pricing` returns the table in effect.
-- The only fiat path is Stripe top-up, USD only, and only where the operator
-  configured Stripe keys. Sponsor wallets may require KYC before a top-up is
-  prepared. There is no second rail, no subscription or invoice flow, and no
-  settlement or payouts: x402 and ACP surfaces only prepare and receipt an
-  authorization against a permit budget, and the payer wallet still signs and
-  submits anything on chain.
-- Always send `Idempotency-Key` on money calls (wallet creation, charges,
-  transfers). A retry with the same key and the same payload returns the
-  original result; the same key with different arguments is refused with 409.
-  A retry without the header is a new operation and can charge twice.
+  Category defaults live in one pricing table (the base platform fee is 0.1
+  credits per call). A registered tool can override that default. The local
+  demo tool is registered at 2 credits per call, which is not the AGENT_COMMS
+  table default of 1.5. `GET /v1/billing/pricing` returns the category table
+  in effect, not each tool's registration price.
+- Credits are created by admin-gated sponsor issuance
+  (`POST /v1/billing/wallets/sponsor`) and, only when
+  `ENABLE_PROOF_SURFACES` is on, by verified Stripe top-up (USD only, where
+  Stripe keys are configured). Sponsor wallets may require KYC before a
+  top-up is prepared. There is no subscription, invoice, or payout flow in
+  this gateway. Direct client-token top-up answers `410 Gone`.
+- x402 and ACP mount only with `ENABLE_PROOF_SURFACES`. x402 prepares a
+  permit-backed authorization and a signed receipt. The payer wallet signs
+  anything that would go on chain. This repository does not submit it. ACP
+  charges USD on the existing Stripe rail with a Shared Payment Token. It
+  does not mint credits, and it is not an on-chain signature.
+- `Idempotency-Key` is honored on agent-wallet creation, charges, and
+  transfers. The same key and the same payload returns the original result.
+  The same key with different arguments is refused with 409. A retry without
+  the header is a new operation and can debit twice. Sponsor-wallet creation
+  does not read that header. If that call times out, list wallets before
+  retrying.
 
 Read [`SECURITY_LIMITATIONS.md`](SECURITY_LIMITATIONS.md),
 [`TRUST_MODEL.md`](TRUST_MODEL.md), and [`docs/threat-model.md`](docs/threat-model.md)

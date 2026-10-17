@@ -435,12 +435,20 @@ class APIKeyService:
                 # requests race for the remaining budget instead of all
                 # reading the same stale count, so max_uses cannot be
                 # overshot. rowcount 0 means the budget is spent.
+                # The expiry predicate is re-read here (not reused from the
+                # check above) so a key that passes the read and then times
+                # out before this write lands consumes nothing: expiry is
+                # enforced at write time, mirroring consume_derived_key_use.
                 consumed = await session.execute(
                     update(APIKeyModel)
                     .where(
                         col(APIKeyModel.key_id) == key.key_id,
                         col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
                         col(APIKeyModel.use_count) < col(APIKeyModel.max_uses),
+                        or_(
+                            col(APIKeyModel.expires_at).is_(None),
+                            col(APIKeyModel.expires_at) >= to_naive_utc(utc_now()),
+                        ),
                     )
                     .values(
                         use_count=APIKeyModel.use_count + 1,

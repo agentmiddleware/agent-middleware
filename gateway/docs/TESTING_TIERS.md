@@ -37,10 +37,10 @@ refuse anything that does not look disposable.
 
 ```bash
 # The guard only accepts postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_*
-# with ENVIRONMENT=test, so the database must answer on port 55439. If your
-# local Postgres listens elsewhere, forward the port first (example below maps
-# a 5432 server onto 55439 for the duration of the run).
-createdb -h 127.0.0.1 -U sellers amw_action_local
+# with ENVIRONMENT=test. createdb, Alembic, and pytest must all use port 55439.
+# If the server listens on another port, forward that port onto 127.0.0.1:55439
+# before these commands. There is no forward example in this file.
+createdb -h 127.0.0.1 -p 55439 -U sellers amw_action_local
 cd gateway
 DATABASE_URL=postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_local \
   ENVIRONMENT=test alembic upgrade head
@@ -50,7 +50,7 @@ RUN_POSTGRES_CONCURRENCY_TESTS=1 ENVIRONMENT=test \
          tests/test_permit_postgres_concurrency.py \
          tests/test_duplicate_guard_postgres_concurrency.py \
          tests/test_action_database_guard.py -q
-dropdb -h 127.0.0.1 -U sellers amw_action_local
+dropdb -h 127.0.0.1 -p 55439 -U sellers amw_action_local
 ```
 
 The action-proof guard (`tests/support/action_database_guard.py`) only

@@ -119,9 +119,7 @@ class TestOutboundUrlGuard:
             "http://[fec0::1]/",
         ],
     )
-    async def test_reserved_and_site_local_literals_are_blocked(
-        self, monkeypatch, url
-    ):
+    async def test_reserved_and_site_local_literals_are_blocked(self, monkeypatch, url):
         """Addresses the stdlib marks global must still be blocked.
 
         IPv4-compatible (::169.254.169.254), IPv4-translated
@@ -173,9 +171,7 @@ class TestOutboundUrlGuard:
             "::ffff:0:169.254.169.254",
         ],
     )
-    async def test_dns_to_reserved_or_site_local_is_blocked(
-        self, monkeypatch, address
-    ):
+    async def test_dns_to_reserved_or_site_local_is_blocked(self, monkeypatch, address):
         async def resolve(_host):
             return [
                 (None, None, None, None, ("93.184.216.34", 0)),

@@ -65,11 +65,7 @@ def _embedded_ipv4_literal(
     """
     if ip.ipv4_mapped is not None:
         return None
-    if (
-        ip in _IPV4_COMPATIBLE
-        or ip in _NAT64_WELL_KNOWN
-        or ip in _IPV4_TRANSLATED
-    ):
+    if ip in _IPV4_COMPATIBLE or ip in _NAT64_WELL_KNOWN or ip in _IPV4_TRANSLATED:
         return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     return None
 
@@ -84,11 +80,7 @@ def address_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> boo
     RFC1918. A public embedding such as ``64:ff9b::8.8.8.8`` stays allowed
     so DNS64 can publish an IPv4-only host.
     """
-    if (
-        ip.is_multicast
-        or bool(getattr(ip, "is_site_local", False))
-        or not ip.is_global
-    ):
+    if ip.is_multicast or bool(getattr(ip, "is_site_local", False)) or not ip.is_global:
         return True
     if isinstance(ip, ipaddress.IPv6Address):
         embedded = _embedded_ipv4_literal(ip)

@@ -24,6 +24,7 @@ gateway/tests/test_api_keys.py:generic-api-key:1348
 gateway/tests/test_awi.py:generic-api-key:959
 gateway/tests/test_comms.py:generic-api-key:247
 gateway/tests/test_constant_test_loop.py:generic-api-key:744
+gateway/tests/test_core_db_qa.py:generic-api-key:644
 gateway/tests/test_failure_lab_diagnostic.py:amw-private-key-material:492
 gateway/tests/test_failure_lab_scenarios.py:generic-api-key:35
 gateway/tests/test_failure_lab_stateful.py:generic-api-key:27

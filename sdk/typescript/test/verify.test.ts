@@ -398,3 +398,9 @@ test(
     assert.fail("needs an injectable verifier to simulate backend failure");
   },
 );
+
+test("signed null algorithm is unsupported, matching the Python verifier", () => {
+  const bundle = seal({ ...payload(), alg: null });
+  const result = verifyBundle(bundle, keys());
+  assert.equal(result.status, "unsupported");
+});

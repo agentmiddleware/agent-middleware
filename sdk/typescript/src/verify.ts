@@ -140,7 +140,7 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const p = payload as Record<string, unknown>;
   const kid = p.kid;
   if (typeof kid !== "string" || !kid) return fail("malformed", "signed payload has no kid", envKid);
-  const alg = p.alg ?? "Ed25519";
+  const alg = p.alg === undefined ? "Ed25519" : p.alg;
   if (alg !== "Ed25519") return fail("unsupported", `unsupported signature algorithm: ${String(alg)}`, kid);
   const signedCanon = p.canonicalization;
   if (typeof signedCanon === "string" && signedCanon !== CANONICALIZATION) return fail("unsupported", `unsupported canonicalization: ${signedCanon}`, kid);

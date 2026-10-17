@@ -61,3 +61,20 @@ gateway/tests/test_x402.py:generic-api-key:635
 gateway/tests/test_x402.py:generic-api-key:644
 gateway/tests/test_x402.py:generic-api-key:881
 gateway/tests/test_x402.py:generic-api-key:917
+# CI-2026-10-16-001 reviewed 2026-10-17: test fixtures, idempotency keys, identifiers (no live credentials)
+799826286f205e211e1a427f1d7d8f9bff5c8582:gateway/tests/test_core_db_qa.py:generic-api-key:644
+14425ae21890033703e2343ba4b5f831716e4e14:gateway/tests/test_gateway_auth_breakit.py:generic-api-key:32
+2d68f60d5dfd8195295457d8c0b93f8324d774d7:gateway/tests/test_gtm62_uncertain_tool_result.py:generic-api-key:101
+e6077da78044877396758afeb6287d0dada79ea7:gateway/tests/test_idempotency_billing_permit_breaks.py:generic-api-key:426
+3426f0563519b28b95e4ccfc8df868e13ba998a9:gateway/tests/test_qa_money_auth_matrix.py:generic-api-key:40
+b832ed901f992cd225b41d74916db202c82a81c4:gateway/tests/test_x402.py:generic-api-key:1641
+b832ed901f992cd225b41d74916db202c82a81c4:gateway/tests/test_x402.py:generic-api-key:1653
+b832ed901f992cd225b41d74916db202c82a81c4:gateway/tests/test_x402.py:generic-api-key:1675
+b832ed901f992cd225b41d74916db202c82a81c4:gateway/tests/test_x402.py:generic-api-key:1680
+6a8fd86f9bbcc303a25b1081428dca7e76a14674:integrations/framework_integrations/tests/test_client_contract.py:generic-api-key:327
+6a8fd86f9bbcc303a25b1081428dca7e76a14674:integrations/framework_integrations/tests/test_client_contract.py:generic-api-key:329
+46f29c640d11981429609766c3f8067ec5245111:sdk/python/tests/test_idempotency_keys.py:generic-api-key:166
+46f29c640d11981429609766c3f8067ec5245111:sdk/python/tests/test_idempotency_keys.py:generic-api-key:174
+8eaae14c6ca41a3f2e55e5d0e38fb3e48d73ae15:spec/test-vectors/generate.py:generic-api-key:169
+923cc826add7856cb81a632d23ba99d85c067559:spec/test-vectors/generate.py:generic-api-key:349
+923cc826add7856cb81a632d23ba99d85c067559:spec/test-vectors/generate.py:generic-api-key:378

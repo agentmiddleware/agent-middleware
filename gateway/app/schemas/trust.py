@@ -435,8 +435,12 @@ class PortableReceiptResponse(BaseModel):
     )
     alg: str = "Ed25519"
     kid: str = Field(description="Identifies which published key signed this receipt.")
+    # Literal, not the RECEIPT_CANONICALIZATION constant: schemas stay free
+    # of service imports. The value is pinned to that constant (and to the
+    # spec and SDK copies) by tests/test_spec_conformance.py.
     canonicalization: str = Field(
-        description="Canonical-JSON contract version the signing_input follows."
+        default="awi-canonical-json/1",
+        description="Canonical-JSON contract version the signing_input follows.",
     )
     signing_input: str = Field(
         description=(

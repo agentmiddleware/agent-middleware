@@ -32,7 +32,7 @@ stripe>=16.0.0           # Stripe payment processing
 mcp>=1.29.0,<2         # MCP SDK; >=1.29.0 provides the pre-parse request-body guard used by public/partner transports; <2 is deliberate: 2.x renamed FastMCP to MCPServer, moved McpError, and changed the lowlevel Server internals that mcp_public/mcp_standard override. Dependabot major bumps are ignored (#460); lift only in a dedicated migration PR.
 
 # --- Database ---
-sqlmodel>=0.0.47,<0.0.48  # Naive-UTC mappings are qualified with this minor release.
+sqlmodel>=0.0.48,<0.0.49  # Naive-UTC mappings are qualified with this minor release.
 alembic>=1.20.0        # Database migrations
 aiosqlite>=0.22.1      # Async SQLite driver for testing
 

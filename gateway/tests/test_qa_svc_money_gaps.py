@@ -19,7 +19,7 @@ use the shared ``clean_database`` fixture and the service facade directly.
 from __future__ import annotations
 
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -29,7 +29,7 @@ from app.core.config import get_settings
 from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, QuoteModel, WalletModel
 from app.schemas.billing import ServiceCategory
-from app.services.agent_money import InsufficientFundsError, get_agent_money
+from app.services.agent_money import get_agent_money
 from app.services.pricing import charge_units_for, tool_price
 from app.services.quotes import QuoteError, QuoteService
 from app.services.receipts import ReceiptError, ReceiptService
@@ -108,10 +108,10 @@ async def test_quote_create_rejects_non_positive_or_non_finite(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_amount", [Decimal("0"), Decimal("-5")])
+@pytest.mark.parametrize("bad_amount", [Decimal("0"), Decimal("-5"), Decimal("NaN")])
 async def test_transfer_rejects_non_positive_amounts(bad_amount: Decimal):
     money = get_agent_money()
-    with pytest.raises((ValueError, InvalidOperation)):
+    with pytest.raises(ValueError, match="Transfer amount must be positive"):
         await money.transfer(
             from_wallet_id="wlt-qa-a",
             to_wallet_id="wlt-qa-b",
@@ -207,10 +207,10 @@ async def test_non_finite_transfer_moves_no_money(clean_database):
 
 
 @pytest.mark.asyncio
-async def test_infinite_transfer_is_insufficient_funds_not_a_mint(clean_database):
+async def test_infinite_transfer_is_rejected_before_debit(clean_database):
     money = get_agent_money()
     sponsor, agent = await _funded_agent(money)
-    with pytest.raises(InsufficientFundsError):
+    with pytest.raises(ValueError, match="Transfer amount must be positive"):
         await money.transfer(
             from_wallet_id=agent.wallet_id,
             to_wallet_id=sponsor.wallet_id,

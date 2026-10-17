@@ -871,9 +871,9 @@ class WalletEngine:
         Raises:
             WalletNotFoundError: If either wallet doesn't exist
             InsufficientFundsError: If source has insufficient balance
-            ValueError: If amount <= 0 or same wallet IDs
+            ValueError: If amount is non-positive or non-finite, or same wallet IDs
         """
-        if amount <= Decimal("0"):
+        if not amount.is_finite() or amount <= Decimal("0"):
             raise ValueError("Transfer amount must be positive")
 
         if from_wallet_id == to_wallet_id:

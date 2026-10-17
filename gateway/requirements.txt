@@ -2,7 +2,7 @@
 # Python 3.11+
 
 # --- Core Framework ---
-fastapi>=0.142.2
+fastapi>=0.143.0
 uvicorn[standard]>=0.54.0
 pydantic>=2.13.5,<2.14  # 2.14 drops the string "pattern" from the permit credit decimal JSON schema (tests/test_permit_numeric_storage.py); lift with a schema fix
 pydantic-settings>=2.14.2

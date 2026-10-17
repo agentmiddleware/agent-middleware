@@ -45,6 +45,7 @@ gateway/tests/test_mcp_upstream_governed.py:generic-api-key:3103
 gateway/tests/test_permits.py:generic-api-key:59
 gateway/tests/test_preflight.py:generic-api-key:115
 gateway/tests/test_preflight.py:stripe-access-token:133
+gateway/tests/test_qa_money_auth_matrix.py:generic-api-key:40
 gateway/tests/test_receipt_wallet_linkage.py:generic-api-key:261
 gateway/tests/test_receipt_wallet_linkage.py:generic-api-key:278
 gateway/tests/test_revocation_containment.py:generic-api-key:21

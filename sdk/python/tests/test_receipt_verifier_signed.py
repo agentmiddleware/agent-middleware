@@ -105,7 +105,9 @@ def _retarget(bundle, old, new):
 def test_flipping_credits_charged_is_rejected_as_tampering():
     bundle, key_set = _verified_bundle()
 
-    result = verify_bundle(_retarget(bundle, '"credits_charged":"2"', '"credits_charged":"0"'), key_set)
+    result = verify_bundle(
+        _retarget(bundle, '"credits_charged":"2"', '"credits_charged":"0"'), key_set
+    )
 
     assert result.status is VerificationStatus.INVALID
     assert result.is_tampered
@@ -185,9 +187,7 @@ def test_single_bit_signature_flip_is_rejected(index):
     raw = bytearray(base64.b64decode(bundle["signature"]))
     raw[index] ^= 0x01
 
-    result = verify_bundle(
-        dict(bundle, signature=base64.b64encode(bytes(raw)).decode()), key_set
-    )
+    result = verify_bundle(dict(bundle, signature=base64.b64encode(bytes(raw)).decode()), key_set)
 
     assert result.status is VerificationStatus.INVALID
     assert result.is_tampered

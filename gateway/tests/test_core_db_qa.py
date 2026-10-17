@@ -641,12 +641,12 @@ async def test_require_scope_bypass_and_jwt_paths():
 # jwt service
 # ---------------------------------------------------------------------------
 
-JWT_TEST_KEY = "dGVzdC1zaWduaW5nLWtleS1tYXRlcmlhbC0zMmJ5dGU="
+JWT_DUMMY_KEY = "dGVzdC1zaWduaW5nLWtleS1tYXRlcmlhbC0zMmJ5dGU="
 
 
 @pytest.fixture
 def jwt_keyed(monkeypatch):
-    monkeypatch.setattr(get_settings(), "TRUST_SIGNING_PRIVATE_KEY_B64", JWT_TEST_KEY)
+    monkeypatch.setattr(get_settings(), "TRUST_SIGNING_PRIVATE_KEY_B64", JWT_DUMMY_KEY)
     from app.core.jwt import get_jwt_service
 
     return get_jwt_service()
@@ -656,7 +656,7 @@ def _mint_raw(payload):
     import jwt as pyjwt
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-    private = Ed25519PrivateKey.from_private_bytes(base64.b64decode(JWT_TEST_KEY))
+    private = Ed25519PrivateKey.from_private_bytes(base64.b64decode(JWT_DUMMY_KEY))
     return pyjwt.encode(payload, private, algorithm="EdDSA")
 
 

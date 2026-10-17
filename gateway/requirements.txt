@@ -26,7 +26,7 @@ python-dotenv>=1.2.4    # .env file loading
 cryptography>=50.0.0       # Ed25519 trust-plane signatures (>=50.0.0 fixes GHSA-g6cj-pr64-35w5)
 PyJWT>=2.15.1           # JWT auth (app/core/jwt.py, oidc_iga); explicit — previously only transitive via mcp's pyjwt[crypto]
 redis>=8.1.0            # Redis-backed rate limiting and runtime persistence
-asyncpg>=0.31.0         # PostgreSQL-backed runtime persistence
+asyncpg>=0.32.0         # PostgreSQL-backed runtime persistence
 greenlet>=3.5.6         # SQLAlchemy async engine support
 stripe>=16.0.0           # Stripe payment processing
 mcp>=1.29.0,<2         # MCP SDK; >=1.29.0 provides the pre-parse request-body guard used by public/partner transports; <2 is deliberate: 2.x renamed FastMCP to MCPServer, moved McpError, and changed the lowlevel Server internals that mcp_public/mcp_standard override. Dependabot major bumps are ignored (#460); lift only in a dedicated migration PR.

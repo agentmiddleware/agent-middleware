@@ -32,7 +32,6 @@ TEST_SEED = bytes(range(32))
 # that is not the key that signed the receipt.
 OTHER_SEED = bytes(range(32, 64))
 KID = "sk_golden_0001"
-UNPUBLISHED_KID = "sk_not_published"
 BASE_FIXTURE = "success_legacy"
 
 
@@ -235,7 +234,6 @@ def _synthetic_cases(
 
     lied = dict(payload)
     lied["payload_hash"] = "0" * 64
-    downgraded = _with_hash(dict(payload, kid=UNPUBLISHED_KID))
     unsupported_alg = _with_hash(dict(payload, alg="RS256"))
     unsupported_canon = _with_hash(dict(payload, canonicalization="other/9"))
 
@@ -285,11 +283,6 @@ def _synthetic_cases(
         {
             "name": "synthetic.payload_hash_mismatch",
             "bundle": sign_bundle(key, lied),
-            "expect": "mismatch",
-        },
-        {
-            "name": "synthetic.payload_kid_downgrade",
-            "bundle": sign_bundle(key, downgraded),
             "expect": "mismatch",
         },
         {

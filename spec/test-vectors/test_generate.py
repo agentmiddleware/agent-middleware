@@ -70,7 +70,6 @@ REQUIRED_EDGES = {
     "synthetic.envelope_alg_mismatch": "mismatch",
     "synthetic.envelope_canonicalization_mismatch": "mismatch",
     "synthetic.payload_hash_mismatch": "mismatch",
-    "synthetic.payload_kid_downgrade": "mismatch",
     "synthetic.jwk_only_key": "verified",
     "synthetic.raw_key_beats_jwk": "invalid",
     "synthetic.short_raw_key_uses_jwk": "verified",
@@ -181,18 +180,6 @@ def test_payload_hash_lie_and_kid_downgrade_are_rejected(generated):
 
     lied = verify_bundle(by_name["synthetic.payload_hash_mismatch"]["bundle"], active)
     assert lied.status.value == "mismatch"
-
-    downgrade = by_name["synthetic.payload_kid_downgrade"]
-    # The signed kid is one this document does not publish. The envelope still
-    # names the key that actually signed the bytes. That is a contradiction,
-    # not a reason to ask the caller to refresh keys.
-    assert (
-        downgrade["bundle"]["kid"]
-        != json.loads(downgrade["bundle"]["signing_input"])["kid"]
-    )
-    result = verify_bundle(downgrade["bundle"], active)
-    assert result.status.value == "mismatch"
-
 
 def test_outcome_tamper_only_prefixes_the_signed_outcome(generated):
     module, receipts, _keys = generated

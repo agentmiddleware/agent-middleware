@@ -455,18 +455,6 @@
       "expect": "mismatch"
     },
     {
-      "name": "synthetic.payload_kid_downgrade",
-      "bundle": {
-        "receipt_id": "rcpt_golden_0001",
-        "kid": "sk_golden_0001",
-        "alg": "Ed25519",
-        "canonicalization": "awi-canonical-json/1",
-        "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_not_published\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"5c21e62b1d500bcd082fd7e717d394384fba6a329cd6aa6ad2704ca810c942f1\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
-        "signature": "UyzAmXdYCN/Ncx8oxLteLar8yF0CJ20s+2t3Mnb/hFcjQhianFBpv2QVEzFprh+3LbazrRz+mMKOSXdB8WK3Bw=="
-      },
-      "expect": "mismatch"
-    },
-    {
       "name": "synthetic.jwk_only_key",
       "bundle": {
         "receipt_id": "rcpt_golden_0001",

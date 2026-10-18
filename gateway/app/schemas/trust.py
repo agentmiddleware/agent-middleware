@@ -12,6 +12,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.json_schema import GetJsonSchemaHandler, JsonSchemaValue
 
 from app.core.credits import credit_amount_fits_storage
 from app.schemas.policies import PolicyBundleResponse
@@ -32,10 +33,32 @@ def _require_storable_credit(amount: Decimal) -> Decimal:
 
 # Numeric scale alone cannot detect large amounts rounded by SQLite's float
 # conversion. Apply this before signing, hashing approval terms, or acceptance.
+#
+# pydantic 2.14 stopped emitting the decimal-string pattern in JSON schema for
+# constrained Decimals. That pattern is part of the published permit contract
+# (clients validate amounts against it before requesting a signature), so pin
+# it explicitly instead of depending on pydantic internals.
+_CREDIT_STRING_PATTERN = (
+    r"^(?!^[-+.]*$)[+-]?0*(?:\d{0,12}|(?=[\d.]{1,21}0*$)\d{0,12}\.\d{0,8}0*$)"
+)
+
+
+class _StoredCreditJsonSchema:
+    def __get_pydantic_json_schema__(
+        self, schema: JsonSchemaValue, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        result = handler(schema)
+        for branch in result.get("anyOf", []):
+            if branch.get("type") == "string":
+                branch["pattern"] = _CREDIT_STRING_PATTERN
+        return result
+
+
 _PositiveStoredCredit = Annotated[
     Decimal,
     Field(gt=0, max_digits=_CREDIT_DIGITS, decimal_places=_CREDIT_DECIMAL_PLACES),
     AfterValidator(_require_storable_credit),
+    _StoredCreditJsonSchema(),
 ]
 
 

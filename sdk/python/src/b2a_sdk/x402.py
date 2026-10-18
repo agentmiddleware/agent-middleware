@@ -83,7 +83,7 @@ class X402Client:
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://api.thisisatest.tech",
+        base_url: str = "http://localhost:8000",
         timeout: float = 10.0,
         *,
         transport: httpx.AsyncBaseTransport | None = None,

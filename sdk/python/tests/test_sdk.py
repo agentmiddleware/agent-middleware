@@ -4,6 +4,7 @@ Tests for B2A SDK.
 
 import asyncio
 import json
+import warnings
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -64,7 +65,8 @@ class TestB2AClient:
         """charge() posts the wallet, service and units as query params."""
         client, seen = _recording_client(_CHARGE_OK)
         async with client:
-            await client.charge("wallet-123", "iot_bridge", units=10)
+            with pytest.warns(UserWarning, match="not replay-safe"):
+                await client.charge("wallet-123", "iot_bridge", units=10)
 
         assert len(seen) == 1
         request = seen[0]
@@ -84,12 +86,13 @@ class TestB2AClient:
     async def test_charge_sends_optional_request_path_and_description(self):
         client, seen = _recording_client(_CHARGE_OK)
         async with client:
-            await client.charge(
-                "wallet-123",
-                "iot_bridge",
-                request_path="/tools/run",
-                description="nightly batch",
-            )
+            with pytest.warns(UserWarning, match="not replay-safe"):
+                await client.charge(
+                    "wallet-123",
+                    "iot_bridge",
+                    request_path="/tools/run",
+                    description="nightly batch",
+                )
 
         params = dict(seen[0].url.params)
         assert params["request_path"] == "/tools/run"
@@ -110,6 +113,21 @@ class TestB2AClient:
 
         assert seen[0].headers["idempotency-key"] == "charge-key-1"
         assert dict(seen[0].url.params)["units"] == "10"
+
+    @pytest.mark.asyncio
+    async def test_charge_with_key_emits_no_warning(self):
+        """A keyed charge is replay-safe, so it stays silent."""
+        client, seen = _recording_client(_CHARGE_OK)
+        async with client:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                await client.charge(
+                    "wallet-123",
+                    "iot_bridge",
+                    idempotency_key="charge-key-1",
+                )
+
+        assert seen[0].headers["idempotency-key"] == "charge-key-1"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -160,7 +178,8 @@ class TestB2AClient:
         )
         async with client:
             with pytest.raises(InsufficientFundsError) as exc_info:
-                await client.charge("wallet-123", "iot_bridge", units=100)
+                with pytest.warns(UserWarning, match="not replay-safe"):
+                    await client.charge("wallet-123", "iot_bridge", units=100)
 
         assert exc_info.value.wallet_id == "wallet-123"
         assert exc_info.value.shortfall == 100.0
@@ -245,7 +264,8 @@ class TestB2AClient:
         )
         async with client:
             with pytest.raises(httpx.HTTPStatusError):
-                await client.charge("someone-elses-wallet", "iot_bridge")
+                with pytest.warns(UserWarning, match="not replay-safe"):
+                    await client.charge("someone-elses-wallet", "iot_bridge")
             with pytest.raises(httpx.HTTPStatusError):
                 await client.charge(
                     "someone-elses-wallet", "iot_bridge", idempotency_key="charge-key-1"

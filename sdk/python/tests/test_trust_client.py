@@ -73,10 +73,11 @@ def _client(handler) -> AgentMiddlewareClient:
 
 
 @pytest.mark.asyncio
-async def test_default_base_url_is_the_live_canonical_api() -> None:
+async def test_default_base_url_is_localhost_never_a_hosted_server() -> None:
     client = AgentMiddlewareClient(api_key="test-key")
     try:
-        assert client.base_url == "https://api.thisisatest.tech"
+        assert client.base_url == "http://localhost:8000"
+        assert "thisisatest" not in client.base_url
     finally:
         await client.close()
 

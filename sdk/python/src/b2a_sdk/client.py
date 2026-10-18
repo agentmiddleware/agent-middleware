@@ -130,7 +130,7 @@ class AgentMiddlewareClient:
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://api.thisisatest.tech",
+        base_url: str = "http://localhost:8000",
         timeout: float = 10.0,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -141,7 +141,9 @@ class AgentMiddlewareClient:
 
         Args:
             api_key: API key for authentication (X-API-Key header)
-            base_url: Base URL of the middleware API
+            base_url: Base URL of the middleware API. Defaults to the local
+                gateway; pass the deployment URL explicitly for anything
+                else, since the default never points at a hosted server.
             timeout: Request timeout in seconds
             transport: Optional HTTPX transport, primarily for in-process tests
             bearer_token: Optional Bearer token for IGA-governed flows. Omit it
@@ -603,6 +605,14 @@ class AgentMiddlewareClient:
             ValueError: If ``idempotency_key`` is blank, too long, or contains
                 a control character (nothing is sent)
         """
+        if idempotency_key is None:
+            warnings.warn(
+                "charge() without idempotency_key is not replay-safe: "
+                "retrying a charge whose response was lost bills the wallet "
+                "again. Pass a caller-owned idempotency_key.",
+                UserWarning,
+                stacklevel=2,
+            )
         headers: dict[str, str] | None = None
         if idempotency_key is not None:
             headers = {"Idempotency-Key": self._validate_idempotency_key(idempotency_key)}

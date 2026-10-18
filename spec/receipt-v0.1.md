@@ -41,6 +41,13 @@ envelope value that disagrees with it as a `mismatch`.
 Additional members (approval ids, action bindings, constraint denials) are
 additive, as for permits.
 
+Two members need care. `ledger_entry_id` and `response_hash` are always
+signed, with null when there is no value: a denied receipt signs
+`"ledger_entry_id":null` and `"response_hash":null`, so verifiers must keep
+those nulls in the bytes they hash. `idempotency_record_id` and
+`dispatch_attempt_id` are signed only when set; receipts that predate the
+linkage fields carry neither.
+
 ## Outcomes
 
 | `outcome` | Meaning |

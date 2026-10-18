@@ -84,18 +84,35 @@ export function keySetFromDocument(doc: unknown): KeySet {
   return keys;
 }
 
+/** True when decoded JSON contains a lone Unicode surrogate. */
 function hasLoneSurrogate(value: unknown): boolean {
   const pending: unknown[] = [value];
-  const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+  const seen = new Set<object>();
   while (pending.length > 0) {
     const current = pending.pop();
     if (typeof current === "string") {
-      if (lone.test(current)) return true;
+      for (let i = 0; i < current.length; i++) {
+        const code = current.charCodeAt(i);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          const next = current.charCodeAt(i + 1);
+          if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+          i += 1;
+        } else if (code >= 0xdc00 && code <= 0xdfff) {
+          return true;
+        }
+      }
     } else if (Array.isArray(current)) {
-      pending.push(...current);
-    } else if (current && typeof current === "object") {
+      if (seen.has(current)) continue;
+      seen.add(current);
+      for (const item of current) pending.push(item);
+    } else if (current !== null && typeof current === "object") {
+      if (seen.has(current)) continue;
+      seen.add(current);
       const obj = current as Record<string, unknown>;
-      for (const k of Object.keys(obj)) pending.push(k, obj[k]);
+      for (const key of Object.keys(obj)) {
+        pending.push(key);
+        pending.push(obj[key]);
+      }
     }
   }
   return false;
@@ -136,7 +153,12 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
     return fail("malformed", "signing_input is not valid JSON", envKid);
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return fail("malformed", "signing_input is not a JSON object", envKid);
-  if (hasLoneSurrogate(payload)) return fail("malformed", "signing_input contains invalid Unicode text", envKid);
+  // Same order as the Python verifier: unreadable text is malformed, and
+  // that decision is made before any signature check. A bad signature must
+  // not turn "cannot read the text" into "tampered".
+  if (hasLoneSurrogate(payload)) {
+    return fail("malformed", "signing_input contains invalid Unicode text", envKid);
+  }
   const p = payload as Record<string, unknown>;
   const kid = p.kid;
   if (typeof kid !== "string" || !kid) return fail("malformed", "signed payload has no kid", envKid);
@@ -151,10 +173,16 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const msg = Buffer.from(signingInput, "utf8");
 
   const raw = keySet.get(kid);
-  if (raw && raw.length !== RAW_KEY_LEN) return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);
+  // A key that is present but the wrong length cannot be judged. Reporting
+  // that as invalid would call the receipt tampered.
+  if (raw && raw.length !== RAW_KEY_LEN) {
+    return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);
+  }
   if (!raw) {
     const envKey = envKid !== kid ? keySet.get(envKid) : undefined;
-    if (envKey && envKey.length === RAW_KEY_LEN && edOk(envKey, sig, msg)) return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);
+    if (envKey && envKey.length === RAW_KEY_LEN && edOk(envKey, sig, msg)) {
+      return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);
+    }
     return fail("unknown_key", `no published key for kid ${kid}`, kid);
   }
   if (raw.length !== RAW_KEY_LEN) return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);

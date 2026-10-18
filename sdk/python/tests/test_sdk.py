@@ -19,6 +19,8 @@ from b2a_sdk import (
     combined,
     monitored,
 )
+from b2a_sdk.edge_client import B2AEdgeClient
+from b2a_sdk.errors import APIError
 
 
 def _recording_client(
@@ -181,6 +183,74 @@ class TestB2AClient:
 
         assert exc_info.value.wallet_id == "wallet-123"
         assert exc_info.value.shortfall == 100.0
+
+    @pytest.mark.asyncio
+    async def test_charge_uses_the_server_top_up_url(self):
+        """The 402 body carries the real top-up path. Do not invent one."""
+        client, _ = _recording_client(
+            {
+                ("POST", "/v1/billing/charge"): httpx.Response(
+                    402,
+                    json={
+                        "detail": {
+                            "error": "insufficient_funds",
+                            "shortfall": 1.5,
+                            "top_up_url": "/v1/billing/top-up/prepare",
+                            "wallet_id": "wallet-123",
+                        }
+                    },
+                )
+            }
+        )
+        async with client:
+            with pytest.raises(InsufficientFundsError) as exc_info:
+                await client.charge("wallet-123", "iot_bridge")
+
+        err = exc_info.value
+        assert err.top_up_url == "/v1/billing/top-up/prepare"
+        assert "/dashboard/top-up" not in str(err)
+        assert err.shortfall == 1.5
+        assert err.payload["detail"]["top_up_url"] == "/v1/billing/top-up/prepare"
+
+    @pytest.mark.asyncio
+    async def test_charge_402_string_detail_is_typed_not_a_crash(self):
+        """A 402 whose detail is a string is still insufficient funds."""
+        client, _ = _recording_client(
+            {
+                ("POST", "/v1/billing/charge"): httpx.Response(
+                    402,
+                    json={"detail": "insufficient_funds"},
+                )
+            }
+        )
+        async with client:
+            with pytest.raises(InsufficientFundsError) as exc_info:
+                await client.charge("wallet-123", "iot_bridge")
+
+        assert exc_info.value.wallet_id == "wallet-123"
+        assert exc_info.value.shortfall is None
+
+    @pytest.mark.asyncio
+    async def test_charge_402_invalid_json_is_an_api_error(self):
+        client, _ = _recording_client(
+            {("POST", "/v1/billing/charge"): httpx.Response(402, content=b"nope")}
+        )
+        async with client:
+            with pytest.raises(APIError, match="invalid_json_response"):
+                await client.charge("wallet-123", "iot_bridge")
+
+    @pytest.mark.asyncio
+    async def test_charge_rejects_idempotency_key_that_would_split_headers(self):
+        """A key with a newline must not be sent. It would inject headers."""
+        client, seen = _recording_client(_CHARGE_OK)
+        async with client:
+            with pytest.raises(ValueError, match="control characters"):
+                await client.charge(
+                    "wallet-123",
+                    "iot_bridge",
+                    idempotency_key="job-1\r\nX-Injected: yes",
+                )
+        assert seen == []
 
     @pytest.mark.asyncio
     async def test_charge_cross_wallet_denial_still_raises(self):
@@ -565,3 +635,30 @@ class TestInsufficientFundsError:
         )
 
         assert error.shortfall is None
+
+
+class TestHeaderInjection:
+    """Caller-controlled header values must not be able to split the request."""
+
+    @pytest.mark.asyncio
+    async def test_edge_execute_rejects_header_injection_before_sending(self):
+        edge = B2AEdgeClient(api_url="http://test", api_key="test-key", timeout=0.1)
+        original = edge._client
+        edge._client = AsyncMock()
+        try:
+            with pytest.raises(ValueError, match="control characters"):
+                await edge.execute_awi_action(
+                    "session-1",
+                    "click",
+                    {},
+                    permit_id="permit-1",
+                    idempotency_key="job\r\nX-Injected: yes",
+                )
+            edge._client.post.assert_not_called()
+        finally:
+            edge._client = original
+            await edge.close()
+
+    def test_edge_api_key_rejects_header_injection(self):
+        with pytest.raises(ValueError, match="control characters"):
+            B2AEdgeClient(api_key="sk\r\nX-Injected: yes")

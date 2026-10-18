@@ -90,6 +90,8 @@ class X402Client:
     ) -> None:
         # Held only in the transport's default headers (see ``api_key``), not
         # duplicated as instance state, so ``vars(client)`` dumps omit it.
+        # Same control-character rule as AgentMiddlewareClient: do not strip.
+        AgentMiddlewareClient._reject_header_controls(api_key, "api_key")
         self.base_url = base_url.rstrip("/")
         self._client = httpx.AsyncClient(
             base_url=self.base_url,

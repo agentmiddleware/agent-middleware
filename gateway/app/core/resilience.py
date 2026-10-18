@@ -37,6 +37,8 @@ def retry_with_backoff(
         async def call_api():
             ...
     """
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
@@ -241,6 +243,8 @@ async def run_with_write_conflict_retry(
     other reason of the same type fail on the first attempt. A restart taken
     this way spends the same budget and ends in the same ``on_exhausted``.
     """
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
     last_exc: BaseException | None = None
     for attempt in range(max_attempts):
         try:

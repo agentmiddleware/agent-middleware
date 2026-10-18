@@ -318,11 +318,7 @@ class AgentMiddlewareClient:
         A success or error body can still describe another tool, permit, or
         wallet. That body is not evidence for this call.
         """
-        if (
-            receipt.tool != tool
-            or receipt.permit_id != permit_id
-            or receipt.wallet_id != wallet_id
-        ):
+        if receipt.tool != tool or receipt.permit_id != permit_id or receipt.wallet_id != wallet_id:
             raise APIError("mcp_receipt_does_not_match_request", payload=payload)
 
     async def discover_tools(self) -> list[ToolDefinition]:

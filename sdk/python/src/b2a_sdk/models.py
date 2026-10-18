@@ -312,7 +312,10 @@ class ACPCheckoutRequest:
             or not all(isinstance(item, ACPLineItem) for item in self.line_items)
         ):
             raise ValueError("line_items must contain 1..100 line items")
-        if not isinstance(self.intent_id, str) or _INTENT_ID_PATTERN.fullmatch(self.intent_id) is None:
+        if (
+            not isinstance(self.intent_id, str)
+            or _INTENT_ID_PATTERN.fullmatch(self.intent_id) is None
+        ):
             raise ValueError(
                 "intent_id must be 1..128 characters of letters, digits, '_', '-' or '.'"
             )

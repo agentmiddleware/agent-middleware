@@ -53,9 +53,7 @@ def _permit_payload(permit_id: str = "permit-1") -> dict:
     }
 
 
-def _receipt_payload(
-    idempotency_key: str, receipt_id: str = "rcpt-1", tool: str = TOOL
-) -> dict:
+def _receipt_payload(idempotency_key: str, receipt_id: str = "rcpt-1", tool: str = TOOL) -> dict:
     return {
         "receipt_id": receipt_id,
         "idempotency_record_id": "idem-1",
@@ -109,10 +107,10 @@ class FakeTrustPlane:
                         "structuredContent": {"ok": True},
                         "isError": False,
                         # Echo the invoked tool: the SDK refuses a receipt that
-                    # names a different call than the one just made.
-                    "receipt": _receipt_payload(
-                        key, receipt_id, tool=body["params"].get("name", TOOL)
-                    ),
+                        # names a different call than the one just made.
+                        "receipt": _receipt_payload(
+                            key, receipt_id, tool=body["params"].get("name", TOOL)
+                        ),
                     },
                 },
             )

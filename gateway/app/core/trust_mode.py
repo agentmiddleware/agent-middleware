@@ -148,6 +148,7 @@ def validate_trust_mode_config(
     redis_url: str = "",
     public_url: str = "",
     database_url: str = "",
+    cors_origins: str = "",
     enable_dogfood_tool: bool = False,
     enable_dogfood_second_tool: bool = False,
 ) -> None:
@@ -282,6 +283,16 @@ def validate_trust_mode_config(
                 "STATE_BACKEND, which governs the key/value state store rather "
                 "than the ORM engine"
             )
+        for entry in (cors_origins or "").split(","):
+            cleaned = entry.strip().strip("\"'").strip()
+            if cleaned == "*":
+                violations.append(
+                    "CORS_ORIGINS must not contain '*' in production-like "
+                    "environments (wildcard CORS lets any website read "
+                    "cross-origin responses; set an explicit origin list or "
+                    "leave it empty when there is no browser client)"
+                )
+                break
 
     if violations:
         raise TrustModeGuardrailError("; ".join(violations))
@@ -313,6 +324,7 @@ def validate_trust_mode_guardrails(settings: Settings) -> None:
         database_url=settings.DATABASE_URL,
         enable_dogfood_tool=settings.ENABLE_DOGFOOD_TOOL,
         enable_dogfood_second_tool=settings.ENABLE_DOGFOOD_SECOND_TOOL,
+        cors_origins=settings.CORS_ORIGINS,
     )
 
 

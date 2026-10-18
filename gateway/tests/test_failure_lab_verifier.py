@@ -213,3 +213,69 @@ def test_disabled_keys_are_dropped_from_the_key_set():
 def test_envelope_only_fields_are_enumerated_for_the_tampering_report():
     assert "issuer" in ENVELOPE_ONLY_FIELDS
     assert "signing_input" not in ENVELOPE_ONLY_FIELDS
+
+
+@pytest.mark.parametrize("count", [True, False])
+def test_a_boolean_is_not_an_execution_count(signed_bundle, count):
+    """Booleans are ints in Python; True must not read as one execution."""
+    bundle, keys = signed_bundle
+    report = verify(
+        bundle,
+        keys,
+        downstream_observation={
+            "executions": count,
+            "operation_id": "refund:pay_1",
+            "source": "effect ledger",
+        },
+    )
+    assert report.signature.status is ClaimStatus.ESTABLISHED
+    assert report.downstream_execution.status is ClaimStatus.NOT_ESTABLISHED
+
+
+def test_a_negative_count_is_an_unusable_observation_not_consistency(signed_bundle):
+    """Minus four executions is impossible, never agreement with the receipt."""
+    bundle, keys = signed_bundle
+    report = verify(
+        bundle,
+        keys,
+        downstream_observation={
+            "executions": -4,
+            "operation_id": "refund:pay_1",
+            "source": "effect ledger",
+        },
+    )
+    assert report.downstream_execution.status is ClaimStatus.NOT_ESTABLISHED
+    assert "consistent" not in report.downstream_execution.reason
+
+
+def test_an_observation_of_another_receipt_fails_the_claim(signed_bundle):
+    """An observation bound to a different receipt cannot establish execution."""
+    bundle, keys = signed_bundle
+    report = verify(
+        bundle,
+        keys,
+        downstream_observation={
+            "executions": 1,
+            "operation_id": "refund:someone-elses",
+            "receipt_id": "rcpt-someone-elses",
+            "source": "effect ledger",
+        },
+    )
+    assert report.signature.status is ClaimStatus.ESTABLISHED
+    assert report.downstream_execution.status is ClaimStatus.FAILED
+
+
+def test_an_observation_bound_to_this_receipt_still_establishes(signed_bundle):
+    """The binding check only fires on a mismatch, never on agreement."""
+    bundle, keys = signed_bundle
+    report = verify(
+        bundle,
+        keys,
+        downstream_observation={
+            "executions": 1,
+            "operation_id": "refund:pay_1",
+            "receipt_id": "rcpt-abc123",
+            "source": "effect ledger",
+        },
+    )
+    assert report.downstream_execution.status is ClaimStatus.ESTABLISHED

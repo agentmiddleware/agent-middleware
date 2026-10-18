@@ -228,6 +228,14 @@ def verify(
     ``{"executions": int, "operation_id": str, "source": str}``. Without it,
     downstream execution is reported NOT_ESTABLISHED -- which is the correct
     answer for a signature alone, not a missing feature.
+
+    ``executions`` must be a genuine integer count: booleans and negative
+    counts are rejected as unusable observations rather than read as
+    evidence. When the observation also carries ``receipt_id`` and the
+    signed payload names a different one, the claim FAILS: the observation
+    describes a different receipt. An observation that names no receipt is
+    taken on the caller's word to describe this one, so callers proving
+    execution should always bind it.
     """
     notes: list[str] = []
 
@@ -377,11 +385,35 @@ def _downstream_claim(
         )
     executions = observation.get("executions")
     source = observation.get("source", "unspecified independent observer")
-    if not isinstance(executions, int):
+    if isinstance(executions, bool) or not isinstance(executions, int):
         return Claim(
             "DOWNSTREAM_EXECUTION_ESTABLISHED",
             ClaimStatus.NOT_ESTABLISHED,
             "the supplied observation did not report an execution count",
+        )
+    if executions < 0:
+        return Claim(
+            "DOWNSTREAM_EXECUTION_ESTABLISHED",
+            ClaimStatus.NOT_ESTABLISHED,
+            "the supplied observation reported an impossible execution count",
+        )
+    bound_receipt = observation.get("receipt_id")
+    signed_receipt = payload.get("receipt_id")
+    if (
+        isinstance(bound_receipt, str)
+        and bound_receipt
+        and isinstance(signed_receipt, str)
+        and signed_receipt
+        and bound_receipt != signed_receipt
+    ):
+        return Claim(
+            "DOWNSTREAM_EXECUTION_ESTABLISHED",
+            ClaimStatus.FAILED,
+            (
+                f"the observation describes receipt {bound_receipt!r} but the "
+                f"signed payload is receipt {signed_receipt!r} -- an observation "
+                "of a different receipt cannot establish this one executed"
+            ),
         )
     if outcome == "delivery_uncertain":
         return Claim(

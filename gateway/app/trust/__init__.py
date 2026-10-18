@@ -90,9 +90,11 @@ from .permits import (
     PermitService,
     PermitValidation,
     PermitWriteContendedError,
+    extract_recipient_identity,
     get_permit_service,
     permit_constraints_snapshot,
     permit_model_to_response,
+    recipient_binding_matches,
 )
 from .permit_requests import (
     REQUEST_STATUS_APPROVED,
@@ -194,9 +196,11 @@ __all__ = [
     "PermitValidation",
     "PermitError",
     "PermitWriteContendedError",
+    "extract_recipient_identity",
     "get_permit_service",
     "permit_constraints_snapshot",
     "permit_model_to_response",
+    "recipient_binding_matches",
     # permit requests (agent asks, human approves, middleware mints)
     "ApprovalCardView",
     "PermitRequestConflictError",

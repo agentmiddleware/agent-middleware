@@ -240,6 +240,11 @@ async def seeded_permit() -> SeededPermit:
     finally:
         async with factory() as session:
             async with session.begin():
+                # Receipts from any test using this permit must go first:
+                # receipts reference permits (receipts_permit_id_fkey).
+                await session.execute(
+                    delete(ReceiptModel).where(ReceiptModel.permit_id == permit_id)
+                )
                 await session.execute(
                     delete(PermitModel).where(PermitModel.permit_id == permit_id)
                 )
@@ -358,29 +363,29 @@ async def seeded_refund_reconciliation(
     finally:
         async with factory() as session:
             async with session.begin():
+                # Children before parents: receipts reference the permit, the
+                # idempotency record, and ledger entries. The refund retry
+                # under test issues a second receipt via create_receipt, so
+                # sweep by permit_id instead of deleting only the seeded one.
                 await session.execute(
-                    delete(IdempotencyRecordModel).where(
-                        IdempotencyRecordModel.record_id == record_id
+                    delete(ReceiptModel).where(
+                        ReceiptModel.permit_id == seeded_permit.permit_id
                     )
                 )
                 await session.execute(
-                    delete(ReceiptModel).where(
-                        ReceiptModel.receipt_id == receipt.receipt_id
+                    delete(IdempotencyRecordModel).where(
+                        IdempotencyRecordModel.wallet_id == seeded_permit.wallet_id
                     )
                 )
                 await session.execute(
                     delete(LedgerEntryModel).where(
-                        LedgerEntryModel.entry_id.in_(
-                            [charge_entry_id, reconciliation["refund_entry_id"]]
-                        )
+                        LedgerEntryModel.wallet_id == seeded_permit.wallet_id
                     )
                 )
-                if receipt.signature_key_id != seeded_permit.signing_key_id:
-                    await session.execute(
-                        delete(SigningKeyModel).where(
-                            SigningKeyModel.key_id == receipt.signature_key_id
-                        )
-                    )
+                # The receipt signature key is suite-wide trust state owned by
+                # the receipt service, not by this fixture. Deleting it can
+                # roll back the cleanup above whenever another module's rows
+                # still reference it, so leave it in place.
 
 
 def _authorization_kwargs(seed: SeededPermit) -> dict[str, object]:

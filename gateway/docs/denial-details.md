@@ -102,6 +102,8 @@ adjacent `details.field` value identifies the rejected field.
 | `max_cost_per_action_exceeded` | The quoted action cost exceeds the wallet policy's per-action limit. | Lower the action cost or raise the policy limit. |
 | `daily_spend_limit_exceeded` | Current daily spend plus this action exceeds the wallet policy limit. | Wait for the policy window to reset or have an administrator change the limit. |
 | `real_effects_required` | The policy forbids a simulated execution path. | Use a real-effects tool configuration or revise the policy. |
+| `risk_tier_not_allowed` | The action's risk tier exceeds the wallet policy bundle's tier ceiling (tiers run low < medium < high; the bundle's `risk_tier` is the highest tier it permits). | Lower the action's risk tier or have an administrator raise the policy ceiling. |
+| `daily_spend_unknown` | The policy sets a daily spend limit but past spending cannot be determined, so the cap cannot be shown to hold. Fail-closed denial. | Retry once spend accounting is healthy; if it persists, have an administrator investigate the ledger before spending resumes. |
 | `policy_denied` | Policy evaluation denied without a narrower stable reason. | Inspect the adjacent audit policy ID and evaluated constraints, then correct the blocking policy. |
 
 ### Terminal human approval

@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: false
@@ -112,6 +112,73 @@ jobs:
           # exit code 5 = no tests collected; don't fail packages that have none yet
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
           exit $rc
+
+  postgres-concurrency:
+    # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:
+    # SQLite treats SELECT ... FOR UPDATE as a silent no-op, so these tests
+    # skip unless pointed at a disposable PostgreSQL database (test tier 2,
+    # see gateway/docs/TESTING_TIERS.md). The database is created fresh in
+    # this job and nothing outside the job can reach it.
+    name: Postgres concurrency / gateway
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sellers
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U sellers"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -r requirements.txt -e "../sdk/python[verify]" pytest-xdist pytest-timeout
+          uv pip install "ruff==${RUFF_VERSION}" "pytest==${PYTEST_VERSION}"
+      - name: Create disposable database
+        run: |
+          uv run --no-sync python - <<'EOF'
+          import asyncio
+          import asyncpg
+
+          async def main():
+              conn = await asyncpg.connect(
+                  user="sellers", host="127.0.0.1", port=55439, database="postgres"
+              )
+              try:
+                  await conn.execute("CREATE DATABASE amw_action_ci")
+              finally:
+                  await conn.close()
+
+          asyncio.run(main())
+          EOF
+      - name: Migrate disposable database
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_ci
+        run: uv run --no-sync alembic upgrade head
+      - name: Postgres concurrency tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_ci
+          ENVIRONMENT: test
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+        run: |
+          uv run --no-sync pytest -q tests/test_action_postgres.py tests/test_permit_postgres_concurrency.py tests/test_duplicate_guard_postgres_concurrency.py tests/test_action_database_guard.py --timeout 300
 
   postgres-proofs:
     # Runs the gateway tests that only prove their claim against a live
@@ -282,7 +349,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
@@ -316,7 +383,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript, postgres-proofs]
+    needs: [detect, python, typescript, postgres-concurrency, postgres-proofs]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

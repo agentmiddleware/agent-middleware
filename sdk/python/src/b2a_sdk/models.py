@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
+
+# Same bounds as gateway app/schemas/acp.py. A checkout the server would
+# reject must fail here, before the delegated payment token is sent.
+_INTENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_\-\.]{1,128}$")
+_HOSTNAME_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_MERCHANT_DOMAIN_PATTERN = re.compile(rf"^{_HOSTNAME_LABEL}(?:\.{_HOSTNAME_LABEL})+$")
+_SUPPORTED_ACP_CURRENCIES = frozenset({"usd"})
 
 JsonObject = dict[str, Any]
 
@@ -247,16 +255,24 @@ class ACPLineItem:
     def __post_init__(self) -> None:
         """Reject line items the server would refuse, before the SPT is sent.
 
-        Bounds mirror ``app/schemas/acp.py::ACPLineItem`` exactly. Catching
-        these here keeps a delegated payment credential off the wire on a
-        request that could only 422.
+        Bounds mirror ``app/schemas/acp.py::ACPLineItem``. ``True`` and
+        ``1.0`` are not integers there, and currency is the lowercase
+        allowlist only. Catching these here keeps a delegated payment
+        credential off the wire on a request that could only 422.
         """
-        if not 0 < self.quantity <= 10_000:
-            raise ValueError(f"quantity must be in 1..10000, got {self.quantity!r}")
-        if not 0 <= self.unit_amount <= 10_000_000:
+        if type(self.quantity) is not int or not 0 < self.quantity <= 10_000:
+            raise ValueError(f"quantity must be an integer in 1..10000, got {self.quantity!r}")
+        if type(self.unit_amount) is not int or not 0 <= self.unit_amount <= 10_000_000:
             raise ValueError(
-                f"unit_amount must be in 0..10000000 minor units, got {self.unit_amount!r}"
+                f"unit_amount must be an integer in 0..10000000 minor units, "
+                f"got {self.unit_amount!r}"
             )
+        if not isinstance(self.name, str) or not 1 <= len(self.name) <= 256:
+            raise ValueError("name must be 1..256 characters")
+        if self.sku is not None and (not isinstance(self.sku, str) or len(self.sku) > 128):
+            raise ValueError("sku must be at most 128 characters")
+        if self.currency not in _SUPPORTED_ACP_CURRENCIES:
+            raise ValueError(f"currency must be 'usd', got {self.currency!r}")
 
     def to_payload(self) -> JsonObject:
         payload: JsonObject = {
@@ -284,6 +300,37 @@ class ACPCheckoutRequest:
     spt_token: str = field(repr=False)
     merchant_domain: str
     client_total: int
+
+    def __post_init__(self) -> None:
+        """Reject a checkout the server would 422, before the SPT is sent.
+
+        The error text names the field and does not include the token.
+        """
+        if (
+            not isinstance(self.line_items, list)
+            or not 1 <= len(self.line_items) <= 100
+            or not all(isinstance(item, ACPLineItem) for item in self.line_items)
+        ):
+            raise ValueError("line_items must contain 1..100 line items")
+        if (
+            not isinstance(self.intent_id, str)
+            or _INTENT_ID_PATTERN.fullmatch(self.intent_id) is None
+        ):
+            raise ValueError(
+                "intent_id must be 1..128 characters of letters, digits, '_', '-' or '.'"
+            )
+        if not isinstance(self.spt_token, str) or not 1 <= len(self.spt_token) <= 512:
+            raise ValueError("spt_token must be 1..512 characters")
+        if (
+            not isinstance(self.merchant_domain, str)
+            or len(self.merchant_domain) > 253
+            or _MERCHANT_DOMAIN_PATTERN.fullmatch(self.merchant_domain) is None
+        ):
+            raise ValueError(
+                "merchant_domain must be a lowercase hostname with no scheme, port, or path"
+            )
+        if type(self.client_total) is not int or self.client_total < 0:
+            raise ValueError("client_total must be an integer >= 0")
 
     def to_payload(self) -> JsonObject:
         return {

@@ -82,6 +82,7 @@ DORMANT_SURFACE_TEST_MODULES = frozenset(
         "test_planner_constraints",
         "test_pods",
         "test_policy_bundles",
+        "test_qa_money_auth_matrix",
         "test_revocation_containment",
         "test_secret_persistence",
         "test_stripe_integration",

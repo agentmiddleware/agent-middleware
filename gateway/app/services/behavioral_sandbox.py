@@ -23,13 +23,15 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 import redis.asyncio as redis
 
 from ..core.config import get_settings
 from ..core.durable_state import get_durable_state
 from ..core.trust_mode import UNSAFE_HOST_SANDBOX_BACKENDS
-from ..core.url_guard import check_outbound_url
+from ..core.url_guard import pin_outbound_url
 from ..schemas.sandbox_behavioral import (
     ExecutionStatus,
     SandboxEnvironment,
@@ -40,6 +42,48 @@ from ..schemas.sandbox_behavioral import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _PinnedOutboundTransport(httpx.AsyncBaseTransport):
+    """Connect to one validated address while keeping Host header and TLS SNI.
+
+    Mirrors the upstream MCP ``_PinnedAsyncTransport`` approach, but for
+    agent-supplied sandbox URLs that vary per request: the caller validates
+    once via ``pin_outbound_url`` and hands the pinned address here, so the
+    connection can only reach the IP that passed validation. Resolving the
+    hostname again at connect time would reopen DNS rebinding (a second
+    lookup can return a private address after validation saw a public one).
+    """
+
+    def __init__(
+        self,
+        *,
+        server_name: str,
+        pinned_address: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._server_name = server_name
+        self._pinned_address = pinned_address
+        self._transport = transport or httpx.AsyncHTTPTransport(
+            verify=True,
+            retries=0,
+            trust_env=False,
+        )
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        extensions = dict(request.extensions)
+        extensions["sni_hostname"] = self._server_name
+        pinned_request = httpx.Request(
+            request.method,
+            request.url.copy_with(host=self._pinned_address),
+            headers=request.headers,
+            stream=request.stream,
+            extensions=extensions,
+        )
+        return await self._transport.handle_async_request(pinned_request)
+
+    async def aclose(self) -> None:
+        await self._transport.aclose()
 
 
 def _limit_child_process(memory_limit_mb: int) -> None:
@@ -599,13 +643,16 @@ print(json.dumps(result))
         timeout_seconds: int,
         *,
         network_access: bool = False,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> dict[str, Any]:
         """Execute an HTTP request in proxy mode."""
         url = tool_input.get("url")
         method = tool_input.get("method", "GET")
 
-        if not url:
+        if not url or not isinstance(url, str):
             return {"success": False, "error": "URL required for HTTP proxy mode"}
+        if not isinstance(method, str) or not method:
+            return {"success": False, "error": "HTTP method must be a string"}
 
         if dry_run:
             return {
@@ -628,7 +675,7 @@ print(json.dumps(result))
                 "success": False,
                 "error": "network_access is disabled for this environment",
             }
-        block_reason = await check_outbound_url(url)
+        block_reason, pinned_address = await pin_outbound_url(url)
         if block_reason:
             return {
                 "success": False,
@@ -636,36 +683,43 @@ print(json.dumps(result))
             }
 
         try:
-            import aiohttp
-
-            async with aiohttp.ClientSession() as session:
+            server_name = (urlsplit(url).hostname or "").strip("[]").rstrip(".").lower()
+            pinned_transport: httpx.AsyncBaseTransport | None = None
+            if pinned_address is not None:
+                # Connect to the IP that passed validation instead of
+                # resolving the hostname a second time: a fresh lookup here
+                # could return a private address after validation saw a
+                # public one (DNS rebinding).
+                pinned_transport = _PinnedOutboundTransport(
+                    server_name=server_name,
+                    pinned_address=pinned_address,
+                    transport=transport,
+                )
+            async with httpx.AsyncClient(
+                transport=pinned_transport,
                 # Don't follow redirects: the URL guard only vetted the
                 # original target, so a 3xx to a loopback/metadata address
                 # would otherwise slip past it.
-                async with session.request(
-                    method,
-                    url,
-                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
-                    allow_redirects=False,
-                ) as resp:
-                    return {
-                        "success": True,
-                        "output": {
-                            "sandboxed": True,
-                            "status_code": resp.status,
-                            "url": str(resp.url),
-                        },
-                    }
-        except ImportError:
-            return {
-                "success": True,
-                "output": {
-                    "sandboxed": True,
-                    "mode": "http_proxy_mock",
-                    "url": url,
-                    "method": method,
-                },
-            }
+                follow_redirects=False,
+                # Proxy env vars must not steer the pinned connection away
+                # from the validated address.
+                trust_env=False,
+                timeout=timeout_seconds,
+            ) as client:
+                # Only the status code is used, so stream and close after
+                # the headers arrive: a huge or never-ending body must not
+                # buffer into gateway memory (the byte budget applies to the
+                # subprocess path, not this proxy fetch).
+                async with client.stream(method.upper(), url) as resp:
+                    status_code = resp.status_code
+                return {
+                    "success": True,
+                    "output": {
+                        "sandboxed": True,
+                        "status_code": status_code,
+                        "url": url,
+                    },
+                }
         except Exception as e:
             return {"success": False, "error": str(e)}
 

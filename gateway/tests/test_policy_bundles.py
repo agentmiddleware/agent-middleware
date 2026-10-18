@@ -304,7 +304,10 @@ async def test_planner_policy_rejects_actions(client, clean_database):
                 "simulation_flags": {"iot_bridge": False, "agent_comms": False},
                 "auth_scope": ["invoke"],
                 "task_context": {
-                    "tier": "high",
+                    # "medium" matches the bundle's default risk_tier, so the
+                    # tier ceiling lets both candidates through and this test
+                    # keeps proving only the category rejection.
+                    "tier": "medium",
                     "candidate_actions": [
                         {
                             "id": "bad-iot",
@@ -731,6 +734,197 @@ async def test_policy_refuses_unknown_risk_tier_and_overlong_name(
     stored = await client.get(f"/v1/policies/{policy_id}", headers=ADMIN)
     assert stored.json()["risk_tier"] == "low"
     assert stored.json()["name"] == "Tiered"
+
+
+# --- Risk-tier ceiling and unknown-spend fail-closed ---------------------------
+#
+# The bundle's risk_tier used to be recorded on the evaluation without ever
+# denying, so a "low risk only" bundle still approved high-risk actions. The
+# daily spend cap used to be skipped whenever past spending was unknown. Both
+# now fail closed. Tier order (low < medium < high) follows the planner tiers
+# in app/optimizer/policy.py and the tier_order map in app/routers/mcp.py, so
+# a bundle's tier is the highest tier it permits.
+
+
+@pytest.mark.anyio
+async def test_policy_enforces_risk_tier_ceiling(client, clean_database):
+    wallet_id = await _wallet(client, "policy-tier-ceiling")
+    created = await client.post(
+        "/v1/policies",
+        json={"wallet_id": wallet_id, "name": "Low risk only", "risk_tier": "low"},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert created.status_code == 201
+
+    matching = await evaluate_wallet_policy(
+        wallet_id=wallet_id, tool_name="any-tool", risk_tier="low"
+    )
+    assert matching.allowed is True
+    assert matching.reason == "allowed"
+
+    for tier in ("medium", "high"):
+        denied = await evaluate_wallet_policy(
+            wallet_id=wallet_id, tool_name="any-tool", risk_tier=tier
+        )
+        assert denied.allowed is False, tier
+        assert denied.reason == "risk_tier_not_allowed", tier
+        assert (
+            denied.evaluated_constraints["evaluated"][-1]["requested_risk_tier"] == tier
+        )
+
+    # An unknown requested tier cannot be shown to sit under the ceiling.
+    unknown = await evaluate_wallet_policy(
+        wallet_id=wallet_id, tool_name="any-tool", risk_tier="critical"
+    )
+    assert unknown.allowed is False
+    assert unknown.reason == "risk_tier_not_allowed"
+
+    # No stated action tier (the MCP and billing callers pass none) means
+    # there is nothing to compare, so it stays allowed.
+    unstated = await evaluate_wallet_policy(wallet_id=wallet_id, tool_name="any-tool")
+    assert unstated.allowed is True
+
+
+@pytest.mark.anyio
+async def test_policy_medium_bundle_permits_lower_tier(client, clean_database):
+    wallet_id = await _wallet(client, "policy-tier-medium")
+    created = await client.post(
+        "/v1/policies",
+        json={"wallet_id": wallet_id, "name": "Default tier bundle"},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert created.status_code == 201
+    assert created.json()["risk_tier"] == "medium"
+
+    for tier, allowed in (("low", True), ("medium", True), ("high", False)):
+        evaluation = await evaluate_wallet_policy(
+            wallet_id=wallet_id, tool_name="any-tool", risk_tier=tier
+        )
+        assert evaluation.allowed is allowed, tier
+        assert evaluation.reason == ("allowed" if allowed else "risk_tier_not_allowed")
+
+
+@pytest.mark.anyio
+async def test_policy_denies_daily_cap_when_spend_unknown(client, clean_database):
+    wallet_id = await _wallet(client, "policy-unknown-spend")
+    created = await client.post(
+        "/v1/policies",
+        json={
+            "wallet_id": wallet_id,
+            "name": "Capped but spend unknown",
+            "daily_spend_limit": 100,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+    assert created.status_code == 201
+
+    # Past spending unknown: the cap cannot be shown to hold, so deny.
+    missing = await evaluate_wallet_policy(
+        wallet_id=wallet_id, tool_name="any-tool", estimated_cost=1.0
+    )
+    assert missing.allowed is False
+    assert missing.reason == "daily_spend_unknown"
+
+    # Known spend still enforces the cap in both directions.
+    within = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="any-tool",
+        estimated_cost=1.0,
+        daily_spend_used=0,
+    )
+    assert within.allowed is True
+
+    over = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="any-tool",
+        estimated_cost=2.0,
+        daily_spend_used=99,
+    )
+    assert over.allowed is False
+    assert over.reason == "daily_spend_limit_exceeded"
+
+
+@pytest.mark.anyio
+async def test_planner_enforces_policy_risk_tier_and_daily_cap(client, clean_database):
+    tier_wallet = await _wallet(client, "policy-planner-tier")
+    tier_policy = await client.post(
+        "/v1/policies",
+        json={
+            "wallet_id": tier_wallet,
+            "name": "Low risk only",
+            "risk_tier": "low",
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+    assert tier_policy.status_code == 201
+
+    cap_wallet = await _wallet(client, "policy-planner-cap")
+    cap_policy = await client.post(
+        "/v1/policies",
+        json={
+            "wallet_id": cap_wallet,
+            "name": "Tiny daily cap",
+            "daily_spend_limit": 1,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+    assert cap_policy.status_code == 201
+
+    def _payload(wallet_id: str, tier: str, daily_spend_used: float) -> dict:
+        return {
+            "state": {
+                "wallet_id": wallet_id,
+                "agent_id": "a1",
+                "task_id": "t1",
+                "request_id": "policy-planner-guard",
+                "wallet_balance": 100,
+                "daily_spend_used": daily_spend_used,
+                "daily_limit": 100,
+                "rate_limit_headroom": 1,
+                "service_health": {"agent_comms": "healthy"},
+                "simulation_flags": {"agent_comms": False},
+                "auth_scope": ["invoke"],
+                "task_context": {
+                    "tier": tier,
+                    "candidate_actions": [
+                        {
+                            "id": "candidate",
+                            "service": "agent_comms",
+                            "credit_cost": 5,
+                            "latency_ms": 10,
+                            "risk_score": 0.01,
+                            "expected_value": 50,
+                            "reliability": 1,
+                        },
+                    ],
+                },
+                "remaining_budget": 10,
+                "slo_window_seconds": 1,
+            },
+            "max_actions": 2,
+        }
+
+    # A high-risk task against a low-risk bundle is rejected at the planner.
+    tiered = await client.post(
+        "/v1/planner/optimize",
+        json=_payload(tier_wallet, "high", 0),
+        headers={"X-API-Key": "test-key", "X-Request-ID": "policy-planner-tier"},
+    )
+    assert tiered.status_code == 200
+    tiered_body = tiered.json()
+    assert tiered_body["policy_reasons"] == {"candidate": "risk_tier_not_allowed"}
+    assert tiered_body["governance"]["policy_ids"] == [tier_policy.json()["policy_id"]]
+
+    # Spending past the daily cap is rejected at the planner.
+    capped = await client.post(
+        "/v1/planner/optimize",
+        json=_payload(cap_wallet, "medium", 0),
+        headers={"X-API-Key": "test-key", "X-Request-ID": "policy-planner-cap"},
+    )
+    assert capped.status_code == 200
+    capped_body = capped.json()
+    assert capped_body["policy_reasons"] == {"candidate": "daily_spend_limit_exceeded"}
+    assert capped_body["governance"]["policy_ids"] == [cap_policy.json()["policy_id"]]
 
 
 @pytest.mark.anyio

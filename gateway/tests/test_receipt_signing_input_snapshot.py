@@ -13,7 +13,9 @@ the same bytes).
 If this test fails, the change is either a bug or an intentional receipt
 format change. An intentional change requires: (1) a receipt schema version
 bump, (2) an entry in CHANGELOG.md, (3) regenerating the golden files with
-``UPDATE_RECEIPT_GOLDEN=1 pytest tests/test_receipt_signing_input_snapshot.py``.
+``GOLDEN_REGEN_ACK=1 UPDATE_RECEIPT_GOLDEN=1 pytest
+tests/test_receipt_signing_input_snapshot.py``. The ack flag is the review
+gate: setting UPDATE_RECEIPT_GOLDEN=1 without it fails instead of writing.
 Never regenerate to make a refactor PR green.
 """
 
@@ -21,7 +23,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -39,6 +40,7 @@ from app.services.signing_keys import (
     get_signing_key_service,
     sha256_hex,
 )
+from tests.support.golden_regen import require_golden_regen_ack
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "receipt_signing_golden"
@@ -155,7 +157,7 @@ def test_receipt_signing_input_is_byte_stable(name: str) -> None:
         "signature_b64_over_test_seed": signature,
     }
 
-    if os.environ.get("UPDATE_RECEIPT_GOLDEN") == "1":
+    if require_golden_regen_ack("UPDATE_RECEIPT_GOLDEN"):
         GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
         golden_path.write_text(json.dumps(actual, indent=2, sort_keys=True) + "\n")
         pytest.skip(f"golden regenerated: {golden_path}")

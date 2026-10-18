@@ -36,11 +36,6 @@ class Settings(BaseSettings):
     # --- Server ---
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    # Empty by default: no origin receives CORS headers until the operator
-    # configures an explicit comma-separated allowlist. The old wildcard
-    # default is still available as an explicit opt-in (see
-    # app.main.add_cors_middleware), but it must never be the posture an
-    # operator gets without asking for it.
     CORS_ORIGINS: str = ""
 
     # --- Public URL ---

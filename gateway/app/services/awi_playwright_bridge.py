@@ -502,6 +502,9 @@ class AWIPlaywrightBridge:
             await self._navigate_to(session, target_url)
         except Exception as e:
             logger.warning(f"Browser setup for session {session_id}: {e}")
+            # A refused or failed navigation must not leave the session
+            # claiming to stand at the target URL.
+            session.current_url = None
 
         logger.info(f"Created DOM bridge session {session_id} for {target_url}")
 

@@ -706,12 +706,17 @@ print(json.dumps(result))
                 trust_env=False,
                 timeout=timeout_seconds,
             ) as client:
-                resp = await client.request(method.upper(), url)
+                # Only the status code is used, so stream and close after
+                # the headers arrive: a huge or never-ending body must not
+                # buffer into gateway memory (the byte budget applies to the
+                # subprocess path, not this proxy fetch).
+                async with client.stream(method.upper(), url) as resp:
+                    status_code = resp.status_code
                 return {
                     "success": True,
                     "output": {
                         "sandboxed": True,
-                        "status_code": resp.status_code,
+                        "status_code": status_code,
                         "url": url,
                     },
                 }

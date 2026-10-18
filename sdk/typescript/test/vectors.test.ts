@@ -19,3 +19,14 @@ for (const c of cases) {
 test("canonical JSON sorts keys and escapes non-ASCII", () => {
   assert.equal(canonicalJson({ b: 1, a: ["é", null] }), '{"a":["\\u00e9",null],"b":1}');
 });
+
+test("a caller-supplied key of the wrong length is malformed, not invalid", () => {
+  const valid = cases.find((c: any) => c.expect === "verified");
+  const signedKid = JSON.parse(valid.bundle.signing_input).kid;
+  const shortKey = new Map([[signedKid, Buffer.alloc(16)]]);
+
+  // A broken caller key must read as "this verifier cannot judge", matching
+  // the Python verifier. Reporting it as invalid would allege forgery for a
+  // local configuration error.
+  assert.equal(verifyBundle(valid.bundle, shortKey).status, "malformed");
+});

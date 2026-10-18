@@ -7,6 +7,7 @@
         "receipt_id": "rcpt_golden_0002",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"constraints_evaluated\":{\"allowed_tools\":[\"golden-path-echo\"],\"max_credits\":\"2.5\"},\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"0\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":null,\"outcome\":\"denied\",\"payload_hash\":\"4382f442c7150186cf873074c391738ea3af7313abebb7c0fcdb4dddff5ec6f1\",\"permit_id\":\"pmt_golden_0001\",\"reason_code\":\"permit_budget_exceeded\",\"receipt_id\":\"rcpt_golden_0002\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":null,\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "Ipxrv7VcxEJoEL5gLBLu0m43tsJehcXPATB6vLgfK/dczRPznce3vp3by7Ndzsptqqnkmsor3XzWKUvmhvwODA=="
       },
@@ -18,6 +19,7 @@
         "receipt_id": "rcpt_golden_0002",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"constraints_evaluated\":{\"allowed_tools\":[\"golden-path-echo\"],\"max_credits\":\"2.5\"},\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"0\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":null,\"outcome\":\"denied\",\"payload_hash\":\"4382f442c7150186cf873074c391738ea3af7313abebb7c0fcdb4dddff5ec6f1\",\"permit_id\":\"pmt_golden_0001\",\"reason_code\":\"permit_budget_exceeded\",\"receipt_id\":\"rcpt_golden_0002\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":null,\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "I5xrv7VcxEJoEL5gLBLu0m43tsJehcXPATB6vLgfK/dczRPznce3vp3by7Ndzsptqqnkmsor3XzWKUvmhvwODA=="
       },
@@ -29,6 +31,7 @@
         "receipt_id": "rcpt_golden_0002",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"constraints_evaluated\":{\"allowed_tools\":[\"golden-path-echo\"],\"max_credits\":\"2.5\"},\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"0\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":null,\"outcome\":\"xdenied\",\"payload_hash\":\"4382f442c7150186cf873074c391738ea3af7313abebb7c0fcdb4dddff5ec6f1\",\"permit_id\":\"pmt_golden_0001\",\"reason_code\":\"permit_budget_exceeded\",\"receipt_id\":\"rcpt_golden_0002\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":null,\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "Ipxrv7VcxEJoEL5gLBLu0m43tsJehcXPATB6vLgfK/dczRPznce3vp3by7Ndzsptqqnkmsor3XzWKUvmhvwODA=="
       },
@@ -40,6 +43,7 @@
         "receipt_id": "rcpt_not_the_signed_one",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"constraints_evaluated\":{\"allowed_tools\":[\"golden-path-echo\"],\"max_credits\":\"2.5\"},\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"0\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":null,\"outcome\":\"denied\",\"payload_hash\":\"4382f442c7150186cf873074c391738ea3af7313abebb7c0fcdb4dddff5ec6f1\",\"permit_id\":\"pmt_golden_0001\",\"reason_code\":\"permit_budget_exceeded\",\"receipt_id\":\"rcpt_golden_0002\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":null,\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "Ipxrv7VcxEJoEL5gLBLu0m43tsJehcXPATB6vLgfK/dczRPznce3vp3by7Ndzsptqqnkmsor3XzWKUvmhvwODA=="
       },
@@ -51,6 +55,7 @@
         "receipt_id": "rcpt_golden_0002",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"constraints_evaluated\":{\"allowed_tools\":[\"golden-path-echo\"],\"max_credits\":\"2.5\"},\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"0\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":null,\"outcome\":\"denied\",\"payload_hash\":\"4382f442c7150186cf873074c391738ea3af7313abebb7c0fcdb4dddff5ec6f1\",\"permit_id\":\"pmt_golden_0001\",\"reason_code\":\"permit_budget_exceeded\",\"receipt_id\":\"rcpt_golden_0002\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":null,\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "Ipxrv7VcxEJoEL5gLBLu0m43tsJehcXPATB6vLgfK/dczRPznce3vp3by7Ndzsptqqnkmsor3XzWKUvmhvwODA=="
       },
@@ -65,6 +70,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"action_contract_version\":1,\"action_payload_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"action_public_tool_id\":\"golden-path-echo\",\"action_schema_id\":\"fixture-payment\",\"action_schema_version\":\"1\",\"action_upstream_binding_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"111bcc38dabf3f209a370dd5aa4f846329764c1174386e004837ffe19047f60a\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "r7GYFvu4Yw/1bH6P13KyM3sCGaRoAxGPbi90aNNvutc5Ebe2+I8vdZ5xa6k1NuJbHntZAC1aq5Us8x2+IoF7Bw=="
       },
@@ -76,6 +82,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"action_contract_version\":1,\"action_payload_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"action_public_tool_id\":\"golden-path-echo\",\"action_schema_id\":\"fixture-payment\",\"action_schema_version\":\"1\",\"action_upstream_binding_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"111bcc38dabf3f209a370dd5aa4f846329764c1174386e004837ffe19047f60a\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "rrGYFvu4Yw/1bH6P13KyM3sCGaRoAxGPbi90aNNvutc5Ebe2+I8vdZ5xa6k1NuJbHntZAC1aq5Us8x2+IoF7Bw=="
       },
@@ -87,6 +94,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"action_contract_version\":1,\"action_payload_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"action_public_tool_id\":\"golden-path-echo\",\"action_schema_id\":\"fixture-payment\",\"action_schema_version\":\"1\",\"action_upstream_binding_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"xsuccess\",\"payload_hash\":\"111bcc38dabf3f209a370dd5aa4f846329764c1174386e004837ffe19047f60a\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "r7GYFvu4Yw/1bH6P13KyM3sCGaRoAxGPbi90aNNvutc5Ebe2+I8vdZ5xa6k1NuJbHntZAC1aq5Us8x2+IoF7Bw=="
       },
@@ -98,6 +106,7 @@
         "receipt_id": "rcpt_not_the_signed_one",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"action_contract_version\":1,\"action_payload_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"action_public_tool_id\":\"golden-path-echo\",\"action_schema_id\":\"fixture-payment\",\"action_schema_version\":\"1\",\"action_upstream_binding_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"111bcc38dabf3f209a370dd5aa4f846329764c1174386e004837ffe19047f60a\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "r7GYFvu4Yw/1bH6P13KyM3sCGaRoAxGPbi90aNNvutc5Ebe2+I8vdZ5xa6k1NuJbHntZAC1aq5Us8x2+IoF7Bw=="
       },
@@ -109,6 +118,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"action_contract_version\":1,\"action_payload_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"action_public_tool_id\":\"golden-path-echo\",\"action_schema_id\":\"fixture-payment\",\"action_schema_version\":\"1\",\"action_upstream_binding_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"111bcc38dabf3f209a370dd5aa4f846329764c1174386e004837ffe19047f60a\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "r7GYFvu4Yw/1bH6P13KyM3sCGaRoAxGPbi90aNNvutc5Ebe2+I8vdZ5xa6k1NuJbHntZAC1aq5Us8x2+IoF7Bw=="
       },
@@ -123,6 +133,7 @@
         "receipt_id": "rcpt_golden_0003",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"140da326607a5ac86da62d2d2c53c513e337e26ec2638b810c34f57d5ab4a664\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0003\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "GbbSo8thFuy+PuUQDPw3GkPR0j5ebx5lgSto6CRz4YrD8KA/RwHMyo+88n5fo4M8BepW8aHVohGL04bBkrzRCQ=="
       },
@@ -134,6 +145,7 @@
         "receipt_id": "rcpt_golden_0003",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"140da326607a5ac86da62d2d2c53c513e337e26ec2638b810c34f57d5ab4a664\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0003\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "GLbSo8thFuy+PuUQDPw3GkPR0j5ebx5lgSto6CRz4YrD8KA/RwHMyo+88n5fo4M8BepW8aHVohGL04bBkrzRCQ=="
       },
@@ -145,6 +157,7 @@
         "receipt_id": "rcpt_golden_0003",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"xsuccess\",\"payload_hash\":\"140da326607a5ac86da62d2d2c53c513e337e26ec2638b810c34f57d5ab4a664\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0003\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "GbbSo8thFuy+PuUQDPw3GkPR0j5ebx5lgSto6CRz4YrD8KA/RwHMyo+88n5fo4M8BepW8aHVohGL04bBkrzRCQ=="
       },
@@ -156,6 +169,7 @@
         "receipt_id": "rcpt_not_the_signed_one",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"140da326607a5ac86da62d2d2c53c513e337e26ec2638b810c34f57d5ab4a664\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0003\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "GbbSo8thFuy+PuUQDPw3GkPR0j5ebx5lgSto6CRz4YrD8KA/RwHMyo+88n5fo4M8BepW8aHVohGL04bBkrzRCQ=="
       },
@@ -167,6 +181,7 @@
         "receipt_id": "rcpt_golden_0003",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"140da326607a5ac86da62d2d2c53c513e337e26ec2638b810c34f57d5ab4a664\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0003\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "GbbSo8thFuy+PuUQDPw3GkPR0j5ebx5lgSto6CRz4YrD8KA/RwHMyo+88n5fo4M8BepW8aHVohGL04bBkrzRCQ=="
       },
@@ -181,6 +196,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -192,6 +208,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "vtTfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -203,6 +220,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"xsuccess\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -214,6 +232,7 @@
         "receipt_id": "rcpt_not_the_signed_one",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -225,6 +244,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -239,6 +259,7 @@
         "receipt_id": "rcpt_golden_0004",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"da897ec3ba058eb3d1242dfcc402264f64c4e62c667efd3f74d4d457dd499058\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0004\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "MbzgmetsnxkTF+oYrUoVlv4rmsswxJU7ugleAfR3l5tNC7fTKs3+E0BxyT0BuxPmKUmvv+2Xkz+E/MAAw6zDBw=="
       },
@@ -250,6 +271,7 @@
         "receipt_id": "rcpt_golden_0004",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"da897ec3ba058eb3d1242dfcc402264f64c4e62c667efd3f74d4d457dd499058\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0004\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "MLzgmetsnxkTF+oYrUoVlv4rmsswxJU7ugleAfR3l5tNC7fTKs3+E0BxyT0BuxPmKUmvv+2Xkz+E/MAAw6zDBw=="
       },
@@ -261,6 +283,7 @@
         "receipt_id": "rcpt_golden_0004",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"xsuccess\",\"payload_hash\":\"da897ec3ba058eb3d1242dfcc402264f64c4e62c667efd3f74d4d457dd499058\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0004\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "MbzgmetsnxkTF+oYrUoVlv4rmsswxJU7ugleAfR3l5tNC7fTKs3+E0BxyT0BuxPmKUmvv+2Xkz+E/MAAw6zDBw=="
       },
@@ -272,6 +295,7 @@
         "receipt_id": "rcpt_not_the_signed_one",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"da897ec3ba058eb3d1242dfcc402264f64c4e62c667efd3f74d4d457dd499058\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0004\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "MbzgmetsnxkTF+oYrUoVlv4rmsswxJU7ugleAfR3l5tNC7fTKs3+E0BxyT0BuxPmKUmvv+2Xkz+E/MAAw6zDBw=="
       },
@@ -283,6 +307,7 @@
         "receipt_id": "rcpt_golden_0004",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"approval_id\":\"apr_golden_0001\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"da897ec3ba058eb3d1242dfcc402264f64c4e62c667efd3f74d4d457dd499058\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0004\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "MbzgmetsnxkTF+oYrUoVlv4rmsswxJU7ugleAfR3l5tNC7fTKs3+E0BxyT0BuxPmKUmvv+2Xkz+E/MAAw6zDBw=="
       },
@@ -297,6 +322,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"d821c53da576e9d1b9cc38e3aa2b3c8fd009ae6558de118c29f4605f17ab5787\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "8CEg2Dwm2gG04zz7PPyVP6o9ZjgVptUZCi9+uCTsCio/0vtkibWA0n0KgS4Dk89+25dTBeA1kRQonxpbmO31AQ=="
       },
@@ -308,6 +334,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"d821c53da576e9d1b9cc38e3aa2b3c8fd009ae6558de118c29f4605f17ab5787\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "8SEg2Dwm2gG04zz7PPyVP6o9ZjgVptUZCi9+uCTsCio/0vtkibWA0n0KgS4Dk89+25dTBeA1kRQonxpbmO31AQ=="
       },
@@ -319,6 +346,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"xsuccess\",\"payload_hash\":\"d821c53da576e9d1b9cc38e3aa2b3c8fd009ae6558de118c29f4605f17ab5787\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "8CEg2Dwm2gG04zz7PPyVP6o9ZjgVptUZCi9+uCTsCio/0vtkibWA0n0KgS4Dk89+25dTBeA1kRQonxpbmO31AQ=="
       },
@@ -330,6 +358,7 @@
         "receipt_id": "rcpt_not_the_signed_one",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"d821c53da576e9d1b9cc38e3aa2b3c8fd009ae6558de118c29f4605f17ab5787\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "8CEg2Dwm2gG04zz7PPyVP6o9ZjgVptUZCi9+uCTsCio/0vtkibWA0n0KgS4Dk89+25dTBeA1kRQonxpbmO31AQ=="
       },
@@ -341,6 +370,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"d821c53da576e9d1b9cc38e3aa2b3c8fd009ae6558de118c29f4605f17ab5787\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "8CEg2Dwm2gG04zz7PPyVP6o9ZjgVptUZCi9+uCTsCio/0vtkibWA0n0KgS4Dk89+25dTBeA1kRQonxpbmO31AQ=="
       },
@@ -355,6 +385,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -381,6 +412,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_envelope_only",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -392,6 +424,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "RS256",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -403,9 +436,9 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "not-the-contract/9",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
-        "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw==",
-        "canonicalization": "not-the-contract/9"
+        "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
       "expect": "mismatch"
     },
@@ -439,6 +472,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -464,6 +498,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -490,6 +525,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -540,6 +576,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "!!!!"
       },
@@ -551,6 +588,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
       },
@@ -562,6 +600,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "not json",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -573,6 +612,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "[1,2]",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -583,6 +623,7 @@
       "bundle": {
         "receipt_id": "rcpt_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"2f7189572cd1c881279bf88315d4727d1328f49f94e1ddd68e476c4572ffcb14\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
@@ -594,6 +635,7 @@
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
         "signature": "v9Tfw25hdHlpKTxjyfht52SMHn2MgjPkMQfJxXvfE1P9QZgkSd4pZKAnp5oUjgUNXCUJyjdPC6ZPr8O618HGBw=="
       },
       "expect": "malformed"

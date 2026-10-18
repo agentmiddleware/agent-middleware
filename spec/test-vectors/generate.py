@@ -179,6 +179,10 @@ def cases_for_fixture(path: Path, key: Ed25519PrivateKey) -> list[dict]:
         "receipt_id": payload["receipt_id"],
         "kid": payload["kid"],
         "alg": "Ed25519",
+        # Same unauthenticated envelope member as sign_bundle: the portable
+        # receipt endpoint emits it and the spec conformance gate requires it
+        # on every well-formed bundle.
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": signing_input,
         "signature": signature,
     }

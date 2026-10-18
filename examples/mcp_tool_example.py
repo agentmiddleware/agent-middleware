@@ -26,20 +26,16 @@ Usage:
 import asyncio
 import json
 import os
-import sys
 
-# The SDK sources live under b2a_sdk/src; inserting the repo root instead makes
-# "b2a_sdk" resolve to the bare directory and the import fails.
-sys.path.insert(
-    0,
-    os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "b2a_sdk", "src"
-    ),
-)
-
-from b2a_sdk import AgentMiddlewareClient
-from b2a_sdk.decorators import mcp_tool, register_mcp_tool_callback
-from b2a_sdk.mcp import generate_manifest, list_tools
+try:
+    from b2a_sdk import AgentMiddlewareClient
+    from b2a_sdk.decorators import mcp_tool, register_mcp_tool_callback
+    from b2a_sdk.mcp import generate_manifest, list_tools
+except ImportError as exc:
+    raise SystemExit(
+        "The b2a_sdk package is not installed. From the repo root run: "
+        "python -m pip install -e './sdk/python[dev]'"
+    ) from exc
 
 CLIENT = None
 

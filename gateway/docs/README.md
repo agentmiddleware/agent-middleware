@@ -19,6 +19,7 @@ consequential MCP tool behind a governed boundary. Start with the
 | Read the public article on what the boundary does and does not guarantee | Intent is not authority |
 | Confirm which commit production is actually running | Deployment verification checklist |
 | Plan a design-partner evaluation | [Design partner guide](../DESIGN_PARTNER_GUIDE.md) |
+| Tell plain pytest, Postgres, and live runs apart | [Test tiers](TESTING_TIERS.md) |
 | Contribute to the repository | [Contributing guide](../../CONTRIBUTING.md) |
 
 ## Agent and API discovery

@@ -18,19 +18,15 @@ Usage:
 
 import asyncio
 import os
-import sys
 
-# The SDK sources live under b2a_sdk/src; inserting the repo root instead makes
-# "b2a_sdk" resolve to the bare directory and the import fails.
-sys.path.insert(
-    0,
-    os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "b2a_sdk", "src"
-    ),
-)
-
-from b2a_sdk import AgentMiddlewareClient
-from b2a_sdk.decorators import billable
+try:
+    from b2a_sdk import AgentMiddlewareClient
+    from b2a_sdk.decorators import billable
+except ImportError as exc:
+    raise SystemExit(
+        "The b2a_sdk package is not installed. From the repo root run: "
+        "python -m pip install -e './sdk/python[dev]'"
+    ) from exc
 
 
 b2a = AgentMiddlewareClient(

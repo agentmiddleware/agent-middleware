@@ -167,13 +167,14 @@ def get_blob_backend() -> BlobBackend:
 
     if backend_name == "s3":
         logger.warning(
-            "S3 blob backend selected but not implemented; falling back to local"
+            "S3 blob backend selected but not implemented; blob calls will fail loudly"
         )
         return _UnimplementedBlob("s3")
 
     if backend_name == "vercel":
         logger.warning(
-            "Vercel blob backend selected but unsupported while media is frozen"
+            "Vercel blob backend selected but unsupported while media is frozen; "
+            "blob calls will fail loudly"
         )
         return _UnimplementedBlob("vercel")
 

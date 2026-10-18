@@ -51,6 +51,13 @@ unless that signature included linkage, so an older success receipt can omit
 both. `response_hash` and `ledger_entry_id` are not omitted: they are JSON
 `null` instead. Dropping a null changes the signed bytes.
 
+Two members need care. `ledger_entry_id` and `response_hash` are always
+signed, with null when there is no value: a denied receipt signs
+`"ledger_entry_id":null` and `"response_hash":null`, so verifiers must keep
+those nulls in the bytes they hash. `idempotency_record_id` and
+`dispatch_attempt_id` are signed only when set; receipts that predate the
+linkage fields carry neither.
+
 ## Outcomes
 
 | `outcome` | Meaning |

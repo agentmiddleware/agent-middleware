@@ -34,6 +34,7 @@ from pydantic import SecretStr, ValidationError
 
 from ..core.config import Settings, get_settings
 from ..core.trust_mode import is_production_like_environment
+from ..core.url_guard import address_is_blocked, is_ambiguous_ipv4_literal
 from ..schemas.billing import ServiceCategory
 from .mcp_dispatch_attempts import (
     MAX_UPSTREAM_CALL_TIMEOUT_SECONDS,
@@ -358,6 +359,10 @@ async def validate_upstream_url(
         literal = ipaddress.ip_address(host)
     except ValueError:
         literal = None
+        if is_ambiguous_ipv4_literal(host):
+            raise UpstreamMcpConfigurationError(
+                "MCP_UPSTREAM_URL must not use an ambiguous numeric host"
+            )
 
     explicit_loopback = host == "localhost" or host.endswith(".localhost")
     addresses: Sequence[str]
@@ -403,10 +408,11 @@ async def validate_upstream_url(
         raise UpstreamMcpConfigurationError(
             "MCP_UPSTREAM_URL must use https except for loopback local/test servers"
         )
-    # is_global alone admits multicast: the stdlib classifies 224.0.0.0/4 and
-    # ff00::/8 as global, so a multicast destination is refused by name.
+    # is_global alone admits multicast, site-local fec0::/10, and IPv6
+    # literals that embed a private IPv4 (compatible, translated, NAT64).
+    # address_is_blocked is the same predicate the outbound URL guard uses.
     if not loopback_exception and any(
-        address.is_multicast or not address.is_global for address in parsed_addresses
+        address_is_blocked(address) for address in parsed_addresses
     ):
         raise UpstreamMcpConfigurationError(
             "MCP_UPSTREAM_URL must not resolve to private, loopback, link-local, "

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # --- Server ---
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    CORS_ORIGINS: str = "*"
+    CORS_ORIGINS: str = ""
 
     # --- Public URL ---
     # Used for agent manifests and documentation links

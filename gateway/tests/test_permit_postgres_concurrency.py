@@ -382,18 +382,10 @@ async def seeded_refund_reconciliation(
                         LedgerEntryModel.wallet_id == seeded_permit.wallet_id
                     )
                 )
-                if receipt.signature_key_id != seeded_permit.signing_key_id:
-                    key_in_use = await session.scalar(
-                        select(PermitModel.permit_id)
-                        .where(PermitModel.key_id == receipt.signature_key_id)
-                        .limit(1)
-                    )
-                    if key_in_use is None:
-                        await session.execute(
-                            delete(SigningKeyModel).where(
-                                SigningKeyModel.key_id == receipt.signature_key_id
-                            )
-                        )
+                # The receipt signature key is suite-wide trust state owned by
+                # the receipt service, not by this fixture. Deleting it can
+                # roll back the cleanup above whenever another module's rows
+                # still reference it, so leave it in place.
 
 
 def _authorization_kwargs(seed: SeededPermit) -> dict[str, object]:

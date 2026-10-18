@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -219,19 +220,32 @@ def extract_recipient_identity(target: str) -> str:
     return urlparse(target).hostname or target
 
 
+_EVM_HEX_ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
+
+
 def recipient_binding_matches(recipient_domain: str | None, target: str) -> bool:
     """Check one recipient value against a permit's recipient constraint.
 
     An unset constraint allows everything. Otherwise the target is reduced
-    with extract_recipient_identity and must equal the bound value
-    exactly. x402 callers pass the demand's pay_to address: x402 demands
+    with extract_recipient_identity and must equal the bound value.
+    x402 callers pass the demand's pay_to address: x402 demands
     name no resource host, so the payee address is the only recipient the
     demand names, and a permit that binds x402 spending must carry that
     address exactly as the demand presents it.
+
+    EVM addresses are 20-byte values: hex-letter casing (lowercase vs
+    EIP-55 checksum form) does not change the identity, so two EVM-shaped
+    values compare case-insensitively. Solana base58 addresses, hostnames,
+    and every other recipient form stay case-sensitive.
     """
     if not recipient_domain:
         return True
-    return extract_recipient_identity(target) == recipient_domain
+    candidate = extract_recipient_identity(target)
+    if _EVM_HEX_ADDRESS.fullmatch(recipient_domain) and _EVM_HEX_ADDRESS.fullmatch(
+        candidate
+    ):
+        return recipient_domain.lower() == candidate.lower()
+    return candidate == recipient_domain
 
 
 def permit_model_to_response(model: PermitModel) -> PermitResponse:

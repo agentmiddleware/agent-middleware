@@ -378,10 +378,17 @@ class X402PaymentHandler:
         # denied with no budget reserved. A missing permit is left for
         # authorize_and_reserve to report as permit_not_found.
         bound = await permits.get_permit(permit_id)
-        if bound is not None and not recipient_binding_matches(
-            bound.recipient_domain, requirement.pay_to
-        ):
-            raise X402Error("permit_recipient_domain_mismatch")
+        if bound is not None:
+            # Ownership before recipient: a permit bound to another wallet
+            # answers permit_wallet_mismatch whatever the pay_to, so a
+            # foreign permit ID plus varied pay_to values cannot probe the
+            # bound recipient through differing denial reasons.
+            if bound.subject_wallet_id != wallet_id:
+                raise X402Error("permit_wallet_mismatch")
+            if not recipient_binding_matches(
+                bound.recipient_domain, requirement.pay_to
+            ):
+                raise X402Error("permit_recipient_domain_mismatch")
         validation = await permits.authorize_and_reserve(
             permit_id=permit_id,
             wallet_id=wallet_id,

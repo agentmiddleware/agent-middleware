@@ -1711,6 +1711,76 @@ async def test_x402_settle_recipient_mismatch_denied_no_reserve(client, clean_da
     assert await _permit_spent(client, permit_id) == Decimal("30")
 
 
+@pytest.mark.anyio
+async def test_x402_settle_recipient_evm_checksum_case_allowed(client, clean_database):
+    """EVM casing is not identity: a checksum-case demand pays a lowercase binding."""
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    # Letters make casing observable; EVM_PAY_TO is all digits.
+    hex_address = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    permit = await _create_recipient_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        recipient="0x" + hex_address,
+        idem_key="x402-recipient-case-permit",
+    )
+    checksummed = "0x" + "".join(
+        c.upper() if i % 2 else c for i, c in enumerate(hex_address)
+    )
+    resp = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=permit["permit_id"],
+            wallet_id=wallet_id,
+            amount="0.03",
+            pay_to=checksummed,
+        ),
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": "x402-recipient-case-1",
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_x402_settle_foreign_permit_gives_no_recipient_oracle(
+    client, clean_database
+):
+    """A foreign wallet gets permit_wallet_mismatch for any pay_to.
+
+    If the recipient check ran before ownership, varying pay_to would
+    reveal the bound address through differing denial reasons.
+    """
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    permit = await _create_recipient_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        recipient=EVM_PAY_TO,
+        idem_key="x402-recipient-oracle-permit",
+    )
+    other = await provision_agent_wallet(client)
+    for i, pay_to in enumerate((EVM_PAY_TO, OTHER_EVM_PAY_TO)):
+        resp = await client.post(
+            "/v1/x402/settle",
+            json=_settle_body(
+                permit_id=permit["permit_id"],
+                wallet_id=other["agent_wallet_id"],
+                amount="0.03",
+                pay_to=pay_to,
+            ),
+            headers={
+                **other["agent_headers"],
+                "Idempotency-Key": f"x402-recipient-oracle-{i}",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "permit_wallet_mismatch"
+
+
 def test_x402_settle_requires_idempotency_record_id():
     """Settle without a record id is a type error: no caller can skip dedupe.
 

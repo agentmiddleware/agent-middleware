@@ -32,6 +32,10 @@ TEST_SEED = bytes(range(32))
 # that is not the key that signed the receipt.
 OTHER_SEED = bytes(range(32, 64))
 KID = "sk_golden_0001"
+# Envelope member the gateway's portable receipt endpoint also emits
+# (PortableReceiptResponse.canonicalization). The signature covers only
+# signing_input, so this member is unauthenticated envelope data.
+CANONICALIZATION = "awi-canonical-json/1"
 BASE_FIXTURE = "success_legacy"
 
 
@@ -115,6 +119,12 @@ def tamper_outcome(signing_input: str) -> str:
     return tampered
 
 
+def payload_hash(payload: dict) -> str:
+    """Lowercase hex SHA-256 of the canonical payload without payload_hash."""
+    inner = {key: value for key, value in payload.items() if key != "payload_hash"}
+    return hashlib.sha256(canonical_json(inner).encode("utf-8")).hexdigest()
+
+
 def _with_hash(payload: dict) -> dict:
     body = {key: value for key, value in payload.items() if key != "payload_hash"}
     updated = dict(body)
@@ -139,7 +149,7 @@ def sign_bundle(key: Ed25519PrivateKey, payload: dict, **envelope: object) -> di
         # Unauthenticated envelope member the gateway's portable receipt
         # endpoint also emits; the signature covers only signing_input.
         # The spec conformance gate requires it on every well-formed bundle.
-        "canonicalization": "awi-canonical-json/1",
+        "canonicalization": CANONICALIZATION,
         "signing_input": signing_input,
         "signature": signature,
     }
@@ -181,7 +191,7 @@ def cases_for_fixture(path: Path, key: Ed25519PrivateKey) -> list[dict]:
         # Same unauthenticated envelope member as sign_bundle: the portable
         # receipt endpoint emits it and the spec conformance gate requires it
         # on every well-formed bundle.
-        "canonicalization": "awi-canonical-json/1",
+        "canonicalization": CANONICALIZATION,
         "signing_input": signing_input,
         "signature": signature,
     }
@@ -266,6 +276,22 @@ def _synthetic_cases(
             "expect": "unknown_key",
         },
         {
+            "name": "synthetic.retired_key_still_verifies",
+            "bundle": dict(base_bundle),
+            # Retirement is not revocation: receipts signed before retirement
+            # must still verify, or rotation would falsify its own history.
+            "keys": {
+                "keys": [
+                    _key_entry(
+                        public_key_b64=real_b64,
+                        jwk=real_jwk,
+                        status="retired",
+                    )
+                ]
+            },
+            "expect": "verified",
+        },
+        {
             "name": "synthetic.envelope_kid_mismatch",
             "bundle": kid_mismatch,
             "expect": "mismatch",
@@ -305,7 +331,9 @@ def _synthetic_cases(
         },
         {
             "name": "synthetic.unsupported_alg",
-            "bundle": sign_bundle(key, unsupported_alg, alg="RS256"),
+            # The envelope keeps the real algorithm: `unsupported` must come from the
+            # signed bytes, never from unauthenticated envelope data.
+            "bundle": sign_bundle(key, unsupported_alg),
             "expect": "unsupported",
         },
         {
@@ -331,6 +359,17 @@ def _synthetic_cases(
         {
             "name": "synthetic.malformed_signing_input_not_object",
             "bundle": not_object,
+            "expect": "malformed",
+        },
+        {
+            "name": "synthetic.malformed_missing_signature",
+            "bundle": {
+                "receipt_id": "rcpt-no-sig",
+                "kid": KID,
+                "alg": "Ed25519",
+                "canonicalization": CANONICALIZATION,
+                "signing_input": "{}",
+            },
             "expect": "malformed",
         },
         {

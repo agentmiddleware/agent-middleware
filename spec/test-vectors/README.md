@@ -4,9 +4,10 @@
   `bytes(range(32))`. **Test use only.**
 - `receipts.json`: cases with a `bundle`, optional `keys` override, and the
   `expect`ed verifier status. Built from the gateway's golden receipt fixtures
-  plus tampered variants. Synthetic cases add a revoked key, envelope fields
-  that disagree with the signed payload, a signed payload_hash that does not
-  match, an unsupported algorithm, and malformed bundles.
+  plus tampered variants. Synthetic cases add retired and disabled keys,
+  envelope fields that disagree with the signed payload, a signed
+  payload_hash that does not match, an unsupported algorithm, and malformed
+  bundles.
 - `generate.py`: regenerates both files from `gateway/tests/fixtures/`.
 
 Check an implementation:

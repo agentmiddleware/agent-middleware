@@ -3,7 +3,7 @@
 Agent-supplied URLs reach two genuinely dangerous sinks: the AWI Playwright
 bridge (a real headless browser that will happily open ``file://`` and
 intranet URLs) and the behavioral sandbox's HTTP proxy mode (a raw
-``aiohttp`` request). Both run inside our infrastructure, so an unchecked
+``httpx`` request). Both run inside our infrastructure, so an unchecked
 URL is an SSRF primitive against link-local metadata services, RFC1918
 networks, and the host filesystem.
 

@@ -61,6 +61,7 @@ _LAZY_ATTRS = {
     "combined": "decorators",
     "monitored": "decorators",
     "parse_402_response": "x402",
+    "SyncAgentMiddlewareClient": "sync_client",
 }
 
 if TYPE_CHECKING:  # let type checkers and IDEs resolve the lazy names statically
@@ -72,6 +73,7 @@ if TYPE_CHECKING:  # let type checkers and IDEs resolve the lazy names staticall
         LocalDecision,
         LocalPermitValidator,
     )
+    from .sync_client import SyncAgentMiddlewareClient
     from .x402 import X402Client, parse_402_response
 
 
@@ -115,6 +117,7 @@ __all__ = [
     "PermitRequest",
     "Receipt",
     "ReceiptVerification",
+    "SyncAgentMiddlewareClient",
     "ToolDefinition",
     "TransportError",
     "VerificationError",

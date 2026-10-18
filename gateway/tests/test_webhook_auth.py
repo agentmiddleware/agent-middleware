@@ -24,6 +24,12 @@ from app.core.webhook_auth import (
 )
 from app.main import app
 
+
+@pytest.fixture(autouse=True)
+async def _clean_shared_db(clean_database):
+    """Webhook tests post through the shared app; start from an empty DB."""
+    yield
+
 # The Stripe webhook receivers are dormant trust surfaces: production mounts
 # them only with Stripe configured, so the suite mounts them for this module
 # (same mechanism as test_kyc / test_stripe_integration).

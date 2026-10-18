@@ -13,7 +13,7 @@ receiver:
   configuration;
 * signature comparison itself is constant-time (``hmac.compare_digest``),
   directly here for generic HMAC webhooks and inside the Stripe SDK's
-  ``secure_compare`` for Stripe's ``v1`` scheme.
+  the SDK's secure_compare for Stripe's v1 scheme.
 
 Success responses stay minimal (an accepted marker, never tenant data).
 Idempotent application of redelivered events stays with the services (UNIQUE
@@ -85,7 +85,7 @@ def verify_stripe_event(
     is not configured, when the signature header is missing or blank, or
     when the Stripe SDK rejects the signature (which covers tampered
     payloads, wrong secrets, and timestamps outside the SDK's 300-second
-    tolerance). The SDK compares the ``v1`` HMAC with its own constant-time
+    tolerance). The SDK compares the v1 HMAC with its own constant-time
     ``secure_compare``.
 
     Args:

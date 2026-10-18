@@ -292,7 +292,7 @@ class StripeIntegration:
             event = verify_stripe_event(
                 payload,
                 sig_header,
-                settings.STRIPE_WEBHOOK_SECRET,
+                get_settings().STRIPE_WEBHOOK_SECRET,
             )
         except WebhookVerificationError as e:
             logger.warning("Rejected Stripe webhook: %s", e)

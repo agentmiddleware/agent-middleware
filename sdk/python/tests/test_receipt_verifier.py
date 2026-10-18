@@ -283,9 +283,7 @@ def test_human_readable_cli_omits_reason_for_success_receipt(monkeypatch, capsys
 
 
 def _signed_bundle(payload: dict, *, private_key, kid: str = "key-1") -> dict:
-    signing_input = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    )
+    signing_input = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     signature = base64.b64encode(private_key.sign(signing_input.encode("utf-8"))).decode()
     return _bundle(signing_input=signing_input, signature=signature, kid=kid)
 
@@ -320,15 +318,11 @@ def test_edited_algorithm_or_canonicalization_is_invalid_not_unsupported():
         '"alg":"Ed25519","canonicalization":"other/9"',
         1,
     )
-    canon_result = verify_bundle(
-        _bundle(**{**genuine, "signing_input": flipped_canon}), keys
-    )
+    canon_result = verify_bundle(_bundle(**{**genuine, "signing_input": flipped_canon}), keys)
     assert canon_result.status is VerificationStatus.INVALID
     assert canon_result.is_tampered
 
-    declared_alg = _signed_bundle(
-        {**payload, "alg": "RS256"}, private_key=private_key, kid=kid
-    )
+    declared_alg = _signed_bundle({**payload, "alg": "RS256"}, private_key=private_key, kid=kid)
     declared_alg_result = verify_bundle(declared_alg, keys)
     assert declared_alg_result.status is VerificationStatus.UNSUPPORTED
     assert not declared_alg_result.is_tampered

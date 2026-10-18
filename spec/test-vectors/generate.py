@@ -137,6 +137,10 @@ def sign_bundle(key: Ed25519PrivateKey, payload: dict, **envelope: object) -> di
         "receipt_id": payload["receipt_id"],
         "kid": KID,
         "alg": "Ed25519",
+        # Unauthenticated envelope member the gateway's portable receipt
+        # endpoint also emits; the signature covers only signing_input.
+        # The spec conformance gate requires it on every well-formed bundle.
+        "canonicalization": "awi-canonical-json/1",
         "signing_input": signing_input,
         "signature": signature,
     }

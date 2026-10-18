@@ -284,6 +284,9 @@ jobs:
       - name: Run action accounting proofs
         env:
           DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_pgproofs
+          # test_action_postgres' autouse fixture imports test_action_migrations,
+          # whose collection gate requires this variable under CI_STRICT=1.
+          ACTION_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_migration
           RUN_POSTGRES_CONCURRENCY_TESTS: "1"
         run: |
           uv run --no-sync pytest -q -rs --timeout 300 \

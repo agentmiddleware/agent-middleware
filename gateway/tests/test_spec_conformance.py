@@ -427,10 +427,18 @@ class TestReceiptVectors:
 
     def test_vector_bundles_match_spec_portable_shape(self):
         _, cases = self._load()
+        # Cases whose point is a wrong canonicalization member itself must
+        # still carry the member (shape) but are exempt from the value check.
+        canonicalization_tamper_cases = {
+            "synthetic.envelope_canonicalization_mismatch",
+            "synthetic.unsupported_canonicalization",
+        }
         for case in cases:
             if case["expect"] == "malformed":
                 continue
             assert PORTABLE_MEMBERS <= set(case["bundle"]), case["name"]
+            if case["name"] in canonicalization_tamper_cases:
+                continue
             assert case["bundle"]["canonicalization"] == CANONICALIZATION, case["name"]
 
     def test_valid_vectors_have_documented_payloads(self):

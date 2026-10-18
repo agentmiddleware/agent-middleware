@@ -14,6 +14,18 @@ from ..services.kyc_service import get_kyc_service
 
 logger = logging.getLogger(__name__)
 
+
+def _require_sig_header(request: Request) -> str:
+    """Return the Stripe signature header or refuse the delivery as unsigned."""
+    sig_header = request.headers.get("stripe-signature", "")
+    if not sig_header:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing Stripe signature",
+        )
+    return sig_header
+
+
 router = APIRouter(
     prefix="/v1/webhooks",
     tags=["Webhooks"],
@@ -38,13 +50,7 @@ async def handle_stripe_webhook(request: Request):
     - identity.verification_session.redacted → Expire verification
     """
     payload = await request.body()
-    sig_header = request.headers.get("stripe-signature", "")
-
-    if not sig_header:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing Stripe signature",
-        )
+    sig_header = _require_sig_header(request)
 
     stripe_integration = get_stripe_integration()
     try:
@@ -78,13 +84,7 @@ async def handle_stripe_identity_webhook(request: Request):
     but we handle them separately here for clarity.
     """
     payload = await request.body()
-    sig_header = request.headers.get("stripe-signature", "")
-
-    if not sig_header:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing Stripe signature",
-        )
+    sig_header = _require_sig_header(request)
 
     kyc_service = get_kyc_service()
     success = await kyc_service.handle_webhook(payload, sig_header)

@@ -287,8 +287,8 @@ async def test_durable_wallet_cannot_read_or_send_as_foreign_agent(clean_databas
             ),
         ]
         for resp in denied:
-            assert resp.status_code == 403
-            assert resp.json()["detail"]["error"] == "access_denied"
+            assert resp.status_code == 404, resp.text
+            assert resp.json()["detail"]["error"] == "agent_not_found"
             assert "a-only" not in resp.text
             assert a["agent_wallet_id"] not in resp.text
 
@@ -336,8 +336,8 @@ async def test_durable_inbox_denied_to_jwt_from_another_wallet(
             params={"agent_id": a_agent},
             headers=b_bearer,
         )
-        assert foreign.status_code == 403, foreign.text
-        assert foreign.json()["detail"]["error"] == "access_denied"
+        assert foreign.status_code == 404, foreign.text
+        assert foreign.json()["detail"]["error"] == "agent_not_found"
 
         spoof = await client.post(
             "/v1/agent-comms/send",
@@ -349,7 +349,8 @@ async def test_durable_inbox_denied_to_jwt_from_another_wallet(
             },
             headers=b_bearer,
         )
-        assert spoof.status_code == 403, spoof.text
+        assert spoof.status_code == 404, spoof.text
+        assert spoof.json()["detail"]["error"] == "agent_not_found"
 
         own = await client.get(
             "/v1/agent-comms/inbox",

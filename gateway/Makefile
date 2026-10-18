@@ -65,7 +65,10 @@ prove-trust-plane-postgres: prove-crash-recovery
 # The harness refuses to run otherwise: it fails closed on a
 # non-PostgreSQL URL, a production-like ENVIRONMENT, a stale Alembic revision,
 # or any application table that already holds rows, and it takes an advisory
-# lock so two runs cannot overlap. This is the same proof CI runs.
+# lock so two runs cannot overlap. This two-process harness stays
+# operator-run: CI runs the lighter postgres concurrency subset instead
+# (the `postgres-concurrency` job in .github/workflows/ci.yml). See
+# docs/TESTING_TIERS.md for which level proves what.
 prove-crash-recovery:
 	RUN_MCP_MULTIPROCESS_TESTS=1 \
 	uv run --with-requirements requirements.txt \

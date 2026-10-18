@@ -81,5 +81,5 @@ b832ed901f992cd225b41d74916db202c82a81c4:gateway/tests/test_x402.py:generic-api-
 8eaae14c6ca41a3f2e55e5d0e38fb3e48d73ae15:spec/test-vectors/generate.py:generic-api-key:169
 923cc826add7856cb81a632d23ba99d85c067559:spec/test-vectors/generate.py:generic-api-key:349
 923cc826add7856cb81a632d23ba99d85c067559:spec/test-vectors/generate.py:generic-api-key:378
-spec/test-vectors/generate.py:generic-api-key:350
-spec/test-vectors/generate.py:generic-api-key:379
+e1abe47d7987cc9a4e9521faeebd6becc9d59504:spec/test-vectors/generate.py:generic-api-key:350
+e1abe47d7987cc9a4e9521faeebd6becc9d59504:spec/test-vectors/generate.py:generic-api-key:379

@@ -11,7 +11,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import os
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -28,7 +27,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utc_now
-from app.db.database import get_engine, get_session_factory
+from app.db.database import get_session_factory
 from app.db.models import (
     BillingAlertModel,
     ControlPlaneAuditEventModel,
@@ -67,6 +66,7 @@ from app.services.upstream_mcp import (
     UpstreamMcpDeliveryUncertainError,
     UpstreamMcpResult,
 )
+from tests.support.db_gate import require_live_postgres
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
     create_tool_permit,
@@ -142,14 +142,14 @@ class PausedUpstreamExecutor:
 
 
 def _require_opted_in_postgres() -> None:
-    engine = get_engine()
-    if engine is None or engine.dialect.name != "postgresql":
-        pytest.skip("requires a PostgreSQL DATABASE_URL for real row-lock semantics")
-    if os.environ.get("RUN_POSTGRES_CONCURRENCY_TESTS") != "1":
-        pytest.skip(
+    require_live_postgres(
+        flag="RUN_POSTGRES_CONCURRENCY_TESTS",
+        reason=(
+            "requires a PostgreSQL DATABASE_URL for real row-lock semantics; "
             "set RUN_POSTGRES_CONCURRENCY_TESTS=1 only with an isolated "
             "PostgreSQL test database"
-        )
+        ),
+    )
 
 
 @pytest_asyncio.fixture(loop_scope="session")

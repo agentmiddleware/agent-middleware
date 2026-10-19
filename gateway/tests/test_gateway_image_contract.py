@@ -66,6 +66,12 @@ Path(os.environ["BUILD_SHA_PATH"]).write_text(value.lower() + "\\n")
 
 DOCKERIGNORE = """\
 .git
+.agents
+**/.agents
+.claude
+**/.claude
+.envrc
+**/.envrc
 .env
 .env.*
 **/.env
@@ -88,7 +94,7 @@ DOCKERIGNORE = """\
 **/*.db-shm
 *.log
 **/*.log
-gateway/data/
+gateway/data
 gateway/.build_commit_sha
 gateway/tests
 """
@@ -176,13 +182,16 @@ def test_release_gate_invokes_defined_image_contract_target() -> None:
         ),
         ("gateway/docker-compose.yml", "context: ..", "context: ."),
         (".dockerignore", "**/.env.*", "# nested secrets admitted"),
+        (".dockerignore", "**/.agents", "# nested agent files admitted"),
+        (".dockerignore", "**/.claude", "# nested assistant files admitted"),
+        (".dockerignore", "**/.envrc", "# nested env loader admitted"),
         (".dockerignore", ".aws", "# local AWS credentials admitted"),
         (".dockerignore", "**/.aws", "# nested AWS credentials admitted"),
         (".dockerignore", "**/*.db", "# nested database admitted"),
         (".dockerignore", "**/*.db-wal", "# database sidecar admitted"),
         (".dockerignore", "**/*.db-shm", "# database sidecar admitted"),
         (".dockerignore", "**/*.log", "# logs admitted"),
-        (".dockerignore", "gateway/data/", "# local state admitted"),
+        (".dockerignore", "gateway/data", "# local state admitted"),
         (".dockerignore", "gateway/.build_commit_sha", "# nested stamp admitted"),
     ),
 )

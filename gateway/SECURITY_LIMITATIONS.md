@@ -170,6 +170,8 @@ inputs and stamp handling; it cannot inspect hosted resources or secret values.
   `create_all` remains only for ephemeral non-production SQLite (tests/local).
 - Keep CI trust invariant tests required before merge. CI also runs a
   `production_trust` subset with production-like trust flags.
+- The full `trust-release-gate` CI job runs only when manually dispatched; the
+  automatic pull-request checks do not enforce that aggregate gate.
 
 ## CORS Posture
 

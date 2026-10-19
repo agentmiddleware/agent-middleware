@@ -127,6 +127,12 @@ def check(root: Path) -> None:
     }
     required_ignores = {
         ".git",
+        ".agents",
+        "**/.agents",
+        ".claude",
+        "**/.claude",
+        ".envrc",
+        "**/.envrc",
         ".env",
         ".env.*",
         "**/.env",
@@ -149,11 +155,11 @@ def check(root: Path) -> None:
         "**/*.db-shm",
         "*.log",
         "**/*.log",
-        "gateway/data/",
+        "gateway/data",
         "gateway/.build_commit_sha",
         "gateway/tests",
     }
-    if missing_ignores := required_ignores - ignored:
+    if missing_ignores := required_ignores - {line.rstrip("/") for line in ignored}:
         raise ValueError(
             f"root Docker context misses exclusions: {sorted(missing_ignores)}"
         )

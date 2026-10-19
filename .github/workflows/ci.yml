@@ -339,6 +339,35 @@ jobs:
       - name: Build and import release and development images
         run: bash .github/scripts/smoke_gateway_image.sh
 
+  trust-release-gate:
+    name: Trust release gate / gateway
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -r requirements.txt -e "../sdk/python[verify]" pytest-xdist pytest-timeout
+      - name: Run aggregate trust release gate
+        env:
+          ENVIRONMENT: test
+        run: |
+          env -u DATABASE_URL -u RUN_POSTGRES_CONCURRENCY_TESTS -u RUN_MCP_MULTIPROCESS_TESTS \
+            PYTHON=.venv/bin/python PYTEST=.venv/bin/pytest make trust-release-gate
+
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
     needs: detect

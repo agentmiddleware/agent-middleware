@@ -196,10 +196,11 @@ rate limiting.
 | `make check-gateway-image-contract` | Source preflight for the repository-root Docker context, gateway and SDK image inputs, secret exclusions, and validated release-stamp transfer. It executes the stamp writer against isolated inputs. It does not build the image, inspect hosted variables, or validate a Railway resource graph. `check-railway-iac` remains an alias for old callers. |
 | `make trust-release-gate` | Runs the image source preflight first, then the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates. |
 
-The CI workflow runs the gateway pytest suite, including the source-preflight
-regression tests, but has no dedicated `trust_release_gate` job. Run
-`make trust-release-gate` for this aggregate gate and verify branch protection
-in GitHub before relying on any check as required for merge. Its green result
+Automatic CI runs the gateway pytest suite, including the source-preflight
+regression tests. The optional `trust-release-gate` CI job runs this aggregate
+gate on `workflow_dispatch`; it is not a required check on pull requests. Run
+that job or `make trust-release-gate` and verify branch protection in GitHub
+before relying on any check as required for merge. Its green result
 does not establish the deployed image digest, runtime secrets, or hosted state.
 The [stranger test](stranger-test.md) is the human milestone that checks the
 same five claims are reachable and checkable from the published docs alone.

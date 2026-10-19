@@ -1398,11 +1398,22 @@ def verify_bundle_integrity(directory: Path | str) -> IntegrityReport:
                 f"{relative}: {size} bytes on disk, manifest says {entry['bytes']}"
             )
 
-    on_disk = {
-        str(path.relative_to(root)).replace(os.sep, "/")
-        for path in root.rglob("*")
-        if path.is_symlink() or path.is_file()
-    }
+    on_disk: set[str] = set()
+    pending = [root]
+    while pending:
+        directory_to_scan = pending.pop()
+        try:
+            with os.scandir(directory_to_scan) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(path)
+                    else:
+                        on_disk.add(str(path.relative_to(root)).replace(os.sep, "/"))
+        except (OSError, RuntimeError) as exc:
+            problems.append(
+                f"{directory_to_scan}: could not scan bundle directory: {exc}"
+            )
     unexpected = sorted(on_disk - listed - {MANIFEST_NAME})
     problems.extend(
         f"{name}: present on disk but not listed in the manifest" for name in unexpected

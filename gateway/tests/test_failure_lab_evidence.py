@@ -9,6 +9,7 @@ traceability exercise worthless.
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 from pathlib import Path
 
@@ -390,6 +391,116 @@ def test_integrity_check_reports_unlisted_symlink_without_reading_target(
     assert report.checked == 0
     assert report.unexpected == ["unlisted.txt"]
     assert outside.read_bytes() == b"outside"
+
+
+def test_integrity_check_accepts_empty_and_nested_regular_bundles(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    _manifest(empty, [])
+    assert verify_bundle_integrity(empty).ok
+
+    nested = tmp_path / "nested"
+    (nested / "subdir").mkdir(parents=True)
+    payload = b"regular"
+    (nested / "subdir" / "payload.txt").write_bytes(payload)
+    _manifest(
+        nested,
+        [
+            {
+                "path": "subdir/payload.txt",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+            }
+        ],
+    )
+    report = verify_bundle_integrity(nested)
+    assert report.ok, report.problems
+    assert report.checked == 1
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "nested"])
+@pytest.mark.parametrize("error", [errno.EIO, errno.EACCES], ids=["eio", "permission"])
+def test_integrity_check_reports_directory_scan_failure(
+    tmp_path, monkeypatch, nested, error
+):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    blocked = bundle / "subdir" if nested else bundle
+    if nested:
+        blocked.mkdir()
+    (blocked / "unlisted.txt").write_bytes(b"not indexed")
+    _manifest(bundle, [])
+    original_scandir = evidence.os.scandir
+
+    def failing_scandir(path):
+        if Path(path) == blocked:
+            raise OSError(error, "synthetic directory scan failure")
+        return original_scandir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(evidence.os, "scandir", failing_scandir)
+        report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.checked == 0
+    assert any("could not scan" in problem for problem in report.problems)
+
+
+def test_integrity_check_does_not_descend_into_unlisted_directory_link(
+    tmp_path, monkeypatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "payload.txt").write_bytes(b"outside")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "linked").symlink_to(outside, target_is_directory=True)
+    _manifest(bundle, [])
+    original_scandir = evidence.os.scandir
+
+    def guarded_scandir(path):
+        assert Path(path) != outside, "outside directory was scanned"
+        return original_scandir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(evidence.os, "scandir", guarded_scandir)
+        patch.setattr(
+            evidence,
+            "_sha256_file",
+            lambda _path: pytest.fail("outside target was hashed"),
+        )
+        report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.unexpected == ["linked"]
+
+
+@pytest.mark.parametrize("failure", [OSError, RuntimeError])
+def test_integrity_check_reports_entry_classification_failure(
+    tmp_path, monkeypatch, failure
+):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "unlisted.txt").write_bytes(b"not indexed")
+    _manifest(bundle, [])
+
+    class BrokenEntry:
+        path = str(bundle / "unlisted.txt")
+
+        def is_dir(self, *, follow_symlinks):
+            assert follow_symlinks is False
+            raise failure("synthetic entry classification failure")
+
+    class BrokenListing:
+        def __enter__(self):
+            return iter([BrokenEntry()])
+
+        def __exit__(self, *_args):
+            return False
+
+    with monkeypatch.context() as patch:
+        patch.setattr(evidence.os, "scandir", lambda _path: BrokenListing())
+        report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert any("could not scan" in problem for problem in report.problems)
 
 
 @pytest.mark.parametrize(

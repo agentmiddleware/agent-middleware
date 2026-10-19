@@ -704,7 +704,7 @@
           "Agent Financial Gateways"
         ],
         "summary": "Create a sponsor wallet (liability sink)",
-        "description": "Bootstrap operator provisioning only. Create a human-owned root account that acts as the 'liability sink' for agent spending. Sponsors ingest fiat currency via payment rails and convert it to ecosystem credits. Agent wallets are provisioned from sponsor balances.",
+        "description": "Bootstrap operator provisioning only. Create a human-owned root account that acts as the 'liability sink' for agent spending. Sponsors hold internal credits funded by verified Stripe top-ups (USD only, where Stripe is configured) or by this explicit admin-gated issuance. Agent wallets are provisioned from sponsor balances. No settlement or payouts are performed.",
         "operationId": "create_sponsor_wallet_v1_billing_wallets_sponsor_post",
         "security": [
           {
@@ -6087,12 +6087,10 @@
           },
           "balance": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Balance"
           },
           "daily_spend_used": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Daily Spend Used"
           },
           "human_approval_required": {
@@ -6534,12 +6532,10 @@
           },
           "credits_authorized": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Credits Authorized"
           },
           "credits_charged": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Credits Charged"
           },
           "error_code": {
@@ -7603,7 +7599,6 @@
           },
           "max_credits": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Max Credits"
           },
           "permit_expires_at": {
@@ -7824,12 +7819,10 @@
           },
           "max_credits": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Max Credits"
           },
           "spent_credits": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Spent Credits"
           },
           "expires_at": {
@@ -7885,8 +7878,7 @@
           "aggregate_value_cap": {
             "anyOf": [
               {
-                "type": "string",
-                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                "type": "string"
               },
               {
                 "type": "null"
@@ -7984,8 +7976,7 @@
                 "type": "number"
               },
               {
-                "type": "string",
-                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+                "type": "string"
               },
               {
                 "type": "null"
@@ -8426,7 +8417,8 @@
           "canonicalization": {
             "type": "string",
             "title": "Canonicalization",
-            "description": "Canonical-JSON contract version the signing_input follows."
+            "description": "Canonical-JSON contract version the signing_input follows.",
+            "default": "awi-canonical-json/1"
           },
           "signing_input": {
             "type": "string",
@@ -8449,7 +8441,6 @@
           "receipt_id",
           "issuer",
           "kid",
-          "canonicalization",
           "signing_input",
           "signature",
           "keys_url"
@@ -8728,7 +8719,6 @@
           },
           "quoted_credits": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Quoted Credits"
           },
           "category": {
@@ -9110,12 +9100,10 @@
           },
           "credits_authorized": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Credits Authorized"
           },
           "credits_charged": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Credits Charged"
           },
           "outcome": {
@@ -9269,7 +9257,6 @@
           },
           "credits": {
             "type": "string",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Credits"
           },
           "status": {

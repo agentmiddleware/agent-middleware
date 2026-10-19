@@ -119,25 +119,6 @@ def test_key_set_rejects_a_document_with_no_keys_list():
         ({"kid": ""}, VerificationStatus.MALFORMED),
         ({"signing_input": "not json"}, VerificationStatus.MALFORMED),
         ({"signing_input": "[1,2]"}, VerificationStatus.MALFORMED),
-        # UNSUPPORTED must be driven by what the SIGNER declared, inside the
-        # signed bytes -- never by the envelope. These still resolve before any
-        # signature check, so they need no key material.
-        (
-            {"signing_input": json.dumps({"receipt_id": "rcpt-1", "kid": "key-1", "alg": "RS256"})},
-            VerificationStatus.UNSUPPORTED,
-        ),
-        (
-            {
-                "signing_input": json.dumps(
-                    {
-                        "receipt_id": "rcpt-1",
-                        "kid": "key-1",
-                        "canonicalization": "something-else/9",
-                    }
-                )
-            },
-            VerificationStatus.UNSUPPORTED,
-        ),
     ],
 )
 def test_unusable_bundles_report_why(overrides, expected):
@@ -299,3 +280,59 @@ def test_human_readable_cli_omits_reason_for_success_receipt(monkeypatch, capsys
     )
 
     assert "\n  reason      " not in output
+
+
+def _signed_bundle(payload: dict, *, private_key, kid: str = "key-1") -> dict:
+    signing_input = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    signature = base64.b64encode(private_key.sign(signing_input.encode("utf-8"))).decode()
+    return _bundle(signing_input=signing_input, signature=signature, kid=kid)
+
+
+def test_edited_algorithm_or_canonicalization_is_invalid_not_unsupported():
+    """A one-byte edit inside signing_input must not become "unsupported".
+
+    alg and canonicalization are only the signer's claim after the signature
+    over those exact bytes checks out. Returning UNSUPPORTED before that check
+    turned a tampered receipt into "this verifier is too old".
+    """
+    pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    private_key = Ed25519PrivateKey.generate()
+    public = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    kid = "key-1"
+    keys = {kid: public}
+    payload = {"receipt_id": "rcpt-1", "kid": kid, "alg": "Ed25519", "tool": "search"}
+    genuine = _signed_bundle(payload, private_key=private_key, kid=kid)
+    assert verify_bundle(genuine, keys).status is VerificationStatus.VERIFIED
+
+    flipped_alg = genuine["signing_input"].replace('"alg":"Ed25519"', '"alg":"RS256"', 1)
+    alg_result = verify_bundle(_bundle(**{**genuine, "signing_input": flipped_alg}), keys)
+    assert alg_result.status is VerificationStatus.INVALID
+    assert alg_result.is_tampered
+    assert not alg_result.ok
+
+    flipped_canon = genuine["signing_input"].replace(
+        '"alg":"Ed25519"',
+        '"alg":"Ed25519","canonicalization":"other/9"',
+        1,
+    )
+    canon_result = verify_bundle(_bundle(**{**genuine, "signing_input": flipped_canon}), keys)
+    assert canon_result.status is VerificationStatus.INVALID
+    assert canon_result.is_tampered
+
+    declared_alg = _signed_bundle({**payload, "alg": "RS256"}, private_key=private_key, kid=kid)
+    declared_alg_result = verify_bundle(declared_alg, keys)
+    assert declared_alg_result.status is VerificationStatus.UNSUPPORTED
+    assert not declared_alg_result.is_tampered
+    assert not declared_alg_result.ok
+
+    declared_canon = _signed_bundle(
+        {**payload, "canonicalization": "other/9"},
+        private_key=private_key,
+        kid=kid,
+    )
+    declared_canon_result = verify_bundle(declared_canon, keys)
+    assert declared_canon_result.status is VerificationStatus.UNSUPPORTED
+    assert not declared_canon_result.is_tampered

@@ -452,8 +452,11 @@ async def _tool_verify_receipt(
             "endpoint will verify."
         )
 
-    # Classify malformed/unsupported/presentation mismatches before touching
-    # the key store. A key outage must not mask a caller-input error.
+    # Malformed bundles and issuer mismatches need no key. An algorithm or
+    # canonicalization string is not authenticated until the signature is
+    # checked, so an empty key set must not classify it: that used to report
+    # UNSUPPORTED and skip the published keys. Unknown kid falls through and
+    # the real key set then decides invalid, unsupported, or unknown_key.
     preflight = _receipt_verifier.verify_bundle(
         bundle, {}, expected_issuer=expected_issuer
     )

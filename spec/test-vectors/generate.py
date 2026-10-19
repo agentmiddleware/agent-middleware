@@ -242,6 +242,21 @@ def _synthetic_cases(
     canon_mismatch = dict(base_bundle)
     canon_mismatch["canonicalization"] = "not-the-contract/9"
 
+    # Downgrade pinning: editing alg or canonicalization in the signed text
+    # without re-signing is tampering (invalid), never a capability gap
+    # (unsupported). Only a claim the test key really signed is unsupported;
+    # the signer-declared variants are the synthetic.unsupported_* cases.
+    edited_alg_input = base_bundle["signing_input"].replace(
+        '"alg":"Ed25519"', '"alg":"RS256"', 1
+    )
+    if edited_alg_input == base_bundle["signing_input"]:
+        raise VectorError("golden signing input has no alg field to edit")
+    edited_canon_input = base_bundle["signing_input"].replace(
+        '"alg":"Ed25519"', '"alg":"Ed25519","canonicalization":"other/9"', 1
+    )
+    if edited_canon_input == base_bundle["signing_input"]:
+        raise VectorError("golden signing input has no anchor for canonicalization")
+
     lied = dict(payload)
     lied["payload_hash"] = "0" * 64
     unsupported_alg = _with_hash(dict(payload, alg="RS256"))
@@ -340,6 +355,16 @@ def _synthetic_cases(
             "name": "synthetic.unsupported_canonicalization",
             "bundle": sign_bundle(key, unsupported_canon, canonicalization="other/9"),
             "expect": "unsupported",
+        },
+        {
+            "name": "downgrade.alg_edited",
+            "bundle": dict(base_bundle, signing_input=edited_alg_input),
+            "expect": "invalid",
+        },
+        {
+            "name": "downgrade.canonicalization_edited",
+            "bundle": dict(base_bundle, signing_input=edited_canon_input),
+            "expect": "invalid",
         },
         {
             "name": "synthetic.malformed_signature",

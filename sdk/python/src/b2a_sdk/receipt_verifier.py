@@ -350,17 +350,13 @@ def verify_bundle(
 
     # Parse the signed bytes before anything else that can decide an outcome.
     #
-    # Ordering is the whole security property here. The envelope is
-    # unauthenticated: anyone in the transport path can edit it. So the
-    # capability gates below (algorithm, canonicalization) and the key
-    # selection must read the *signed* payload, never the envelope. An earlier
-    # version read `alg` and `canonicalization` from the envelope and
-    # short-circuited to UNSUPPORTED before the signature was ever checked,
-    # which let one edited byte turn a genuine receipt into "your verifier is
-    # too old" -- an attacker-chosen status, and the exact integrity/capability
-    # inversion this taxonomy exists to prevent. Envelope values are still
-    # checked, but afterwards, and disagreement is MISMATCH (a finding about
-    # the bundle) rather than UNSUPPORTED (a statement about this verifier).
+    # The envelope is unauthenticated: anyone on the path can edit it. Key
+    # selection, algorithm, and canonicalization are therefore read from
+    # signing_input, never from the envelope. Those claims are still just
+    # bytes until the signature over those exact bytes holds. Judging them
+    # first reported a tampered receipt as UNSUPPORTED ("this verifier is too
+    # old") instead of INVALID. Envelope values are checked after the
+    # signature verifies, and disagreement is MISMATCH.
     try:
         payload = json.loads(signing_input)
     except (json.JSONDecodeError, UnicodeDecodeError, RecursionError, ValueError):
@@ -393,28 +389,9 @@ def verify_bundle(
             key_id=envelope_key_id,
         )
 
+    # Held for the check after the signature. Not authenticated yet.
     algorithm = payload.get("alg", "Ed25519")
-    if algorithm != "Ed25519":
-        # Signer-declared, and therefore a genuine statement about what this
-        # verifier can do.
-        return _fail(
-            VerificationStatus.UNSUPPORTED,
-            f"unsupported signature algorithm: {algorithm!r}",
-            key_id=key_id,
-        )
-
     signed_canonicalization = payload.get("canonicalization")
-    if isinstance(signed_canonicalization, str) and signed_canonicalization != CANONICALIZATION:
-        # Verifying under rules the payload was not signed with would produce a
-        # confident answer to the wrong question. Only trusted because it is
-        # signed; receipts predating this field carry no counterpart and are
-        # handled by the envelope cross-check after verification.
-        return _fail(
-            VerificationStatus.UNSUPPORTED,
-            f"unsupported canonicalization: {signed_canonicalization!r} (this "
-            f"verifier implements {CANONICALIZATION!r})",
-            key_id=key_id,
-        )
 
     signature = _b64decode(signature_b64)
     if signature is None:
@@ -484,6 +461,24 @@ def verify_bundle(
         return _fail(
             VerificationStatus.INVALID,
             "signature does not verify over signing_input",
+            key_id=key_id,
+        )
+
+    # The signature held, so algorithm and canonicalization are the signer's
+    # claim. A different algorithm, or a canonicalization this verifier does
+    # not implement, is UNSUPPORTED. That judgment is not available when the
+    # signature failed: that case already returned INVALID above.
+    if algorithm != "Ed25519":
+        return _fail(
+            VerificationStatus.UNSUPPORTED,
+            f"unsupported signature algorithm: {algorithm!r}",
+            key_id=key_id,
+        )
+    if isinstance(signed_canonicalization, str) and signed_canonicalization != CANONICALIZATION:
+        return _fail(
+            VerificationStatus.UNSUPPORTED,
+            f"unsupported canonicalization: {signed_canonicalization!r} (this "
+            f"verifier implements {CANONICALIZATION!r})",
             key_id=key_id,
         )
 

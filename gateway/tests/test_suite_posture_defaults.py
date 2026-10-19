@@ -55,27 +55,27 @@ def test_strict_mode_ci_run_has_content():
     assert "ALLOW_LEGACY_UNPERMITTED_MCP=false" in workflow
 
 
-def test_postgres_concurrency_ci_job_exists():
-    """Race coverage must stay proven in CI, not just present but skipped."""
+def test_postgres_proof_ci_jobs_exist():
+    """Real database and crash coverage must execute in required CI."""
     workflow = CI_WORKFLOW.read_text()
     assert "postgres-concurrency" in workflow
+    assert "postgres-proofs" in workflow
+    assert 'CI_STRICT: "1"' in workflow
     assert "RUN_POSTGRES_CONCURRENCY_TESTS" in workflow
     assert "test_action_postgres.py" in workflow
+    assert "test_mcp_postgres_multiprocess.py" in workflow
+    assert "test_action_multiprocess.py" in workflow
+    assert "Prove gated tests actually ran" in workflow
 
 
-def test_postgres_trust_ci_job_fails_when_required_tests_skip():
+def test_postgres_trust_regressions_run_in_proofs():
     """The asyncpg trust loop and concurrent accounting must not skip in CI."""
     workflow = CI_WORKFLOW.read_text()
-    assert "\n  postgres-trust:" in workflow
-    assert "TEST_POSTGRES_URL:" in workflow
-    assert 'REQUIRE_POSTGRES_TESTS: "1"' in workflow
-    assert "test_postgres_datetime_binding.py::TestPostgresTrustLoop" in workflow
+    assert "TEST_POSTGRES_URL" in workflow
+    assert "test_postgres_datetime_binding.py" in workflow
     assert (
         "test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted"
         in workflow
     )
-    assert "skipped" in workflow
-    assert (
-        "needs: [detect, python, typescript, postgres-concurrency, postgres-trust]"
-        in workflow
-    )
+    assert "RUN_POSTGRES_CONCURRENCY_TESTS" in workflow
+    assert "proof-logs-accounting" in workflow

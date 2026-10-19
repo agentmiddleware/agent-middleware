@@ -135,25 +135,27 @@ class _UnimplementedBlob(BlobBackend):
     def __init__(self, name: str):
         self._name = name
 
-    async def put(self, key, data, content_type="application/octet-stream"):  # type: ignore[override]
+    async def put(
+        self, key: str, data: bytes, content_type: str = "application/octet-stream"
+    ) -> str:
         raise NotImplementedError(
             f"{self._name} blob backend is outside the frozen proof-surface scope; "
             "see docs/PROOF_SURFACES.md"
         )
 
-    async def get(self, key):  # type: ignore[override]
+    async def get(self, key: str) -> bytes:
         raise NotImplementedError(
             f"{self._name} blob backend is outside the frozen proof-surface scope; "
             "see docs/PROOF_SURFACES.md"
         )
 
-    async def delete(self, key):  # type: ignore[override]
+    async def delete(self, key: str) -> bool:
         raise NotImplementedError(
             f"{self._name} blob backend is outside the frozen proof-surface scope; "
             "see docs/PROOF_SURFACES.md"
         )
 
-    async def url(self, key):  # type: ignore[override]
+    async def url(self, key: str) -> str:
         raise NotImplementedError(
             f"{self._name} blob backend is outside the frozen proof-surface scope; "
             "see docs/PROOF_SURFACES.md"

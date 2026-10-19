@@ -11,7 +11,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import os
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -28,7 +27,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utc_now
-from app.db.database import get_engine, get_session_factory
+from app.db.database import get_session_factory
 from app.db.models import (
     BillingAlertModel,
     ControlPlaneAuditEventModel,
@@ -55,6 +54,7 @@ from app.services.mcp_dispatch_attempts import (
 from app.services.mcp_dispatch_reconciliation import (
     McpDispatchReconciliationService,
 )
+from app.services.ownership import CallerIdentity
 from app.services.permits import PermitService, PermitValidation
 from app.services.receipts import ReceiptError, get_receipt_service
 from app.services.refund_reconciliation import (
@@ -67,6 +67,7 @@ from app.services.upstream_mcp import (
     UpstreamMcpDeliveryUncertainError,
     UpstreamMcpResult,
 )
+from tests.support.db_gate import require_live_postgres
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
     create_tool_permit,
@@ -142,14 +143,14 @@ class PausedUpstreamExecutor:
 
 
 def _require_opted_in_postgres() -> None:
-    engine = get_engine()
-    if engine is None or engine.dialect.name != "postgresql":
-        pytest.skip("requires a PostgreSQL DATABASE_URL for real row-lock semantics")
-    if os.environ.get("RUN_POSTGRES_CONCURRENCY_TESTS") != "1":
-        pytest.skip(
+    require_live_postgres(
+        flag="RUN_POSTGRES_CONCURRENCY_TESTS",
+        reason=(
+            "requires a PostgreSQL DATABASE_URL for real row-lock semantics; "
             "set RUN_POSTGRES_CONCURRENCY_TESTS=1 only with an isolated "
             "PostgreSQL test database"
-        )
+        ),
+    )
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -429,6 +430,7 @@ async def test_concurrent_operation_key_charge_is_one_debit_in_postgres(
                     units=Decimal("1"),
                     request_path="/mcp/messages",
                     operation_key=record_id,
+                    caller=CallerIdentity.admin(),
                 ),
                 money.charge(
                     wallet_id=seeded_permit.wallet_id,
@@ -436,6 +438,7 @@ async def test_concurrent_operation_key_charge_is_one_debit_in_postgres(
                     units=Decimal("1"),
                     request_path="/mcp/messages",
                     operation_key=record_id,
+                    caller=CallerIdentity.admin(),
                 ),
             ),
             timeout=10,
@@ -667,7 +670,9 @@ async def test_authorization_then_revocation_is_one_valid_serial_order(
 
     async def revoke() -> object:
         revocation_started.set()
-        return await service.revoke_permit(seeded_permit.permit_id)
+        return await service.revoke_permit(
+            seeded_permit.permit_id, caller=CallerIdentity.admin()
+        )
 
     revocation = asyncio.create_task(revoke())
     await asyncio.wait_for(revocation_started.wait(), timeout=5)
@@ -1343,6 +1348,7 @@ async def test_inflight_governed_debit_blocks_cleanup_then_refunds_once_in_postg
                 units=Decimal("1"),
                 request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
                 operation_key=begun.record_id,
+                caller=CallerIdentity.admin(),
             )
         )
         await asyncio.wait_for(debit_fence_acquired.wait(), timeout=5)
@@ -1541,6 +1547,7 @@ async def test_inflight_governed_debit_blocks_effect_free_abandon_in_postgres(
                 units=Decimal("1"),
                 request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
                 operation_key=begun.record_id,
+                caller=CallerIdentity.admin(),
             )
         )
         await asyncio.wait_for(debit_fence_acquired.wait(), timeout=5)
@@ -1729,6 +1736,7 @@ async def test_dispatch_claim_cas_is_exclusive_in_postgres() -> None:
         units=Decimal("1"),
         request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
         operation_key=begun.record_id,
+        caller=CallerIdentity.admin(),
     )
     assert hasattr(charge, "entry_id")
     await dispatch.attach_charge(
@@ -1815,6 +1823,7 @@ async def test_dispatch_claim_cas_is_exclusive_in_postgres() -> None:
         units=Decimal("1"),
         request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
         operation_key=race_begun.record_id,
+        caller=CallerIdentity.admin(),
     )
     assert hasattr(race_charge, "entry_id")
     race_attempt = await dispatch.attach_charge(
@@ -1927,6 +1936,7 @@ async def test_concurrent_dispatch_reconcilers_create_one_signed_audit_in_postgr
         units=Decimal("1"),
         request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
         operation_key=begun.record_id,
+        caller=CallerIdentity.admin(),
     )
     assert hasattr(charge, "entry_id")
     await dispatch.attach_charge(
@@ -2137,6 +2147,7 @@ async def test_concurrent_provisioning_never_overdraws_in_postgres() -> None:
                 sponsor_wallet_id=sponsor_id,
                 agent_id=f"pg-conc-{index}-{uuid.uuid4().hex[:6]}",
                 budget_credits=Decimal("100"),
+                caller=CallerIdentity.admin(),
             )
         except Exception as exc:  # refusal is a valid outcome, not a failure
             return exc
@@ -2167,11 +2178,13 @@ async def test_concurrent_transfers_conserve_credits_in_postgres() -> None:
         sponsor_wallet_id=sponsor_id,
         agent_id=f"pg-src-{uuid.uuid4().hex[:6]}",
         budget_credits=Decimal("300"),
+        caller=CallerIdentity.admin(),
     )
     dest = await money.create_agent_wallet(
         sponsor_wallet_id=sponsor_id,
         agent_id=f"pg-dst-{uuid.uuid4().hex[:6]}",
         budget_credits=Decimal("0"),
+        caller=CallerIdentity.admin(),
     )
 
     async def move() -> object:
@@ -2180,6 +2193,7 @@ async def test_concurrent_transfers_conserve_credits_in_postgres() -> None:
                 from_wallet_id=source.wallet_id,
                 to_wallet_id=dest.wallet_id,
                 amount=Decimal("100"),
+                caller=CallerIdentity.admin(),
             )
         except Exception as exc:
             return exc
@@ -2207,18 +2221,22 @@ async def test_concurrent_reclaims_credit_the_parent_once_in_postgres() -> None:
         sponsor_wallet_id=sponsor_id,
         agent_id=f"pg-parent-{uuid.uuid4().hex[:6]}",
         budget_credits=Decimal("400"),
+        caller=CallerIdentity.admin(),
     )
     child = await money.create_child_wallet(
         parent_wallet_id=parent.wallet_id,
         child_agent_id=f"pg-child-{uuid.uuid4().hex[:6]}",
         budget_credits=Decimal("150"),
         max_spend=Decimal("150"),
+        caller=CallerIdentity.admin(),
     )
     parent_before = await _wallet_balance(parent.wallet_id)
 
     async def reclaim() -> object:
         try:
-            return await money.reclaim_child_wallet(child.wallet_id)
+            return await money.reclaim_child_wallet(
+                child.wallet_id, caller=CallerIdentity.admin()
+            )
         except Exception as exc:
             return exc
 

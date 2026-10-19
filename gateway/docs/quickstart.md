@@ -56,7 +56,7 @@ Three things worth knowing about what just started:
   deployments refuse to boot with these flags set.
 
 Leave the server running and do the rest **in a second terminal**, from the
-repository root:
+gateway directory (the same directory where you ran `make quickstart`):
 
 ```bash
 export API_URL=http://127.0.0.1:8000
@@ -287,8 +287,8 @@ curl -s -X POST "$API_URL/mcp/messages" \
 ```
 
 `permit_budget_exceeded`, with the arithmetic in `details`
-(`required_credits: 2.0`, `remaining_credits: 1.0`) and — read the denial
-receipt closely — `credits_charged: "0"` and `ledger_entry_id: null`. The
+(`required_credits: "2.0"`, `remaining_credits: "1.00000000"`). Read the denial
+receipt closely: `credits_charged: "0"` and `ledger_entry_id: null`. The
 denial is **signed evidence that carries no charge**: authority ran out
 before money moved, and you can prove it. The tool did not run (the notes
 file still has three notes), and the ledger still shows exactly three

@@ -10,16 +10,19 @@ Usage:
 from __future__ import annotations
 
 from functools import wraps
-from typing import Callable, TypeVar
+from typing import Any, Awaitable, Callable, Coroutine, ParamSpec, TypeVar
 
 from fastapi import HTTPException, status
 
 from app.core.auth import AuthContext
 
-F = TypeVar("F", bound=Callable)
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
-def require_scope(*required_scopes: str) -> Callable[[F], F]:
+def require_scope(
+    *required_scopes: str,
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Coroutine[Any, Any, T]]]:
     """Decorator that checks JWT scopes on the auth context.
 
     API key callers (source="db" or "env") bypass scope checks
@@ -27,12 +30,17 @@ def require_scope(*required_scopes: str) -> Callable[[F], F]:
     one of the required scopes.
     """
 
-    def decorator(func: F) -> F:
+    def decorator(
+        func: Callable[P, Awaitable[T]],
+    ) -> Callable[P, Coroutine[Any, Any, T]]:
         @wraps(func)
-        async def wrapper(*args, **kwargs) -> F:
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             # Find AuthContext in kwargs
-            auth: AuthContext | None = kwargs.get("auth")
-            if auth is None:
+            auth: AuthContext | None = None
+            candidate = kwargs.get("auth")
+            if isinstance(candidate, AuthContext):
+                auth = candidate
+            else:
                 for arg in args:
                     if isinstance(arg, AuthContext):
                         auth = arg
@@ -53,20 +61,22 @@ def require_scope(*required_scopes: str) -> Callable[[F], F]:
             if auth.source in ("db", "env", "static-dev"):
                 return await func(*args, **kwargs)
 
-            # JWT callers must have at least one required scope
-            if not any(scope in auth.scopes for scope in required_scopes):
+            # JWT callers must have at least one required scope. None means
+            # the context never received a scope list (see AuthContext).
+            provided_scopes = auth.scopes if auth.scopes is not None else []
+            if not any(scope in provided_scopes for scope in required_scopes):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail={
                         "error": "insufficient_scope",
                         "message": f"Requires one of: {', '.join(required_scopes)}",
                         "required": list(required_scopes),
-                        "provided": auth.scopes,
+                        "provided": provided_scopes,
                     },
                 )
 
             return await func(*args, **kwargs)
 
-        return wrapper  # type: ignore[return-value]
+        return wrapper
 
     return decorator

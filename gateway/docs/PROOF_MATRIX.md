@@ -31,12 +31,13 @@ It does not run the SQLite demo. The demo intentionally controls its own
 throwaway database and signing seed, including destructive tamper checks;
 passing it a deployment database is not a supported proof mode.
 
-CI's `postgres-trust` job migrates a disposable PostgreSQL database, then
-runs two checks the default SQLite suite skips: `TestPostgresTrustLoop`
-with `TEST_POSTGRES_URL` (its own process, because that fixture rebuilds
-the application) and `test_rapid_fire_invokes_all_accounted` with
-`DATABASE_URL` and `REQUIRE_POSTGRES_TESTS=1`. The job fails if either
-check is skipped. `postgres-concurrency` is the row-lock job
+CI's `postgres-proofs` job migrates disposable PostgreSQL databases, then
+runs the checks the default SQLite suite skips: `TestPostgresTrustLoop`
+with `TEST_POSTGRES_URL` (asyncpg driver proof) and
+`test_rapid_fire_invokes_all_accounted` with `DATABASE_URL` and
+`RUN_POSTGRES_CONCURRENCY_TESTS=1` (concurrent-invoke accounting proof).
+The job sets `CI_STRICT=1` and its final step fails if any proof logged a
+skip. `postgres-concurrency` is the row-lock job
 (`RUN_POSTGRES_CONCURRENCY_TESTS=1`). Neither job is the multi-process
 crash harness, and neither runs the rest of the trust-primitive suites
 on PostgreSQL.
@@ -197,10 +198,11 @@ rate limiting.
 | `make trust-coverage-gate` | 43 focused trust test files at an **80% coverage floor** across 38 named trust-plane control modules |
 | `make trust-release-gate` | The offline Railway IaC contract first (lock-pinned package install with lifecycle scripts disabled, then fail-closed API-only graph validation), followed by the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates |
 
-CI runs `scripts/trust_release_gate.sh` as a dedicated required check
-(`trust_release_gate`) so `main` cannot advance past an unproven claim; the
-exact branch-protection settings are in
-`trust-release-gate-branch-protection.md`.
+From `gateway/`, run `make trust-release-gate` for the full local release gate.
+Committed CI reports `CI result` and does not invoke the full release-gate
+script. The [active main ruleset](https://github.com/agentmiddleware/agent-middleware/rules/24444399)
+requires `CI result` and `gitleaks` with strict status checks, linear history,
+and resolved review threads.
 The [stranger test](stranger-test.md) is the human milestone that checks the
 same five claims are reachable and checkable from the published docs alone.
 

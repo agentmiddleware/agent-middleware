@@ -454,3 +454,49 @@ async def test_other_wallets_are_unaffected_by_a_revocation(
         json={"refresh_token": bystander_tokens["refresh_token"]},
     )
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.anyio
+async def test_refresh_insert_failure_rolls_back_the_claim(
+    client, clean_database, signing_key
+):
+    """A transient failure storing the successor must not strand the client.
+
+    Claim, liveness check, and successor insert commit atomically: when the
+    insert fails, the claim rolls back, the old token stays live, and the
+    client can retry instead of being logged out with a 500.
+    """
+    from unittest.mock import patch
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.core.jwt import get_jwt_service
+    from app.db.database import get_session_factory
+    from app.db.models import RefreshTokenModel
+
+    provisioned = await provision_agent_wallet(client)
+    tokens = await _mint_tokens(client, provisioned["agent_headers"]["X-API-Key"])
+    payload = get_jwt_service().verify_refresh_token(tokens["refresh_token"])
+
+    with (
+        patch.object(
+            AsyncSession, "add", side_effect=RuntimeError("simulated insert failure")
+        ),
+        pytest.raises(RuntimeError, match="simulated insert failure"),
+    ):
+        await client.post(
+            "/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+        )
+
+    # The claim was rolled back: the old token is still live...
+    factory = get_session_factory()
+    async with factory() as session:
+        record = await session.get(RefreshTokenModel, payload.jti)
+        assert record is not None
+        assert record.revoked is False
+
+    # ...so the client can retry and succeed.
+    retry = await client.post(
+        "/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert retry.status_code == 200, retry.text

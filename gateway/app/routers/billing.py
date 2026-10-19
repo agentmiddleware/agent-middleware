@@ -351,14 +351,9 @@ async def create_agent_wallet(
         await guard.complete({"detail": str(e)}, 404)
         raise HTTPException(status_code=404, detail=str(e))
     except OwnershipDeniedError:
-        await guard.complete(
-            {
-                "error": "wallet_access_denied",
-                "message": "API key is not authorized for this wallet.",
-            },
-            status.HTTP_403_FORBIDDEN,
-        )
-        raise _ownership_denied(request.sponsor_wallet_id)
+        denied = _ownership_denied(request.sponsor_wallet_id)
+        await guard.complete({"detail": denied.detail}, denied.status_code)
+        raise denied
     except InsufficientFundsError as e:
         insufficient_detail = {
             "error": "insufficient_funds",
@@ -1168,14 +1163,9 @@ async def transfer_wallets(
             error="wallet_access_denied",
             metadata={"to_wallet_id": to_wallet_id},
         )
-        await guard.complete(
-            {
-                "error": "wallet_access_denied",
-                "message": "API key is not authorized for this wallet.",
-            },
-            status.HTTP_403_FORBIDDEN,
-        )
-        raise _ownership_denied(from_wallet_id)
+        denied = _ownership_denied(from_wallet_id)
+        await guard.complete({"detail": denied.detail}, denied.status_code)
+        raise denied
     except InsufficientFundsError as e:
         await _record_billing_governance(
             event="billing.transfer",

@@ -97,6 +97,9 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           if grep -q '^\[tool\.mypy\]' pyproject.toml 2>/dev/null || [ -f mypy.ini ]; then
+            if [ "${{ matrix.project }}" = "sdk/python" ]; then
+              uv pip install -e ".[mcp]"
+            fi
             uv pip install "mypy==${MYPY_VERSION}" && uv run --no-sync mypy .
           else
             echo "mypy not configured; skipping"
@@ -171,6 +174,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      AMW_TEST_DB_DISPOSABLE: "1"
     services:
       postgres:
         image: postgres:16
@@ -258,6 +263,7 @@ jobs:
       run:
         working-directory: gateway
     env:
+      AMW_TEST_DB_DISPOSABLE: "1"
       CI_STRICT: "1"
       ENVIRONMENT: test
     steps:

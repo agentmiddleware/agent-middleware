@@ -394,6 +394,50 @@ test("disabled key verifies nothing: its receipts are unknown_key", () => {
   assert.equal(verifyBundle(seal(payload()), ks).status, "unknown_key");
 });
 
+test("integer above 2^53 is returned as the signed digits", () => {
+  const signingInput =
+    '{"constraints_evaluated":{"jev_risk_guard":{"big":9007199254740993,"exact":9007199254740992,"neg":-9007199254740993,"note":"9007199254740993","pow10":10000000000000000,"safe":1}},"kid":"key-1","receipt_id":"rcpt-1"}';
+  const signature = sign(
+    null,
+    Buffer.from(signingInput, "utf8"),
+    keyPair.privateKey,
+  ).toString("base64");
+  const result = verifyBundle(
+    { signing_input: signingInput, signature, kid: "key-1" },
+    keys(),
+  );
+  assert.equal(result.status, "verified");
+  const guard = (
+    result.claims?.constraints_evaluated as {
+      jev_risk_guard: {
+        big: unknown;
+        exact: unknown;
+        neg: unknown;
+        note: unknown;
+        pow10: unknown;
+        safe: unknown;
+      };
+    }
+  ).jev_risk_guard;
+  assert.equal(guard.big, "9007199254740993");
+  assert.equal(typeof guard.big, "string");
+  assert.notEqual(guard.big, 9007199254740992);
+  // Powers of two (and 10^16) that fit in a double stay numbers.
+  assert.equal(guard.exact, 9007199254740992);
+  assert.equal(guard.pow10, 10000000000000000);
+  assert.equal(guard.neg, "-9007199254740993");
+  assert.equal(guard.note, "9007199254740993");
+  assert.equal(guard.safe, 1);
+
+  const tampered = signingInput.replace("9007199254740993", "9007199254740994");
+  const bad = verifyBundle(
+    { signing_input: tampered, signature, kid: "key-1" },
+    keys(),
+  );
+  assert.equal(bad.status, "invalid");
+  assert.equal(bad.claims, undefined);
+});
+
 test("float-bearing payload signed Python-style verifies", () => {
   // The gateway signs floats Python renders as 1.0/0.0. seal() would print
   // them as 1/0, so the signed bytes are built as a string instead.

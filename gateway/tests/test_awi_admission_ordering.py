@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.time import utc_now
+from app.services.ownership import CallerIdentity
 from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, PermitModel, WalletModel
 from app.main import app
@@ -455,7 +456,9 @@ async def test_new_call_denied_but_prior_receipt_remains_replayable(
     first = await client.post(case.path, json=case.body, headers=case.headers)
     assert first.status_code == 200
     if constraint == "revoked":
-        await get_permit_service().revoke_permit(case.permit)
+        await get_permit_service().revoke_permit(
+            case.permit, caller=CallerIdentity.admin()
+        )
     else:
         # Mutable expiry is signed; advancing the validation clock preserves
         # signature identity and models expiry without corrupting the permit.

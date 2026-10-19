@@ -89,6 +89,10 @@ include = [
     "README.md",
     "pyproject.toml",
 ]
+exclude = [
+    # Repository-only test: its vectors live outside this source distribution.
+    "tests/test_receipt_vectors.py",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

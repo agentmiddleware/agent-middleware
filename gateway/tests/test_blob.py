@@ -7,11 +7,14 @@ surface is frozen — tests pin that contract so the stubs do not silently
 succeed.
 """
 
+import inspect
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
 from app.core.blob import (
+    BlobBackend,
     LocalFilesystemBlob,
     _UnimplementedBlob,
     blob_backend_name,
@@ -137,3 +140,12 @@ async def test_stub_methods_raise_not_implemented_with_freeze_guidance():
     ):
         with pytest.raises(NotImplementedError, match="docs/PROOF_SURFACES.md"):
             await operation()
+
+
+def test_unimplemented_blob_keeps_base_parameter_annotations():
+    """Bare overrides widen every parameter to Any and hide caller mistakes."""
+    for name in ("put", "get", "delete", "url"):
+        base = getattr(BlobBackend, name)
+        override = getattr(_UnimplementedBlob, name)
+        assert inspect.signature(override) == inspect.signature(base)
+        assert get_type_hints(override) == get_type_hints(base)

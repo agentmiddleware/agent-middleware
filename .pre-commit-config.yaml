@@ -20,3 +20,19 @@ repos:
       - id: check-toml
       - id: end-of-file-fixer
       - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: f12be1ebaa5351c1fc76472de98db2c3446c8253 # frozen: v0.16.10
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+        args: ["--check"]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: 2834ec6639549dd6796205c8f011dedcd587288b # frozen: v2.4.0
+    hooks:
+      - id: mypy
+        # Only gateway configures mypy; check its app as one package.
+        files: ^gateway/app/.*\.py$
+        args: ["--config-file=gateway/mypy.ini", "gateway/app"]
+        pass_filenames: false

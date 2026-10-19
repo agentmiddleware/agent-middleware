@@ -459,6 +459,116 @@ async def test_permit_service_budget_lifecycle_and_filters(
     assert validation.reason == "permit_revoked"
 
 
+async def _stored_permit_revocation(permit_id: str) -> tuple[str, datetime | None]:
+    factory = get_session_factory()
+    async with factory() as session:
+        model = await session.get(PermitModel, permit_id)
+        assert model is not None
+        return model.status, model.revoked_at
+
+
+@pytest.mark.anyio
+async def test_repeat_revoke_permit_keeps_original_revoked_at(
+    client,
+    clean_database,
+    enforce_naive_utc_datetime_columns,
+):
+    """A second revoke is a no-op on the stored revocation evidence.
+
+    ``revoked_at`` is returned in permit denial details. Moving it forward on
+    a repeat call would make that evidence describe the later call.
+    """
+    provisioned = await provision_agent_wallet(client)
+    service = get_permit_service()
+    permit = await service.create_permit(
+        PermitCreateRequest(
+            issuer_wallet_id=provisioned["agent_wallet_id"],
+            subject_wallet_id=provisioned["agent_wallet_id"],
+            subject_key_id=provisioned["key_id"],
+            allowed_tools=["repeat-revoke-tool"],
+            scopes=["tool:repeat-revoke-tool:invoke"],
+            max_credits=Decimal("10"),
+            expires_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).replace(
+                tzinfo=None
+            ),
+        )
+    )
+
+    first = await service.revoke_permit(permit.permit_id)
+    assert first.status == "revoked"
+    assert first.revoked_at is not None
+
+    original = datetime(2020, 1, 2, 3, 4, 5)
+    factory = get_session_factory()
+    async with factory() as session:
+        model = await session.get(PermitModel, permit.permit_id)
+        assert model is not None
+        model.revoked_at = original
+        await session.commit()
+
+    second = await service.revoke_permit(permit.permit_id)
+    assert second.status == "revoked"
+    assert second.revoked_at == original
+    assert await _stored_permit_revocation(permit.permit_id) == ("revoked", original)
+
+    validation = await service.validate_for_action(
+        permit_id=permit.permit_id,
+        wallet_id=provisioned["agent_wallet_id"],
+        tool_name="repeat-revoke-tool",
+        estimated_credits=Decimal("1"),
+        key_id=provisioned["key_id"],
+    )
+    assert validation.allowed is False
+    assert validation.reason == "permit_revoked"
+    assert validation.details == {
+        "status": "revoked",
+        "revoked_at": "2020-01-02T03:04:05Z",
+    }
+
+    with pytest.raises(PermitError) as missing:
+        await service.revoke_permit("permit-does-not-exist")
+    assert missing.value.reason == "permit_not_found"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("terminal_status", ["expired", "exhausted"])
+async def test_revoke_permit_does_not_relabel_non_active_permit(
+    client,
+    clean_database,
+    enforce_naive_utc_datetime_columns,
+    terminal_status,
+):
+    """Revoke only transitions an active permit. Expired or exhausted stays put."""
+    provisioned = await provision_agent_wallet(client)
+    service = get_permit_service()
+    permit = await service.create_permit(
+        PermitCreateRequest(
+            issuer_wallet_id=provisioned["agent_wallet_id"],
+            subject_wallet_id=provisioned["agent_wallet_id"],
+            subject_key_id=provisioned["key_id"],
+            allowed_tools=["terminal-revoke-tool"],
+            scopes=["tool:terminal-revoke-tool:invoke"],
+            max_credits=Decimal("10"),
+            expires_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).replace(
+                tzinfo=None
+            ),
+        )
+    )
+
+    factory = get_session_factory()
+    async with factory() as session:
+        model = await session.get(PermitModel, permit.permit_id)
+        assert model is not None
+        model.status = terminal_status
+        model.revoked_at = None
+        await session.commit()
+
+    returned = await service.revoke_permit(permit.permit_id)
+    assert returned.status == terminal_status
+    assert returned.revoked_at is None
+    assert await _stored_permit_revocation(permit.permit_id) == (terminal_status, None)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("terminal_state", "expected_reason"),

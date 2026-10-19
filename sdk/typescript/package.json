@@ -22,8 +22,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters",
     "prepublishOnly": "npm run build && npm test",
-    "test": "node --test test/*.test.ts",
+    "test": "node --test test/*.test.ts test/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

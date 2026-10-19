@@ -1,6 +1,6 @@
 """Validate a repository-root release stamp for the production image.
 
-``.build_commit_sha`` is gitignored. A named ``COPY`` of that path fails on a
+``.build_commit_sha`` is gitignored. A named Docker COPY of that path fails on a
 clean tree before the build starts, and no workflow in this repo creates the
 file. The production Dockerfile runs this script instead.
 
@@ -11,7 +11,7 @@ Sources:
 
 The build fails when neither source is a 7–64 character hex SHA, when the
 staged file is present but invalid, or when both sources are valid and
-disagree. The arg is not named ``COMMIT_SHA`` or ``BUILD_COMMIT_SHA`` so a
+disagree. The arg is not named COMMIT_SHA or ``BUILD_COMMIT_SHA`` so a
 stale Railway service variable is not picked up as the stamp.
 
 ``STAGED_SHA_PATH`` and ``BUILD_SHA_PATH`` select the input and output paths

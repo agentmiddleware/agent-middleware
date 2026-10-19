@@ -265,7 +265,13 @@ def test_dockerfile_bakes_commit_stamp_without_copying_gitignored_file():
     dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
 
     assert "COPY .build_commit_sha" not in dockerfile
+    assert "COPY . /context/" in dockerfile
     assert "ARG RELEASE_COMMIT_SHA" in dockerfile
-    assert "python scripts/write_build_commit_sha.py" in dockerfile
+    assert "STAGED_SHA_PATH=/context/.build_commit_sha" in dockerfile
+    assert "BUILD_SHA_PATH=/stamp/.build_commit_sha" in dockerfile
+    assert "python /context/gateway/scripts/write_build_commit_sha.py" in dockerfile
+    assert dockerfile.index("COPY gateway/ /app/") < dockerfile.index(
+        "COPY --from=build-metadata /stamp/.build_commit_sha /app/.build_commit_sha"
+    )
     assert "ARG COMMIT_SHA" not in dockerfile
     assert "ARG BUILD_COMMIT_SHA" not in dockerfile

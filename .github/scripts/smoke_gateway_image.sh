@@ -17,6 +17,9 @@ canary_paths=(
   gateway/.amw-image-smoke.db-shm
   gateway/.amw-image-smoke.log
   gateway/.amw-image-smoke.pem
+  gateway/.agents/amw-image-smoke.txt
+  gateway/.claude/amw-image-smoke.txt
+  gateway/.envrc
   sdk/python/.amw-image-smoke.key
 )
 for path in "${canary_paths[@]}"; do
@@ -38,7 +41,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for dir in gateway/data gateway/data/quickstart; do
+for dir in gateway/data gateway/data/quickstart gateway/.agents gateway/.claude; do
+  if [[ -L "$dir" ]]; then
+    echo "Canary parent is a symlink: $dir" >&2
+    exit 1
+  fi
   if [[ ! -d "$dir" ]]; then
     mkdir "$dir"
     created_dirs+=("$dir")
@@ -62,6 +69,9 @@ image_canaries=(
   /app/.amw-image-smoke.db-shm
   /app/.amw-image-smoke.log
   /app/.amw-image-smoke.pem
+  /app/.agents/amw-image-smoke.txt
+  /app/.claude/amw-image-smoke.txt
+  /app/.envrc
   /sdk/python/.amw-image-smoke.key
 )
 stamp="$(git rev-parse HEAD)"

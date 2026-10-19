@@ -1093,6 +1093,7 @@ class PermitService:
                         caller,
                         issuer_wallet_id=model.issuer_wallet_id,
                         subject_wallet_id=model.subject_wallet_id,
+                        subject_key_id=model.subject_key_id,
                         error=PermitAccessDeniedError,
                     )
                     # Atomic guarded reserve (see authorize_and_reserve): the cap
@@ -1226,6 +1227,7 @@ class PermitService:
                         caller,
                         issuer_wallet_id=owner.issuer_wallet_id,
                         subject_wallet_id=owner.subject_wallet_id,
+                        subject_key_id=owner.subject_key_id,
                         error=PermitAccessDeniedError,
                     )
                     # Atomic clamped decrement: a single UPDATE so a concurrent
@@ -1365,6 +1367,7 @@ class PermitService:
                             caller,
                             issuer_wallet_id=model.issuer_wallet_id,
                             subject_wallet_id=model.subject_wallet_id,
+                            subject_key_id=model.subject_key_id,
                             error=PermitAccessDeniedError,
                         )
                         original_counts_json = model.tool_call_counts_json
@@ -1442,6 +1445,7 @@ class PermitService:
                         caller,
                         issuer_wallet_id=permit_owner.issuer_wallet_id,
                         subject_wallet_id=permit_owner.subject_wallet_id,
+                        subject_key_id=permit_owner.subject_key_id,
                         error=PermitAccessDeniedError,
                     )
                     # Only a terminal returned_error attempt has a reservation

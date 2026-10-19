@@ -234,6 +234,12 @@ async def test_permit_budget_mutations_deny_a_stranger(client, clean_database):
     service = get_permit_service()
     stranger_caller = _owner_of(stranger["agent_wallet_id"])
     owner_caller = _owner_of(owner["agent_wallet_id"])
+    other_key_caller = CallerIdentity(
+        wallet_id=owner["agent_wallet_id"], key_id="another-key-in-the-same-wallet"
+    )
+    bound_key_caller = CallerIdentity(
+        wallet_id=owner["agent_wallet_id"], key_id=owner["key_id"]
+    )
 
     permit = await _permit(owner)
 
@@ -241,20 +247,61 @@ async def test_permit_budget_mutations_deny_a_stranger(client, clean_database):
         await service.reserve_budget(
             permit.permit_id, Decimal("5"), caller=stranger_caller
         )
-    await service.reserve_budget(permit.permit_id, Decimal("5"), caller=owner_caller)
+    with pytest.raises(PermitAccessDeniedError):
+        await service.reserve_budget(
+            permit.permit_id, Decimal("5"), caller=other_key_caller
+        )
+    with pytest.raises(PermitAccessDeniedError):
+        await service.reserve_budget(
+            permit.permit_id,
+            Decimal("5"),
+            caller=CallerIdentity.for_wallet(
+                owner["agent_wallet_id"], key_id="another-key-in-the-same-wallet"
+            ),
+        )
+    with pytest.raises(PermitAccessDeniedError):
+        await service.reserve_budget(
+            permit.permit_id,
+            Decimal("5"),
+            caller=CallerIdentity(wallet_id=owner["agent_wallet_id"]),
+        )
+    await service.reserve_budget(
+        permit.permit_id, Decimal("5"), caller=bound_key_caller
+    )
 
     with pytest.raises(PermitAccessDeniedError):
         await service.release_budget(
             permit.permit_id, Decimal("5"), caller=stranger_caller
         )
-    await service.release_budget(permit.permit_id, Decimal("5"), caller=owner_caller)
+    with pytest.raises(PermitAccessDeniedError):
+        await service.release_budget(
+            permit.permit_id, Decimal("5"), caller=other_key_caller
+        )
+    await service.release_budget(
+        permit.permit_id, Decimal("5"), caller=bound_key_caller
+    )
 
     with pytest.raises(PermitAccessDeniedError):
         await service.release_tool_call(
             permit.permit_id, "owner-tool", caller=stranger_caller
         )
+    with pytest.raises(PermitAccessDeniedError):
+        await service.release_tool_call(
+            permit.permit_id, "owner-tool", caller=other_key_caller
+        )
     # No per-tool cap is configured, so the owner's release is a no-op.
     await service.release_tool_call(permit.permit_id, "owner-tool", caller=owner_caller)
+
+    sponsored = await _permit(owner, issuer_wallet_id=owner["sponsor_wallet_id"])
+    issuer_caller = CallerIdentity(
+        wallet_id=owner["sponsor_wallet_id"], key_id="issuer-key"
+    )
+    await service.reserve_budget(
+        sponsored.permit_id, Decimal("1"), caller=issuer_caller
+    )
+    await service.release_budget(
+        sponsored.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+    )
 
 
 @pytest.mark.anyio
@@ -293,6 +340,11 @@ async def test_release_dispatch_budget_denies_a_stranger(client, clean_database)
         await service.release_dispatch_budget_once(
             "att-owner-enforcement",
             caller=_owner_of(stranger["agent_wallet_id"]),
+        )
+    with pytest.raises(PermitAccessDeniedError):
+        await service.release_dispatch_budget_once(
+            "att-owner-enforcement",
+            caller=CallerIdentity(wallet_id=wallet_id, key_id="another-key"),
         )
 
     assert (

@@ -42,6 +42,7 @@ class CallerIdentity:
     wallet_id: str | None = None
     key_id: str | None = None
     is_bootstrap_admin: bool = False
+    is_engine_proven: bool = False
 
     @classmethod
     def from_auth(cls, auth: Any) -> CallerIdentity:
@@ -62,7 +63,7 @@ class CallerIdentity:
         permit, an admitted governed context, a reconciled attempt row),
         never from an unverified request field.
         """
-        return cls(wallet_id=wallet_id, key_id=key_id)
+        return cls(wallet_id=wallet_id, key_id=key_id, is_engine_proven=True)
 
     @classmethod
     def admin(cls) -> CallerIdentity:
@@ -88,14 +89,30 @@ def require_permit_party(
     *,
     issuer_wallet_id: str | None,
     subject_wallet_id: str | None,
+    subject_key_id: str | None,
     error: type[RuntimeError] = OwnershipDeniedError,
     reason: str = "permit_access_denied",
 ) -> None:
-    """Allow only a wallet the permit belongs to (issuer or subject)."""
+    """Allow the issuer or the bound subject key to mutate permit accounting."""
     if caller.is_bootstrap_admin:
         return
-    parties = {issuer_wallet_id, subject_wallet_id} - {None}
-    if caller.wallet_id is not None and caller.wallet_id in parties:
+    # When issuer and subject are the same wallet, another key in that wallet
+    # must not bypass the subject-key binding by presenting as the issuer.
+    if (
+        caller.wallet_id is not None
+        and caller.wallet_id == issuer_wallet_id
+        and issuer_wallet_id != subject_wallet_id
+    ):
+        return
+    if (
+        caller.wallet_id is not None
+        and caller.wallet_id == subject_wallet_id
+        and (
+            subject_key_id is None
+            or caller.key_id == subject_key_id
+            or (caller.key_id is None and caller.is_engine_proven)
+        )
+    ):
         return
     raise error(reason)
 

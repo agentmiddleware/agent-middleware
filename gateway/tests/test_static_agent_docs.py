@@ -39,7 +39,11 @@ def test_llm_txt_does_not_freeze_a_wallet_on_the_first_cap_crossing():
     assert "freeze assessment is not debited" in folded
     assert "alert count does not" in folded
     assert "not changed to frozen" in folded
-    assert "transactions roll back" in folded
+    assert "governed database transaction rolls back" in folded
+    assert "uncommitted velocity and billing mutations roll back with it" in folded
+    assert "governed refusal can still commit an alert" in folded
+    assert "post-dispatch `delivery_uncertain` outcome retains the debit" in folded
+    assert "Failed governed transactions roll back" not in text
 
 
 def test_llm_txt_production_redis_outage_is_503_not_the_memory_limiter():
@@ -77,8 +81,14 @@ def test_llm_txt_mcp_messages_governed_errors_are_http_200_jsonrpc():
     assert "Do not branch on HTTP 402 or HTTP 409 for that route" in text
     assert "does not report either idempotency condition as HTTP 409" in folded
     assert "do not treat it as an in-progress retry" in folded
-    assert "rejected-credential pre-authentication" in folded
+    assert "shared per-client pre-authentication" in folded
+    assert "including unauthenticated requests and rejected credentials" in folded
     assert "public MCP client/global bucket" in folded
+    assert "These codes do not describe every governed failure" in text
+    assert "or an HTTP route denied" in text
+    assert (
+        "Checks that run before the handler use HTTP status on every route" not in text
+    )
     assert "| 402 | Insufficient credits |" not in text
 
 
@@ -89,8 +99,10 @@ def test_dashboard_catalog_auth_depends_on_the_boot_mode():
     assert "Tool catalogs and invoke require an operator-issued key." not in page
     assert "production-like boot" in page
     assert "local-compatible boot may leave the catalog anonymous" in page
-    assert "Invoke still requires a key." in page
-    assert "tool catalog requires a key on production-like boots" in page
+    assert "Governed invocation still requires authentication" in page
+    assert "API key or bearer credential" in page
+    assert "read-only public MCP endpoint" in page
+    assert "tool catalog requires authentication on production-like boots" in page
     assert "local-compatible boots allow anonymous catalog reads" in page
     assert "Tool lists on this origin require a key" not in page
 

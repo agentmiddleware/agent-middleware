@@ -151,6 +151,7 @@ POST /mcp/messages
 ### Rate Limits
 - Default: 120 requests/minute per API key, configurable by the operator.
 - No extra burst allowance. Check `/v1/discover` rate-limit metadata for the current limit.
+- Requests without accepted credentials, including unauthenticated requests and rejected credentials, also count against a shared per-client pre-authentication bucket.
 - Shared Redis counts fixed 60-second windows. The in-memory limiter, used when Redis is not configured or when a non-production boot loses Redis, counts a rolling 60 seconds.
 - On a production-like boot with `REDIS_URL` set, a Redis outage does not use that in-memory limiter. Requests subject to rate limiting fail with HTTP 503 and error `rate_limiter_unavailable`; exempt public documentation and health routes are not refused by the limiter.
 
@@ -170,8 +171,10 @@ freeze the wallet, but another billing check can still deny the charge. With
 after three recorded alerts requests a freeze; this is not necessarily the
 fourth paid charge. The freeze assessment is not debited. Hourly and daily
 spend counters roll over, but the alert count does not. Closed or suspended
-wallets are not changed to frozen. Failed governed transactions roll back
-their velocity and billing mutations.
+wallets are not changed to frozen. If a governed database transaction rolls
+back, its uncommitted velocity and billing mutations roll back with it. A
+governed refusal can still commit an alert; a post-dispatch
+`delivery_uncertain` outcome retains the debit.
 
 ---
 
@@ -234,13 +237,14 @@ clients require `/mcp` after the operator enables the Streamable HTTP transport.
 
 ## Error Codes
 
-Checks that run before the handler use HTTP status on every route, including `POST /mcp/messages`:
+HTTP responses can report authentication, rate-limit, and REST failures.
+These codes do not describe every governed failure on `POST /mcp/messages`:
 
 | Code | Meaning |
 |------|---------|
 | 401 | Missing credentials, a malformed or too-short API key, or invalid bearer authentication. |
-| 403 | A well-formed API key was rejected, or an authenticated caller lacks required wallet, tenant, administrator, policy, or ACL access. |
-| 429 | A rate limit was exceeded: per-key, rejected-credential pre-authentication, or public MCP client/global bucket. |
+| 403 | A well-formed API key was rejected, or an HTTP route denied required wallet, tenant, administrator, policy, or ACL access. |
+| 429 | A rate limit was exceeded: per-key, shared per-client pre-authentication (including unauthenticated requests and rejected credentials), or public MCP client/global bucket. |
 | 503 | On a rate-limited request in a production-like boot with `REDIS_URL` set, the shared limiter could not use Redis. The error is `rate_limiter_unavailable`. |
 | 500 | Unclassified server error on a REST route. |
 

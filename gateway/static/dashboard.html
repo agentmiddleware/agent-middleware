@@ -293,10 +293,11 @@
     <h1>Inspect the trust plane without invented telemetry.</h1>
     <p class="lede">
       This origin is a private experiment, not a public product. On a
-      production-like boot, tool catalogs and invoke require an operator-issued
-      key. A local-compatible boot may leave the catalog anonymous. Invoke still
-      requires a key. This page only points at runtime posture and portable
-      verification keys.
+      production-like boot, tool catalogs and governed invocation require
+      authentication. A local-compatible boot may leave the catalog anonymous
+      and may opt into a separate, read-only public MCP endpoint. Governed
+      invocation still requires authentication by API key or bearer credential.
+      This page only points at runtime posture and portable verification keys.
     </p>
     <p class="notice">
       No tenant records or aggregate customer counts are rendered here. This page
@@ -357,7 +358,7 @@
       <div class="links">
         <a href="/.well-known/agent.json">
           <strong>Agent manifest</strong>
-          <span>Bootstrap metadata. The tool catalog requires a key on production-like boots; local-compatible boots allow anonymous catalog reads.</span>
+          <span>Bootstrap metadata. The tool catalog requires authentication on production-like boots; local-compatible boots allow anonymous catalog reads.</span>
         </a>
         <a href="/llms.txt">
           <strong>llms.txt</strong>

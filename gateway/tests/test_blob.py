@@ -7,11 +7,14 @@ surface is frozen — tests pin that contract so the stubs do not silently
 succeed.
 """
 
+import inspect
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
 from app.core.blob import (
+    BlobBackend,
     LocalFilesystemBlob,
     _UnimplementedBlob,
     blob_backend_name,
@@ -38,13 +41,25 @@ def _clear_backend_cache():
 
 
 @pytest.mark.anyio
-async def test_local_backend_put_get_round_trip(local_blob):
+async def test_local_backend_put_get_round_trip(local_blob, tmp_path):
     payload = b"hello world"
     url = await local_blob.put("my-video.mp4", payload, "video/mp4")
-    assert url.startswith("file://")
+    # Refs are opaque: no scheme, no host path, only the content digest.
+    assert url.startswith("blob:")
+    assert "file://" not in url
+    assert str(tmp_path) not in url
 
     got = await local_blob.get("my-video.mp4")
     assert got == payload
+
+
+@pytest.mark.anyio
+async def test_local_backend_url_ref_is_opaque(local_blob, tmp_path):
+    """Ref lookups must not echo the blob root back to the caller."""
+    ref = await local_blob.url("my-video.mp4")
+    assert ref.startswith("blob:")
+    assert str(tmp_path) not in ref
+    assert "/" not in ref
 
 
 @pytest.mark.anyio
@@ -125,3 +140,12 @@ async def test_stub_methods_raise_not_implemented_with_freeze_guidance():
     ):
         with pytest.raises(NotImplementedError, match="docs/PROOF_SURFACES.md"):
             await operation()
+
+
+def test_unimplemented_blob_keeps_base_parameter_annotations():
+    """Bare overrides widen every parameter to Any and hide caller mistakes."""
+    for name in ("put", "get", "delete", "url"):
+        base = getattr(BlobBackend, name)
+        override = getattr(_UnimplementedBlob, name)
+        assert inspect.signature(override) == inspect.signature(base)
+        assert get_type_hints(override) == get_type_hints(base)

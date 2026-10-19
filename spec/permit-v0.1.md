@@ -12,7 +12,7 @@ Required members:
 | `permit_id` | string | Unique permit id |
 | `issuer_wallet_id` | string | The operator (sponsor) account that granted the permit |
 | `subject_wallet_id` | string | The agent account the permit is for |
-| `subject_key_id` | string or null | The agent API key the permit is bound to, if bound |
+| `subject_key_id` | string or null | Agent API key this permit is bound to. JSON `null` when it is not bound to one key, and that null is part of the signed bytes |
 | `scopes` | string[] | Granted scopes, for example `tool:<tool>:invoke`, `billing:charge` |
 | `allowed_tools` | string[] | Tools this permit may invoke |
 | `max_credits` | decimal string | Budget ceiling for the permit's lifetime |

@@ -24,6 +24,7 @@ REPO = GATEWAY.parent
 
 BACKTICK_MD = re.compile(r"`([^`\n]*?\.md)`")
 BACKTICK_SCRIPT = re.compile(r"`(scripts/[A-Za-z0-9_./-]+\.py)`")
+MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\n]+)\)")
 
 
 def _load_rotate_script():
@@ -36,16 +37,17 @@ def _load_rotate_script():
     return module
 
 
-def _markdown_ref_resolves(doc: Path, ref: str) -> bool:
+def _markdown_ref_resolves(doc: Path, ref: str, *, linked: bool = False) -> bool:
     target = ref.strip().split("#", 1)[0].split("?", 1)[0]
     if not target.endswith(".md") or target.startswith("http"):
         return True
     relative = Path(target)
+    if linked:
+        return (doc.parent / relative).is_file()
     candidates = [
         (doc.parent / relative).resolve(),
         (GATEWAY / relative).resolve(),
         (REPO / relative).resolve(),
-        (DOCS / relative.name).resolve(),
     ]
     return any(path.is_file() for path in candidates)
 
@@ -53,9 +55,14 @@ def _markdown_ref_resolves(doc: Path, ref: str) -> bool:
 def test_docs_markdown_references_exist() -> None:
     missing: list[str] = []
     for doc in sorted(DOCS.glob("*.md")):
-        for match in BACKTICK_MD.finditer(doc.read_text(encoding="utf-8")):
+        text = doc.read_text(encoding="utf-8")
+        for match in BACKTICK_MD.finditer(text):
             ref = match.group(1)
             if not _markdown_ref_resolves(doc, ref):
+                missing.append(f"{doc.name}: {ref}")
+        for match in MARKDOWN_LINK.finditer(text):
+            ref = match.group(1)
+            if not _markdown_ref_resolves(doc, ref, linked=True):
                 missing.append(f"{doc.name}: {ref}")
     assert not missing, "docs name markdown files that are not in the tree:\n" + "\n".join(
         missing
@@ -94,6 +101,12 @@ def test_api_key_rotation_runbook_matches_the_code() -> None:
     assert "bounded_key_cannot_mint" in text
     assert "wallet_access_denied" in text
     assert "scripts/rotate_api_keys.py" in text
+    assert "from the gateway directory" in text
+    assert "`revoke_old: true`" in text
+    assert "`422` `invalid_rotation_request`" in text
+    assert "bounded wallet key may call emergency revoke" in text
+    assert "caller key's remaining bounds" in text
+    assert "revokes the wallet's refresh tokens" in text
     assert "POST /v1/api-keys/rotate" in text
     assert "POST /v1/api-keys/emergency-revoke" in text
     assert "DELETE /v1/api-keys/{wallet_id}/{key_id}" in text
@@ -147,6 +160,8 @@ def test_human_preflight_uses_the_gateway_directory() -> None:
 
 def test_readme_index_does_not_name_missing_material() -> None:
     text = (DOCS / "README.md").read_text(encoding="utf-8")
+    assert "[API key rotation](api-key-rotation.md)" in text
+    assert "[Pods](pods.md) are a dormant trust feature" in text
     for missing in (
         "mcp-registry-submission.md",
         "aegis/",

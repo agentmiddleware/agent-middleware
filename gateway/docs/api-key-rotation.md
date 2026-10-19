@@ -5,6 +5,9 @@ Signing-key custody, rotation, and compromise response are in
 [key-management.md](key-management.md). There is no script and no route that
 retires signing-key metadata.
 
+Run the script commands below from the gateway directory, which contains
+`scripts/rotate_api_keys.py`.
+
 Two API key classes rotate. A third class must not.
 
 | Class | Where it lives | How it dies |
@@ -72,10 +75,13 @@ Who may call them:
 - A database key may act only on its own `wallet_id`. Any other wallet is
   `403` `wallet_access_denied`.
 - A JWT cannot mint a replacement key (`403` `jwt_cannot_mint_api_key`).
-- A database key that has `max_uses` or `expires_at` cannot mint a different
-  key. It may rotate only itself, by sending its own `key_id`. The
-  replacement keeps the remaining bounds. Anything else is `403`
-  `bounded_key_cannot_mint`.
+- A bounded database key (`max_uses` or `expires_at`) cannot create a fresh
+  key or rotate another key. An omitted or different `key_id` on rotate is
+  `403` `bounded_key_cannot_mint`. It may rotate its own key, and the
+  replacement keeps its remaining bounds. A key with `max_uses` must set
+  `revoke_old: true`, or rotate returns `422` `invalid_rotation_request`.
+- A bounded wallet key may call emergency revoke. If it requests a replacement,
+  the new key inherits only the caller key's remaining bounds.
 
 ### Rotate one key
 
@@ -118,7 +124,7 @@ Returns 204. The optional `reason` query parameter defaults to
 
 `create_new_key` defaults to true. An emergency call that omits it mints a
 replacement and returns that secret once. Set it to false when you only want
-the old keys dead.
+the old keys dead. This route also revokes the wallet's refresh tokens.
 
 Rotation history for a wallet is `GET /v1/api-keys/{wallet_id}/logs`.
 
@@ -127,7 +133,7 @@ Rotation history for a wallet is `GET /v1/api-keys/{wallet_id}/logs`.
 | What happened | What to do |
 | --- | --- |
 | A `VALID_API_KEYS` bootstrap key leaked, or may have leaked | Generate a replacement, remove the old value from the host secret, restart every worker, then run `verify`. Treat every worker that has not restarted as still accepting the old key. |
-| A `b2a_` wallet key leaked | `DELETE` that key, or `POST /v1/api-keys/rotate` with `revoke_old` true. For every key on the wallet, use `POST /v1/api-keys/emergency-revoke` and set `create_new_key` explicitly. No restart. |
+| A `b2a_` wallet key leaked | `DELETE` that key, or `POST /v1/api-keys/rotate` with `revoke_old` true. To revoke every wallet key and its refresh tokens, use `POST /v1/api-keys/emergency-revoke` and set `create_new_key` explicitly. No restart. |
 | An `amw_dev_` static key leaked | Production-like processes refuse to boot when `STATIC_DEV_API_KEYS` is set, and they ignore those keys if that guard is bypassed. Remove the value from the local env if the machine is shared. Do not copy it into `VALID_API_KEYS`. Entries without the `amw_dev_` prefix never authenticate, including a live key pasted into the wrong variable. |
 | The signing private key leaked, or may have leaked | Stop and follow [key-management.md](key-management.md). This runbook does not retire signing keys, and nothing in `scripts/` does either. |
 

@@ -103,6 +103,7 @@ later in this section.
 | `app.routers.auth` (dormant) | JWT exchange (`/v1/auth/*`) — second auth story; wedge contract is `X-API-Key` |
 | `app.routers.kyc` (dormant) | Stripe Identity KYC |
 | `app.routers.planner` (dormant) | Budget optimizer |
+| `app.routers.pods` (dormant) | Shared-budget agent-key groups ([pods](pods.md)) |
 | `app.routers.billing.expansion_router` (dormant) | Child/swarm wallets, transfers, top-ups, marketplace, velocity status, dry-run sandbox |
 
 They mount via `app.main.mount_dormant_trust_surfaces` when

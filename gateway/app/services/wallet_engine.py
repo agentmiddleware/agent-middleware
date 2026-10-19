@@ -7,6 +7,7 @@ wallet reads. The public compatibility surface remains AgentMoney.
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -40,6 +41,11 @@ InsufficientFundsFactory = Callable[[str, Decimal, Decimal], Exception]
 MetadataSerializer = Callable[[dict | None], str | None]
 MAX_CHILD_WALLET_TTL_SECONDS = 2_147_483_647
 _MAX_WALLET_HIERARCHY_DEPTH = 32
+
+
+def _is_finite_amount(value: Decimal | float) -> bool:
+    """Check both Decimal and float inputs before any ordered comparison."""
+    return value.is_finite() if isinstance(value, Decimal) else math.isfinite(value)
 
 
 class WalletExpiredError(RuntimeError):
@@ -344,6 +350,8 @@ class WalletEngine:
 
         No BEGIN/COMMIT here — the caller's transaction owns those.
         """
+        if not _is_finite_amount(initial_credits):
+            raise ValueError("initial_credits must be finite")
         if initial_credits < Decimal("0"):
             # A negative seed opens the wallet holding a negative balance
             # with no ledger entry to explain it: the initial-credit row is
@@ -412,6 +420,8 @@ class WalletEngine:
         balance.
         """
         require_wallet_owner(caller, sponsor_wallet_id)
+        if not _is_finite_amount(budget_credits):
+            raise ValueError("budget_credits must be finite")
         if budget_credits < Decimal("0"):
             # A negative budget inverts the debit into a credit: the guard
             # ``balance >= budget_credits`` is trivially true for a negative
@@ -579,12 +589,16 @@ class WalletEngine:
         """
         require_wallet_owner(caller, parent_wallet_id)
         _validate_child_wallet_ttl(ttl_seconds)
+        if not _is_finite_amount(budget_credits):
+            raise ValueError("budget_credits must be finite")
         if budget_credits < Decimal("0"):
             # Same inversion as the sponsor path, and worse: a child opened
             # with a negative balance cannot be unwound by a later reclaim,
             # which only credits the parent back a positive reclaim_amount.
             # Zero is allowed here too, for the same reason.
             raise ValueError("budget_credits cannot be negative")
+        if not _is_finite_amount(max_spend) or max_spend <= Decimal("0"):
+            raise ValueError("max_spend must be a finite number greater than zero")
         async with self._session_factory()() as session:
             async with session.begin():
                 # Lock parent wallet

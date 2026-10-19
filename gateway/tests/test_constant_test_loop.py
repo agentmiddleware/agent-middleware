@@ -7,6 +7,7 @@ behaviors unique to constant_test_loop that aren't covered by demo_trust_plane.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import socket
@@ -194,39 +195,110 @@ def test_constant_test_loop_validates_malformed_key(monkeypatch):
         module.run_constant_test("http://127.0.0.1:9", "short", "", "")
 
 
-def test_constant_test_loop_never_logs_keys(capsys):
-    """Smoke: keys are never printed to stdout/stderr."""
-    # The old version noted it could not prove this and cited code review.
-    # This executes the key-reading path with a canary and asserts the
-    # canary never reaches captured output.
+def test_constant_test_loop_never_logs_keys(monkeypatch, capsys):
+    """The full keyed loop must not print its credential."""
     module = _load_loop_module()
+    canary_key = "amw_test_canary_key_must_not_appear_in_logs"
+    monkeypatch.setenv("CI_SMOKE_AGENT_KEY", canary_key)
+    monkeypatch.delenv("CI_SMOKE_WALLET_ID", raising=False)
+    monkeypatch.delenv("CI_SMOKE_KEY_ID", raising=False)
+    agent_key, wallet_id, key_id = module._get_agent_key()
+    assert (agent_key, wallet_id, key_id) == (canary_key, "", "")
 
-    # Set a canary key
-    canary_key = "canary_key_must_not_appear_in_logs"
-    test_env = {
-        **os.environ,
-        "CI_SMOKE_AGENT_KEY": canary_key,
-        "CI_SMOKE_WALLET_ID": "wallet_id",
-        "CI_SMOKE_KEY_ID": "key_id",
-    }
+    paths = []
+    mcp_calls = []
 
-    # Temporarily override os.environ
-    original_environ = os.environ.copy()
-    os.environ.update(test_env)
+    def respond(request):
+        assert request.headers["X-API-Key"] == canary_key
+        path = request.url.path
+        paths.append(path)
+        if path == "/v1/billing/wallets":
+            return httpx.Response(200, json={"wallets": [{"wallet_id": "w1"}]})
+        if path == "/v1/billing/wallets/w1/keys":
+            return httpx.Response(
+                200, json={"keys": [{"key_prefix": canary_key[:8], "key_id": "k1"}]}
+            )
+        if path == "/mcp/tools.json":
+            return httpx.Response(
+                200,
+                json={
+                    "tools": [{"name": "partner.echo"}, {"name": "partner.notes.write"}]
+                },
+            )
+        if path == "/v1/permits" and request.method == "POST":
+            return httpx.Response(201, json={"permit_id": "p1", "spent_credits": "0"})
+        if path == "/mcp/messages":
+            mcp_calls.append(json.loads(request.content))
+            if len(mcp_calls) == 3:
+                return httpx.Response(
+                    200,
+                    json={
+                        "error": {
+                            "message": "permit_tool_not_allowed",
+                            "data": {
+                                "receipt": {
+                                    "receipt_id": "denied1",
+                                    "outcome": "denied",
+                                    "permit_id": "p1",
+                                    "credits_charged": "0",
+                                }
+                            },
+                        }
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "isError": False,
+                        "receipt": {
+                            "receipt_id": "success1",
+                            "outcome": "success",
+                            "ledger_entry_id": "entry1",
+                            "permit_id": "p1",
+                            "credits_charged": "1",
+                        },
+                    }
+                },
+            )
+        if path == "/v1/receipts/verify":
+            return httpx.Response(200, json={"valid": True})
+        if path == "/v1/permits/p1":
+            return httpx.Response(200, json={"spent_credits": "1"})
+        if path == "/v1/billing/ledger/w1":
+            return httpx.Response(
+                200,
+                json={
+                    "entries": [
+                        {
+                            "entry_id": "entry1",
+                            "amount": "-1",
+                            "description": "partner.echo",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404)
 
-    try:
-        agent_key, wallet_id, key_id = module._get_agent_key()
-        assert agent_key == canary_key
-        assert wallet_id == "wallet_id"
-        assert key_id == "key_id"
+    transport = httpx.MockTransport(respond)
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        module.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+    module.run_constant_test("http://127.0.0.1:9", agent_key, wallet_id, key_id)
 
-        captured = capsys.readouterr()
-        assert canary_key not in captured.out
-        assert canary_key not in captured.err
-
-    finally:
-        os.environ.clear()
-        os.environ.update(original_environ)
+    assert [call["params"]["name"] for call in mcp_calls] == [
+        "partner.echo",
+        "partner.echo",
+        "partner.notes.write",
+    ]
+    assert "/v1/permits/p1" in paths
+    assert paths.count("/v1/billing/ledger/w1") == 2
+    captured = capsys.readouterr()
+    assert "ALL INVARIANTS HELD" in captured.err
+    assert canary_key not in captured.out + captured.err
 
 
 def test_constant_test_loop_self_provision_signal():

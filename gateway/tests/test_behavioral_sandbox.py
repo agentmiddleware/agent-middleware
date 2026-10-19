@@ -3,6 +3,7 @@ Tests for the Behavioral Sandbox Engine — Phase 6
 """
 
 import asyncio
+import math
 import os
 import pytest
 
@@ -405,6 +406,8 @@ class TestBehavioralSandboxEngine:
             + metrics["timeout_count"]
         ) == metrics["total_executions"]
         assert isinstance(metrics["avg_execution_time_ms"], (int, float))
+        assert math.isfinite(metrics["avg_execution_time_ms"])
+        assert metrics["avg_execution_time_ms"] >= 0
 
         await engine.destroy_environment(env.env_id)
 

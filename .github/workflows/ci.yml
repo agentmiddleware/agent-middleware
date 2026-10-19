@@ -284,9 +284,6 @@ jobs:
       - name: Run action accounting proofs
         env:
           DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_pgproofs
-          # test_action_postgres' autouse fixture imports test_action_migrations,
-          # whose collection gate requires this variable under CI_STRICT=1.
-          ACTION_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_migration
           RUN_POSTGRES_CONCURRENCY_TESTS: "1"
         run: |
           uv run --no-sync pytest -q -rs --timeout 300 \
@@ -326,11 +323,8 @@ jobs:
       - name: Prove gated tests actually ran
         working-directory: .
         run: |
-          if grep -h "^SKIPPED" "$GITHUB_WORKSPACE"/proof-logs-*.txt; then
-            echo "::error::a database-gated proof skipped instead of running"
-            exit 1
-          fi
-          echo "no gated skips in proof logs"
+          python3 gateway/tests/support/proof_log_gate.py \
+            "$GITHUB_WORKSPACE"/proof-logs-{concurrency,action,migration,driver,stress,action-mp}.txt
 
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}

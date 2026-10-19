@@ -71,26 +71,41 @@ def require_live_postgres(*, flag: str | None = None, reason: str) -> None:
     _refuse_quiet_skip(reason)
 
 
+class _ClosedGateCondition:
+    """Evaluate the gate when pytest sets up a selected test, not on import."""
+
+    def __init__(self, *, flag: str | None, url_env: str | None, reason: str):
+        self.flag = flag
+        self.url_env = url_env
+        self.reason = reason
+
+    def __bool__(self) -> bool:
+        if gate_open(flag=self.flag, url_env=self.url_env):
+            return False
+        if ci_strict():
+            pytest.fail(
+                f"CI_STRICT=1 but a database-gated test would skip: {self.reason}",
+                pytrace=False,
+            )
+        return True
+
+
 def collection_mark(
     *, flag: str | None = None, url_env: str | None = None, reason: str
 ):
-    """Module-level gate for files that skip at import time.
+    """Skip or fail a selected gated test during setup.
 
-    Returns a no-op mark when the gate is open so call sites append it
-    unconditionally::
+    Call sites may append the mark unconditionally::
 
         pytestmark = [
             pytest.mark.asyncio(loop_scope="session"),
             db_gate.collection_mark(flag="RUN_FOO_TESTS", reason="..."),
         ]
 
-    Under CI_STRICT a closed gate fails collection instead of skipping.
+    An imported module cannot fail a separate proof's collection. Under
+    CI_STRICT, only a selected gated test fails when its gate is closed.
     """
-    if gate_open(flag=flag, url_env=url_env):
-        return pytest.mark.skipif(False, reason="database gate open")
-    if ci_strict():
-        pytest.fail(
-            f"CI_STRICT=1 but a database-gated module would skip: {reason}",
-            pytrace=False,
-        )
-    return pytest.mark.skipif(True, reason=reason)
+    return pytest.mark.skipif(
+        _ClosedGateCondition(flag=flag, url_env=url_env, reason=reason),
+        reason=reason,
+    )

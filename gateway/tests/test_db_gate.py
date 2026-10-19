@@ -104,7 +104,7 @@ def test_collection_mark_is_noop_when_open(monkeypatch):
     monkeypatch.setenv(PROBE_FLAG, "1")
     mark = db_gate.collection_mark(flag=PROBE_FLAG, reason="probe")
     assert mark.name == "skipif"
-    assert mark.args[0] is False
+    assert bool(mark.args[0]) is False
 
 
 def test_collection_mark_skips_when_closed(monkeypatch):
@@ -112,17 +112,20 @@ def test_collection_mark_skips_when_closed(monkeypatch):
     monkeypatch.delenv(db_gate.CI_STRICT_ENV_VAR, raising=False)
     mark = db_gate.collection_mark(flag=PROBE_FLAG, reason="probe")
     assert mark.name == "skipif"
-    assert mark.args[0] is True
+    assert bool(mark.args[0]) is True
 
 
-def test_collection_mark_fails_under_ci_strict(monkeypatch):
+def test_collection_mark_fails_under_ci_strict_when_evaluated(monkeypatch):
     monkeypatch.delenv(PROBE_FLAG, raising=False)
     monkeypatch.setenv(db_gate.CI_STRICT_ENV_VAR, "1")
+    mark = db_gate.collection_mark(flag=PROBE_FLAG, reason="probe")
     with pytest.raises(pytest.fail.Exception, match="CI_STRICT"):
-        db_gate.collection_mark(flag=PROBE_FLAG, reason="probe")
+        bool(mark.args[0])
 
 
-def _run_probe(tmp_path: Path, *, ci_strict: bool) -> subprocess.CompletedProcess:
+def _run_probe(
+    tmp_path: Path, *, ci_strict: bool, import_only: bool = False
+) -> subprocess.CompletedProcess:
     probe = tmp_path / "test_db_gate_probe.py"
     probe.write_text(
         "import pytest\n"
@@ -133,9 +136,18 @@ def _run_probe(tmp_path: Path, *, ci_strict: bool) -> subprocess.CompletedProces
         '    reason="probe",\n'
         ")\n"
         "\n"
+        "FIELDS = ('permit_id',)\n"
+        "\n"
         "\n"
         "def test_probe():\n"
         "    pass\n"
+    )
+    importer = tmp_path / "test_importer.py"
+    importer.write_text(
+        "from test_db_gate_probe import FIELDS\n"
+        "\n"
+        "def test_imported_constant():\n"
+        "    assert FIELDS == ('permit_id',)\n"
     )
     env = {
         **os.environ,
@@ -156,7 +168,15 @@ def _run_probe(tmp_path: Path, *, ci_strict: bool) -> subprocess.CompletedProces
     else:
         env.pop(db_gate.CI_STRICT_ENV_VAR, None)
     return subprocess.run(
-        [sys.executable, "-m", "pytest", str(probe), "-q", "-p", "no:cacheprovider"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(importer if import_only else probe),
+            "-q",
+            "-p",
+            "no:cacheprovider",
+        ],
         cwd=tmp_path,
         env=env,
         capture_output=True,
@@ -178,3 +198,34 @@ def test_closed_gate_errors_under_ci_strict(tmp_path):
     assert result.returncode != 0, output
     assert "CI_STRICT" in output, output
     assert "1 skipped" not in output, output
+
+
+def test_importing_closed_gate_does_not_fail_unrelated_strict_test(tmp_path):
+    result = _run_probe(
+        tmp_path,
+        ci_strict=True,
+        import_only=True,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "1 passed" in output, output
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected_code"),
+    [
+        ("\x1b[33mSKIPPED\x1b[0m [1] tests/test_proof.py: closed gate\n", 1),
+        ("\x1b[32m1 passed\x1b[0m in 0.01s\n", 0),
+    ],
+)
+def test_proof_log_gate_handles_colored_pytest_output(tmp_path, summary, expected_code):
+    log = tmp_path / "proof-logs-probe.txt"
+    log.write_text(summary)
+    script = Path(__file__).resolve().parent / "support" / "proof_log_gate.py"
+    result = subprocess.run(
+        [sys.executable, str(script), str(log)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == expected_code, result.stdout + result.stderr

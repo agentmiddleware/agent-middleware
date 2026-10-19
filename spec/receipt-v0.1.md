@@ -87,7 +87,7 @@ Full trigger table: [`../gateway/docs/failure-semantics.md`](../gateway/docs/fai
 |---|---|---|
 | `verified` | Signature holds over the signed bytes and the envelope agrees | yes |
 | `invalid` | Signature does not verify | reject (tampered) |
-| `mismatch` | Signature verified, but the bundle disagrees with the signed payload. Covers a different envelope `receipt_id`, `kid`, `alg`, or `canonicalization`, and a `payload_hash` that is not the SHA-256 of the canonical payload with that member removed | reject |
+| `mismatch` | Signature verified, but the bundle disagrees with the signed payload. Covers a different envelope `receipt_id`, `kid`, `alg`, or `canonicalization`. A `payload_hash` that does not match a recomputation is not a mismatch: verifiers never recompute it (see `payload_hash` in [`README.md`](README.md)) | reject |
 | `unknown_key` | Verifier does not hold the signed `kid`, including when that key is present but `disabled` | cannot judge; refresh keys |
 | `malformed` | Bundle cannot be parsed, or the signature is not 64 bytes of base64 | cannot judge |
 | `unsupported` | The signed payload's `alg` or `canonicalization` is not implemented, and the signature over `signing_input` checked out. The envelope alone must not produce this status | cannot judge |

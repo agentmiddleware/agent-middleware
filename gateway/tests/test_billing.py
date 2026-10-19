@@ -1250,7 +1250,6 @@ async def test_rejected_charge_does_not_inflate_velocity_counters(
     """A charge rejected for insufficient funds must not leave the wallet's
     hourly/daily spend counters inflated (which would trip false daily-limit
     rejections and velocity auto-freeze despite zero real spend)."""
-    from decimal import Decimal as _D
     from app.db.database import get_session_factory
     from app.db.models import WalletModel
 
@@ -1282,8 +1281,8 @@ async def test_rejected_charge_does_not_inflate_velocity_counters(
     async with factory() as session:
         wallet = await session.get(WalletModel, wallet_id)
         # All three rejected charges were reversed out of the counters.
-        assert wallet.daily_spent == _D("0")
-        assert wallet.hourly_spent == _D("0")
+        assert wallet.daily_spent == Decimal("0")
+        assert wallet.hourly_spent == Decimal("0")
 
 
 @pytest.mark.anyio

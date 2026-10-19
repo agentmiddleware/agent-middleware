@@ -26,6 +26,7 @@ import pytest
 
 from app.core.time import to_naive_utc, utc_now
 from app.db.database import _normalize_bind_parameters
+from tests.support import db_gate
 
 
 class TestToNaiveUtc:
@@ -73,8 +74,6 @@ class TestNormalizeBindParameters:
         assert _normalize_bind_parameters(None) is None
         assert _normalize_bind_parameters("raw") == "raw"
 
-
-from tests.support import db_gate
 
 POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL", "").strip()
 

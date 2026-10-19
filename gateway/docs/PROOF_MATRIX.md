@@ -193,11 +193,13 @@ rate limiting.
 | Command | Enforces |
 |---|---|
 | `make trust-coverage-gate` | 43 focused trust test files at an **80% coverage floor** across 38 named trust-plane control modules |
-| `make trust-release-gate` | The offline Railway IaC contract first (lock-pinned package install with lifecycle scripts disabled, then fail-closed API-only graph validation), followed by the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates |
+| `make trust-release-gate` | The in-repo Railway deploy contract first (`Dockerfile`, `requirements.txt`, and an executable `scripts/docker_entrypoint.sh`; the hosted `.railway/railway.ts` graph is not in this repository), followed by the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates |
 
 From `gateway/`, run `make trust-release-gate` for the full local release gate.
-Committed CI reports `CI result` and does not invoke the full release-gate
-script. The [active main ruleset](https://github.com/agentmiddleware/agent-middleware/rules/24444399)
+CI runs `scripts/trust_release_gate.sh` in a separate, non-required
+`trust_release_gate` job. It is outside `CI result` until trust coverage and
+committed OpenAPI parity pass in CI and the required-check decision is made
+explicitly. The [active main ruleset](https://github.com/agentmiddleware/agent-middleware/rules/24444399)
 requires `CI result` and `gitleaks` with strict status checks, linear history,
 and resolved review threads.
 The [stranger test](stranger-test.md) is the human milestone that checks the

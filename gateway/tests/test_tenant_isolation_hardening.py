@@ -361,16 +361,16 @@ async def test_iot_registration_metadata_cannot_assign_ownership(
 
     # B registers a device while naming A as owner in client-controlled
     # metadata. Ownership comes from the authenticated key, never the body.
-    spoof = {
-        key: a["agent_wallet_id"]
-        for key in (
+    spoof = dict.fromkeys(
+        (
             "owner_wallet_id",
             "_owner_wallet_id",
             "__owner_wallet_id",
             "wallet_id",
             "owner",
-        )
-    }
+        ),
+        a["agent_wallet_id"],
+    )
     create = await client.post(
         "/v1/iot/devices",
         json=_iot_device(device_id, metadata=spoof),

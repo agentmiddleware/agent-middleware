@@ -76,7 +76,7 @@ _CALL_METRICS: dict[str, Any] = {
     "calls_total": 0,
     "latency_seconds_total": 0.0,
     "latency_seconds_max": 0.0,
-    "outcomes": {outcome: 0 for outcome in _CALL_OUTCOMES},
+    "outcomes": dict.fromkeys(_CALL_OUTCOMES, 0),
 }
 
 

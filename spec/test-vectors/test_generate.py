@@ -69,7 +69,8 @@ REQUIRED_EDGES = {
     "synthetic.envelope_kid_mismatch": "mismatch",
     "synthetic.envelope_alg_mismatch": "mismatch",
     "synthetic.envelope_canonicalization_mismatch": "mismatch",
-    "synthetic.payload_hash_mismatch": "mismatch",
+    "synthetic.payload_hash_mismatch": "verified",
+    "synthetic.float_payload_verifies": "verified",
     "synthetic.jwk_only_key": "verified",
     "synthetic.raw_key_beats_jwk": "invalid",
     "synthetic.short_raw_key_uses_jwk": "verified",
@@ -172,14 +173,19 @@ def test_wrong_raw_key_is_not_rescued_by_a_matching_jwk(generated):
     assert rescued.status.value == "verified"
 
 
-def test_payload_hash_lie_and_kid_downgrade_are_rejected(generated):
+def test_signed_payload_hash_lie_still_verifies(generated):
     key_set_from_document, verify_bundle = _verifier()
     _module, receipts, keys = generated
     active = key_set_from_document(keys)
     by_name = _by_name(receipts)
 
     lied = verify_bundle(by_name["synthetic.payload_hash_mismatch"]["bundle"], active)
-    assert lied.status.value == "mismatch"
+    assert lied.status.value == "verified"
+
+    floats = verify_bundle(
+        by_name["synthetic.float_payload_verifies"]["bundle"], active
+    )
+    assert floats.status.value == "verified"
 
 def test_outcome_tamper_only_prefixes_the_signed_outcome(generated):
     module, receipts, _keys = generated

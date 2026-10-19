@@ -44,12 +44,21 @@ logger = logging.getLogger(__name__)
 # refuse a healthy service. Before enabling RUN_MIGRATIONS_ON_START, operators
 # must compare physical schema and data-migration history and review recovery
 # under docs/schema-042-rollout.md; table presence does not prove parity.
+# The set covers the full loop, not just issuance: permits and receipts plus
+# the audit hash chain (control_plane_audit_events with its audit_chain_heads
+# pointers), the signing-key registry receipts and audit events point at, the
+# human-approval gate on governed invokes, and the idempotency and dispatch
+# records that make retries safe.
 REQUIRED_TRUST_TABLES = frozenset(
     {
         "permits",
         "receipts",
         "idempotency_records",
         "mcp_dispatch_attempts",
+        "control_plane_audit_events",
+        "audit_chain_heads",
+        "signing_keys",
+        "human_approvals",
     }
 )
 REQUIRED_TRUST_COLUMNS = {

@@ -176,10 +176,10 @@ def _routing_path(request: Request) -> str:
     the path) is cut off, so ``/health?not-health`` looks like the exempt
     ``/health`` route while routing still sees the original path.
     """
-    path = request.scope.get("path")
-    if isinstance(path, str):
-        return path
-    return request.url.path
+    path = request.scope["path"]
+    if not isinstance(path, str):
+        raise TypeError("ASGI scope path must be a string")
+    return path
 
 
 def _client_id(request: Request) -> str:

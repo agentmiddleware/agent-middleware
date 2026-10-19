@@ -138,10 +138,10 @@ def _request_path(request: Request) -> str:
     A decoded ``%3F`` would otherwise make ``/health?not-health`` look like
     the cacheable ``/health`` document.
     """
-    path = request.scope.get("path")
-    if isinstance(path, str):
-        return path
-    return request.url.path
+    path = request.scope["path"]
+    if not isinstance(path, str):
+        raise TypeError("ASGI scope path must be a string")
+    return path
 
 
 def _normalized_path(path: str) -> str:

@@ -29,6 +29,7 @@ from ..core.time import utc_now
 from ..core.resilience import run_with_write_conflict_retry
 from ..schemas.billing import AlertSeverity, AlertType, WalletStatus
 from .agent_money import WalletNotFoundError
+from .stripe_webhook_auth import StripeWebhookAuthError, construct_verified_event
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -288,12 +289,12 @@ class StripeIntegration:
             ValueError: For unhandled event types
         """
         try:
-            event = stripe.Webhook.construct_event(
+            event = construct_verified_event(
                 payload,
                 sig_header,
-                settings.STRIPE_WEBHOOK_SECRET,
+                secret=settings.STRIPE_WEBHOOK_SECRET,
             )
-        except (ValueError, stripe.SignatureVerificationError) as e:
+        except StripeWebhookAuthError as e:
             logger.error(f"Invalid Stripe signature: {e}")
             return False
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, PlainTextResponse
 from starlette.routing import Route
@@ -204,18 +205,24 @@ def test_explicit_route_headers_are_not_overridden() -> None:
     assert TestClient(app).get("/framed").headers["x-frame-options"] == "DENY"
 
 
-def test_question_mark_inside_the_path_is_not_public_discovery() -> None:
-    """``/health?not-health`` is not the cacheable ``/health`` document.
-
-    ``request.url.path`` reparses the path and drops everything after ``?``,
-    so this used to skip Cache-Control: no-store for a route that is not
-    public discovery.
-    """
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/health?other",
+        "/health#other",
+        "/docs?other",
+        "/docs#other",
+        "/mcp/public?other",
+        "/mcp/public#other",
+    ],
+)
+def test_encoded_delimiter_path_has_private_cache_and_narrow_csp(path: str) -> None:
+    """Cache and CSP use the decoded router path, including delimiters."""
     import anyio
     from starlette.requests import Request
 
     async def always_ok(scope, receive, send):
-        await PlainTextResponse("no")(scope, receive, send)
+        await HTMLResponse("<html>private</html>")(scope, receive, send)
 
     middleware = SecurityHeadersMiddleware(always_ok)
     sent: list[dict] = []
@@ -232,8 +239,8 @@ def test_question_mark_inside_the_path_is_not_public_discovery() -> None:
         "http_version": "1.1",
         "method": "GET",
         "scheme": "http",
-        "path": "/health?not-the-health-route",
-        "raw_path": b"/health%3Fnot-the-health-route",
+        "path": path,
+        "raw_path": path.replace("?", "%3F").replace("#", "%23").encode(),
         "query_string": b"",
         "headers": [(b"host", b"test")],
         "client": ("127.0.0.1", 9),
@@ -247,10 +254,9 @@ def test_question_mark_inside_the_path_is_not_public_discovery() -> None:
     start = next(
         message for message in sent if message["type"] == "http.response.start"
     )
-    cache = Request({"type": "http", "headers": start["headers"]}).headers.get(
-        "cache-control"
-    )
-    assert cache == "no-store"
+    headers = Request({"type": "http", "headers": start["headers"]}).headers
+    assert headers["cache-control"] == "no-store"
+    assert headers["content-security-policy"] == FIRST_PARTY_HTML_CSP
 
 
 def test_middleware_is_registered_on_the_application() -> None:

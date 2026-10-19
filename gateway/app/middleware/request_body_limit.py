@@ -51,16 +51,10 @@ def _malformed_body() -> JSONResponse:
     )
 
 
-def _frame_chunk(message: Message) -> bytes | bytearray | memoryview | None:
-    """Return this frame's body, or None when the frame is not bytes.
-
-    A missing or null body is an empty frame. ASGI omits the key for that
-    case, and a null is the same empty frame rather than a crash.
-    """
-    if "body" not in message or message["body"] is None:
-        return b""
-    body = message["body"]
-    if isinstance(body, (bytes, bytearray, memoryview)):
+def _frame_chunk(message: Message) -> bytes | bytearray | None:
+    """Return the optional bytes body, or None for an invalid ASGI frame."""
+    body = message.get("body", b"")
+    if isinstance(body, (bytes, bytearray)):
         return body
     return None
 

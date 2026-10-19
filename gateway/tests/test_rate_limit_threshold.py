@@ -611,9 +611,12 @@ async def test_bucket_key_is_canonicalized_like_auth() -> None:
     assert third.status_code == 429
 
 
-async def _status_for(app, path: str) -> int:
-    """Drive one raw ASGI request and return the response status."""
+async def _status_for(app, path: str, *, api_key: str | None = None) -> int:
+    """Drive one raw ASGI request with an already decoded routing path."""
     seen: list[int] = []
+    headers = [(b"host", b"test")]
+    if api_key is not None:
+        headers.append((b"x-api-key", api_key.encode("ascii")))
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -621,9 +624,9 @@ async def _status_for(app, path: str) -> int:
         "method": "GET",
         "scheme": "http",
         "path": path,
-        "raw_path": path.encode("ascii"),
+        "raw_path": path.replace("?", "%3F").replace("#", "%23").encode("ascii"),
         "query_string": b"",
-        "headers": [(b"host", b"test")],
+        "headers": headers,
         "client": ("127.0.0.1", 5000),
         "server": ("test", 80),
     }
@@ -640,13 +643,12 @@ async def _status_for(app, path: str) -> int:
 
 
 @pytest.mark.anyio
-async def test_literal_question_mark_in_path_does_not_skip_the_limit() -> None:
-    """``/health?not-health`` is not the exempt ``/health`` route.
-
-    The server decodes ``%3F`` into the path. ``request.url.path`` then cuts
-    the string at the question mark, so the limiter used to see ``/health``
-    and skip the ceiling while routing still saw the original path.
-    """
+@pytest.mark.parametrize(
+    "path",
+    ["/health?other", "/health#other", "/docs?other", "/docs#other"],
+)
+async def test_encoded_delimiter_in_path_does_not_skip_limit(path: str) -> None:
+    """The decoded router path is different from the exempt route."""
 
     async def ok(scope, receive, send):
         await PlainTextResponse("ok")(scope, receive, send)
@@ -655,12 +657,35 @@ async def test_literal_question_mark_in_path_does_not_skip_the_limit() -> None:
     # Stay on the in-memory counter. This probe must not open a Redis client.
     limited._redis_url = ""
 
-    weird = "/health?not-the-health-route"
-    assert await _status_for(limited, weird) == 200
-    assert await _status_for(limited, weird) == 429
+    assert await _status_for(limited, path) == 200
+    assert await _status_for(limited, path) == 429
 
-    # The real health route stays exempt.
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path", ["/health", "/docs"])
+async def test_actual_health_and_docs_paths_stay_exempt(path: str) -> None:
+    async def ok(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
     exempt = RateLimitMiddleware(ok, requests_per_minute=1)
     exempt._redis_url = ""
-    assert await _status_for(exempt, "/health") == 200
-    assert await _status_for(exempt, "/health") == 200
+    assert await _status_for(exempt, path) == 200
+    assert await _status_for(exempt, path) == 200
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path", ["/mcp/public?other", "/mcp/public#other"])
+async def test_encoded_delimiter_does_not_use_public_mcp_bucket(path: str) -> None:
+    async def ok(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    limited = RateLimitMiddleware(ok, requests_per_minute=1)
+    limited._redis_url = ""
+    assert await _status_for(limited, path, api_key="first-key") == 200
+    assert await _status_for(limited, path, api_key="second-key") == 200
+    assert not any("route:mcp-public" in key for key in limited._requests)
+
+    public = RateLimitMiddleware(ok, requests_per_minute=1)
+    public._redis_url = ""
+    assert await _status_for(public, "/mcp/public", api_key="first-key") == 200
+    assert await _status_for(public, "/mcp/public", api_key="second-key") == 429

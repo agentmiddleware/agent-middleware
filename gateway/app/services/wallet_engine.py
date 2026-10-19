@@ -740,16 +740,21 @@ class WalletEngine:
                         )
                     )
                 ).scalar_one_or_none()
+                owns_child = (
+                    caller.wallet_id is not None and caller.wallet_id == child_wallet_id
+                )
+                owns_parent = (
+                    caller.wallet_id is not None
+                    and child_peek is not None
+                    and caller.wallet_id == child_peek.parent_wallet_id
+                )
+                if not caller.is_bootstrap_admin and not (owns_child or owns_parent):
+                    raise OwnershipDeniedError("wallet_access_denied")
                 if not child_peek:
                     raise self._wallet_not_found_error(child_wallet_id)
                 if not child_peek.parent_wallet_id:
                     raise ValueError("Child wallet has no parent")
                 parent_wallet_id = child_peek.parent_wallet_id
-                if not caller.is_bootstrap_admin and caller.wallet_id not in {
-                    child_wallet_id,
-                    parent_wallet_id,
-                }:
-                    raise OwnershipDeniedError("wallet_access_denied")
 
                 locked = await self._lock_wallets_in_order(
                     session, [child_wallet_id, parent_wallet_id]

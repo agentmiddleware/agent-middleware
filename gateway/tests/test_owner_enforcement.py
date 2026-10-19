@@ -14,13 +14,14 @@ from decimal import Decimal
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.db.database import get_session_factory
-from app.db.models import McpDispatchAttemptModel
+from app.db.models import LedgerEntryModel, McpDispatchAttemptModel, WalletModel
 from app.main import app
 from app.schemas.billing import LedgerAction, ServiceCategory
 from app.schemas.trust import PermitCreateRequest
-from app.services.agent_money import get_agent_money
+from app.services.agent_money import WalletNotFoundError, get_agent_money
 from app.services.idempotency import get_idempotency_service
 from app.services.ownership import CallerIdentity, OwnershipDeniedError
 from app.services.permits import (
@@ -127,6 +128,103 @@ async def test_create_and_reclaim_child_wallet_deny_a_stranger(client, clean_dat
         child.wallet_id, caller=_owner_of(owner["agent_wallet_id"])
     )
     assert reclaimed["child_wallet_id"] == child.wallet_id
+
+
+@pytest.mark.anyio
+async def test_reclaim_denies_unowned_wallets_without_revealing_their_state(
+    client, clean_database
+):
+    owner = await provision_agent_wallet(client)
+    stranger = await provision_agent_wallet(client)
+    money = get_agent_money()
+    child = await money.create_child_wallet(
+        owner["agent_wallet_id"],
+        "owner-child",
+        Decimal("10"),
+        Decimal("10"),
+        caller=_owner_of(owner["agent_wallet_id"]),
+    )
+
+    async def state():
+        async with get_session_factory()() as session:
+            wallets = (await session.execute(select(WalletModel))).scalars().all()
+            ledger = (await session.execute(select(LedgerEntryModel))).scalars().all()
+            return (
+                {
+                    wallet.wallet_id: (wallet.balance, wallet.status)
+                    for wallet in wallets
+                },
+                len(ledger),
+            )
+
+    before = await state()
+    for caller in (
+        _owner_of(stranger["agent_wallet_id"]),
+        CallerIdentity(),
+        CallerIdentity.for_wallet(None),
+    ):
+        for wallet_id in (
+            "missing-reclaim-wallet",
+            owner["sponsor_wallet_id"],  # parentless wallet
+            child.wallet_id,
+        ):
+            with pytest.raises(OwnershipDeniedError) as denied:
+                await money.reclaim_child_wallet(wallet_id, caller=caller)
+            assert denied.value.reason == "wallet_access_denied"
+            assert str(denied.value) == "wallet_access_denied"
+            assert await state() == before
+
+
+@pytest.mark.anyio
+async def test_reclaim_preserves_parent_child_engine_and_admin_access(
+    client, clean_database
+):
+    owner = await provision_agent_wallet(client)
+    money = get_agent_money()
+    parent_id = owner["agent_wallet_id"]
+
+    for index, caller_for_child in enumerate(
+        (
+            lambda child_id: CallerIdentity(wallet_id=parent_id),
+            lambda child_id: CallerIdentity(wallet_id=child_id),
+            lambda child_id: CallerIdentity.for_wallet(parent_id),
+            lambda child_id: CallerIdentity.for_wallet(child_id),
+            lambda child_id: CallerIdentity.admin(),
+        )
+    ):
+        child = await money.create_child_wallet(
+            parent_id,
+            f"authorized-child-{index}",
+            Decimal("10"),
+            Decimal("10"),
+            caller=_owner_of(parent_id),
+        )
+        reclaimed = await money.reclaim_child_wallet(
+            child.wallet_id, caller=caller_for_child(child.wallet_id)
+        )
+        assert reclaimed["child_wallet_id"] == child.wallet_id
+        wallet = await money.get_wallet(child.wallet_id)
+        assert wallet is not None
+        assert wallet.status.value == "closed"
+        with pytest.raises(ValueError, match="Wallet already closed"):
+            await money.reclaim_child_wallet(
+                child.wallet_id, caller=caller_for_child(child.wallet_id)
+            )
+
+    with pytest.raises(WalletNotFoundError) as missing:
+        await money.reclaim_child_wallet(
+            "missing-reclaim-wallet", caller=CallerIdentity.admin()
+        )
+    assert missing.value.wallet_id == "missing-reclaim-wallet"
+    with pytest.raises(ValueError, match="Child wallet has no parent"):
+        await money.reclaim_child_wallet(
+            owner["sponsor_wallet_id"],
+            caller=CallerIdentity(wallet_id=owner["sponsor_wallet_id"]),
+        )
+    with pytest.raises(ValueError, match="Can only reclaim from child wallets"):
+        await money.reclaim_child_wallet(
+            parent_id, caller=CallerIdentity(wallet_id=parent_id)
+        )
 
 
 @pytest.mark.anyio

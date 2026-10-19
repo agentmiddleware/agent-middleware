@@ -24,7 +24,7 @@ Semantics match the Python verifier in `../python` and the format in
 npm install       # dev dependencies only (typescript, @types/node)
 npm run build     # emits dist/verify.js plus types; what a consumer imports
 npm run lint      # checks types and unused code
-npm test          # runs verifier and package export tests (Node 22.18+ runs .ts directly)
+npm test          # builds, then runs verifier and package export tests (Node 22.18+ runs .ts directly)
 npm run typecheck # optional
 ```
 

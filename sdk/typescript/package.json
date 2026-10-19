@@ -24,6 +24,7 @@
     "build": "tsc -p tsconfig.build.json",
     "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters",
     "prepublishOnly": "npm run build && npm test",
+    "pretest": "npm run build",
     "test": "node --test test/*.test.ts test/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },

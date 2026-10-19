@@ -229,6 +229,13 @@ async def test_terminal_and_uncertain_owners_never_reopen(action_runtime, mode):
     action_runtime[3].mode = mode
     await invoke_action(action_runtime, "standard", "first")
     owner = (await action_rows())[0]
+    if mode in {"pre_dispatch_failure", "delivery_uncertain", "returned_error"}:
+        async with get_session_factory()() as session:
+            receipt = await session.get(ReceiptModel, owner.response_reference)
+            assert receipt is not None
+            assert json.loads(receipt.constraints_evaluated_json or "{}") == {
+                "max_calls_per_tool": {"partner.pay": 1}
+            }
     before = owner.model_dump()
     calls = len(action_runtime[3].calls)
     effects = action_runtime[3].dispatch_count

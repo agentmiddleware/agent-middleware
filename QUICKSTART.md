@@ -49,9 +49,15 @@ uv run --with "mcp>=1.29,<2" python ../examples/mcp-client/call_with_retry.py
 ```
 
 ```text
+idempotency key: mcp-example-...
 first receipt: rcpt-...
 retry receipt: rcpt-...      <- the same id: no second dispatch, no second debit
 ```
+
+If the script stops after printing the key, run it again with
+`AMW_IDEMPOTENCY_KEY` set to that value. A new key would be a second charge.
+The `mcp.json` config does not set an idempotency key: a connection header
+would pin one key onto every tool call.
 
 Check the effect count yourself: `wc -l data/dogfood_partner_notes.jsonl` grew
 by one, not two.

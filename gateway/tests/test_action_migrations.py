@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from tests.support import db_gate
 from tests.support.action_database_guard import (
     require_action_database_url,
     require_action_test_environment,
@@ -164,8 +165,8 @@ def test_action_migration_retains_legacy_and_blocks_authority_loss(
             ]
 
 
-@pytest.mark.skipif(
-    not os.environ.get("ACTION_MIGRATION_DATABASE_URL"),
+@db_gate.collection_mark(
+    url_env="ACTION_MIGRATION_DATABASE_URL",
     reason="requires fresh disposable local action migration DB",
 )
 def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():

@@ -484,7 +484,11 @@ async def lifespan(app: FastAPI):
     await close_db()
     await close_durable_state()
 
-    await asyncio.sleep(2)  # Allow in-flight requests to drain
+    # Fixed 2s pause before process exit. This coordinates with nothing and
+    # drains nothing: graceful connection draining belongs to the server
+    # (uvicorn --timeout-graceful-shutdown), not to this sleep. Kept only as
+    # a brief settling window for background log and metric flushes.
+    await asyncio.sleep(2)
     logger.info(
         "app_shutdown",
         phase="complete",
@@ -493,6 +497,28 @@ async def lifespan(app: FastAPI):
 
 
 public_contact = _public_contact_metadata(settings)
+
+
+def build_openapi_servers(
+    public_url: str, environment: str
+) -> list[dict[str, str]] | None:
+    """Servers advertised in the OpenAPI spec, or None to omit the field.
+
+    No placeholder domain is ever advertised: when PUBLIC_URL is unset the
+    servers field is omitted entirely (consumers default to "/") instead of
+    pointing agents at a domain the operator does not control. The loopback
+    entry is only ever listed alongside a real public URL, and only outside
+    production-like environments.
+    """
+    public_url = (public_url or "").strip()
+    if not public_url:
+        return None
+    servers = [{"url": public_url, "description": "Public API (set PUBLIC_URL)"}]
+    if not is_production_like_environment(environment):
+        servers.append(
+            {"url": "http://localhost:8000", "description": "Local Development"}
+        )
+    return servers
 
 
 app = FastAPI(
@@ -541,17 +567,7 @@ app = FastAPI(
         "name": "Business Source License 1.1",
         "url": "https://github.com/PetrefiedThunder/agent-middleware/blob/main/LICENSE",
     },
-    servers=[
-        {
-            "url": settings.PUBLIC_URL or "https://api.thisisatest.tech",
-            "description": "Public API (set PUBLIC_URL)",
-        },
-        *(
-            []
-            if is_production_like_environment(settings.ENVIRONMENT)
-            else [{"url": "http://localhost:8000", "description": "Local Development"}]
-        ),
-    ],
+    servers=build_openapi_servers(settings.PUBLIC_URL, settings.ENVIRONMENT),
 )
 
 # --- Middleware Stack ---

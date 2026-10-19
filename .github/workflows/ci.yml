@@ -180,6 +180,19 @@ jobs:
         run: |
           uv run --no-sync pytest -q tests/test_action_postgres.py tests/test_permit_postgres_concurrency.py tests/test_duplicate_guard_postgres_concurrency.py tests/test_action_database_guard.py --timeout 300
 
+  gateway-image-smoke:
+    name: Gateway image import smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and import release and development images
+        run: bash .github/scripts/smoke_gateway_image.sh
+
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
     needs: detect
@@ -234,7 +247,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript, postgres-concurrency]
+    needs: [detect, python, typescript, postgres-concurrency, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

@@ -7,7 +7,6 @@ and N-1 duplicate_request_new_key denials under enforce mode.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import timedelta
 from decimal import Decimal
 
@@ -17,13 +16,14 @@ from sqlalchemy import select
 
 from app.core.config import DuplicateGuardMode
 from app.core.time import utc_now
-from app.db.database import get_engine, get_session_factory
+from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, McpDispatchAttemptModel, ReceiptModel
 from app.main import app
 from app.schemas.billing import ServiceCategory
 from app.services.service_registry import get_service_registry
 from app.services.signing_keys import canonical_json, sha256_hex
 from app.services.upstream_mcp import UpstreamMcpResult
+from tests.support.db_gate import require_live_postgres
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
     provision_agent_wallet,
@@ -32,14 +32,14 @@ from tests.test_trust_helpers import (
 
 def _require_opted_in_postgres() -> None:
     """Skip test if not running against PostgreSQL with opt-in flag."""
-    engine = get_engine()
-    if engine is None or engine.dialect.name != "postgresql":
-        pytest.skip("requires a PostgreSQL DATABASE_URL for real row-lock semantics")
-    if os.environ.get("RUN_POSTGRES_CONCURRENCY_TESTS") != "1":
-        pytest.skip(
+    require_live_postgres(
+        flag="RUN_POSTGRES_CONCURRENCY_TESTS",
+        reason=(
+            "requires a PostgreSQL DATABASE_URL for real row-lock semantics; "
             "set RUN_POSTGRES_CONCURRENCY_TESTS=1 only with an isolated "
-            "PostgreSQL database"
-        )
+            "PostgreSQL test database"
+        ),
+    )
 
 
 class FakeUpstreamExecutor:

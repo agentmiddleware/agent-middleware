@@ -637,6 +637,32 @@ async def test_require_scope_bypass_and_jwt_paths():
     assert exc_info.value.status_code == 401
 
 
+def test_auth_context_omitted_scopes_normalize_to_empty_list():
+    omitted = AuthContext(source="env", raw_key="k")
+    explicit_none = AuthContext(source="jwt", raw_key="k", scopes=None)
+    assert omitted.scopes == []
+    assert explicit_none.scopes == []
+
+
+@pytest.mark.anyio
+async def test_require_scope_treats_unset_scopes_as_empty():
+    """A context that skipped constructor None-coercion must not raise TypeError."""
+
+    @require_scope("billing:charge")
+    async def handler(auth: AuthContext):
+        return "ok"
+
+    auth = AuthContext(
+        source="jwt", raw_key="k", wallet_id="w1", scopes=["billing:charge"]
+    )
+    object.__setattr__(auth, "scopes", None)
+    with pytest.raises(HTTPException) as exc_info:
+        await handler(auth=auth)
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == "insufficient_scope"
+    assert exc_info.value.detail["provided"] == []
+
+
 # ---------------------------------------------------------------------------
 # jwt service
 # ---------------------------------------------------------------------------

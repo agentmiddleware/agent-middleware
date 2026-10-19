@@ -11,7 +11,8 @@ Integration packages for popular agent frameworks:
 ## Installation
 
 No PyPI package is published; import this module from a checkout of the
-repository after `python -m pip install -r requirements.txt`.
+repository after `python -m pip install -r gateway/requirements.txt -e ./sdk/python`
+with `PYTHONPATH=integrations`.
 
 ## Quick Start
 

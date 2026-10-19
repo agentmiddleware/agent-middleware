@@ -74,11 +74,13 @@ class TestNormalizeBindParameters:
         assert _normalize_bind_parameters("raw") == "raw"
 
 
+from tests.support import db_gate
+
 POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL", "").strip()
 
 
-@pytest.mark.skipif(
-    not POSTGRES_URL,
+@db_gate.collection_mark(
+    url_env="TEST_POSTGRES_URL",
     reason="TEST_POSTGRES_URL not set; Postgres-dialect coverage skipped",
 )
 class TestPostgresTrustLoop:

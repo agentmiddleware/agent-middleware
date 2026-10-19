@@ -33,6 +33,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.trust_mode import is_production_like_environment
+from tests.support.db_gate import require_opt_in
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
 
 
@@ -115,11 +116,13 @@ class UpstreamSnapshot:
 
 
 def _require_explicit_isolation() -> str:
-    if os.environ.get("RUN_MCP_MULTIPROCESS_TESTS") != "1":
-        pytest.skip(
+    require_opt_in(
+        flag="RUN_MCP_MULTIPROCESS_TESTS",
+        reason=(
             "set RUN_MCP_MULTIPROCESS_TESTS=1 only for the isolated "
             "PostgreSQL multiprocess harness"
-        )
+        ),
+    )
     if os.environ.get("MCP_STRESS_DB_ISOLATED") != "1":
         pytest.fail(
             "MCP_STRESS_DB_ISOLATED=1 is required; refusing to inspect or "

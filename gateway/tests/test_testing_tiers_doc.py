@@ -41,6 +41,9 @@ def test_tier_guide_names_live_level_and_ci_job():
         "trust-conformance-live",
         "adversarial-battery-live",
         "postgres-concurrency",
+        "postgres-proofs",
+        "tests/test_mcp_postgres_multiprocess.py",
+        "tests/test_action_multiprocess.py",
     ):
         assert token in text, f"tier guide no longer documents {token}"
 

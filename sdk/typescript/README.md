@@ -1,6 +1,6 @@
 # @agent-middleware/verify (TypeScript)
 
-License: Apache-2.0. Status: source only, not published to npm.
+License: Apache-2.0. Status: not published to npm.
 
 Offline verification of Agent Middleware receipt bundles, using Node's built-in
 Ed25519 support. No runtime dependencies and no network access.
@@ -23,7 +23,8 @@ Semantics match the Python verifier in `../python` and the format in
 ```bash
 npm install       # dev dependencies only (typescript, @types/node)
 npm run build     # emits dist/verify.js plus types; what a consumer imports
-npm test          # runs the shared spec/test-vectors (Node 22.18+ runs .ts directly)
+npm run lint      # checks types and unused code
+npm test          # builds, then runs verifier and package export tests (Node 22.18+ runs .ts directly)
 npm run typecheck # optional
 ```
 

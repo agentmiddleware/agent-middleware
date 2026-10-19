@@ -4,6 +4,7 @@
 
 **Version:** use `version` from `GET /.well-known/agent.json` (this document may be cached).
 **Base URL:** {{PUBLIC_URL}}
+When served, this token is replaced with the configured `PUBLIC_URL`. If unset, the response asks operators to configure it; `http://localhost:8000` is only a local example.
 **Auth:** `X-API-Key` header on protected routes
 
 ---

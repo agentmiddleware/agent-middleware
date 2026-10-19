@@ -261,6 +261,25 @@ def test_equal_duplicate_counts_do_not_claim_native_sufficiency():
     assert all(column.duplicate_effects == 1 for column in comparison.columns)
 
 
+def test_observed_single_effect_does_not_prove_existing_integration_sufficient():
+    comparison = build_comparison(
+        _result(
+            [
+                _entry(
+                    Configuration.DIRECT_NAIVE, verdict=Verdict.OBSERVED, executions=1
+                ),
+                _entry(Configuration.DIRECT_NATIVE, verdict=Verdict.FAIL, executions=1),
+                _entry(
+                    Configuration.GATEWAY_NATIVE, verdict=Verdict.PASS, executions=1
+                ),
+            ]
+        )
+    )
+    assert comparison.conclusion.kind is ConclusionKind.INCONCLUSIVE
+    assert comparison.conclusion.duplicates_prevented_vs_existing == 0
+    assert comparison.conclusion.duplicates_prevented_vs_native == 0
+
+
 def test_a_short_existing_column_does_not_hide_a_native_baseline_that_ran():
     result = _result(
         [

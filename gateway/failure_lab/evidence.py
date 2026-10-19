@@ -1401,7 +1401,7 @@ def verify_bundle_integrity(directory: Path | str) -> IntegrityReport:
     on_disk = {
         str(path.relative_to(root)).replace(os.sep, "/")
         for path in root.rglob("*")
-        if path.is_file() and not path.is_symlink()
+        if path.is_symlink() or path.is_file()
     }
     unexpected = sorted(on_disk - listed - {MANIFEST_NAME})
     problems.extend(

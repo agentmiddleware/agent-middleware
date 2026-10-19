@@ -373,6 +373,25 @@ def test_integrity_check_rejects_escaping_parent_link_and_linked_manifest(
     assert linked_report.checked == 0
 
 
+def test_integrity_check_reports_unlisted_symlink_without_reading_target(
+    tmp_path, monkeypatch
+):
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"outside")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "unlisted.txt").symlink_to(outside)
+    _manifest(bundle, [])
+    monkeypatch.setattr(
+        evidence, "_sha256_file", lambda _path: pytest.fail("unlisted link was hashed")
+    )
+    report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.checked == 0
+    assert report.unexpected == ["unlisted.txt"]
+    assert outside.read_bytes() == b"outside"
+
+
 @pytest.mark.parametrize(
     "files", [None, {}, [1], [None], [{"path": "file", "bytes": "invalid"}]]
 )

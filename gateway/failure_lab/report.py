@@ -298,12 +298,13 @@ def _baseline_is_credible(column: ConfigurationView | None) -> bool:
 
     Zero duplicate effects is not evidence on its own. A column that never
     reached the one intended execution suppressed duplicates by doing
-    nothing, and a FAIL verdict means that column did not hold.
+    nothing. OBSERVED records measurements without establishing that the
+    baseline handled the test correctly; only PASS supports that claim.
     """
     return (
         column is not None
         and column.ran
-        and column.verdict in (Verdict.PASS.value, Verdict.OBSERVED.value)
+        and column.verdict == Verdict.PASS.value
         and column.downstream_effects >= INTENDED_EXECUTIONS
     )
 
@@ -432,7 +433,8 @@ def _conclude(
             return Conclusion(
                 ConclusionKind.INCONCLUSIVE,
                 "A baseline ran, but it executed the business action fewer "
-                "times than this test requires, or its own verdict is FAIL. "
+                "times than this test requires, or its verdict does not "
+                "establish success. "
                 "A count of zero duplicate effects in that case does not show "
                 "that the baseline did the work this test requires: doing "
                 "nothing produces no duplicate. This report does not call "

@@ -446,8 +446,9 @@ class ToolCallResponse(BaseModel):
     """MCP tool call response."""
 
     content: list[dict[str, Any]]
-    isError: bool = False
-    structuredContent: dict[str, Any] | None = None
+    # MCP tool-result field names are camelCase on the wire.
+    isError: bool = False  # noqa: N815
+    structuredContent: dict[str, Any] | None = None  # noqa: N815
     receipt: dict[str, Any] | None = None
 
 

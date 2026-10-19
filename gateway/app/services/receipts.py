@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from decimal import Decimal
@@ -63,9 +64,6 @@ class ReceiptWriteContendedError(RuntimeError):
     """
 
     reason = "receipt_write_contended"
-
-
-import json
 
 
 def _loads_dict(value: str | None) -> dict[str, Any]:

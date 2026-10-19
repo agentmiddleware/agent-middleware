@@ -70,7 +70,7 @@ async def _run_check(
     start = time.monotonic()
     try:
         result = await asyncio.wait_for(check(), timeout=CHECK_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         result = {
             "status": "down",
             "error": f"timeout after {CHECK_TIMEOUT_SECONDS}s",

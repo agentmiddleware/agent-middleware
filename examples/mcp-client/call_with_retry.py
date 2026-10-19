@@ -197,7 +197,7 @@ async def call_once(api_key: str, idempotency_key: str) -> dict:
     ):
         await session.initialize()
         result = await session.call_tool(TOOL, dict(_NOTE))
-        return result.model_dump(mode="json")
+        return result.model_dump(mode="json", by_alias=True)
 
 
 async def main() -> None:

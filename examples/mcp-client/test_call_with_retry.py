@@ -147,15 +147,6 @@ def test_matching_copies_still_return_the_one_receipt_id() -> None:
     assert client._outcome(result) == "success"
 
 
-class _Result:
-    def __init__(self, payload: dict) -> None:
-        self._payload = payload
-
-    def model_dump(self, mode: str = "json") -> dict:
-        assert mode == "json"
-        return self._payload
-
-
 class _Session:
     def __init__(self, payload: dict, seen: dict) -> None:
         self._payload = payload
@@ -170,10 +161,10 @@ class _Session:
     async def initialize(self) -> None:
         self._seen["initialized"] = True
 
-    async def call_tool(self, name: str, arguments: dict) -> _Result:
+    async def call_tool(self, name: str, arguments: dict) -> CallToolResult:
         self._seen["tool"] = name
         self._seen["arguments"] = arguments
-        return _Result(self._payload)
+        return CallToolResult.model_validate(self._payload)
 
 
 def test_call_once_sends_key_headers_and_does_not_put_the_secret_in_the_url(
@@ -211,6 +202,53 @@ def test_call_once_sends_key_headers_and_does_not_put_the_secret_in_the_url(
     }
     assert seen["tool"] == client.TOOL
     assert seen["arguments"] == {"text": "hello from an MCP client"}
+
+
+@pytest.mark.parametrize(
+    "actual_receipt",
+    [
+        _receipt("rcpt-other"),
+        _receipt("rcpt-good", "denied"),
+        {"receipt_id": "rcpt-good"},
+        "malformed",
+    ],
+    ids=["conflicting-id", "denied", "missing-outcome", "malformed"],
+)
+def test_call_once_keeps_wire_meta_when_an_extra_meta_claims_success(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    actual_receipt: dict | str,
+) -> None:
+    """The MCP model must not let an extra meta overwrite the wire _meta."""
+    good = _receipt("rcpt-good")
+    wire = {
+        "content": [],
+        "isError": False,
+        "_meta": {RECEIPT_KEY: actual_receipt},
+        "meta": {RECEIPT_KEY: good},
+        "receipt": good,
+    }
+
+    class _Client:
+        async def __aenter__(self) -> tuple:
+            return (None, None, None)
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+    monkeypatch.setattr(
+        client, "streamablehttp_client", lambda *args, **kwargs: _Client()
+    )
+    monkeypatch.setattr(client, "ClientSession", lambda read, write: _Session(wire, {}))
+
+    result = asyncio.run(client.call_once(API_KEY, "retry-key-1"))
+    assert result["_meta"][RECEIPT_KEY] == actual_receipt
+    assert client.retry_failure(result, result) is not None
+
+    _patch_main(monkeypatch, [result, result])
+    with pytest.raises(SystemExit):
+        asyncio.run(client.main())
+    assert "receipt:" not in capsys.readouterr().out
 
 
 def test_call_once_refuses_a_blank_or_short_api_key_before_connecting(

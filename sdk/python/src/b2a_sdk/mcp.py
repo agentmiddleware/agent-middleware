@@ -16,13 +16,9 @@ import asyncio
 import json
 import os
 import sys
-from typing import Any
+from typing import Any, Literal
 
-try:
-    import httpx
-except ImportError:
-    httpx = None
-
+import httpx
 
 DEFAULT_API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
 
@@ -46,9 +42,6 @@ def generate_manifest(
     url = f"{api_url}/mcp/tools.json"
     if category:
         url = f"{url}?category={category}"
-
-    if httpx is None:
-        raise RuntimeError("httpx required. Install: pip install httpx")
 
     response = httpx.get(url, timeout=30.0)
     response.raise_for_status()
@@ -108,7 +101,7 @@ def list_tools(
 
 
 async def serve_async(
-    transport: str = "stdio",
+    transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
 ) -> None:
@@ -183,7 +176,7 @@ async def serve_async(
 
 
 def serve(
-    transport: str = "stdio",
+    transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
 ) -> None:

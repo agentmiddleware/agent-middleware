@@ -17,8 +17,8 @@ import functools
 import inspect
 import time
 import traceback
-from collections.abc import Callable, Coroutine
-from typing import Any, ParamSpec, TypeVar, get_type_hints
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any, ParamSpec, TypeVar, cast, get_type_hints
 
 from .client import B2AClient, DryRunSimulation
 
@@ -93,7 +93,7 @@ def _extract_schema_from_func(func: Callable) -> tuple[dict | None, dict | None]
     """Extract input/output schemas from a function signature."""
     try:
         sig = inspect.signature(func)
-        hints = get_type_hints(func) if func else {}
+        hints = get_type_hints(func)
 
         properties = {}
         required = []
@@ -146,7 +146,7 @@ def monitored(
     capture_args: bool = False,
     *,
     capture_traceback: bool = False,
-):
+) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """
     Instantly wires a function to the Autonomous Product Manager.
 
@@ -177,16 +177,16 @@ def monitored(
 
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @functools.wraps(func)
-        async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
             start_time = time.time()
-            metadata = {}
+            metadata: dict[str, Any] = {}
 
             if capture_args:
                 metadata["args"] = str(args)[:200]
                 metadata["kwargs"] = {k: str(v)[:200] for k, v in kwargs.items()}
 
             try:
-                result = await func(*args, **kwargs)
+                result = await cast(Awaitable[Any], func(*args, **kwargs))
 
                 latency_ms = int((time.time() - start_time) * 1000)
                 metadata["latency_ms"] = latency_ms
@@ -226,7 +226,7 @@ def monitored(
         @functools.wraps(func)
         def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             start_time = time.time()
-            metadata = {}
+            metadata: dict[str, Any] = {}
 
             if capture_args:
                 metadata["args"] = str(args)[:200]
@@ -271,7 +271,7 @@ def monitored(
                 raise
 
         if asyncio.iscoroutinefunction(func):
-            return async_wrapper
+            return cast(Callable[P, T], async_wrapper)
         return sync_wrapper
 
     return decorator
@@ -285,7 +285,7 @@ def billable(
     request_path: str | None = None,
     *,
     idempotency_key_factory: Callable[..., str] | None = None,
-):
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Coroutine[Any, Any, T]]]:
     """
     Gates function execution behind the Agent Financial Gateway.
 
@@ -337,7 +337,9 @@ def billable(
             charged and the function does not run)
     """
 
-    def decorator(func: Callable[P, T]) -> Callable[P, T]:
+    def decorator(
+        func: Callable[P, Awaitable[T]],
+    ) -> Callable[P, Coroutine[Any, Any, T]]:
         @functools.wraps(func)
         async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             sim = _dry_run_context.get()
@@ -368,7 +370,7 @@ def billable(
             return await func(*args, **kwargs)
 
         @functools.wraps(func)
-        def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> Coroutine[Any, Any, T]:
             raise RuntimeError(
                 f"@billable requires an async function. Got sync function: {func.__name__}"
             )
@@ -389,7 +391,7 @@ def combined(
     request_path: str | None = None,
     *,
     idempotency_key_factory: Callable[..., str] | None = None,
-):
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Coroutine[Any, Any, T]]]:
     """
     Combines @monitored and @billable into a single decorator.
 
@@ -415,7 +417,9 @@ def combined(
         Decorator function
     """
 
-    def decorator(func: Callable[P, T]) -> Callable[P, T]:
+    def decorator(
+        func: Callable[P, Awaitable[T]],
+    ) -> Callable[P, Coroutine[Any, Any, T]]:
         monitored_decorator = monitored(client, service_name)
         billable_decorator = billable(
             client,
@@ -444,7 +448,7 @@ def mcp_tool(
     category: str = "custom",
     credits_per_unit: float = 1.0,
     unit_name: str = "call",
-):
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Coroutine[Any, Any, T]]]:
     """
     Decorator to register a function as an MCP tool.
 
@@ -475,7 +479,9 @@ def mcp_tool(
         Decorator function
     """
 
-    def decorator(func: Callable[P, T]) -> Callable[P, T]:
+    def decorator(
+        func: Callable[P, Awaitable[T]],
+    ) -> Callable[P, Coroutine[Any, Any, T]]:
         actual_name = name or func.__name__
         actual_description = description or func.__doc__ or "No description"
 
@@ -492,7 +498,7 @@ def mcp_tool(
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             return await func(*args, **kwargs)
 
-        wrapper._b2a_mcp_metadata = {
+        wrapper.__dict__["_b2a_mcp_metadata"] = {
             "service_id": service_id,
             "name": actual_name,
             "description": actual_description,

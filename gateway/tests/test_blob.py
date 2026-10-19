@@ -38,13 +38,25 @@ def _clear_backend_cache():
 
 
 @pytest.mark.anyio
-async def test_local_backend_put_get_round_trip(local_blob):
+async def test_local_backend_put_get_round_trip(local_blob, tmp_path):
     payload = b"hello world"
     url = await local_blob.put("my-video.mp4", payload, "video/mp4")
-    assert url.startswith("file://")
+    # Refs are opaque: no scheme, no host path, only the content digest.
+    assert url.startswith("blob:")
+    assert "file://" not in url
+    assert str(tmp_path) not in url
 
     got = await local_blob.get("my-video.mp4")
     assert got == payload
+
+
+@pytest.mark.anyio
+async def test_local_backend_url_ref_is_opaque(local_blob, tmp_path):
+    """Ref lookups must not echo the blob root back to the caller."""
+    ref = await local_blob.url("my-video.mp4")
+    assert ref.startswith("blob:")
+    assert str(tmp_path) not in ref
+    assert "/" not in ref
 
 
 @pytest.mark.anyio

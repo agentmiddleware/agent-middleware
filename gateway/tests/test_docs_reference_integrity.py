@@ -85,6 +85,7 @@ def test_docs_script_references_exist() -> None:
 
 def test_api_key_rotation_runbook_matches_the_code() -> None:
     text = (DOCS / "api-key-rotation.md").read_text(encoding="utf-8")
+    words = " ".join(text.split())
     rotate = _load_rotate_script()
 
     assert RotateAPIKeyRequest.model_fields["revoke_old"].default is False
@@ -98,6 +99,10 @@ def test_api_key_rotation_runbook_matches_the_code() -> None:
     for name in ("AGENT_MIDDLEWARE_API_URL", "OLD_API_KEY", "NEW_API_KEY"):
         assert name in text
     assert "401" in text and "403" in text
+    assert "must not start with `Bearer ` or have a JWT shape" in words
+    assert "verification before env-key lookup" in words
+    assert "an empty or short API key returns `401`" in words
+    assert "an unknown well-formed API key returns `403`" in words
     assert "bounded_key_cannot_mint" in text
     assert "wallet_access_denied" in text
     assert "scripts/rotate_api_keys.py" in text
@@ -115,6 +120,37 @@ def test_api_key_rotation_runbook_matches_the_code() -> None:
     assert "key-management.md" in text
     # A restart is required: get_settings caches VALID_API_KEYS for the process.
     assert "restart" in text
+
+
+def test_release_gate_doc_matches_committed_ci() -> None:
+    proof = (DOCS / "PROOF_MATRIX.md").read_text(encoding="utf-8")
+    makefile = (GATEWAY / "Makefile").read_text(encoding="utf-8")
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    workflows = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((REPO / ".github" / "workflows").iterdir())
+        if path.suffix in {".yml", ".yaml"}
+    )
+
+    assert "trust-release-gate:\n\tscripts/trust_release_gate.sh" in makefile
+    assert "make trust-release-gate" not in workflows
+    assert "trust_release_gate.sh" not in workflows
+    assert "name: CI result" in ci
+    assert "`make trust-release-gate`" in proof
+    assert "does not invoke the full release-gate" in proof
+    assert "`CI result` and `gitleaks`" in proof
+    assert "rules/24444399" in proof
+
+
+def test_rogue_agent_doc_preserves_receipt_exceptions() -> None:
+    text = (DOCS / "owasp-agentic-top10-mapping.md").read_text(encoding="utf-8")
+    section = text.split("## ASI10 — Rogue Agents", 1)[1]
+
+    assert "[failure semantics](failure-semantics.md)" in section
+    assert "Terminalized or reconcilable governed calls" in section
+    assert "before usable authority and an executable tool have no" in section
+    assert "manual review may also have no" in section
+    assert "every action, allowed or refused" not in section
 
 
 def test_pods_doc_matches_the_dormant_router() -> None:

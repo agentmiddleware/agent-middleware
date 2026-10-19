@@ -24,8 +24,10 @@ keeps accepting the old bootstrap list until that worker restarts.
 Generate replacements. The command prints key material to stdout and a short
 note to stderr. The default count is 2. Each generated key starts with
 `amw_live_`. That prefix is only a label from the generator. The server does
-not require it: any comma-separated entry of at least 8 characters in
-`VALID_API_KEYS` is a bootstrap admin key.
+not require it: each comma-separated entry in `VALID_API_KEYS` must be at
+least 8 characters after trimming and must not start with `Bearer ` or have a
+JWT shape (two dots and more than 50 characters). Those values route to JWT
+verification before env-key lookup.
 
 ```bash
 python scripts/rotate_api_keys.py generate
@@ -57,8 +59,11 @@ redirects and it does not write. Exit codes:
 - 2: an env var is missing, or the URL is unsafe (embedded credentials, a
   path, a query, a fragment, or remote HTTP)
 
-A key the server does not know is `403` with `invalid_api_key`, not 401.
-401 is a missing credential. Both count as "rejected" for the old key.
+With bootstrap keys configured, an unknown well-formed API key returns `403`
+with `invalid_api_key`. A missing credential returns `401` with
+`missing_credentials`; an empty or short API key returns `401` with
+`invalid_api_key`, and an invalid Bearer or JWT-shaped token returns `401`.
+All count as "rejected" for the old key.
 
 The checker allows the canonical production origin. Point it at the
 deployment whose secret you just changed, and only after the old key should

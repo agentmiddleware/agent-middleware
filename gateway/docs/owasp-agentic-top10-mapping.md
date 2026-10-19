@@ -169,9 +169,12 @@ paused on an explicit human decision ([human-approval-gate.md](human-approval-ga
 ## ASI10 — Rogue Agents
 
 **Posture: contained.** A rogue or runaway agent exhausts its permit and
-stops: spend caps and use counts bound total damage, expiry bounds duration,
-and every action, allowed or refused, is metered and receipted. API-key
-revocation and rotation are operational today. Env bootstrap keys use
+stops: spend caps and use counts bound total damage, and expiry bounds duration.
+Terminalized or reconcilable governed calls have signed terminal accounting.
+Requests rejected before usable authority and an executable tool have no
+receipt; local post-effect failures held for manual review may also have no
+receipt ([failure semantics](failure-semantics.md)). API-key revocation and
+rotation are operational today. Env bootstrap keys use
 `scripts/rotate_api_keys.py` plus a worker restart
 ([api-key-rotation.md](api-key-rotation.md)). Wallet keys use
 `DELETE /v1/api-keys/{wallet_id}/{key_id}`,

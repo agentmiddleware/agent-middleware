@@ -100,12 +100,10 @@ for module in "${TRUST_COVERAGE_MODULES[@]}"; do
 done
 
 echo "[trust-coverage] enforcing 80% coverage over trust-plane control modules"
-# Coverage resolves app.trust.evidence before pytest collects tests, then removes
-# that temporary import. Preload SQLAlchemy so its compiled cache-key module and
-# Python visitors keep the same InternalTraversal class across that discovery.
-"${PYTHON_CMD[@]}" -c \
-  'import sys; import sqlalchemy; import pytest; raise SystemExit(pytest.main(sys.argv[1:]))' \
-  -q \
+# Pytest loads -p modules before pytest-cov resolves app.trust.evidence and
+# discards its temporary imports. Preload SQLAlchemy in the selected pytest
+# process so its compiled cache-key module keeps the same InternalTraversal.
+"${PYTEST_CMD[@]}" -p sqlalchemy -q \
   "${TRUST_COVERAGE_TESTS[@]}" \
   "${COV_ARGS[@]}" \
   --cov-report=term-missing \

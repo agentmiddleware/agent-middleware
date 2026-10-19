@@ -13,7 +13,10 @@ the gate or be exempted below with a written reason.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import subprocess
+import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
@@ -167,3 +170,94 @@ def test_scope_check_flags_an_unlisted_unexempted_module() -> None:
         "app.routers.receipts",
         "app.routers.static",
     ]
+
+
+def test_coverage_gate_preserves_distinct_pytest_override(tmp_path: Path) -> None:
+    """The coverage preloader must run through PYTEST, not the PYTHON override."""
+
+    pytest_stub = tmp_path / "pytest-stub"
+    pytest_stub.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$GATE_CAPTURE"\nexit "$GATE_EXIT"\n'
+    )
+    pytest_stub.chmod(0o755)
+    python_stub = tmp_path / "python-stub"
+    python_stub.write_text("#!/bin/sh\nexit 42\n")
+    python_stub.chmod(0o755)
+
+    environment = os.environ.copy()
+    for name in (
+        "DATABASE_URL",
+        "RUN_POSTGRES_CONCURRENCY_TESTS",
+        "RUN_MCP_MULTIPROCESS_TESTS",
+    ):
+        environment.pop(name, None)
+    environment.update(
+        PYTHON=str(python_stub),
+        PYTEST=str(pytest_stub),
+        GATE_CAPTURE=str(tmp_path / "arguments"),
+        GATE_EXIT="0",
+    )
+    result = subprocess.run(
+        ["bash", str(GATE_SCRIPT)],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    arguments = (tmp_path / "arguments").read_text().splitlines()
+    assert arguments[:3] == ["-p", "sqlalchemy", "-q"]
+    assert "--cov=app.trust.evidence" in arguments
+    assert "--cov-fail-under=80" in arguments
+    environment["GATE_EXIT"] = "17"
+    failed = subprocess.run(
+        ["bash", str(GATE_SCRIPT)], cwd=REPO_ROOT, env=environment, check=False
+    )
+    assert failed.returncode == 17
+
+
+def test_coverage_preload_keeps_sqlalchemy_cache_traversal(tmp_path: Path) -> None:
+    """The real pytest plugin keeps cache keys valid and evidence measured."""
+
+    probe = tmp_path / "test_cache_key.py"
+    probe.write_text(
+        "from sqlalchemy import select\n"
+        "from app.db.models import WalletModel\n"
+        "from app.trust.evidence import _metadata_from_json\n"
+        "def test_cache_key():\n"
+        "    assert _metadata_from_json('{}') == {}\n"
+        "    assert select(WalletModel)._generate_cache_key() is not None\n"
+    )
+    environment = os.environ.copy()
+    for name in (
+        "DATABASE_URL",
+        "RUN_POSTGRES_CONCURRENCY_TESTS",
+        "RUN_MCP_MULTIPROCESS_TESTS",
+    ):
+        environment.pop(name, None)
+    for name in tuple(environment):
+        if name.startswith("COV_CORE_"):
+            environment.pop(name)
+    environment["PYTHONPATH"] = str(REPO_ROOT)
+    environment["COVERAGE_FILE"] = str(tmp_path / ".coverage")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "sqlalchemy",
+            str(probe),
+            "--cov=app.trust.evidence",
+            "--cov-report=term",
+        ],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "app/trust/evidence.py" in result.stdout

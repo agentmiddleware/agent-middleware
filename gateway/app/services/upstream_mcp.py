@@ -20,6 +20,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation, localcontext
@@ -946,6 +947,20 @@ class UpstreamMcpAdapter:
                 await self._initialize_session(
                     session,
                     response_guard=response_guard,
+                )
+                # A fresh ClientSession otherwise lists tools after a
+                # successful call to find its output schema. Seed the
+                # already-discovered schema before claiming dispatch so a
+                # later tools/list cannot discard the paid result, while
+                # retaining the SDK's structured-output validation.
+                schemas = getattr(session, "_tool_output_schemas", None)
+                if not isinstance(schemas, dict):
+                    raise UpstreamMcpPreDispatchError(
+                        "upstream_client_schema_cache_unavailable"
+                    )
+                schema = self._discovered_tool.output_schema
+                schemas[self.configuration.tool_name] = (
+                    deepcopy(schema) if schema is not None else None
                 )
                 try:
                     await before_dispatch()

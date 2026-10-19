@@ -27,6 +27,7 @@ from app.services.agent_money import AgentMoney, get_agent_money
 from app.services.audit_log import AuditEvent, record_audit_event
 from app.services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
 from app.services.idempotency import IdempotencyService, get_idempotency_service
+from app.services.ownership import CallerIdentity
 from app.services.mcp_dispatch_attempts import (
     DISPATCH_SENT_STATES,
     DISPATCH_PREPARED,
@@ -220,7 +221,10 @@ class McpDispatchReconciliationService:
                 if await self._find_operation_debit(attempt) is not None:
                     continue
             try:
-                if await self._permits.release_dispatch_budget_once(attempt.attempt_id):
+                if await self._permits.release_dispatch_budget_once(
+                    attempt.attempt_id,
+                    caller=CallerIdentity.for_wallet(attempt.wallet_id),
+                ):
                     budget_released += 1
             except Exception as exc:
                 failed.append(attempt.attempt_id)
@@ -447,6 +451,7 @@ class McpDispatchReconciliationService:
                     description=(
                         f"Reconcile refunded upstream MCP dispatch {attempt.attempt_id}"
                     ),
+                    caller=CallerIdentity.for_wallet(attempt.wallet_id),
                 )
                 await self._dispatch.mark_debit_refunded(
                     attempt_id=attempt.attempt_id,
@@ -477,7 +482,10 @@ class McpDispatchReconciliationService:
                 raise DispatchAttemptError("dispatch_receipt_outcome_conflict")
             if attempt.budget_released_at is not None:
                 return
-        await self._permits.release_dispatch_budget_once(attempt.attempt_id)
+        await self._permits.release_dispatch_budget_once(
+            attempt.attempt_id,
+            caller=CallerIdentity.for_wallet(attempt.wallet_id),
+        )
 
     async def _find_operation_debit(
         self,

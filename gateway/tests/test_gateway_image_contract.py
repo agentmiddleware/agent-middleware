@@ -131,6 +131,44 @@ def test_release_gate_invokes_defined_image_contract_target() -> None:
     assert invoked and set(invoked) <= defined
 
 
+def test_retired_railway_iac_target_fails_closed() -> None:
+    """A missing Railway graph must not make the old IaC target succeed.
+
+    This tree has no ``.railway/railway.ts``. An alias that only checks Docker
+    files reported that absence as a passed release step and skipped the
+    lock-pinned graph and deployment-variable preservation contract. The name
+    is retired: Make must fail it, and the release gate must not call it.
+    """
+    makefile = MAKEFILE.read_text()
+    gate = GATE_SCRIPT.read_text()
+    proof = (REPO_ROOT / "docs" / "PROOF_MATRIX.md").read_text(encoding="utf-8")
+    security = (REPO_ROOT / "SECURITY_LIMITATIONS.md").read_text(encoding="utf-8")
+
+    assert not re.search(r"^check-railway-iac\s*:", makefile, re.MULTILINE)
+    assert "check-railway-iac" not in _invoked_make_targets(gate)
+    assert "Railway IaC contract is retired" in proof
+    assert "`check-railway-iac` is not a Make target" in proof
+    assert "remains an alias" not in proof
+    assert "lock-pinned" not in proof
+    assert "does not contain `.railway/railway.ts`" in security
+    assert "does not verify secret retention" in security
+    assert "preserve()" not in security
+    assert "retired" in security and "`check-railway-iac`" in security
+
+    if shutil.which("make") is None:
+        pytest.skip("make is not installed")
+    result = subprocess.run(
+        ["make", "-n", "check-railway-iac"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "check-railway-iac" in (result.stderr + result.stdout)
+
+
 def test_checker_accepts_reviewed_ignores_reordered(image_source: Path) -> None:
     ignore = image_source / ".dockerignore"
     patterns = [

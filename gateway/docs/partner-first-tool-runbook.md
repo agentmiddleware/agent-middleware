@@ -164,9 +164,9 @@ measured integration burden is recorded.
 
 **Commercial signal:** the partner says what unacceptable risk would return if
 the boundary were removed and commits an owner, next action, and decision date.
-A follow-up meeting or "cool demo" response alone is not validation. Apply the
-full gate in
-`docs/30-day-customer-validation.md`.
+A follow-up meeting or "cool demo" response alone is not validation. The
+pass and fail rules in this section are the gate. There is no separate
+validation document in this repository.
 
 **Fail / stop:** partner asks for settlement, KMS, multi-framework policy, or
 broad migration before the single-tool loop is trusted. Point to

@@ -151,9 +151,10 @@ checks actual context behavior.
   localhost.
 - Set `VALID_API_KEYS` only via host secrets / Railway service variables and
   verify the value in the selected service through an authorized private
-  operator check. This repository does not contain a hosted IaC graph or
-  verify secret retention. Never commit real keys or use the placeholder
-  `change-me` in production.
+  operator check. This repository does not contain `.railway/railway.ts` or
+  any hosted IaC graph, and it does not verify secret retention. The retired
+  `check-railway-iac` target is not a release-gate step. Never commit real
+  keys or use the placeholder `change-me` in production.
 - Disable or isolate proof surfaces that execute code, drive browsers, generate
   patches, crawl external URLs, or touch third-party systems.
 - When `REDIS_URL` is set, production-like environments fail closed on Redis
@@ -172,8 +173,9 @@ checks actual context behavior.
   `create_all` remains only for ephemeral non-production SQLite (tests/local).
 - Keep CI trust invariant tests required before merge. CI also runs a
   `production_trust` subset with production-like trust flags.
-- The full `trust-release-gate` CI job runs only when manually dispatched; the
-  automatic pull-request checks do not enforce that aggregate gate.
+- Committed CI does not run the aggregate `trust-release-gate`. Run
+  `make trust-release-gate` locally before a hosted release. Automatic
+  pull-request checks do not enforce that gate.
 
 ## CORS Posture
 

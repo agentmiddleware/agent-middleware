@@ -21,7 +21,10 @@ concurrency:
 env:
   FORCE_COLOR: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # Blessed ruff and mypy. Must match gateway/requirements-dev.txt.
+  # mypy must also match the exact pin in gateway/requirements.txt.
   RUFF_VERSION: "0.16.10"
+  MYPY_VERSION: "2.4.0"
   PYTEST_VERSION: "9.1.1"
 
 jobs:
@@ -94,10 +97,47 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           if grep -q '^\[tool\.mypy\]' pyproject.toml 2>/dev/null || [ -f mypy.ini ]; then
-            uv pip install mypy && uv run --no-sync mypy .
+            uv pip install "mypy==${MYPY_VERSION}" && uv run --no-sync mypy .
           else
             echo "mypy not configured; skipping"
           fi
+      - name: Pre-commit mypy (gateway)
+        if: matrix.project == 'gateway' && matrix.python-version == '3.12'
+        working-directory: .
+        env:
+          UV_PYTHON: "3.12"
+        run: |
+          hook=(uv tool run --from pre-commit==4.6.0 pre-commit run mypy)
+          "${hook[@]}" --all-files
+
+          probe_stem="$(mktemp gateway/typecheck/_mypy_hook_probe_XXXXXXXX)"
+          trap 'rm -f "$probe_stem" "$probe_stem.py"' EXIT
+          probe="$probe_stem.py"
+          mv "$probe_stem" "$probe"
+          cat > "$probe" <<'PY'
+          def probe() -> int:
+              return "the hook must reject this return type"
+          PY
+
+          if probe_output="$("${hook[@]}" --files "$probe" 2>&1)"; then
+            printf '%s\n' "$probe_output"
+            echo "mypy hook unexpectedly accepted the type error" >&2
+            exit 1
+          else
+            probe_status=$?
+          fi
+          printf '%s\n' "$probe_output"
+          expected="typecheck/$(basename "$probe"):2: error: Incompatible return value type (got \"str\", expected \"int\")  [return-value]"
+          if [ "$probe_status" -ne 1 ] ||
+             ! grep -Fqx "$expected" <<< "$probe_output" ||
+             ! grep -Eq '^Found 1 error in 1 file \(checked [0-9]+ source files\)$' <<< "$probe_output"; then
+            echo "mypy hook failed for a reason other than the single probe error" >&2
+            exit 1
+          fi
+
+          rm "$probe"
+          trap - EXIT
+          "${hook[@]}" --all-files
       - name: Test (pytest)
         run: |
           set +e
@@ -112,6 +152,13 @@ jobs:
           # exit code 5 = no tests collected; don't fail packages that have none yet
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
           exit $rc
+      - name: Collect SDK source distribution tests
+        if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
+        run: |
+          uv build --sdist --out-dir "$RUNNER_TEMP/b2a-sdist"
+          tar -xzf "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*.tar.gz -C "$RUNNER_TEMP/b2a-sdist"
+          test ! -e "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*/tests/test_receipt_vectors.py
+          uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*/tests
 
   postgres-concurrency:
     # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:
@@ -338,35 +385,6 @@ jobs:
           persist-credentials: false
       - name: Build and import release and development images
         run: bash .github/scripts/smoke_gateway_image.sh
-
-  trust-release-gate:
-    name: Trust release gate / gateway
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    defaults:
-      run:
-        working-directory: gateway
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          python-version: "3.12"
-          enable-cache: false
-      - name: Install
-        run: |
-          uv venv
-          uv pip install -r requirements.txt -e "../sdk/python[verify]" pytest-xdist pytest-timeout
-      - name: Run aggregate trust release gate
-        env:
-          ENVIRONMENT: test
-        run: |
-          env -u DATABASE_URL -u RUN_POSTGRES_CONCURRENCY_TESTS -u RUN_MCP_MULTIPROCESS_TESTS \
-            PYTHON=.venv/bin/python PYTEST=.venv/bin/pytest make trust-release-gate
 
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}

@@ -30,6 +30,7 @@ from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, QuoteModel, WalletModel
 from app.schemas.billing import ServiceCategory
 from app.services.agent_money import get_agent_money
+from app.services.ownership import CallerIdentity
 from app.services.pricing import charge_units_for, tool_price
 from app.services.quotes import QuoteError, QuoteService
 from app.services.receipts import ReceiptError, ReceiptService
@@ -116,6 +117,7 @@ async def test_transfer_rejects_non_positive_amounts(bad_amount: Decimal):
             from_wallet_id="wlt-qa-a",
             to_wallet_id="wlt-qa-b",
             amount=bad_amount,
+            caller=CallerIdentity.for_wallet("wlt-qa-a"),
         )
 
 
@@ -127,6 +129,7 @@ async def test_transfer_rejects_self_transfer():
             from_wallet_id="wlt-qa-a",
             to_wallet_id="wlt-qa-a",
             amount=Decimal("1"),
+            caller=CallerIdentity.for_wallet("wlt-qa-a"),
         )
 
 
@@ -168,6 +171,7 @@ async def _funded_agent(money, *, sponsor_credits="1000", budget="100"):
         sponsor_wallet_id=sponsor.wallet_id,
         agent_id="qa-agent",
         budget_credits=Decimal(budget),
+        caller=CallerIdentity.for_wallet(sponsor.wallet_id),
     )
     return sponsor, agent
 
@@ -194,12 +198,14 @@ async def test_non_finite_transfer_moves_no_money(clean_database):
             from_wallet_id=agent.wallet_id,
             to_wallet_id=sponsor.wallet_id,
             amount=Decimal("Infinity"),
+            caller=CallerIdentity.for_wallet(agent.wallet_id),
         )
     with pytest.raises(Exception):
         await money.transfer(
             from_wallet_id=agent.wallet_id,
             to_wallet_id=sponsor.wallet_id,
             amount=Decimal("NaN"),
+            caller=CallerIdentity.for_wallet(agent.wallet_id),
         )
     after = await money.get_wallet(agent.wallet_id)
     assert after.balance == before
@@ -215,6 +221,7 @@ async def test_infinite_transfer_is_rejected_before_debit(clean_database):
             from_wallet_id=agent.wallet_id,
             to_wallet_id=sponsor.wallet_id,
             amount=Decimal("Infinity"),
+            caller=CallerIdentity.for_wallet(agent.wallet_id),
         )
 
 
@@ -226,15 +233,18 @@ async def test_refund_recredit_is_idempotent_and_scoped(clean_database):
         wallet_id=agent.wallet_id,
         service_category=ServiceCategory.PLATFORM_FEE,
         units=Decimal("2"),
+        caller=CallerIdentity.for_wallet(agent.wallet_id),
     )
     assert charge.balance_after is not None
     first = await money.refund_charge(
         wallet_id=agent.wallet_id,
         charge_entry_id=charge.entry_id,
+        caller=CallerIdentity.for_wallet(agent.wallet_id),
     )
     second = await money.refund_charge(
         wallet_id=agent.wallet_id,
         charge_entry_id=charge.entry_id,
+        caller=CallerIdentity.for_wallet(agent.wallet_id),
     )
     assert first.entry_id == second.entry_id
     wallet = await money.get_wallet(agent.wallet_id)
@@ -243,6 +253,7 @@ async def test_refund_recredit_is_idempotent_and_scoped(clean_database):
         await money.refund_charge(
             wallet_id=agent.wallet_id,
             charge_entry_id="ledger-entry-that-does-not-exist",
+            caller=CallerIdentity.for_wallet(agent.wallet_id),
         )
 
 
@@ -254,16 +265,19 @@ async def test_refund_cannot_redeem_another_wallets_charge(clean_database):
         sponsor_wallet_id=sponsor.wallet_id,
         agent_id="qa-agent-two",
         budget_credits=Decimal("50"),
+        caller=CallerIdentity.for_wallet(sponsor.wallet_id),
     )
     charge = await money.charge(
         wallet_id=agent.wallet_id,
         service_category=ServiceCategory.PLATFORM_FEE,
         units=Decimal("1"),
+        caller=CallerIdentity.for_wallet(agent.wallet_id),
     )
     with pytest.raises(ValueError, match="not found"):
         await money.refund_charge(
             wallet_id=other.wallet_id,
             charge_entry_id=charge.entry_id,
+            caller=CallerIdentity.for_wallet(other.wallet_id),
         )
 
 

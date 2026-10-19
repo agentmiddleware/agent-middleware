@@ -1,4 +1,4 @@
-.PHONY: quickstart quickstart-check live-loop-proof demo-ambiguous-retry demo-ambiguous-retry-check failure-lab failure-lab-check test test-all test-proof coverage prove-trust-plane prove-trust-plane-postgres prove-crash-recovery demo-trust-plane demo-trust-plane-check dogfood-trust-plane dogfood-trust-plane-check red-team-trust-plane red-team-trust-plane-check agent-ops-war-room agent-ops-war-room-check check-doc-references check-gateway-image-contract check-railway-iac trust-coverage-gate trust-release-gate trust-conformance-live adversarial-battery-live failure-lab-suite failure-lab-all failure-lab-evidence failure-lab-list failure-lab-explore failure-lab-integration-check failure-lab-diagnostic failure-lab-verify-bundle
+.PHONY: quickstart quickstart-check live-loop-proof demo-ambiguous-retry demo-ambiguous-retry-check failure-lab failure-lab-check test test-all test-proof coverage prove-trust-plane prove-trust-plane-postgres prove-crash-recovery demo-trust-plane demo-trust-plane-check dogfood-trust-plane dogfood-trust-plane-check red-team-trust-plane red-team-trust-plane-check agent-ops-war-room agent-ops-war-room-check check-doc-references check-gateway-image-contract trust-coverage-gate trust-release-gate trust-conformance-live adversarial-battery-live failure-lab-suite failure-lab-all failure-lab-evidence failure-lab-list failure-lab-explore failure-lab-integration-check failure-lab-diagnostic failure-lab-verify-bundle
 
 
 
@@ -130,11 +130,10 @@ trust-coverage-gate:
 
 # Repository-owned image inputs and stamp provenance. This source check does
 # not inspect Railway state, external secret values, or a built image.
+# The old check-railway-iac name is retired: this tree has no Railway resource
+# graph, so that name must not succeed by aliasing this Docker preflight.
 check-gateway-image-contract:
 	python3 scripts/check_gateway_image_contract.py
-
-# Compatibility alias for callers of the old, misleading target name.
-check-railway-iac: check-gateway-image-contract
 
 trust-release-gate:
 	scripts/trust_release_gate.sh

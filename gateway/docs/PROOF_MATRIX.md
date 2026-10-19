@@ -193,15 +193,17 @@ rate limiting.
 | Command | Enforces |
 |---|---|
 | `make trust-coverage-gate` | 43 focused trust test files at an **80% coverage floor** across 38 named trust-plane control modules |
-| `make check-gateway-image-contract` | Source preflight for the repository-root Docker context, gateway and SDK image inputs, secret exclusions, and validated release-stamp transfer. It executes the stamp writer against isolated inputs and requires review of any changed `.dockerignore` pattern; CI image smoke checks the actual context. It does not parse Dockerfiles fully, inspect hosted variables, or validate a Railway resource graph. `check-railway-iac` remains an alias for old callers. |
-| `make trust-release-gate` | Runs the image source preflight first, then the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates. |
+| `make check-gateway-image-contract` | Source preflight for the repository-root Docker context, gateway and SDK image inputs, secret exclusions, and validated release-stamp transfer. It executes the stamp writer against isolated inputs and requires review of any changed `.dockerignore` pattern; CI image smoke checks the actual context. It does not parse Dockerfiles fully, inspect hosted variables, or validate a Railway resource graph. The Railway IaC contract is retired: this repository has no `.railway/railway.ts`, and `check-railway-iac` is not a Make target. |
+| `make trust-release-gate` | Runs the image source preflight first, then the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates. A green local gate does not establish the deployed image digest, runtime secrets, or hosted state. |
 
 Automatic CI runs the gateway pytest suite, including the source-preflight
-regression tests. The optional `trust-release-gate` CI job runs this aggregate
-gate on `workflow_dispatch`; it is not a required check on pull requests. Run
-that job or `make trust-release-gate` and verify branch protection in GitHub
-before relying on any check as required for merge. Its green result
-does not establish the deployed image digest, runtime secrets, or hosted state.
+regression tests. That pytest run is not the aggregate release gate.
+
+From `gateway/`, run `make trust-release-gate` for the full local release gate.
+Committed CI reports `CI result` and does not invoke the full release-gate
+script. The [active main ruleset](https://github.com/agentmiddleware/agent-middleware/rules/24444399)
+requires `CI result` and `gitleaks` with strict status checks, linear history,
+and resolved review threads.
 The [stranger test](stranger-test.md) is the human milestone that checks the
 same five claims are reachable and checkable from the published docs alone.
 

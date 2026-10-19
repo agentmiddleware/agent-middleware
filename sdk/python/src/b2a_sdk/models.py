@@ -260,6 +260,9 @@ class ACPLineItem:
         allowlist only. Catching these here keeps a delegated payment
         credential off the wire on a request that could only 422.
         """
+        self._validate()
+
+    def _validate(self) -> None:
         if type(self.quantity) is not int or not 0 < self.quantity <= 10_000:
             raise ValueError(f"quantity must be an integer in 1..10000, got {self.quantity!r}")
         if type(self.unit_amount) is not int or not 0 <= self.unit_amount <= 10_000_000:
@@ -275,6 +278,7 @@ class ACPLineItem:
             raise ValueError(f"currency must be 'usd', got {self.currency!r}")
 
     def to_payload(self) -> JsonObject:
+        self._validate()
         payload: JsonObject = {
             "name": self.name,
             "quantity": self.quantity,
@@ -306,12 +310,19 @@ class ACPCheckoutRequest:
 
         The error text names the field and does not include the token.
         """
+        self._validate()
+
+    def _validate(self) -> None:
         if (
             not isinstance(self.line_items, list)
             or not 1 <= len(self.line_items) <= 100
             or not all(isinstance(item, ACPLineItem) for item in self.line_items)
         ):
             raise ValueError("line_items must contain 1..100 line items")
+        total = 0
+        for item in self.line_items:
+            item._validate()
+            total += item.quantity * item.unit_amount
         if (
             not isinstance(self.intent_id, str)
             or _INTENT_ID_PATTERN.fullmatch(self.intent_id) is None
@@ -331,8 +342,11 @@ class ACPCheckoutRequest:
             )
         if type(self.client_total) is not int or self.client_total < 0:
             raise ValueError("client_total must be an integer >= 0")
+        if self.client_total != total:
+            raise ValueError("acp_total_mismatch")
 
     def to_payload(self) -> JsonObject:
+        self._validate()
         return {
             "intent_id": self.intent_id,
             "line_items": [item.to_payload() for item in self.line_items],

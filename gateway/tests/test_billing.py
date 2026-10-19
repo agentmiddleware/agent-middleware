@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.main import app
+from app.services.ownership import CallerIdentity
 from app.core.config import Settings, get_settings
 from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, WalletModel
@@ -377,11 +378,13 @@ async def test_refund_charge_reverses_debit(client, api_headers, clean_database)
         wallet_id=agent_wallet_id,
         charge_entry_id=charge["entry_id"],
         description="Refund failed MCP tool",
+        caller=CallerIdentity.admin(),
     )
     duplicate_refund = await get_agent_money().refund_charge(
         wallet_id=agent_wallet_id,
         charge_entry_id=charge["entry_id"],
         description="Refund failed MCP tool",
+        caller=CallerIdentity.admin(),
     )
     assert refund.action.value == "refund"
     assert refund.entry_id == f"refund-{charge['entry_id']}"
@@ -479,6 +482,7 @@ async def test_late_refund_does_not_reduce_new_period_spend(
         wallet_id=agent_wallet_id,
         charge_entry_id=charge["entry_id"],
         description="Late refund failed MCP tool",
+        caller=CallerIdentity.admin(),
     )
     assert refund.entry_id == f"refund-{charge['entry_id']}"
 
@@ -1375,6 +1379,7 @@ async def test_billing_engine_refuses_non_positive_units(units):
             service_category=ServiceCategory.IOT_BRIDGE,
             units=units,
             request_path="/non-positive",
+            caller=CallerIdentity.admin(),
         )
 
 
@@ -1398,6 +1403,7 @@ async def test_billing_engine_refuses_non_finite_units(units):
             service_category=ServiceCategory.IOT_BRIDGE,
             units=units,
             request_path="/non-finite",
+            caller=CallerIdentity.admin(),
         )
 
 
@@ -2429,6 +2435,7 @@ async def test_losing_an_operation_key_race_does_not_leave_velocity_overcounted(
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("2"),
         operation_key=operation_key,
+        caller=CallerIdentity.admin(),
     )
 
     # The winner: an ordinary charge under the same operation key.

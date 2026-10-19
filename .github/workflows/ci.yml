@@ -101,6 +101,43 @@ jobs:
           else
             echo "mypy not configured; skipping"
           fi
+      - name: Pre-commit mypy (gateway)
+        if: matrix.project == 'gateway' && matrix.python-version == '3.12'
+        working-directory: .
+        env:
+          UV_PYTHON: "3.12"
+        run: |
+          hook=(uv tool run --from pre-commit==4.6.0 pre-commit run mypy)
+          "${hook[@]}" --all-files
+
+          probe_stem="$(mktemp gateway/typecheck/_mypy_hook_probe_XXXXXXXX)"
+          trap 'rm -f "$probe_stem" "$probe_stem.py"' EXIT
+          probe="$probe_stem.py"
+          mv "$probe_stem" "$probe"
+          cat > "$probe" <<'PY'
+          def probe() -> int:
+              return "the hook must reject this return type"
+          PY
+
+          if probe_output="$("${hook[@]}" --files "$probe" 2>&1)"; then
+            printf '%s\n' "$probe_output"
+            echo "mypy hook unexpectedly accepted the type error" >&2
+            exit 1
+          else
+            probe_status=$?
+          fi
+          printf '%s\n' "$probe_output"
+          expected="typecheck/$(basename "$probe"):2: error: Incompatible return value type (got \"str\", expected \"int\")  [return-value]"
+          if [ "$probe_status" -ne 1 ] ||
+             ! grep -Fqx "$expected" <<< "$probe_output" ||
+             ! grep -Eq '^Found 1 error in 1 file \(checked [0-9]+ source files\)$' <<< "$probe_output"; then
+            echo "mypy hook failed for a reason other than the single probe error" >&2
+            exit 1
+          fi
+
+          rm "$probe"
+          trap - EXIT
+          "${hook[@]}" --all-files
       - name: Test (pytest)
         run: |
           set +e
@@ -115,6 +152,13 @@ jobs:
           # exit code 5 = no tests collected; don't fail packages that have none yet
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
           exit $rc
+      - name: Collect SDK source distribution tests
+        if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
+        run: |
+          uv build --sdist --out-dir "$RUNNER_TEMP/b2a-sdist"
+          tar -xzf "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*.tar.gz -C "$RUNNER_TEMP/b2a-sdist"
+          test ! -e "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*/tests/test_receipt_vectors.py
+          uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*/tests
 
   postgres-concurrency:
     # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:

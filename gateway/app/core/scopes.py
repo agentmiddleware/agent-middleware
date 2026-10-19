@@ -61,15 +61,17 @@ def require_scope(
             if auth.source in ("db", "env", "static-dev"):
                 return await func(*args, **kwargs)
 
-            # JWT callers must have at least one required scope
-            if not any(scope in auth.scopes for scope in required_scopes):
+            # JWT callers must have at least one required scope. None means
+            # the context never received a scope list (see AuthContext).
+            provided_scopes = auth.scopes if auth.scopes is not None else []
+            if not any(scope in provided_scopes for scope in required_scopes):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail={
                         "error": "insufficient_scope",
                         "message": f"Requires one of: {', '.join(required_scopes)}",
                         "required": list(required_scopes),
-                        "provided": auth.scopes,
+                        "provided": provided_scopes,
                     },
                 )
 

@@ -26,6 +26,7 @@ from typing import Any, Mapping
 from app.core.config import get_settings
 from app.schemas.billing import ServiceCategory
 from app.services.audit_log import record_audit_event
+from app.services.ownership import CallerIdentity
 from app.services.permits import get_permit_service, recipient_binding_matches
 from app.services.pricing import charge_units_for
 from app.services.receipts import ReceiptWriteContendedError, get_receipt_service
@@ -560,7 +561,11 @@ class X402PaymentHandler:
                         shadow_session_id,
                     )
             try:
-                await permits.release_budget(permit_id, credits)
+                await permits.release_budget(
+                    permit_id,
+                    credits,
+                    caller=CallerIdentity.for_wallet(wallet_id),
+                )
                 budget_released = True
             except Exception:
                 compensation_complete = False
@@ -570,7 +575,11 @@ class X402PaymentHandler:
             # one-call permit's legitimate retry is denied
             # permit_max_calls_exceeded with no receipt to show for it.
             try:
-                await permits.release_tool_call(permit_id, X402_TOOL_NAME)
+                await permits.release_tool_call(
+                    permit_id,
+                    X402_TOOL_NAME,
+                    caller=CallerIdentity.for_wallet(wallet_id),
+                )
                 tool_call_released = True
             except Exception:
                 compensation_complete = False

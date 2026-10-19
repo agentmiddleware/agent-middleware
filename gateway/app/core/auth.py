@@ -47,7 +47,10 @@ class AuthContext:
     key_id: str | None = None
     wallet_id: str | None = None
     is_bootstrap_admin: bool = False
-    scopes: list[str] = None  # type: ignore[assignment]
+    # Omitted scopes arrive as None. __post_init__ stores [] so a constructed
+    # context carries a list; readers must still treat None as no scopes,
+    # because a context that skipped the constructor can leave None in place.
+    scopes: list[str] | None = None
     # Enterprise (Okta/Entra) bearer that accompanied an X-API-Key call. Set
     # ONLY when the Authorization header carried a token whose UNVERIFIED
     # issuer names a pinned IGA issuer (see get_auth_context). It is identity
@@ -235,7 +238,7 @@ async def _resolve_auth_context(
 
     valid_keys = [k.strip() for k in settings.VALID_API_KEYS.split(",") if k.strip()]
 
-    if any(hmac.compare_digest(stripped, key) for key in valid_keys):
+    if any(_constant_time_equal(stripped, key) for key in valid_keys):
         return AuthContext(
             source="env",
             raw_key=stripped,
@@ -254,7 +257,7 @@ async def _resolve_auth_context(
         if is_production_like_environment(settings.ENVIRONMENT)
         else _parse_static_dev_keys(settings.STATIC_DEV_API_KEYS)
     )
-    if any(hmac.compare_digest(stripped, key) for key in static_dev_keys):
+    if any(_constant_time_equal(stripped, key) for key in static_dev_keys):
         return AuthContext(
             source="static-dev",
             raw_key=stripped,
@@ -325,6 +328,18 @@ async def reject_anonymous_production_catalog(request: Request) -> None:
         or request.headers.get("x-api-key"),
         authorization=request.headers.get("authorization"),
     )
+
+
+def _constant_time_equal(presented: str, expected: str) -> bool:
+    """Compare two key strings without raising on non-ASCII input.
+
+    ``hmac.compare_digest`` on ``str`` raises ``TypeError`` when either side
+    has non-ASCII characters, which turned a refused API key into an
+    unhandled 500. Comparing the UTF-8 bytes keeps arbitrary input safe: a
+    non-ASCII presentation simply never matches an ASCII configured key,
+    and a non-ASCII configured key still compares correctly.
+    """
+    return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
 
 
 def _parse_static_dev_keys(configured: str) -> list[str]:

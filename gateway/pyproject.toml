@@ -1,9 +1,66 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "agent-native-middleware"
 version = "1.3.0"
 description = "Governed MCP authorization, metering, signed receipts, and audit evidence"
 license = "LicenseRef-FSL-1.1-ALv2"
 requires-python = ">=3.11"
+# Runtime dependency floors (source of truth). requirements.txt mirrors this
+# set and stays the install target for Docker/CI/`uv run --with-requirements`
+# runs; tests/test_packaging_deps.py keeps the two in sync.
+dependencies = [
+    "fastapi>=0.143.0",
+    "uvicorn[standard]>=0.54.0",
+    # 2.14 drops the string "pattern" from the permit credit decimal JSON
+    # schema (tests/test_permit_numeric_storage.py); lift with a schema fix.
+    "pydantic>=2.14.1,<2.15",
+    "pydantic-settings>=2.14.2",
+    "email-validator>=2.3.0",
+    "structlog>=24.1.0",
+    "aiomqtt>=2.5.1",
+    "aiocoap>=0.4.17",
+    # Upstream MCP DNS pinning relies on httpcore's sni_hostname extension
+    # contract.
+    "httpx>=0.28.1,<0.29",
+    # Verified implementation of the DNS-pin + TLS SNI handoff; update only
+    # with its integration test.
+    "httpcore==1.0.9",
+    # Transitive via httpx/starlette; >=4.14.2 fixes CVE-2026-63374 (TLSStream
+    # IDNA 2003 cert spoofing, critical) and CVE-2026-64847 (process-pool
+    # stderr block).
+    "anyio>=4.14.2",
+    # File upload support (>=0.0.30 fixes CVE-2026-53538/53539, >=0.0.31
+    # fixes CVE-2026-53540).
+    "python-multipart>=0.0.32",
+    "python-dotenv>=1.2.4",
+    # Ed25519 trust-plane signatures (>=50.0.0 fixes GHSA-g6cj-pr64-35w5).
+    "cryptography>=50.0.0",
+    # JWT auth (app/core/jwt.py, oidc_iga); explicit — previously only
+    # transitive via mcp's pyjwt[crypto].
+    "PyJWT>=2.15.1",
+    "redis>=8.1.0",
+    "asyncpg>=0.32.0",
+    "greenlet>=3.5.6",
+    "stripe>=16.0.0",
+    # MCP SDK; >=1.29.0 provides the pre-parse request-body guard used by
+    # public/partner transports. <2 is deliberate: 2.x renamed FastMCP to
+    # MCPServer, moved McpError, and changed the lowlevel Server internals
+    # that mcp_public/mcp_standard override. Dependabot major bumps are
+    # ignored (#460); lift only in a dedicated migration PR.
+    "mcp>=1.29.0,<2",
+    # Naive-UTC mappings are qualified with this minor release.
+    "sqlmodel>=0.0.48,<0.0.49",
+    "alembic>=1.20.0",
+    "aiosqlite>=0.22.1",
+]
+
+# The gateway ships as a container image, not a wheel, and only `app/` is
+# importable at runtime; keep tests, scripts, and failure_lab out of builds.
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
 
 [project.optional-dependencies]
 # mcp <2 is deliberate and must match requirements.txt: 2.x renamed FastMCP to

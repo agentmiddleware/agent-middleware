@@ -58,6 +58,7 @@ from ..services.billing_engine import (
     LedgerOperationConflictError,
     LedgerWriteContendedError,
 )
+from ..services.ownership import CallerIdentity
 from ..services.service_registry import get_service_registry
 from ..services.action_permits import (
     action_execution_identity,
@@ -117,10 +118,12 @@ from ..trust import (
     get_human_approval_service,
     get_idempotency_service,
     charge_units_for,
+    extract_recipient_identity,
     get_permit_service,
     get_quote_service,
     get_receipt_service,
     permit_constraints_snapshot,
+    recipient_binding_matches,
     record_audit_event,
     get_refund_reconciliation_service,
     resolve_client_idempotency_key,
@@ -2003,11 +2006,10 @@ async def _execute_registered_tool_inner(
         and execution_backend == "upstream_mcp"
     ):
         upstream_origin = str(service.get("upstream_origin", ""))
-        from urllib.parse import urlparse
-
-        parsed = urlparse(upstream_origin)
-        origin_domain = parsed.hostname or upstream_origin
-        if origin_domain != permit_model.recipient_domain:
+        origin_domain = extract_recipient_identity(upstream_origin)
+        if not recipient_binding_matches(
+            permit_model.recipient_domain, upstream_origin
+        ):
             audit_event = await _audit_mcp_invocation(
                 effects_committed=False,
                 decision=decision,
@@ -2508,7 +2510,8 @@ async def _execute_registered_tool_inner(
             # release is best-effort, so it cannot stop the budget going back.
             await _release_iga_use(iga_granted_use, tool_name, reason=denial_reason)
             await get_permit_service().release_dispatch_budget_once(
-                dispatch_attempt.attempt_id
+                dispatch_attempt.attempt_id,
+                caller=CallerIdentity.for_wallet(wallet_id),
             )
         else:
             if governed_call and permit_model:
@@ -2652,6 +2655,7 @@ async def _execute_registered_tool_inner(
                 wallet_id=wallet_id,
                 charge_entry_id=charge_result.entry_id,
                 description=f"Refund {description}",
+                caller=CallerIdentity.for_wallet(wallet_id),
             )
         except Exception as refund_exc:
             # Two reasons. The diagnostic one carries the refund store's (and,
@@ -2761,6 +2765,7 @@ async def _execute_registered_tool_inner(
                 await get_permit_service().release_budget(
                     permit_model.permit_id,
                     registered_cost,
+                    caller=CallerIdentity.for_wallet(permit_model.subject_wallet_id),
                 )
             except PermitWriteContendedError:
                 # Guarded for the same reason _release_local_permit_reservation
@@ -3020,6 +3025,7 @@ async def _charge_and_checkpoint(
         request_path=request_path,
         description=description,
         operation_key=idempotency_record_id if governed_call else None,
+        caller=CallerIdentity.for_wallet(wallet_id),
     )
     if isinstance(charge_result, InsufficientFundsResponse):
         return charge_result, None, dispatch_attempt
@@ -3383,6 +3389,7 @@ async def _raise_refunded_upstream_failure(
             wallet_id=wallet_id,
             charge_entry_id=ledger_entry_id,
             description=f"Refund {description}",
+            caller=CallerIdentity.for_wallet(wallet_id),
         )
         await dispatch_service.mark_debit_refunded(
             attempt_id=dispatch_attempt.attempt_id,
@@ -3441,7 +3448,8 @@ async def _raise_refunded_upstream_failure(
 
     try:
         await get_permit_service().release_dispatch_budget_once(
-            dispatch_attempt.attempt_id
+            dispatch_attempt.attempt_id,
+            caller=CallerIdentity.for_wallet(permit_model.subject_wallet_id),
         )
     except PermitWriteContendedError:
         # The upstream half of the guard above, and the safer of the two: this
@@ -3780,14 +3788,22 @@ async def _release_local_permit_reservation(
     """
     permits = get_permit_service()
     try:
-        await permits.release_budget(permit_model.permit_id, registered_cost)
+        await permits.release_budget(
+            permit_model.permit_id,
+            registered_cost,
+            caller=CallerIdentity.for_wallet(permit_model.subject_wallet_id),
+        )
     except Exception:
         logger.exception(
             "mcp_release_budget_failed",
             extra={"permit_id": permit_model.permit_id, "reason": reason},
         )
     try:
-        await permits.release_tool_call(permit_model.permit_id, tool_name)
+        await permits.release_tool_call(
+            permit_model.permit_id,
+            tool_name,
+            caller=CallerIdentity.for_wallet(permit_model.subject_wallet_id),
+        )
     except Exception:
         logger.exception(
             "mcp_release_tool_call_failed",

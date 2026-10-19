@@ -24,11 +24,17 @@ breaking changes will bump the version. Propose changes with a spec RFC issue
   transmitted. Verifiers must not re-serialize before verifying.
 - **Canonical JSON (`awi-canonical-json/1`):** object keys sorted at every
   level, no insignificant whitespace (`,` and `:` separators), non-ASCII
-  escaped as `\uXXXX`. Credit amounts and timestamps are strings by the time
-  they are signed, so no number-formatting rules are needed.
+  escaped as lowercase `\uXXXX`.
+- **Amounts and timestamps:** credit amounts and timestamps are strings before
+  they are signed. Amount strings are fixed point, with no exponent and with
+  trailing zeros removed (`2.50` is signed as `2.5`, `10.00` as `10`).
+  Timestamps are UTC with a numeric offset, for example
+  `2026-09-16T12:00:00+00:00`. A verifier does not reformat these values. It
+  checks the bytes it was given.
 - **`payload_hash`:** lowercase hex SHA-256 of the canonical JSON of the signed
   payload *without* the `payload_hash` member. It is itself part of the signed
-  bytes.
+  bytes. A signature over a payload whose `payload_hash` does not match that
+  computation is a `mismatch`, not a valid receipt.
 - **`kid`:** the signing key id, inside the signed payload. Key selection uses
   the signed `kid`, never the unauthenticated envelope.
 

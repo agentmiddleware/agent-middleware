@@ -20,6 +20,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update as sa_update
 
 from app.core.config import get_settings
+from app.services.ownership import CallerIdentity
 from app.db.database import get_session_factory
 from app.db.models import IdempotencyRecordModel
 from app.main import app
@@ -168,6 +169,7 @@ async def test_replay_after_dispatched_triggers_reconciliation(
             units=Decimal("4") / Decimal("3"),
             request_path="/test",
             operation_key=begun.record_id,
+            caller=CallerIdentity.admin(),
         )
         await dispatch.attach_charge(
             attempt_id=attempt.attempt_id,

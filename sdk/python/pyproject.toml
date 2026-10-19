@@ -50,7 +50,7 @@ verify = [
 # mcp 2.x renamed to MCPServer. Standalone generation is retired.
 # Bound matches the application's requirements.txt.
 mcp = [
-    "mcp>=1.29.0,<2",
+    "mcp>=1.29.0,<3",
 ]
 dev = [
     "pytest>=9.0.3",
@@ -88,6 +88,10 @@ include = [
     "LICENSE",
     "README.md",
     "pyproject.toml",
+]
+exclude = [
+    # Repository-only test: its vectors live outside this source distribution.
+    "tests/test_receipt_vectors.py",
 ]
 
 [tool.pytest.ini_options]

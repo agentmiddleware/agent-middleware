@@ -7,6 +7,7 @@ wallet reads. The public compatibility surface remains AgentMoney.
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,7 @@ from ..schemas.billing import (
     WalletStatus,
     WalletType,
 )
+from .ownership import CallerIdentity, OwnershipDeniedError, require_wallet_owner
 from .wallet_status import SPENDABLE_WALLET_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,11 @@ InsufficientFundsFactory = Callable[[str, Decimal, Decimal], Exception]
 MetadataSerializer = Callable[[dict | None], str | None]
 MAX_CHILD_WALLET_TTL_SECONDS = 2_147_483_647
 _MAX_WALLET_HIERARCHY_DEPTH = 32
+
+
+def _is_finite_amount(value: Decimal | float) -> bool:
+    """Check both Decimal and float inputs before any ordered comparison."""
+    return value.is_finite() if isinstance(value, Decimal) else math.isfinite(value)
 
 
 class WalletExpiredError(RuntimeError):
@@ -303,15 +310,6 @@ class WalletEngine:
             else self._settings.KYC_REQUIRED_FOR_TOPUP
         )
 
-        if not initial_credits.is_finite() or initial_credits < Decimal("0"):
-            # The HTTP schema refuses these with ge=0 and allow_inf_nan=False,
-            # but the SDK and composed callers (pods, dev keys) reach this
-            # method directly. A negative opening balance books a liability
-            # the ledger never recorded, and a non-finite one stores NaN or
-            # Infinity in a Numeric column and poisons every total read after.
-            # Zero stays allowed: it opens an empty wallet to top up later.
-            raise ValueError("initial_credits must be a finite non-negative number")
-
         if session is not None:
             return await self._create_sponsor_wallet_in(
                 session,
@@ -352,6 +350,17 @@ class WalletEngine:
 
         No BEGIN/COMMIT here — the caller's transaction owns those.
         """
+        if not _is_finite_amount(initial_credits):
+            raise ValueError("initial_credits must be finite")
+        if initial_credits < Decimal("0"):
+            # A negative seed opens the wallet holding a negative balance
+            # with no ledger entry to explain it: the initial-credit row is
+            # only written for positive seeds, so the missing money would be
+            # invisible to every ledger-derived balance. The billing router
+            # refuses these through ``ge=0``; the service refuses them too,
+            # matching the agent and child wallet paths. Zero stays allowed:
+            # it opens an empty wallet to be topped up later.
+            raise ValueError("initial_credits cannot be negative")
         wallet_id = f"spn-{uuid.uuid4().hex[:12]}"
 
         wallet = WalletModel(
@@ -398,27 +407,31 @@ class WalletEngine:
         auto_refill_threshold: Decimal = Decimal("100.0"),
         auto_refill_amount: Decimal = Decimal("1000.0"),
         session: AsyncSession | None = None,
+        *,
+        caller: CallerIdentity,
     ) -> WalletResponse:
         """Provision a pre-paid agent wallet from a sponsor's balance.
 
         ``session``, when given, must already be inside a transaction the
         CALLER owns end to end — same contract as ``create_sponsor_wallet``.
         Omit it for the original standalone behavior.
+
+        The caller must own the sponsor: the new wallet is funded from its
+        balance.
         """
-        if not budget_credits.is_finite() or budget_credits < Decimal("0"):
+        require_wallet_owner(caller, sponsor_wallet_id)
+        if not _is_finite_amount(budget_credits):
+            raise ValueError("budget_credits must be finite")
+        if budget_credits < Decimal("0"):
             # A negative budget inverts the debit into a credit: the guard
             # ``balance >= budget_credits`` is trivially true for a negative
             # amount, so the sponsor would be paid and the new wallet opened
-            # holding a negative balance. A non-finite budget never reaches a
-            # clean decision: NaN raises InvalidOperation out of the
-            # comparison below, and Infinity escapes into an
-            # InsufficientFundsError carrying infinite amounts that downstream
-            # JSON cannot render.
+            # holding a negative balance.
             #
             # Zero is deliberately allowed. It debits nothing and opens an
             # empty wallet to be topped up later, which is what
             # SelfProvisionRequest.budget_credits (ge=0) offers callers.
-            raise ValueError("budget_credits must be a finite non-negative number")
+            raise ValueError("budget_credits cannot be negative")
 
         if session is not None:
             return await self._create_agent_wallet_in(
@@ -565,22 +578,26 @@ class WalletEngine:
         task_description: str = "",
         ttl_seconds: int | None = None,
         auto_reclaim: bool = True,
+        *,
+        caller: CallerIdentity,
     ) -> WalletResponse:
-        """Spawn a child sub-agent wallet from a parent agent's balance."""
+        """Spawn a child sub-agent wallet from a parent agent's balance.
+
+        The caller must own the parent: the new wallet is funded from its
+        balance. Checked before any row is loaded so a stranger cannot use
+        the error (or its absence) to probe which wallet ids exist.
+        """
+        require_wallet_owner(caller, parent_wallet_id)
         _validate_child_wallet_ttl(ttl_seconds)
-        if not budget_credits.is_finite() or budget_credits < Decimal("0"):
+        if not _is_finite_amount(budget_credits):
+            raise ValueError("budget_credits must be finite")
+        if budget_credits < Decimal("0"):
             # Same inversion as the sponsor path, and worse: a child opened
             # with a negative balance cannot be unwound by a later reclaim,
             # which only credits the parent back a positive reclaim_amount.
             # Zero is allowed here too, for the same reason.
-            raise ValueError("budget_credits must be a finite non-negative number")
-        if not max_spend.is_finite() or max_spend <= Decimal("0"):
-            # The HTTP schema requires gt=0, but the SDK reaches here
-            # directly. A zero or negative cap bricks the wallet at birth
-            # (no charge can ever fit inside it), and a non-finite cap
-            # stores NaN or Infinity in a Numeric column: NaN raises
-            # InvalidOperation out of every later cap comparison, and
-            # Infinity silently disables the cap the parent thought it set.
+            raise ValueError("budget_credits cannot be negative")
+        if not _is_finite_amount(max_spend) or max_spend <= Decimal("0"):
             raise ValueError("max_spend must be a finite number greater than zero")
         async with self._session_factory()() as session:
             async with session.begin():
@@ -712,8 +729,14 @@ class WalletEngine:
             logger.info(f"Spawned child wallet {child_wallet_id} for {child_agent_id}")
             return wallet_model_to_response(child)
 
-    async def reclaim_child_wallet(self, child_wallet_id: str) -> dict:
-        """Reclaim unspent credits from a child wallet back to its parent."""
+    async def reclaim_child_wallet(
+        self, child_wallet_id: str, *, caller: CallerIdentity
+    ) -> dict:
+        """Reclaim unspent credits from a child wallet back to its parent.
+
+        The caller must own the child wallet or the parent it pays into;
+        anyone else is denied even though both rows are named by id.
+        """
         async with self._session_factory()() as session:
             async with session.begin():
                 # Discover the (immutable) parent id with an unlocked read, so
@@ -731,6 +754,16 @@ class WalletEngine:
                         )
                     )
                 ).scalar_one_or_none()
+                owns_child = (
+                    caller.wallet_id is not None and caller.wallet_id == child_wallet_id
+                )
+                owns_parent = (
+                    caller.wallet_id is not None
+                    and child_peek is not None
+                    and caller.wallet_id == child_peek.parent_wallet_id
+                )
+                if not caller.is_bootstrap_admin and not (owns_child or owns_parent):
+                    raise OwnershipDeniedError("wallet_access_denied")
                 if not child_peek:
                     raise self._wallet_not_found_error(child_wallet_id)
                 if not child_peek.parent_wallet_id:
@@ -863,6 +896,8 @@ class WalletEngine:
         amount: Decimal,
         description: str = "",
         correlation_id: str | None = None,
+        *,
+        caller: CallerIdentity,
     ) -> dict:
         """
         Transfer credits between two wallets (agent-to-agent handoff).
@@ -883,19 +918,18 @@ class WalletEngine:
         Raises:
             WalletNotFoundError: If either wallet doesn't exist
             InsufficientFundsError: If source has insufficient balance
-            ValueError: If amount <= 0 or same wallet IDs
+            ValueError: If amount is non-positive or non-finite, or same wallet IDs
         """
         if not amount.is_finite() or amount <= Decimal("0"):
-            # The HTTP layer refuses these with gt=0 and allow_inf_nan=False,
-            # but the SDK reaches this method directly. NaN raises
-            # InvalidOperation out of the comparison (a 500-class leak, not a
-            # clean refusal), and Infinity passes it, then escapes into an
-            # InsufficientFundsError carrying infinite amounts that downstream
-            # JSON cannot render.
-            raise ValueError("Transfer amount must be a finite positive number")
+            raise ValueError("Transfer amount must be positive")
 
         if from_wallet_id == to_wallet_id:
             raise ValueError("Cannot transfer to the same wallet")
+
+        # Only the source wallet's owner may move its credits. Checked before
+        # any row is loaded so a stranger cannot use the error (or its
+        # absence) to probe which wallet ids exist.
+        require_wallet_owner(caller, from_wallet_id)
 
         async with self._session_factory()() as session:
             async with session.begin():

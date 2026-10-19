@@ -435,12 +435,20 @@ class APIKeyService:
                 # requests race for the remaining budget instead of all
                 # reading the same stale count, so max_uses cannot be
                 # overshot. rowcount 0 means the budget is spent.
+                # The expiry predicate is re-read here (not reused from the
+                # check above) so a key that passes the read and then times
+                # out before this write lands consumes nothing: expiry is
+                # enforced at write time, mirroring consume_derived_key_use.
                 consumed = await session.execute(
                     update(APIKeyModel)
                     .where(
                         col(APIKeyModel.key_id) == key.key_id,
                         col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
                         col(APIKeyModel.use_count) < col(APIKeyModel.max_uses),
+                        or_(
+                            col(APIKeyModel.expires_at).is_(None),
+                            col(APIKeyModel.expires_at) >= to_naive_utc(utc_now()),
+                        ),
                     )
                     .values(
                         use_count=APIKeyModel.use_count + 1,
@@ -659,33 +667,51 @@ class APIKeyService:
         """
         Revoke an API key.
 
+        The write matches only a key that is not already revoked. A repeat
+        call returns True and leaves the stored ``revoked_at`` and
+        ``revoke_reason`` in place. A missing key still raises
+        ``KeyNotFoundError``.
+
         Args:
             wallet_id: Wallet owning the key
             key_id: Key to revoke
             reason: Reason for revocation
 
         Returns:
-            True if revoked successfully
+            True when the key is revoked, including when it already was.
         """
         async with self._session_factory()() as session:
-            result = await session.execute(
-                select(APIKeyModel).where(
+            updated = await session.execute(
+                update(APIKeyModel)
+                .where(
                     col(APIKeyModel.key_id) == key_id,
                     col(APIKeyModel.wallet_id) == wallet_id,
+                    col(APIKeyModel.status) != APIKeyStatus.REVOKED.value,
                 )
+                .values(
+                    status=APIKeyStatus.REVOKED.value,
+                    revoked_at=utc_now(),
+                    revoke_reason=reason,
+                )
+                .execution_options(synchronize_session=False)
             )
-            key = result.scalar_one_or_none()
-
-            if not key:
-                raise KeyNotFoundError(key_id)
-
-            key.status = APIKeyStatus.REVOKED.value
-            key.revoked_at = utc_now()
-            key.revoke_reason = reason
-            session.add(key)
+            wrote = (cast(Any, updated).rowcount or 0) == 1
+            if not wrote:
+                existing = await session.execute(
+                    select(APIKeyModel).where(
+                        col(APIKeyModel.key_id) == key_id,
+                        col(APIKeyModel.wallet_id) == wallet_id,
+                    )
+                )
+                if existing.scalar_one_or_none() is None:
+                    raise KeyNotFoundError(key_id)
+            # Commit whenever the key exists. rowcount decides only whether
+            # this call performed the revocation; a false 0 must not roll
+            # the guarded write back and report success.
             await session.commit()
 
-        logger.warning(f"Revoked API key {key_id} for wallet {wallet_id}: {reason}")
+        if wrote:
+            logger.warning(f"Revoked API key {key_id} for wallet {wallet_id}: {reason}")
         return True
 
     async def emergency_revocation(

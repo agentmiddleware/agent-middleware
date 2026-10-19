@@ -100,6 +100,37 @@ Callers must provide nonblank idempotency keys when creating permits and
 invoking tools. Reusing a key with a different request raises
 `IdempotencyConflictError`.
 
+The client defaults to `http://localhost:8000`, never a hosted server.
+Pass `base_url` explicitly for any other deployment.
+
+## Synchronous use
+
+`AgentMiddlewareClient` is async-only. Pilot scripts with plain blocking
+code can use `SyncAgentMiddlewareClient`, which covers the same
+discover, permit, invoke, receipt, and evidence calls with no event loop
+of their own:
+
+```python
+from b2a_sdk import PermitRequest, SyncAgentMiddlewareClient
+
+with SyncAgentMiddlewareClient(
+    api_key="agt-your-api-key",
+    base_url="https://your-gateway.example.com",
+) as client:
+    tools = client.discover_tools()
+    permit = client.create_permit(PermitRequest(...), idempotency_key="permit-run-001")
+    invocation = client.invoke_tool(
+        "partner.search",
+        {"query": "quarterly risk"},
+        wallet_id="agt-wallet",
+        permit_id=permit.permit_id,
+        idempotency_key="invoke-run-001",
+    )
+    assert client.verify_receipt(invocation.receipt.receipt_id).valid
+```
+
+For concurrent or long-lived work, use the async client directly.
+
 If a remote tool was dispatched but its outcome could not be confirmed,
 `invoke_tool` raises `DeliveryUncertainError`. Its `receipt_id` identifies the
 signed, charged uncertainty receipt; the SDK never retries the dispatch.
@@ -195,6 +226,7 @@ use `AgentMiddlewareClient` and the typed trust-loop methods.
 
 Legacy `charge()` and `@billable` calls made without an idempotency key are
 not replay-safe: retrying one whose response was lost bills the wallet again.
+Unkeyed `charge()` calls now emit a `UserWarning` to say so.
 Pass `charge(..., idempotency_key="...")`, or give `@billable` /
 `@combined` an `idempotency_key_factory` that derives the same key from the
 call's arguments on every retry, and the server replays the original charge
@@ -208,7 +240,7 @@ which can contain secrets.
 ## Build and test
 
 ```bash
-uv build b2a_sdk
-python -m pytest sdk/python/tests
+uv build sdk/python --out-dir dist
+uv run --directory sdk/python --extra dev pytest
 ruff check sdk/python/src sdk/python/tests
 ```

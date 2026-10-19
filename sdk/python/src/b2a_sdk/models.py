@@ -38,7 +38,10 @@ def _optional_string(data: Mapping[str, Any], key: str) -> str | None:
 def _datetime(value: Any, key: str) -> datetime:
     if not isinstance(value, str):
         raise ValueError(f"response field {key!r} must be an ISO-8601 string")
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"response field {key!r} must be an ISO-8601 string") from exc
 
 
 def _decimal(value: Any, key: str) -> Decimal:

@@ -79,6 +79,12 @@ class B2AEdgeClient:
         timeout: float = 30.0,
     ):
         self.api_url = api_url.rstrip("/")
+        if isinstance(api_key, str):
+            # Local import: this module must not import the governed client
+            # at load time. A key with CR or LF would inject a header.
+            from .client import AgentMiddlewareClient
+
+            AgentMiddlewareClient._reject_header_controls(api_key, "api_key")
         self.api_key = api_key
         self.wallet_id = wallet_id
         self.timeout = timeout
@@ -174,11 +180,13 @@ class B2AEdgeClient:
         permit = permit_id.strip() if isinstance(permit_id, str) else ""
         if not permit:
             raise ValueError("permit_id must not be blank")
-        key = idempotency_key.strip() if isinstance(idempotency_key, str) else ""
-        if not key:
+        if not isinstance(idempotency_key, str):
             raise ValueError("idempotency_key must not be blank")
-        if len(key) > 128:
-            raise ValueError("idempotency_key must be at most 128 characters")
+        # Same blank, length, and control-character rules as the governed client.
+        from .client import AgentMiddlewareClient
+
+        AgentMiddlewareClient._reject_header_controls(permit, "permit_id")
+        key = AgentMiddlewareClient._validate_idempotency_key(idempotency_key)
         payload = {
             "session_id": session_id,
             "action": action,
@@ -434,17 +442,21 @@ class LocalPermitValidator:
         tool_name: str,
         estimated_credits: Decimal,
         now: datetime | None = None,
+        wallet_id: str | None = None,
     ) -> LocalDecision:
         """Run the in-process permit checks for one prospective call.
 
         Mirrors the server's validation order and reason strings: status,
-        expiry, allowed tools, scopes (both ``tool:{name}:invoke`` and
-        ``billing:charge``), remaining budget
-        (``max_credits - spent_credits - locally reserved``), and
-        ``max_calls_per_tool`` against the local counter. Purely local — no
+        expiry, subject wallet (when ``wallet_id`` is passed), allowed tools,
+        scopes (both ``tool:{name}:invoke`` and ``billing:charge``), remaining
+        budget (``max_credits - spent_credits - locally reserved``), and
+        ``max_calls_per_tool`` against the local counter. Purely local: no
         network, no state change (use :meth:`record_use` after a completed
         call). Malformed expiry/amount fields fail closed with the matching
         denial reason. An allow here is advisory; the server still decides.
+
+        Omitting ``wallet_id`` skips the wallet comparison, so older callers
+        keep the previous advisory check.
         """
         permit = self._permit
         status = str(permit.get("status") or "active")
@@ -459,6 +471,9 @@ class LocalPermitValidator:
             return LocalDecision(False, "permit_expired")
         if expires_at <= moment:
             return LocalDecision(False, "permit_expired")
+        # Server order: wallet mismatch after expiry, before tools and scopes.
+        if wallet_id is not None and permit.get("subject_wallet_id") != wallet_id:
+            return LocalDecision(False, "permit_wallet_mismatch")
         # Mirror the server exactly (app/services/permits.py): an EMPTY
         # allowlist means unrestricted — only a non-empty list that omits the
         # tool denies. The scope check below still gates every tool.
@@ -478,10 +493,10 @@ class LocalPermitValidator:
             return LocalDecision(False, "permit_budget_exceeded")
         limits = permit.get("max_calls_per_tool") or {}
         if tool_name in limits:
-            try:
-                limit = int(limits[tool_name])
-            except (TypeError, ValueError):
-                # Fail closed on a malformed limit, like the server does.
+            limit = limits[tool_name]
+            # bool is an int, and int() would also turn 2.5 or "3" into a cap.
+            # The server denies any limit that is not a real int.
+            if type(limit) is not int:
                 return LocalDecision(False, "permit_max_calls_exceeded")
             if self._call_counts.get(tool_name, 0) >= limit:
                 return LocalDecision(False, "permit_max_calls_exceeded")
@@ -495,7 +510,12 @@ class LocalPermitValidator:
         The mirror errs conservative: an idempotent replay that returns the
         same receipt still advances the local counters, under-estimating the
         remaining budget rather than over-estimating it.
+
+        A negative amount is recorded as zero. Subtracting it would raise the
+        budget the mirror is willing to allow. The call still counts.
         """
+        if credits < 0:
+            credits = Decimal("0")
         self._call_counts[tool_name] = self._call_counts.get(tool_name, 0) + 1
         self._reserved += credits
 
@@ -545,8 +565,10 @@ class GovernedEdgeSession:
         already hold (or pin) the issuer's ``trust-keys.json``. Raises
         :class:`~b2a_sdk.errors.PermitDeniedError` with reason:
 
-        * ``permit_signature_invalid`` — the fetched permit does not verify
+        * ``permit_signature_invalid``: the fetched permit does not verify
           against the published keys (a genuine cryptographic negative);
+        * ``permit_wallet_mismatch``: the permit subject wallet is not the
+          wallet this session will act as;
         * ``permit_trust_keys_invalid`` — the trust-keys document is not a
           usable key set (malformed document, no ``keys`` list);
         * ``permit_verification_unavailable`` — the Ed25519 verifier itself
@@ -574,6 +596,10 @@ class GovernedEdgeSession:
             raise PermitDeniedError("permit_verification_unavailable") from exc
         if not verified:
             raise PermitDeniedError("permit_signature_invalid", payload=permit)
+        # Signature failure is the stronger finding, so the wallet comparison
+        # runs only after the permit verifies.
+        if permit.get("subject_wallet_id") != wallet_id:
+            raise PermitDeniedError("permit_wallet_mismatch", payload=permit)
         return cls(client, validator, permit_id=permit_id, wallet_id=wallet_id)
 
     async def invoke(
@@ -596,6 +622,7 @@ class GovernedEdgeSession:
         decision = self.validator.check(
             name,
             estimated_credits if estimated_credits is not None else Decimal("0"),
+            wallet_id=self.wallet_id,
         )
         if not decision.allowed:
             raise PermitDeniedError(decision.reason or "permit_denied")

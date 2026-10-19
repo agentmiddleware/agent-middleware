@@ -1,49 +1,184 @@
-# Break report: gateway MCP routers and dispatch
+# Break Report: gateway/failure_lab (Oct 8, 2026)
 
-Summary: 1 break found, 1 fixed and tested, 0 fixed but failing, 0 blocked.
+## Summary
 
-The break is in upstream dispatch. The four inbound probes (malformed initialize, tool call without a session, oversized body, unknown method) did not produce a server error or run a tool on a refusal.
+Probed the fail-closed surfaces of `gateway/failure_lab` with 8 adversarial
+probes (bad observation counts, mismatched observations, malformed operation
+identifiers, oversized bodies, type coercions). Found 5 breaks. Fixed 4 with
+root-cause patches plus regression tests, all passing. Fixed but failing: 0.
+Blocked / left open: 1 (observation binding without identifiers, needs a
+contract decision, see finding 5).
 
-## High: a successful paid tool call is discarded when a later tool list fails
+All work is local only. No production config, secrets, migrations, or network
+calls were involved. No database needed: every fix is in pure functions
+covered by unit tests.
 
-What broke: After a partner tool returned a normal success, the gateway sent a second `tools/list` on the same connection. That second request is not part of the paid call. When it failed, the gateway threw away the tool answer it already had.
+## Findings (by severity)
 
-Three local reproductions, all against a scripted upstream (no live partner, no charge endpoint):
+### 1. High: a boolean `True` observation established downstream execution
 
-- `tools/list` answered "method not found" (`-32601`). The adapter raised `UpstreamMcpDeliveryUncertainError`.
-- `tools/list` returned an output schema the tool answer did not match. The adapter raised `UpstreamMcpDeliveryUncertainError`.
-- `tools/list` was larger than the response cap. The adapter raised `UpstreamMcpResponseRejectedError` (`upstream_response_too_large`).
+What broke: `verify()` with
+`downstream_observation={"executions": True, ...}` reported
+`DOWNSTREAM_EXECUTION_ESTABLISHED`. In Python `bool` is a subclass of `int`,
+so the `isinstance(executions, int)` guard accepted it and `True > 0`
+counted as one execution.
 
-In each case the caller did not receive the tool text `paid-result`. The router treats both of those errors as charged outcomes, not refunds, so the caller pays and still gets a failure after the partner tool has already run.
+How to reproduce: sign any receipt, call
+`verify(bundle, keys, downstream_observation={"executions": True, ...})`,
+read the downstream claim.
 
-How to reproduce: from `gateway/`, run `tests/test_mcp_dispatch_breaks.py::test_paid_tool_call_ignores_a_hostile_follow_up_list` on the code before the cache pin. The scripted server returns `paid-result` for `tools/call`, then answers `tools/list` with one of the three hostile bodies above. The call must keep `paid-result` and must not send `tools/list` after `tools/call`.
+Root cause: `gateway/failure_lab/verifier.py`, `_downstream_claim`
+(execution-count validation, formerly around line 378).
 
-Root cause: `gateway/app/services/upstream_mcp.py` `_call_tool_once` (the `session.call_tool` call, now line 972). Every dispatch opens a new MCP `ClientSession` and never fills that session's output-schema cache. The installed client helper `ClientSession.call_tool` (`mcp/client/session.py` lines 411-421) calls `list_tools` when the tool name is missing from `_tool_output_schemas`, then may raise `RuntimeError` if the fresh list carries a schema the body does not match. Those exceptions are raised after the tool response has already arrived, and the adapter reports them as delivery-uncertain or response-rejected.
+Fix: reject booleans explicitly (`isinstance(executions, bool)` fails the
+observation as unusable, status NOT_ESTABLISHED). Same for any non-int type.
 
-Fix: Before the dispatch claim, if the session has that cache dict, set this tool's entry to `None`. The helper then returns the `tools/call` body and does not send `tools/list`. The gateway still canonicalizes that body the same way as before (size cap, secret check, canonical JSON).
+Test results: new test `test_a_boolean_is_not_an_execution_count`
+(parametrized True/False) in
+`gateway/tests/test_failure_lab_verifier.py`. Confirmed it fails on pre-fix
+code (old code returned ESTABLISHED for True) via a read-only
+`git show HEAD:` comparison script. Passes on fixed code.
 
-Test results: On the code before this pin, the same test file failed all three cases (`delivery_uncertain`, `delivery_uncertain`, `upstream_response_too_large`). After the pin, `tests/test_mcp_dispatch_breaks.py`, `tests/test_mcp_router_breaks.py`, and `tests/test_upstream_mcp.py` passed: 101 tests. A later run of the two new files passed: 38 tests. Ruff check and format check passed on the three touched Python files.
+### 2. Medium: an impossible negative execution count was reported as consistent
 
-## Probes that held
+What broke: `{"executions": -4}` with a non-success outcome returned
+NOT_ESTABLISHED with reason text calling the observation "consistent with"
+the outcome. Minus four executions cannot happen, so blessing it as
+consistent is a false clean bill for the instrument.
 
-Malformed initialize on `POST /mcp`: empty body, truncated JSON, non-UTF-8, `NaN`, null or non-string protocol version, missing or non-object params, missing or odd `id`, and a wrong `jsonrpc` version. Each stayed under HTTP 500 and did not run the fixture tool. Covered by `test_malformed_initialize_is_not_a_server_error`.
+How to reproduce: `verify()` with `executions=-4`, outcome
+`failed_refunded` or `delivery_uncertain`, read the reason string.
 
-Tool call without a session on `POST /mcp`: a wallet key and no `Mcp-Session-Id` runs the tool and the receipt wallet is the caller's. A forged `Mcp-Session-Id` does not change that wallet and does not skip the API key (missing key is HTTP 401). A missing, boolean, array, or object `id` does not run the tool. The outbound adapter still forwards the `mcp-session-id` from initialize onto `tools/call`. Covered by `test_tool_call_without_session_does_not_skip_auth_or_crash` and the dispatch test's session header check.
+Root cause: same function as finding 1, no lower-bound validation.
 
-Oversized body on `POST /mcp`: a body over `MAX_REQUEST_BODY_BYTES` (1 MiB) is HTTP 413 and does not run the tool. An empty `Content-Length` with that same body is a 4xx and does not run the tool. Covered by `test_oversized_standard_mcp_body_is_refused_before_the_tool`.
+Fix: negative counts return NOT_ESTABLISHED with reason "the supplied
+observation reported an impossible execution count". An impossible reading
+is an instrument error, not evidence for or against execution.
 
-Unknown method on `POST /mcp`: `resources/list`, `prompts/list`, and `logging/setLevel` return `-32601` and do not run a tool. `logging/setLevel` does not change the process log level because this server does not register that handler. `notifications/initialized` is HTTP 202. A non-string method stays under HTTP 500. Covered by `test_unknown_method_is_not_a_server_error` and `test_non_string_method_is_not_a_server_error`.
+Test results: new test
+`test_a_negative_count_is_an_unusable_observation_not_consistency`.
+Confirmed old code emitted "consistent" wording; passes on fixed code.
+
+### 3. Medium: an observation naming a different receipt established execution
+
+What broke: `verify()` never compared any identifier between the
+observation and the signed payload, so an observation collected for receipt
+B (with executions > 0) marked receipt A as executed.
+
+How to reproduce: verify receipt A with an observation carrying
+`receipt_id` of receipt B and `executions=1`. Old result: ESTABLISHED.
+
+Root cause: same function; the documented observation shape carries
+`operation_id` but the signed payload has no operation field to compare, so
+nothing was ever cross-checked.
+
+Fix: when the observation carries a non-empty string `receipt_id` and the
+signed payload names a different one, the claim FAILS with a reason naming
+both receipts. Matching or absent identifiers behave exactly as before, so
+no existing caller (including scenario T10, whose observation carries no
+receipt_id) changes status. The `verify()` docstring now documents the
+binding rule and recommends callers always bind observations.
+
+Test results: new tests `test_an_observation_of_another_receipt_fails_the_claim`
+and `test_an_observation_bound_to_this_receipt_still_establishes`.
+Confirmed old code returned ESTABLISHED for the mismatch; both pass fixed.
+
+### 4. Medium: non-string operation ids were coerced into plausible identifiers
+
+What broke: `classify_request()` applied `str()` to whatever the request
+carried as `operation_id`, so a dict, number, or bool became a
+plausible-looking string (for example `"{'nested': True}"`). That value
+matches no fault plan, so an injected fault would silently never fire while
+the crossing record reads as normally observed.
+
+How to reproduce: feed a `tools/call` (or `/refunds`) body with
+`"operation_id": {"nested": true}` to `classify_request`. Old result:
+`(kind, "{'nested': True}")`.
+
+Root cause: `gateway/failure_lab/faults.py`, `classify_request`, both the
+MCP and REST branches.
+
+Fix: accept the value only when it is already a string, else record `None`
+(visibly unidentified). The real gateway only ever sends strings
+(`StrictStr` in the refund tool), so no legitimate traffic changes.
+
+Test results: new `gateway/tests/test_failure_lab_failclosed.py` with
+parametrized bad-type cases for both paths plus a positive control.
+Confirmed old code coerced; passes fixed.
+
+### 5. Low (open, needs a decision): observations without identifiers are taken on trust
+
+What did not break but is weak by design: an observation carrying no
+`receipt_id` (the documented shape has only executions, operation_id,
+source) is assumed to describe the receipt being verified. Finding 3 closes
+the case where binding info is present but ignored; it cannot close the
+case where no binding info exists, because the signed payload carries no
+operation identifier to compare against (only receipt_id, request_hash, and
+dispatch linkage). Closing it fully means adding `receipt_id` (or
+`request_hash`) to the observation contract and threading it through every
+scenario that builds one, starting with T10.
+
+No code changed for this. Left as an open question for C.Lee below.
+
+### 6. Low: oversized fault-layer bodies raised instead of refusing cleanly
+
+What broke: a POST body over the 1 MiB buffer raised raw `ValueError` out
+of `FaultInjectionMiddleware`, surfacing to the gateway as an
+unclassifiable transport error instead of a clean refusal. The tool was
+never touched (fail-closed in effect), but the failure mode was a crash,
+not a refusal, and nothing recorded the refusal.
+
+How to reproduce: POST more than `_MAX_BODY_BYTES` to `/mcp` through
+`FaultInjectionMiddleware`. Old behavior: `ValueError` propagates.
+
+Root cause: `gateway/failure_lab/faults.py`,
+`FaultInjectionMiddleware.__call__` called `_read_body` unguarded.
+
+Fix: catch `ValueError`, record a crossing (`fault="oversized_body_rejected"`,
+`reached_tool=False`, `delivered=True`, kind `unclassified` so it never
+pollutes dispatch counts), and answer 413 with a JSON error. This mirrors
+the diagnostic server, which already refuses oversized submissions with 413
+(see `test_an_oversized_submission_is_refused`).
+
+Test results: new test
+`test_oversized_body_is_refused_as_413_without_reaching_the_tool` in the new
+file. Confirmed old code raised `ValueError`; passes fixed.
+
+## What was probed and held
+
+- Float (`1.0`) and string (`"1"`) execution counts: already rejected.
+- `False` count on a success receipt: already FAILED the claim correctly.
+- Unsigned envelope edits: still verify, and are reported as disagreements.
+- Envelope `kid` relabelling: cannot steer key selection (signed bytes win).
+- Unknown signed `kid`, disabled keys, key-length checks: all fail closed.
+- Redaction and secret plumbing (`secret_values` carries admin key, bearer,
+  control token plus environment secrets): complete, no change needed.
+- Retired signing keys staying published: deliberate (historical receipts
+  stay verifiable), not a bug.
+- Scenario verdict logic (T02, T09, T10): guards against empty probe loops
+  and ledger reconciliation already present, no change needed.
+
+## Test summary
+
+Commands run from `gateway/` through the slot queue:
+
+- `python -m pytest tests/test_failure_lab_verifier.py tests/test_failure_lab_failclosed.py -q`: 27 passed
+- `python -m pytest ...verifier ...failclosed ...evidence ...report ...claims ...harness ...portable_keys -q`: 90 passed
+- `python -m pytest ...verifier ...failclosed ...scenarios -q`: 86 passed
+- `ruff check failure_lab/ tests/test_failure_lab_failclosed.py tests/test_failure_lab_verifier.py`: all checks passed
+- `ruff format` applied to `failure_lab/faults.py`; all touched files format-clean
+- No-fix confirmation: new assertions executed against pre-fix modules
+  extracted read-only via `git show HEAD:`; all 5 failed there and pass
+  with the fix.
+
+Full gateway suite was not run (time and shared-machine load); scenario
+integration runs needing the app and databases were not run beyond the
+`test_failure_lab_scenarios` file, which passed.
 
 ## Open questions
 
-Legacy `POST /mcp/messages` still accepts a `tools/call` whose JSON-RPC `id` is missing or null and will run it. The standard `POST /mcp` path treats that shape as a notification and does not run the tool. I did not change the legacy route. Whether callers still omit `id` is a compatibility decision, and this pass did not execute that legacy call.
-
-Methods the MCP SDK does not model (`tools/execute`, `INITIALIZE`) come back as `-32602` invalid params, not `-32601` method not found. The tool does not run. I left that as the SDK's answer.
-
-A JSON-RPC error on the `tools/call` request itself, after the dispatch claim, is still delivery-uncertain and charged. This fix does not refund that case. The claim is already taken, and the send may have reached the partner.
-
-The pin uses the client's `_tool_output_schemas` attribute. The new test drives the real client, so a library upgrade that removes the attribute will fail the test. I did not edit the installed package.
-
-The discovered output schema is still not checked against the returned body. The gateway's own result canonicalizer never did that check. Enforcing it would be a new product rule, and a mismatch must not be reported as delivery-uncertain.
-
-Partner MCP (`gateway/app/partner_mcp.py`) is a separate app. I did not probe it. The full gateway suite was not run.
+1. Should the downstream-observation contract require `receipt_id`
+   (finding 5), with T10 and any other builders updated to supply it?
+   Recommend yes, as a follow-up task.
+2. No migration, no config, no API changes in this work. Nothing needs a
+   decision to land it.

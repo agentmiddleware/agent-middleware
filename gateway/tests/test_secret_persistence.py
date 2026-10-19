@@ -232,8 +232,8 @@ async def test_legacy_comms_registry_record_is_scrubbed_and_still_owned(
         foreign = await client.get(
             "/v1/comms/messages/agent-legacy/inbox", headers=other["agent_headers"]
         )
-        assert foreign.status_code == 403
-        assert foreign.json()["detail"]["error"] == "access_denied"
+        assert foreign.status_code == 404, foreign.text
+        assert foreign.json()["detail"]["error"] == "agent_not_found"
 
         own = await client.get(
             "/v1/comms/messages/agent-legacy/inbox", headers=owner["agent_headers"]

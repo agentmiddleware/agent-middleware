@@ -7,10 +7,10 @@
 # unconditionally on every run and inflated its failure count.
 set -euo pipefail
 
-# ruff is not in requirements.txt (CI installs it separately), so ask for it
-# explicitly in the uv fallback.
+# ruff and mypy are exact pins in requirements-dev.txt, the same versions as
+# RUFF_VERSION and MYPY_VERSION in CI. Do not --with either tool unpinned.
 PYTHON_ENV_REQUIRE="ruff mypy"
-PYTHON_ENV_EXTRA_WITH="ruff"
+PYTHON_ENV_EXTRA_REQUIREMENTS="requirements-dev.txt"
 # shellcheck source=scripts/lib/python_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/python_env.sh"
 

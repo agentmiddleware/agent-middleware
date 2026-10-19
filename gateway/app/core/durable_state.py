@@ -31,7 +31,12 @@ import asyncpg
 import redis.asyncio as redis
 
 from .config import get_settings
-from .db_urls import as_asyncpg_url, is_postgres_url, sqlite_path_from_url
+from .db_urls import (
+    as_asyncpg_url,
+    is_postgres_url,
+    is_sqlite_url,
+    sqlite_path_from_url,
+)
 from .runtime_degradation import mark_durable_state_fell_back
 from .trust_mode import is_production_like_environment
 
@@ -146,7 +151,23 @@ class DurableStateStore:
         self._state_backend = settings.STATE_BACKEND.strip().lower()
         self._redis_url = settings.REDIS_URL.strip()
         self._database_url = settings.DATABASE_URL.strip()
-        self._sqlite_url = settings.SQLITE_URL.strip()
+        # SQLITE_URL is documented as a filesystem path (see .env.example),
+        # but the name invites the SQLAlchemy URL form, and handing a URL to
+        # aiosqlite.connect would create a file with that literal name while
+        # the operator believes state is durable elsewhere. Accept the URL
+        # form too; anything that is not a SQLite URL stays a raw path, and
+        # an in-memory spelling resolves to "" so it keeps the deliberate
+        # non-durable treatment below instead of a garbage file.
+        raw_sqlite_url = settings.SQLITE_URL.strip()
+        if raw_sqlite_url and is_sqlite_url(raw_sqlite_url):
+            # SQLAlchemy URL form: normalize to the file path aiosqlite
+            # expects. An in-memory spelling normalizes to "" so it keeps
+            # the deliberate non-durable treatment instead of becoming a
+            # file with a URL for a name.
+            self._sqlite_url = sqlite_path_from_url(raw_sqlite_url)
+        else:
+            # Documented raw-path form (or the ":memory:" shorthand).
+            self._sqlite_url = raw_sqlite_url
         # A SQLAlchemy SQLite ``DATABASE_URL`` is the standard local-development
         # setting. Without this, auto-resolution below would see a non-empty
         # DATABASE_URL, choose the postgres backend, hand a sqlite DSN to

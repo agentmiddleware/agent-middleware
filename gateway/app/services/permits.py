@@ -884,8 +884,13 @@ class PermitService:
             return PermitValidation(
                 False, "permit_key_mismatch", model, {"bound_to": "subject_key_id"}
             )
+        # An empty allowlist names no tool, so it admits none. The previous
+        # `if allowed_tools and ...` form skipped this check for empty lists
+        # and let the scope check below decide, so a permit carrying explicit
+        # scopes but no tool restriction could authorize tools it never
+        # named. Deny-all here makes the empty case explicit.
         allowed_tools = _loads_list(model.allowed_tools_json)
-        if allowed_tools and tool_name not in allowed_tools:
+        if tool_name not in allowed_tools:
             return PermitValidation(
                 False,
                 "permit_tool_not_allowed",

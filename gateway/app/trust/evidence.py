@@ -443,7 +443,11 @@ async def build_receipt_evidence(
                 },
             )
         )
-        tool_allowed = not permit.allowed_tools or receipt.tool in permit.allowed_tools
+        # An empty or unset allowlist names no tool, so it admits none —
+        # the same deny-all the authorization path applies (permits.py).
+        # Evidence must not report permit_tool_scope as passed for an action
+        # the permit itself would refuse.
+        tool_allowed = receipt.tool in (permit.allowed_tools or [])
         required_scope = f"tool:{receipt.tool}:invoke"
         scope_allowed = (
             required_scope in permit.scopes and "billing:charge" in permit.scopes

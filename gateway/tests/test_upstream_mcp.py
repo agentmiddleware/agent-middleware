@@ -95,6 +95,7 @@ class FakeSession:
         )
         self.initialize_error = initialize_error
         self.call_error = call_error
+        self._tool_output_schemas: dict[str, Any] = {}
         self.events: list[str] = []
         self.call_arguments: dict[str, Any] | None = None
         self.call_meta: dict[str, Any] | None = None
@@ -1110,6 +1111,64 @@ async def test_call_tool_commits_dispatch_boundary_and_forwards_metadata() -> No
     )
     assert len(result.response_hash) == 64
     assert result.size_bytes == len(result.canonical_json.encode("utf-8"))
+
+
+@pytest.mark.anyio
+async def test_schema_cache_must_exist_before_dispatch_claim() -> None:
+    session = FakeSession()
+    del session._tool_output_schemas
+    adapter = UpstreamMcpAdapter(_configuration())
+    _mark_discovered(adapter)
+    _bind_session(adapter, session)
+    claimed = False
+
+    async def before_dispatch() -> None:
+        nonlocal claimed
+        claimed = True
+
+    with pytest.raises(UpstreamMcpPreDispatchError) as exc_info:
+        await adapter.call_tool(
+            {},
+            invocation_id="inv",
+            idempotency_key="idem",
+            before_dispatch=before_dispatch,
+        )
+
+    assert exc_info.value.code == "upstream_client_schema_cache_unavailable"
+    assert claimed is False
+    assert session.events == ["initialize"]
+
+
+@pytest.mark.anyio
+async def test_discovered_output_schema_is_copied_before_dispatch_claim() -> None:
+    output_schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+    }
+    adapter = UpstreamMcpAdapter(_configuration())
+    adapter._discovered_tool = DiscoveredUpstreamTool(
+        name="partner.write",
+        description="Partner write",
+        input_schema={"type": "object"},
+        output_schema=output_schema,
+    )
+    session = FakeSession()
+    _bind_session(adapter, session)
+
+    async def before_dispatch() -> None:
+        cached = session._tool_output_schemas["partner.write"]
+        assert cached == output_schema
+        assert cached is not output_schema
+        assert cached["properties"] is not output_schema["properties"]
+        session.events.append("before_dispatch")
+
+    await adapter.call_tool(
+        {},
+        invocation_id="inv-copy",
+        idempotency_key="idem-copy",
+        before_dispatch=before_dispatch,
+    )
+    assert session.events == ["initialize", "before_dispatch", "call_tool"]
 
 
 @pytest.mark.anyio

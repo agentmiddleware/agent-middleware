@@ -264,7 +264,11 @@ jobs:
           PY
           }
           run_required /tmp/pg-datetime.xml tests/test_postgres_datetime_binding.py::TestPostgresTrustLoop
-          run_required /tmp/pg-accounting.xml tests/test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted
+          # setup_database creates the pooled engine on the session event loop.
+          # Keep the accounting test's async fixtures on that loop too.
+          run_required /tmp/pg-accounting.xml \
+            -o asyncio_default_fixture_loop_scope=session \
+            tests/test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted
 
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}

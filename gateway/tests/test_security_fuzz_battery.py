@@ -684,7 +684,7 @@ async def test_oversized_payload_on_invoke_is_refused(client, clean_database):
 # ─── Track 5: Rate Limit Behavior ────────────────────────────────────────────
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_rapid_fire_invokes_all_accounted(client, clean_database):
     """Fire 20 rapid invokes; check all receipts exist and total charge is exact.
     Requires PostgreSQL for accurate row-lock accounting.

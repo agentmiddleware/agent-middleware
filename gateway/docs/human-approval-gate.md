@@ -116,11 +116,11 @@ railway variables set SENTINEL_API_KEY=sk_live_...   # from your Sentinel tenant
 railway variables set SIMULATION_MODE_HUMAN_APPROVAL=false
 ```
 
-Deploy through the exact-SHA operator sequence in
-the hosted-service deploy runbook (not in this repository). Do not expect the production public
+Deploy through a separately reviewed exact-SHA operator process; this
+repository has no hosted deploy runbook. Do not expect the production public
 dependency projection to attest Sentinel readiness. Validate the integration
 with a separate deliberate synthetic or redacted gated-approval flow, then
-create a gated permit (note the extra field) and drive the loop from
-the hosted-service deploy runbook (not in this repository)'s dogfood section — the first
+create a gated permit (note the extra field) and drive the loop with a
+separately approved synthetic test — the first
 `/mcp/messages` call returns `human_approval_pending`, the approver gets the
 Sentinel email/SMS, and the retried call executes after approval.

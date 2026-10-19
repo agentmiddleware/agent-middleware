@@ -29,8 +29,9 @@ worth running on both engines, and a result on one is not a result on the
 other. `scripts/invariant_attacks/attack2_budget_postgres.py` exists for
 exactly that comparison.
 
-Boot instructions: [quickstart.md](quickstart.md) for the local plane,
-the hosted-service deploy runbook (not in this repository) for a deployment of your own.
+Boot instructions: [quickstart.md](quickstart.md) for the local plane.
+Hosted deployment requires a separately reviewed operator process; see
+[`SECURITY_LIMITATIONS.md`](../SECURITY_LIMITATIONS.md) for its limits.
 
 ## 2. Mint your own credentials
 

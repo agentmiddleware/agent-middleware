@@ -63,9 +63,9 @@ not satisfy it.
    origins and standard auto-permit bypasses. Routing alone is insufficient;
    demonstrate credential isolation and upstream refusal before admission.
    No mixed-version activation is allowed without this evidence.
-5. Use the canonical immutable exact-SHA release path in
-   the hosted-service deploy runbook (not in this repository). Apply 042 through the reviewed migration
-   entrypoint, then verify private schema parity, the baked build SHA, worker
+5. Use a separately reviewed immutable exact-SHA operator process; this
+   repository has no hosted deploy runbook or IaC graph. Apply 042 through the
+   reviewed migration entrypoint, then verify private schema parity, the baked build SHA, worker
    identity, runtime posture, health and logs. Record the observations above.
    Preserve signing material, stable deployment authority and native upstream
    idempotency identity. Schema compatibility alone does not prove safe admission.

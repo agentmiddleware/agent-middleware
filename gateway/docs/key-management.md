@@ -191,7 +191,8 @@ Until the KMS integration ships, the production posture is:
   `active`. Retiring the old metadata has no route or script yet:
   `retire_key_metadata` and `rotate_active_key_metadata` are service methods
   only, and no `POST /v1/admin/signing-keys/rotate` route exists. The
-  post-rotation steps are in the hosted-service deploy runbook (not in this repository).
+  post-rotation steps require a separately reviewed operator process; this
+  repository has no hosted deploy runbook.
 
 This is documented as a known limitation in `SECURITY_LIMITATIONS.md` and
 should be the default answer to "where do the private keys live?" until the

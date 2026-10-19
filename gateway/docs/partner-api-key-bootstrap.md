@@ -58,19 +58,20 @@ curl -X DELETE "$API_URL/v1/api-keys/$AGENT_WALLET_ID/$KEY_ID" \
 
 Same steps as [`golden-path.md`](golden-path.md) §2–4:
 
-1. `POST /v1/billing/wallets/sponsor` with bootstrap key  
-2. `POST /v1/billing/wallets/agent` with bootstrap key  
-3. `POST /v1/api-keys` for the agent wallet with bootstrap key  
-4. Partner uses the returned `api_key` as `X-API-Key` thereafter  
+1. `POST /v1/billing/wallets/sponsor` with bootstrap key
+2. `POST /v1/billing/wallets/agent` with bootstrap key
+3. `POST /v1/api-keys` for the agent wallet with bootstrap key
+4. Partner uses the returned `api_key` as `X-API-Key` thereafter
 
 ## What agents should do on 401
 
-1. Re-read `/.well-known/agent.json` → `authentication` (`public_self_serve: false`).  
-2. Stop — do not invent keys or hit random mint endpoints.  
+1. Re-read `/.well-known/agent.json` → `authentication` (`public_self_serve: false`).
+2. Stop — do not invent keys or hit random mint endpoints.
 3. Ask the human operator for a wallet-scoped key (this doc).
 
 ## Related
 
 - [`DESIGN_PARTNER_GUIDE.md`](../DESIGN_PARTNER_GUIDE.md)
 - [`golden-path.md`](golden-path.md)
-- the hosted-service deploy runbook (not in this repository) (`VALID_API_KEYS` posture)
+- [`SECURITY_LIMITATIONS.md`](../SECURITY_LIMITATIONS.md#required-production-posture)
+  (`VALID_API_KEYS` posture); hosted secret verification is an operator check

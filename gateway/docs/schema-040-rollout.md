@@ -33,8 +33,9 @@ records in the pre-040 shape, keeping this first-party fallback compatible.
    permits, schema-040 restart, old-style permit-creation replay, signed-window
    enforcement and tamper rejection with issuance disabled. Missing columns
    and mismatched revision stamps must still fail closed.
-4. Use the canonical clean, detached exact-SHA `prepare_railway_release.py`
-   archive and immutable `railway up` upload for both releases. Keep
+4. Prepare a clean, detached exact-SHA build context and record the immutable
+   image digest for both releases using a separately reviewed operator process;
+   this repository does not contain `prepare_railway_release.py`. Keep
    `ENABLE_PERMIT_REPEAT_WINDOW_ISSUANCE=false` (its default) while deploying
    `BRIDGE_SHA`. Verify this setting inside the selected live instance. Apply
    040 through the migration-on-start entrypoint only after confirming the
@@ -46,11 +47,11 @@ records in the pre-040 shape, keeping this first-party fallback compatible.
    both health routes reporting the exact baked SHA with provenance `stamped`.
    Inspect logs. Record deployment ID, instance ID, full SHA, and results.
    Only then is `BRIDGE_SHA` a live-verified rollback target.
-6. Deploy the reviewed merged main SHA using the same immutable path. New
+6. Deploy the reviewed merged main SHA using the same reviewed process. New
    issuance may be enabled only after every remaining worker is compatible.
    Stage only `ENABLE_PERMIT_REPEAT_WINDOW_ISSUANCE=true` without automatic
-   redeployment, then upload the exact approved main context. Do not trigger a
-   rebuild from stale Railway GitHub source metadata. Preserve all credentials
+   redeployment, then deploy the exact approved main context. Do not trigger a
+   rebuild from stale Railway GitHub source metadata. Verify credentials
    and other configuration. Verify the flag privately in the final instance.
 
 The first compatibility deployment crosses the old-image restart boundary.
@@ -61,9 +62,9 @@ has actually been exercised.
 
 ## Rollback after activation
 
-Stage issuance disabled, without triggering a source redeploy, and upload the
-recorded `BRIDGE_SHA` from its clean detached archive. Leave database 040 and
-all signing material intact. Verify sole-worker identity, schema, runtime
+Stage issuance disabled, without triggering a source redeploy, and deploy the
+recorded `BRIDGE_SHA` from its clean detached build context. Leave database 040
+and all signing material intact. Verify sole-worker identity, schema, runtime
 posture, public exact-SHA health, and logs again. Previously issued non-null
 permits must still verify and retain their window; the flag controls only
 **new issuance**, not verification, invocation, or completed creation replay.

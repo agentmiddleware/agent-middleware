@@ -115,9 +115,10 @@ Keep these out of the wedge until a design partner requires them:
 
 ## Required Production Posture
 
-Operator deploy path and variable checklist:
-the hosted-service deploy runbook (not in this repository) (`railway up` from this
-repo; do not Redeploy from GitHub source).
+Before any hosted release, the operator must review the exact source SHA,
+image digest, deployment state, and runtime variables separately. The local
+`make check-gateway-image-contract` gate checks only repository-owned image
+inputs and stamp handling; it cannot inspect hosted resources or secret values.
 
 - `TRUST_MODE_ENABLED=true` and `ALLOW_LEGACY_UNPERMITTED_MCP=false` are the
   shipped defaults. A production-like environment cannot boot under any
@@ -146,11 +147,11 @@ repo; do not Redeploy from GitHub source).
 - Set `PUBLIC_URL` to the public HTTPS API origin (Railway host or custom
   domain). Agents and `/llm.txt` use it; do not leave production pointing at
   localhost.
-- Set `VALID_API_KEYS` only via host secrets / Railway service variables. The
-  API-only `.railway/railway.ts` graph preserves the key
-  name without owning or exposing its value; every configured API key uses
-  `preserve()`. Never commit real keys or use the placeholder `change-me` in
-  production.
+- Set `VALID_API_KEYS` only via host secrets / Railway service variables and
+  verify the value in the selected service through an authorized private
+  operator check. This repository does not contain a hosted IaC graph or
+  verify secret retention. Never commit real keys or use the placeholder
+  `change-me` in production.
 - Disable or isolate proof surfaces that execute code, drive browsers, generate
   patches, crawl external URLs, or touch third-party systems.
 - When `REDIS_URL` is set, production-like environments fail closed on Redis

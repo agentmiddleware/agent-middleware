@@ -15,9 +15,10 @@ check runs only at startup.
 
 1. Confirm the production database is at `040_permit_repeat_window`. An earlier
    revision needs its own migration review first.
-2. Deploy the reviewed main SHA through the canonical exact-SHA path in
-   the hosted-service deploy runbook (not in this repository), with `RUN_MIGRATIONS_ON_START=true`
-   so the entrypoint applies 041 before uvicorn starts.
+2. Deploy the reviewed main SHA with a separately reviewed exact-SHA operator
+   process. This repository has no hosted deploy runbook or IaC graph. Set
+   `RUN_MIGRATIONS_ON_START=true` so the entrypoint applies 041 before uvicorn
+   starts, and verify the image digest and runtime settings privately.
 3. Record the deployed SHA, deployment id, and the result of the private schema
    parity check. That SHA is now the earliest valid recovery image.
 

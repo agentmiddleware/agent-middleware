@@ -195,7 +195,7 @@ async def lifespan(app: FastAPI):
             "reporting provider.status=contact_not_configured on a "
             "production-like deployment. Set PUBLIC_CONTACT_NAME, "
             "PUBLIC_CONTACT_EMAIL, and PUBLIC_CONTACT_URL together "
-            "(see the hosted-service deploy runbook (not in this repository), Required production variables)."
+            "(see SECURITY_LIMITATIONS.md, Required Production Posture)."
         )
     try:
         signing_key_state = validate_signing_key_configuration(settings)

@@ -171,5 +171,5 @@ when the selected deployment exposes the full proof-surface report. It does
 | End-to-end wallet + key + tool flow | `docs/golden-path.md` |
 | What “beta” still means | `docs/production-beta-roadmap.md` |
 | Env flags | `.env.example` |
-| Railway deploy (single path) | the hosted-service deploy runbook (not in this repository) — `railway up`; never Redeploy from GitHub source |
+| Hosted deploy | Separately reviewed exact-SHA operator process; this repository has no hosted deploy runbook or IaC graph |
 | Database migrations | This section §7 + `scripts/docker_entrypoint.sh` |

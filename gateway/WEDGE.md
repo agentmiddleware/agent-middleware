@@ -268,11 +268,10 @@ the verifier checks the receipt against that root. Do not start key
 pinning, TUF, or Fulcio as a side project.
 
 Production-like deploys must keep `ENABLE_PROOF_SURFACES=false`.
-Deploy SOP (single path: `railway up` from this Dockerfile):
-the hosted-service deploy runbook (not in this repository).
-
-Agent-executable remediation of known spine/discovery/deploy debt:
-`docs/tech-debt-remediation-plan.md`.
+`make check-gateway-image-contract` checks the local image source and release
+stamp path. A hosted release still needs separate operator review of the exact
+image digest, runtime configuration, deployed SHA, and health; this repository
+contains no hosted deployment graph or deploy runbook.
 
 ## What Not To Claim Yet
 

@@ -193,12 +193,14 @@ rate limiting.
 | Command | Enforces |
 |---|---|
 | `make trust-coverage-gate` | 43 focused trust test files at an **80% coverage floor** across 38 named trust-plane control modules |
-| `make trust-release-gate` | The offline Railway IaC contract first (lock-pinned package install with lifecycle scripts disabled, then fail-closed API-only graph validation), followed by the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates |
+| `make check-gateway-image-contract` | Source preflight for the repository-root Docker context, gateway and SDK image inputs, secret exclusions, and validated release-stamp transfer. It executes the stamp writer against isolated inputs. It does not build the image, inspect hosted variables, or validate a Railway resource graph. `check-railway-iac` remains an alias for old callers. |
+| `make trust-release-gate` | Runs the image source preflight first, then the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates. |
 
-CI runs `scripts/trust_release_gate.sh` as a dedicated required check
-(`trust_release_gate`) so `main` cannot advance past an unproven claim; the
-exact branch-protection settings are in
-`trust-release-gate-branch-protection.md`.
+The CI workflow runs the gateway pytest suite, including the source-preflight
+regression tests, but has no dedicated `trust_release_gate` job. Run
+`make trust-release-gate` for this aggregate gate and verify branch protection
+in GitHub before relying on any check as required for merge. Its green result
+does not establish the deployed image digest, runtime secrets, or hosted state.
 The [stranger test](stranger-test.md) is the human milestone that checks the
 same five claims are reachable and checkable from the published docs alone.
 

@@ -39,7 +39,9 @@ async def harness(tmp_path_factory):
     async with get_engine().connect() as conn:
         await stress._assert_migrated_empty_database(conn)
         for table in ("permits", "receipts"):
-            cols = await conn.run_sync(lambda c: inspect(c).get_columns(table))
+            cols = await conn.run_sync(
+                lambda c, table=table: inspect(c).get_columns(table)
+            )
             assert set(FIELDS) <= {c["name"] for c in cols}, "stale 042 schema"
     async for value in stress.stress_harness.__wrapped__(tmp_path_factory):
         yield value

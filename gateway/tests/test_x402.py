@@ -1058,7 +1058,7 @@ async def test_release_tool_call_compensation_semantics(client, clean_database):
 
     # Two concurrent-style reservations, one release: the surviving count is
     # exactly one — the release never clobbers the other reservation.
-    for idx in range(2):
+    for _idx in range(2):
         validation = await permits.authorize_and_reserve(
             permit_id=permit_id,
             wallet_id=wallet_id,

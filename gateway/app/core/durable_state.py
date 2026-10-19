@@ -610,7 +610,7 @@ class DurableStateStore:
         self._backend = "memory"
 
 
-@lru_cache()
+@lru_cache
 def get_durable_state() -> DurableStateStore:
     return DurableStateStore()
 

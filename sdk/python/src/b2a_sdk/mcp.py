@@ -134,9 +134,13 @@ async def serve_async(
     async def call_tool(service_id: str, input_data: dict, wallet_id: str, api_key: str) -> dict:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{api_url}/v1/billing/services/{service_id}/invoke",
+                f"{api_url}/mcp/tools/{service_id}/invoke",
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-                json={"caller_wallet_id": wallet_id, "input_data": input_data},
+                json={
+                    "name": service_id,
+                    "arguments": input_data,
+                    "mcp_context": {"wallet_id": wallet_id},
+                },
                 timeout=30.0,
             )
             response.raise_for_status()
@@ -150,7 +154,7 @@ async def serve_async(
             async def handler(**kwargs) -> dict:
                 return await call_tool(
                     service_id=svc_id,
-                    input_data={"input_data": kwargs},
+                    input_data=kwargs,
                     wallet_id=os.getenv("B2A_WALLET_ID", ""),
                     api_key=os.getenv("B2A_API_KEY", ""),
                 )

@@ -149,8 +149,8 @@ async def test_unknown_outcome_rejected_before_enrichment_or_write(
     assert await _money_and_receipt_state(owner["agent_wallet_id"]) == before
 
 
-@pytest.mark.parametrize("outcome", ["denied", "insufficient_funds"])
-async def test_charged_denial_rejected_without_mutation(
+@pytest.mark.parametrize("outcome", ["denied", "insufficient_funds", "failed_refunded"])
+async def test_charged_uncharged_outcome_rejected_without_mutation(
     client, clean_database, monkeypatch, outcome
 ):
     owner, permit = await _setup(client)
@@ -158,7 +158,7 @@ async def test_charged_denial_rejected_without_mutation(
     monkeypatch.setattr(get_settings(), "JEV_RISK_GUARD", DuplicateGuardMode.LOG)
 
     async def unexpected_enrichment(*args, **kwargs):
-        raise AssertionError("charged denial reached JEV enrichment")
+        raise AssertionError("charged uncharged outcome reached JEV enrichment")
 
     monkeypatch.setattr(
         "app.services.receipts.load_jev_guard_metadata", unexpected_enrichment
@@ -170,7 +170,7 @@ async def test_charged_denial_rejected_without_mutation(
                 permit,
                 outcome=outcome,
                 credits_charged=Decimal("0.5"),
-                reason_code="permit_budget_exceeded",
+                reason_code="upstream_error",
             )
         )
     assert await _money_and_receipt_state(owner["agent_wallet_id"]) == before

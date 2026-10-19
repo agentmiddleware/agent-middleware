@@ -37,7 +37,7 @@ _RECEIPT_OUTCOMES = frozenset(
         "response_rejected",
     }
 )
-_UNCHARGED_OUTCOMES = frozenset({"denied", "insufficient_funds"})
+_UNCHARGED_OUTCOMES = frozenset({"denied", "insufficient_funds", "failed_refunded"})
 
 
 class ReceiptError(RuntimeError):

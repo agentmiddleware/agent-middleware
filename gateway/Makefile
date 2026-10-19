@@ -28,8 +28,9 @@ live-loop-proof:
 # are skipped here — run them with `make test-all` (what CI runs) or `make test-proof`.
 # `--with-requirements` makes these self-contained: uv installs the runtime +
 # test deps for the run, so `make test` works on a fresh checkout without a
-# separate `pip install -r requirements.txt` (deps live in requirements.txt,
-# not pyproject [project.dependencies]).
+# separate `pip install -r requirements.txt` (runtime floors are declared in
+# pyproject [project.dependencies]; requirements.txt mirrors them and stays
+# the install target for Docker/CI/`--with-requirements` runs).
 test:
 	uv run --with-requirements requirements.txt pytest tests/ -q -m "not proof"
 

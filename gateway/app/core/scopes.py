@@ -10,7 +10,7 @@ Usage:
 from __future__ import annotations
 
 from functools import wraps
-from typing import Awaitable, Callable, ParamSpec, TypeVar
+from typing import Any, Awaitable, Callable, Coroutine, ParamSpec, TypeVar
 
 from fastapi import HTTPException, status
 
@@ -22,7 +22,7 @@ T = TypeVar("T")
 
 def require_scope(
     *required_scopes: str,
-) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Coroutine[Any, Any, T]]]:
     """Decorator that checks JWT scopes on the auth context.
 
     API key callers (source="db" or "env") bypass scope checks
@@ -32,7 +32,7 @@ def require_scope(
 
     def decorator(
         func: Callable[P, Awaitable[T]],
-    ) -> Callable[P, Awaitable[T]]:
+    ) -> Callable[P, Coroutine[Any, Any, T]]:
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             # Find AuthContext in kwargs

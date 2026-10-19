@@ -16,6 +16,7 @@ from app.main import app
 from app.services.audit_log import record_audit_event
 from app.services.idempotency import get_idempotency_service
 from app.services.receipts import ReceiptError, get_receipt_service
+from app.services.signing_keys import get_signing_key_service
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
 
 pytestmark = pytest.mark.anyio
@@ -76,7 +77,7 @@ async def _money_and_receipt_state(wallet_id):
             .all()
         )
         receipts = (await session.execute(select(ReceiptModel))).scalars().all()
-        keys = (await session.execute(select(SigningKeyModel.key_id))).scalars().all()
+        keys = (await session.execute(select(SigningKeyModel))).scalars().all()
         return (
             (wallet.balance, wallet.lifetime_credits, wallet.lifetime_debits),
             tuple(
@@ -85,8 +86,26 @@ async def _money_and_receipt_state(wallet_id):
                     for row in ledger
                 )
             ),
-            tuple(sorted((row.receipt_id, row.signature) for row in receipts)),
-            tuple(sorted(keys)),
+            tuple(
+                sorted(
+                    (
+                        row.receipt_id,
+                        row.signature,
+                        row.signature_key_id,
+                        row.constraints_evaluated_json,
+                        row.outcome,
+                        row.credits_charged,
+                        row.response_hash,
+                    )
+                    for row in receipts
+                )
+            ),
+            tuple(
+                sorted(
+                    (row.key_id, row.status, row.activated_at, row.retired_at)
+                    for row in keys
+                )
+            ),
         )
 
 
@@ -212,6 +231,51 @@ async def test_constraints_replay_compares_signed_semantics(client, clean_databa
         with pytest.raises(ReceiptError, match="^receipt_idempotency_conflict$"):
             await service.create_receipt(**kwargs, constraints_evaluated=changed)
         assert await _money_and_receipt_state(owner["agent_wallet_id"]) == before
+
+
+@pytest.mark.parametrize("caller_owned", [False, True])
+@pytest.mark.parametrize("conflicting", [False, True])
+async def test_replay_checks_existing_evidence_before_signing(
+    client, clean_database, monkeypatch, caller_owned, conflicting
+):
+    owner, permit = await _setup(client)
+    kwargs = await _idempotent_kwargs(owner, permit, "before-signing")
+    service = get_receipt_service()
+    first = await service.create_receipt(
+        **kwargs, constraints_evaluated={"checked": True}
+    )
+    before = await _money_and_receipt_state(owner["agent_wallet_id"])
+
+    async def forbidden_sign(*_args, **_kwargs):
+        raise AssertionError("replay reached signing")
+
+    def forbidden_prepared_sign(*_args, **_kwargs):
+        raise AssertionError("replay reached prepared signing")
+
+    signing = get_signing_key_service()
+    monkeypatch.setattr(signing, "sign_payload", forbidden_sign)
+    monkeypatch.setattr(signing, "sign_payload_with_key_id", forbidden_prepared_sign)
+
+    async def check_replay(session=None):
+        replay = {
+            **kwargs,
+            "constraints_evaluated": {"checked": not conflicting},
+            "session": session,
+            "prepared_signing_key_id": first.signature_key_id if caller_owned else None,
+        }
+        if conflicting:
+            with pytest.raises(ReceiptError, match="^receipt_idempotency_conflict$"):
+                await service.create_receipt(**replay)
+        else:
+            again = await service.create_receipt(**replay)
+            assert again.receipt_id == first.receipt_id
+
+    if caller_owned:
+        async with get_session_factory()() as session:
+            await check_replay(session)
+    else:
+        await check_replay()
+    assert await _money_and_receipt_state(owner["agent_wallet_id"]) == before
 
 
 @pytest.mark.parametrize(("first", "replay"), [(None, {}), ({}, None)])

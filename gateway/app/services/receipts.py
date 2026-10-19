@@ -432,8 +432,12 @@ class ReceiptService:
             return receipt_model_to_response(existing)
 
         target_session = session
-        if target_session is not None:
-            existing = await existing_response(target_session)
+        if idempotency_record_id is not None:
+            if target_session is None:
+                async with get_session_factory()() as preflight_session:
+                    existing = await existing_response(preflight_session)
+            else:
+                existing = await existing_response(target_session)
             if existing is not None:
                 return existing
 

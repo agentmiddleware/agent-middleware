@@ -13,6 +13,7 @@ import stripe
 from unittest.mock import patch, MagicMock
 from uuid import uuid4
 from httpx import AsyncClient, ASGITransport
+from app.core.config import get_settings
 from app.main import app
 from app.services import kyc_service as kyc_service_module
 
@@ -628,7 +629,7 @@ def _stripe_signature_header(payload: bytes, secret: str) -> str:
 async def pending_identity_session(client, api_headers, sponsor_wallet, monkeypatch):
     """A sponsor wallet with an open Stripe Identity session and a known secret."""
     monkeypatch.setattr(
-        kyc_service_module.settings, "STRIPE_WEBHOOK_SECRET", IDENTITY_WEBHOOK_SECRET
+        get_settings(), "STRIPE_WEBHOOK_SECRET", IDENTITY_WEBHOOK_SECRET
     )
     session_id = f"vs_sig_{sponsor_wallet['wallet_id']}"
     with patch(

@@ -30,6 +30,7 @@ async def _clean_shared_db(clean_database):
     """Webhook tests post through the shared app; start from an empty DB."""
     yield
 
+
 # The Stripe webhook receivers are dormant trust surfaces: production mounts
 # them only with Stripe configured, so the suite mounts them for this module
 # (same mechanism as test_kyc / test_stripe_integration).
@@ -97,7 +98,9 @@ def test_verify_stripe_event_refuses_wrong_secret():
 def test_verify_stripe_event_refuses_tampered_payload():
     signed = _sign(b'{"id":"evt_helper_test","object":"event"}', SHARED_SECRET)
     with pytest.raises(WebhookVerificationError):
-        verify_stripe_event(b'{"id":"evt_forged","object":"event"}', signed, SHARED_SECRET)
+        verify_stripe_event(
+            b'{"id":"evt_forged","object":"event"}', signed, SHARED_SECRET
+        )
 
 
 @pytest.fixture
@@ -160,7 +163,9 @@ async def test_payment_webhook_denies_everything_when_secret_unconfigured(
         {"stripe-signature": "anything"},
         {"stripe-signature": _sign(payload, SHARED_SECRET)},
     ):
-        resp = await client.post("/v1/webhooks/stripe", content=payload, headers=headers)
+        resp = await client.post(
+            "/v1/webhooks/stripe", content=payload, headers=headers
+        )
         assert resp.status_code == 401
         assert resp.json()["detail"] == "Invalid Stripe signature"
 

@@ -13,7 +13,7 @@ receiver:
   configuration;
 * signature comparison itself is constant-time (``hmac.compare_digest``),
   directly here for generic HMAC webhooks and inside the Stripe SDK's
-  the SDK's secure_compare for Stripe's v1 scheme.
+  secure_compare for Stripe's v1 scheme.
 
 Success responses stay minimal (an accepted marker, never tenant data).
 Idempotent application of redelivered events stays with the services (UNIQUE
@@ -52,9 +52,7 @@ def require_webhook_secret(secret: str | None, *, name: str) -> str:
             "refusing to process unsigned webhook traffic",
             name,
         )
-        raise WebhookVerificationError(
-            f"webhook receiver {name} is not configured"
-        )
+        raise WebhookVerificationError(f"webhook receiver {name} is not configured")
     return secret
 
 

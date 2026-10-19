@@ -268,7 +268,7 @@ jobs:
           EOF
       - name: Migrate proof databases
         run: |
-          for db in amw_pg_concurrency amw_action_pgproofs amw_pg_stress amw_action_multiprocess; do
+          for db in amw_pg_concurrency amw_action_pgproofs amw_pg_pgloop amw_pg_stress amw_action_multiprocess; do
             DATABASE_URL="postgresql+asyncpg://sellers@127.0.0.1:55439/$db" \
               uv run --no-sync python -m alembic upgrade head
           done

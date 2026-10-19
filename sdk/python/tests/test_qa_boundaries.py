@@ -61,6 +61,33 @@ async def test_blank_invoke_binding_is_rejected_before_io(field: str, value: str
     assert seen == []
 
 
+@pytest.mark.parametrize("bad_key", [None, 7, b"key", object()])
+@pytest.mark.asyncio
+async def test_non_string_idempotency_key_is_value_error_before_io(bad_key: object) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(500)
+
+    with pytest.raises(ValueError, match="idempotency_key must be a string"):
+        AgentMiddlewareClient._validate_idempotency_key(bad_key)
+    async with _client(handler) as client:
+        with pytest.raises(ValueError, match="idempotency_key must be a string"):
+            await client.invoke_tool(
+                "partner.search",
+                {},
+                wallet_id="wallet-1",
+                permit_id="permit-1",
+                idempotency_key=bad_key,
+            )
+    assert seen == []
+
+
+def test_idempotency_validator_normalizes_valid_key_without_client() -> None:
+    assert AgentMiddlewareClient._validate_idempotency_key("  job-1  ") == "job-1"
+
+
 @pytest.mark.asyncio
 async def test_unsafe_dry_run_id_sends_no_delete_and_preserves_body_error() -> None:
     seen: list[tuple[str, str]] = []

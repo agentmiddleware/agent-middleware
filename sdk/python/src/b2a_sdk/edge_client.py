@@ -247,6 +247,7 @@ class LocalDecision:
 def _find_forbidden_field(arguments: Any, forbidden: set[str]) -> str | None:
     """Find forbidden nested keys and reject cyclic argument containers."""
     active: set[int] = set()
+    completed: set[int] = set()
     stack: list[tuple[Any, bool]] = [(arguments, True)]
     while stack:
         node, entering = stack.pop()
@@ -255,9 +256,12 @@ def _find_forbidden_field(arguments: Any, forbidden: set[str]) -> str | None:
         identity = id(node)
         if not entering:
             active.remove(identity)
+            completed.add(identity)
             continue
         if identity in active:
             raise ValueError("cyclic arguments")
+        if identity in completed:
+            continue
         active.add(identity)
         stack.append((node, False))
         if isinstance(node, dict):

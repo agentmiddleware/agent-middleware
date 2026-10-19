@@ -237,6 +237,8 @@ class AgentMiddlewareClient:
 
     @staticmethod
     def _validate_idempotency_key(idempotency_key: str) -> str:
+        if not isinstance(idempotency_key, str):
+            raise ValueError("idempotency_key must be a string")
         key = idempotency_key.strip()
         if not key:
             raise ValueError("idempotency_key must not be blank")

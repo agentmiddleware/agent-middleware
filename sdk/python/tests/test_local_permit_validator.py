@@ -456,6 +456,37 @@ def test_check_denies_nested_forbidden_keys_but_not_values():
     assert validator.check(TOOL, Decimal("1"), arguments={}).allowed
 
 
+@pytest.mark.parametrize("forbidden_fields", [[], ["password"]])
+def test_check_scans_shared_acyclic_arguments_in_linear_work(forbidden_fields):
+    class CountingDict(dict):
+        visits = 0
+
+        def items(self):
+            type(self).visits += 1
+            return super().items()
+
+    node: dict[str, Any] = CountingDict({"value": "safe"})
+    for _ in range(12):
+        node = CountingDict({"left": node, "right": node})
+    validator = LocalPermitValidator(_permit_dict(forbidden_fields=forbidden_fields), {})
+    assert validator.check(TOOL, Decimal("1"), arguments=node).allowed
+    assert CountingDict.visits <= 26  # 13 distinct dicts, including the leaf
+
+
+def test_check_finds_forbidden_key_in_shared_node_and_handles_deep_nesting():
+    validator = LocalPermitValidator(_permit_dict(forbidden_fields=["password"]), {})
+    shared = {"nested": {"password": "synthetic"}}
+    assert (
+        validator.check(TOOL, Decimal("1"), arguments={"left": shared, "right": shared}).reason
+        == "permit_forbidden_field:password"
+    )
+
+    node: dict[str, Any] = {}
+    for _ in range(1200):
+        node = {"next": [node]}
+    assert validator.check(TOOL, Decimal("1"), arguments=node).allowed
+
+
 @pytest.mark.parametrize("kind", ["dict", "list"])
 def test_check_denies_cyclic_argument_graphs(kind: str):
     validator = LocalPermitValidator(_permit_dict(forbidden_fields=["password"]), {})

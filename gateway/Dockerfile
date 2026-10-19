@@ -14,11 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code. A release archive may already include
+# .build_commit_sha; that file is gitignored and is not in a clean checkout.
 COPY . .
 
-# Release contexts must carry a commit stamp generated from the exact Git tree.
-COPY .build_commit_sha /app/.build_commit_sha
+# Bake /app/.build_commit_sha from the staged file or RELEASE_COMMIT_SHA.
+# A named COPY of the gitignored stamp fails before the build starts.
+ARG RELEASE_COMMIT_SHA
+RUN python scripts/write_build_commit_sha.py
 
 RUN chmod +x scripts/docker_entrypoint.sh \
     && groupadd --system app \

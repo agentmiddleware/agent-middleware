@@ -31,6 +31,11 @@ from app.db.models import (
 )
 from app.schemas.billing import AlertType
 from app.schemas.trust import ActionPermitFields, PermitCreateRequest, PermitResponse
+from app.services.ownership import (
+    CallerIdentity,
+    require_permit_issuer,
+    require_permit_party,
+)
 from app.services.signing_keys import get_signing_key_service, sha256_hex
 
 logger = logging.getLogger(__name__)
@@ -39,6 +44,18 @@ logger = logging.getLogger(__name__)
 class PermitError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
+        super().__init__(reason)
+
+
+class PermitAccessDeniedError(PermitError):
+    """The caller owns neither side of the permit it tried to mutate.
+
+    A ``PermitError`` so existing handlers keep classifying it, with a
+    distinct reason so routers answer 403 instead of the 404/400 those
+    handlers give every other permit failure.
+    """
+
+    def __init__(self, reason: str = "permit_access_denied") -> None:
         super().__init__(reason)
 
 
@@ -494,7 +511,9 @@ class PermitService:
             await session.refresh(model)
         return permit_model_to_response(model)
 
-    async def revoke_permit(self, permit_id: str) -> PermitResponse:
+    async def revoke_permit(
+        self, permit_id: str, *, caller: CallerIdentity
+    ) -> PermitResponse:
         """Revoke an active permit.
 
         The write matches only ``status = 'active'``. A repeat call, or a call
@@ -503,6 +522,14 @@ class PermitService:
         """
         factory = get_session_factory()
         async with factory() as session:
+            owner = await session.get(PermitModel, permit_id)
+            if owner is None:
+                raise PermitError("permit_not_found")
+            require_permit_issuer(
+                caller,
+                issuer_wallet_id=owner.issuer_wallet_id,
+                error=PermitAccessDeniedError,
+            )
             # Guarded write, same shape as the budget reservation: a second
             # caller cannot overwrite revoked_at after the status has left
             # active, including when the two calls overlap.
@@ -1118,7 +1145,9 @@ class PermitService:
             total = result.scalar()
             return Decimal(str(total)) if total is not None else Decimal("0")
 
-    async def reserve_budget(self, permit_id: str, amount: Decimal) -> None:
+    async def reserve_budget(
+        self, permit_id: str, amount: Decimal, *, caller: CallerIdentity
+    ) -> None:
         factory = get_session_factory()
 
         async def _once() -> None:
@@ -1134,6 +1163,13 @@ class PermitService:
                     )
                     if model is None:
                         raise PermitError("permit_not_found")
+                    require_permit_party(
+                        caller,
+                        issuer_wallet_id=model.issuer_wallet_id,
+                        subject_wallet_id=model.subject_wallet_id,
+                        subject_key_id=model.subject_key_id,
+                        error=PermitAccessDeniedError,
+                    )
                     # Atomic guarded reserve (see authorize_and_reserve): the cap
                     # *and the expiry* are enforced by the WHERE clause, not a
                     # read-then-write. The expiry term matters for the same
@@ -1244,12 +1280,30 @@ class PermitService:
 
         await self._run_with_write_retry(_once)
 
-    async def release_budget(self, permit_id: str, amount: Decimal) -> None:
+    async def release_budget(
+        self, permit_id: str, amount: Decimal, *, caller: CallerIdentity
+    ) -> None:
         factory = get_session_factory()
 
         async def _once() -> None:
             async with factory() as session:
                 async with session.begin():
+                    # Ownership is checked on a locked read before the guarded
+                    # decrement: the no-op-on-missing-permit below must not
+                    # become a silent success for a caller with no claim on
+                    # the permit.
+                    owner = await session.get(
+                        PermitModel, permit_id, with_for_update=True
+                    )
+                    if owner is None:
+                        return
+                    require_permit_party(
+                        caller,
+                        issuer_wallet_id=owner.issuer_wallet_id,
+                        subject_wallet_id=owner.subject_wallet_id,
+                        subject_key_id=owner.subject_key_id,
+                        error=PermitAccessDeniedError,
+                    )
                     # Atomic clamped decrement: a single UPDATE so a concurrent
                     # reservation on the same permit cannot be lost to a
                     # read-modify-write refund. A missing permit is a no-op.
@@ -1356,7 +1410,9 @@ class PermitService:
             )
             return False
 
-    async def release_tool_call(self, permit_id: str, tool_name: str) -> None:
+    async def release_tool_call(
+        self, permit_id: str, tool_name: str, *, caller: CallerIdentity
+    ) -> None:
         """Give back one ``max_calls_per_tool`` use consumed by a reservation.
 
         Compensation partner to :meth:`release_budget`: ``authorize_and_reserve``
@@ -1381,6 +1437,13 @@ class PermitService:
                         )
                         if model is None:
                             return
+                        require_permit_party(
+                            caller,
+                            issuer_wallet_id=model.issuer_wallet_id,
+                            subject_wallet_id=model.subject_wallet_id,
+                            subject_key_id=model.subject_key_id,
+                            error=PermitAccessDeniedError,
+                        )
                         original_counts_json = model.tool_call_counts_json
                         counts = _loads_dict(original_counts_json or "{}")
                         current = counts.get(tool_name, 0)
@@ -1428,7 +1491,9 @@ class PermitService:
 
         await self._run_with_write_retry(_once)
 
-    async def release_dispatch_budget_once(self, attempt_id: str) -> bool:
+    async def release_dispatch_budget_once(
+        self, attempt_id: str, *, caller: CallerIdentity
+    ) -> bool:
         """Release one remote attempt's reservation exactly once.
 
         The permit mutation and attempt checkpoint share one transaction. This
@@ -1444,6 +1509,19 @@ class PermitService:
                     attempt = await session.get(McpDispatchAttemptModel, attempt_id)
                     if attempt is None:
                         raise PermitError("dispatch_attempt_not_found")
+                    # Attempt-keyed, but the money it guards belongs to the
+                    # linked permit: a caller with no claim on that permit
+                    # must not drive its budget, even with the attempt id.
+                    permit_owner = await session.get(PermitModel, attempt.permit_id)
+                    if permit_owner is None:
+                        raise PermitError("permit_not_found")
+                    require_permit_party(
+                        caller,
+                        issuer_wallet_id=permit_owner.issuer_wallet_id,
+                        subject_wallet_id=permit_owner.subject_wallet_id,
+                        subject_key_id=permit_owner.subject_key_id,
+                        error=PermitAccessDeniedError,
+                    )
                     # Only a terminal returned_error attempt has a reservation
                     # to give back. Releasing budget for a prepared or
                     # dispatched attempt frees credits that attempt may still

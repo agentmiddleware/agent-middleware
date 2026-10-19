@@ -12,6 +12,15 @@ both with different values (see below). `parse_402_response()` always sets the
 two equal, so the normal path is unchanged. The tag is not cut by this
 change — `python-sdk-v0.5.0` is still a release decision.
 
+### Receipt verifier
+
+- An edited `alg` or `canonicalization` inside `signing_input` is `invalid`
+  when the signature does not verify and the key is available. Those claims
+  are `unsupported` only after the signature over the exact bytes checks out.
+  Reporting them first let a tampered receipt look like a verifier limitation
+  (`unsupported`), including on the public `verify_receipt` preflight, which
+  then skipped the published keys.
+
 ### Audit follow-up (2026-10-01)
 
 Security and correctness fixes from the 2026-08-27 repository audit. The only

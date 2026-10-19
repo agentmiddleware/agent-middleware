@@ -94,6 +94,9 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           if grep -q '^\[tool\.mypy\]' pyproject.toml 2>/dev/null || [ -f mypy.ini ]; then
+            if [ "${{ matrix.project }}" = "sdk/python" ]; then
+              uv pip install -e ".[mcp]"
+            fi
             uv pip install mypy && uv run --no-sync mypy .
           else
             echo "mypy not configured; skipping"

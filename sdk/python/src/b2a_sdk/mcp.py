@@ -15,13 +15,9 @@ import argparse
 import asyncio
 import json
 import os
-from typing import Any
+from typing import Any, Literal
 
-try:
-    import httpx
-except ImportError:
-    httpx = None
-
+import httpx
 
 DEFAULT_API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
 
@@ -45,9 +41,6 @@ def generate_manifest(
     url = f"{api_url}/mcp/tools.json"
     if category:
         url = f"{url}?category={category}"
-
-    if httpx is None:
-        raise RuntimeError("httpx required. Install: pip install httpx")
 
     response = httpx.get(url, timeout=30.0)
     response.raise_for_status()
@@ -107,7 +100,7 @@ def list_tools(
 
 
 async def serve_async(
-    transport: str = "stdio",
+    transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
 ) -> None:
@@ -128,7 +121,7 @@ async def serve_async(
     manifest = generate_manifest(api_url=api_url)
     tools = manifest.get("tools", [])
 
-    mcp = FastMCP("B2A Marketplace")
+    mcp = FastMCP("B2A Marketplace", port=port)
 
     async def call_tool(service_id: str, input_data: dict, wallet_id: str, api_key: str) -> dict:
         async with httpx.AsyncClient() as client:
@@ -168,11 +161,11 @@ async def serve_async(
     print(f"  export B2A_API_URL={api_url}")
     print()
 
-    mcp.run(transport=transport, port=port)
+    mcp.run(transport=transport)
 
 
 def serve(
-    transport: str = "stdio",
+    transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
 ) -> None:

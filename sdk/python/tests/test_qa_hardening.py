@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import types
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,6 +20,7 @@ import pytest
 
 from b2a_sdk import (
     AgentMiddlewareClient,
+    AuthenticationError,
     AuthorizationError,
     DeliveryUncertainError,
     IdempotencyConflictError,
@@ -44,6 +46,7 @@ from b2a_sdk.edge_client import (
 from b2a_sdk.errors import APIError
 from b2a_sdk.models import ACPCheckoutRequest, ACPLineItem, Permit
 from b2a_sdk.receipt_verifier import VerificationError
+from b2a_sdk.x402 import X402Client, parse_402_response
 
 TOOL = "partner.search"
 
@@ -1074,6 +1077,18 @@ class TestB2AEdgeClient:
 
 
 class TestLocalValidatorAndSession:
+    def test_verify_permit_malformed_cap_container_fails_closed(self):
+        """A non-mapping max_calls_per_tool must deny, not raise AttributeError."""
+        validator = LocalPermitValidator(_permit_dict(max_calls_per_tool=["not-a-mapping"]), {})
+        assert validator.verify_permit() is False
+
+    @pytest.mark.parametrize("limits", [5, ["partner.search"], "cap"])
+    def test_check_malformed_call_cap_fails_closed(self, limits):
+        validator = LocalPermitValidator(_permit_dict(max_calls_per_tool=limits), {})
+        decision = validator.check(TOOL, Decimal("1"))
+        assert decision.allowed is False
+        assert decision.reason == "permit_max_calls_exceeded"
+
     @pytest.mark.xfail(
         strict=True,
         reason="bug: check raises TypeError on non-list scopes instead of fail-closed denial",
@@ -1124,6 +1139,200 @@ class TestLocalValidatorAndSession:
             assert exc_info.value.reason == "permit_signature_invalid"
         finally:
             await client.close()
+
+
+class TestX402Extras:
+    def test_parse_response_with_real_httpx_response(self):
+        response = httpx.Response(
+            402,
+            headers={
+                "X-402-Amount": "1.50",
+                "X-402-PayTo": "0xabc",
+                "X-402-Network": "base",
+            },
+        )
+        assert parse_402_response(response) == {
+            "amount": "1.50",
+            "amount_usd": "1.50",
+            "pay_to": "0xabc",
+            "network": "base",
+        }
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            httpx.Response(402, headers={"X-402-Amount": "1"}),
+            httpx.Response(200, headers={}),
+            types.SimpleNamespace(status_code=402),
+        ],
+    )
+    def test_parse_response_none_without_full_demand(self, response):
+        assert parse_402_response(response) is None
+
+    @pytest.mark.asyncio
+    async def test_parse_transport_error_is_typed(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("down", request=request)
+
+        client = X402Client(
+            api_key="k", base_url="http://test", transport=httpx.MockTransport(handler)
+        )
+        try:
+            with pytest.raises(TransportError):
+                await client.parse_402(402, {})
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_settle_permit_denial_on_400_is_typed(self):
+        client = X402Client(
+            api_key="k",
+            base_url="http://test",
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(400, json={"detail": "permit_revoked"})
+            ),
+        )
+        try:
+            with pytest.raises(PermitDeniedError):
+                await client.settle_402(
+                    permit_id="p",
+                    wallet_id="w",
+                    requirement={"amount_usd": "1", "pay_to": "0x", "network": "base"},
+                    idempotency_key="k1",
+                )
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("status", "body", "error"),
+        [
+            (401, {"detail": "bad key"}, AuthenticationError),
+            (403, {"detail": "nope"}, AuthorizationError),
+            (409, {"detail": "in use"}, IdempotencyConflictError),
+        ],
+    )
+    async def test_settle_http_errors_are_typed(self, status, body, error):
+        client = X402Client(
+            api_key="k",
+            base_url="http://test",
+            transport=httpx.MockTransport(lambda request: httpx.Response(status, json=body)),
+        )
+        try:
+            with pytest.raises(error):
+                await client.settle_402(
+                    permit_id="p",
+                    wallet_id="w",
+                    requirement={"amount_usd": "1", "pay_to": "0x", "network": "base"},
+                    idempotency_key="k1",
+                )
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_settle_sends_payer_asset_and_stripped_key(self):
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"settlement_id": "stl-1"})
+
+        client = X402Client(
+            api_key="k", base_url="http://test", transport=httpx.MockTransport(handler)
+        )
+        try:
+            result = await client.settle_402(
+                permit_id="p",
+                wallet_id="w",
+                requirement={
+                    "amount_usd": "1.50",
+                    "pay_to": "0xabc",
+                    "network": "base",
+                    "asset": "USDC",
+                },
+                idempotency_key="  k1  ",
+                payer="0xpayer",
+            )
+        finally:
+            await client.close()
+        assert result == {"settlement_id": "stl-1"}
+        body = json.loads(seen[0].content)
+        assert body["payer"] == "0xpayer"
+        assert body["asset"] == "USDC"
+        assert seen[0].headers["idempotency-key"] == "k1"
+
+    @pytest.mark.asyncio
+    async def test_settle_blank_key_rejected_before_send(self):
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={})
+
+        client = X402Client(
+            api_key="k", base_url="http://test", transport=httpx.MockTransport(handler)
+        )
+        try:
+            with pytest.raises(ValueError, match="must not be blank"):
+                await client.settle_402(
+                    permit_id="p",
+                    wallet_id="w",
+                    requirement={"amount_usd": "1", "pay_to": "0x", "network": "base"},
+                    idempotency_key="   ",
+                )
+        finally:
+            await client.close()
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_handle_402_none_when_not_a_demand(self):
+        client = X402Client(
+            api_key="k",
+            base_url="http://test",
+            transport=httpx.MockTransport(
+                lambda request: (_ for _ in ()).throw(AssertionError("must not send"))
+            ),
+        )
+        try:
+            assert (
+                await client.handle_402(
+                    types.SimpleNamespace(status_code=200, headers={}),
+                    permit_id="p",
+                    wallet_id="w",
+                    idempotency_key="k1",
+                )
+                is None
+            )
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_handle_402_settles_a_real_demand(self):
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"settlement_id": "stl-9"})
+
+        client = X402Client(
+            api_key="k", base_url="http://test", transport=httpx.MockTransport(handler)
+        )
+        try:
+            response = httpx.Response(
+                402,
+                headers={
+                    "X-402-Amount": "1.50",
+                    "X-402-PayTo": "0xabc",
+                    "X-402-Network": "base",
+                },
+            )
+            result = await client.handle_402(
+                response, permit_id="p", wallet_id="w", idempotency_key="k9"
+            )
+        finally:
+            await client.close()
+        assert result == {"settlement_id": "stl-9"}
+        assert seen[0].headers["idempotency-key"] == "k9"
 
 
 def _signed_cli_bundle(tmp_path, *, kid="cli-key-1"):

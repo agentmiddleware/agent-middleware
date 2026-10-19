@@ -43,6 +43,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -208,6 +209,9 @@ class B2AEdgeClient:
         """Get wallet balance. Requires ``wallet_id`` set on the client."""
         if not self.wallet_id:
             raise ValueError("wallet_id required for balance check")
+        from .client import require_path_segment
+
+        require_path_segment(self.wallet_id, "wallet_id")
         response = await self._client.get(
             f"{self.api_url}/v1/billing/wallets/{self.wallet_id}",
             headers=self._auth_headers(),
@@ -238,6 +242,32 @@ class LocalDecision:
 
     allowed: bool
     reason: str | None = None
+
+
+def _find_forbidden_field(arguments: Any, forbidden: set[str]) -> str | None:
+    """Find forbidden nested keys and reject cyclic argument containers."""
+    active: set[int] = set()
+    stack: list[tuple[Any, bool]] = [(arguments, True)]
+    while stack:
+        node, entering = stack.pop()
+        if not isinstance(node, (dict, list, tuple)):
+            continue
+        identity = id(node)
+        if not entering:
+            active.remove(identity)
+            continue
+        if identity in active:
+            raise ValueError("cyclic arguments")
+        active.add(identity)
+        stack.append((node, False))
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if key in forbidden:
+                    return str(key)
+                stack.append((child, True))
+        else:
+            stack.extend((child, True) for child in node)
+    return None
 
 
 class LocalPermitValidator:
@@ -357,11 +387,18 @@ class LocalPermitValidator:
         }
         if permit.get("requires_human_approval"):
             payload["requires_human_approval"] = True
-        max_calls = permit.get("max_calls_per_tool") or {}
+        max_calls = permit.get("max_calls_per_tool")
+        if max_calls is None:
+            max_calls = {}
+        if not isinstance(max_calls, Mapping):
+            raise ValueError("max_calls_per_tool must be an object of integers")
         if max_calls:
-            payload["max_calls_per_tool"] = {
-                str(tool): int(limit) for tool, limit in max_calls.items()
-            }
+            normalized_calls: dict[str, int] = {}
+            for tool, limit in max_calls.items():
+                if type(limit) is not int:
+                    raise ValueError("max_calls_per_tool values must be integers")
+                normalized_calls[str(tool)] = limit
+            payload["max_calls_per_tool"] = normalized_calls
         if permit.get("aggregate_value_cap") is not None:
             payload["aggregate_value_cap"] = cls._canonical_decimal(permit["aggregate_value_cap"])
         forbidden = permit.get("forbidden_fields") or []
@@ -372,7 +409,10 @@ class LocalPermitValidator:
         if permit.get("allow_identical_repeats"):
             payload["allow_identical_repeats"] = True
         if permit.get("repeat_window_seconds") is not None:
-            payload["repeat_window_seconds"] = int(permit["repeat_window_seconds"])
+            window = permit["repeat_window_seconds"]
+            if type(window) is not int:
+                raise ValueError("repeat_window_seconds must be an integer")
+            payload["repeat_window_seconds"] = window
         # Action bindings are additive signed fields. Match ActionPermitFields
         # without importing the server or adding an SDK runtime dependency.
         action_fields = (
@@ -443,6 +483,8 @@ class LocalPermitValidator:
         estimated_credits: Decimal,
         now: datetime | None = None,
         wallet_id: str | None = None,
+        *,
+        arguments: dict[str, Any] | None = None,
     ) -> LocalDecision:
         """Run the in-process permit checks for one prospective call.
 
@@ -491,7 +533,11 @@ class LocalPermitValidator:
         remaining = max_credits - spent - self._reserved
         if estimated_credits > remaining:
             return LocalDecision(False, "permit_budget_exceeded")
-        limits = permit.get("max_calls_per_tool") or {}
+        limits = permit.get("max_calls_per_tool")
+        if limits is None:
+            limits = {}
+        if not isinstance(limits, Mapping):
+            return LocalDecision(False, "permit_max_calls_exceeded")
         if tool_name in limits:
             limit = limits[tool_name]
             # bool is an int, and int() would also turn 2.5 or "3" into a cap.
@@ -500,6 +546,16 @@ class LocalPermitValidator:
                 return LocalDecision(False, "permit_max_calls_exceeded")
             if self._call_counts.get(tool_name, 0) >= limit:
                 return LocalDecision(False, "permit_max_calls_exceeded")
+        forbidden = permit.get("forbidden_fields") or []
+        if forbidden and not isinstance(forbidden, list):
+            return LocalDecision(False, "permit_forbidden_field:malformed")
+        if arguments is not None:
+            try:
+                hit = _find_forbidden_field(arguments, {str(name) for name in forbidden})
+            except (TypeError, ValueError):
+                return LocalDecision(False, "permit_forbidden_field:malformed")
+            if hit is not None:
+                return LocalDecision(False, f"permit_forbidden_field:{hit}")
         return LocalDecision(True, None)
 
     def record_use(self, tool_name: str, credits: Decimal) -> None:
@@ -511,13 +567,16 @@ class LocalPermitValidator:
         same receipt still advances the local counters, under-estimating the
         remaining budget rather than over-estimating it.
 
-        A negative amount is recorded as zero. Subtracting it would raise the
-        budget the mirror is willing to allow. The call still counts.
+        Negative and non-finite amounts do not change the reservation. The
+        completed call still counts.
         """
-        if credits < 0:
-            credits = Decimal("0")
         self._call_counts[tool_name] = self._call_counts.get(tool_name, 0) + 1
-        self._reserved += credits
+        try:
+            amount = Decimal(str(credits))
+        except (ArithmeticError, TypeError, ValueError):
+            return
+        if amount.is_finite() and amount >= 0:
+            self._reserved += amount
 
 
 class GovernedEdgeSession:
@@ -581,6 +640,11 @@ class GovernedEdgeSession:
         so callers see the documented boundary error type without losing the
         diagnostic.
         """
+        from .client import require_path_segment
+
+        require_path_segment(permit_id, "permit_id")
+        if not isinstance(wallet_id, str) or not wallet_id.strip():
+            raise ValueError("wallet_id must not be blank")
         permit = await client._request_json("GET", f"/v1/permits/{permit_id}")
         document = trust_keys_document
         if document is None:
@@ -623,6 +687,7 @@ class GovernedEdgeSession:
             name,
             estimated_credits if estimated_credits is not None else Decimal("0"),
             wallet_id=self.wallet_id,
+            arguments=arguments,
         )
         if not decision.allowed:
             raise PermitDeniedError(decision.reason or "permit_denied")

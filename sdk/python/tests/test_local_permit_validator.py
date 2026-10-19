@@ -255,6 +255,38 @@ def test_verify_permit_covers_v2_constraints_when_present():
         assert validator.verify_permit() is False, f"{field} must be signed"
 
 
+def test_signed_call_caps_and_repeat_windows_require_real_integers():
+    permit, keys = _build_signed_permit(max_calls_per_tool={TOOL: 3})
+    for value in ("3", True, 3.0):
+        changed = dict(permit, max_calls_per_tool={TOOL: value})
+        assert not _validator(changed, keys).verify_permit()
+
+    permit, keys = _build_signed_permit(repeat_window_seconds=3600)
+    for value in ("3600", True, 3600.0):
+        changed = dict(permit, repeat_window_seconds=value)
+        assert not _validator(changed, keys).verify_permit()
+
+
+def test_malformed_call_cap_containers_fail_closed_without_changing_legacy_absence():
+    permit, keys = _build_signed_permit()
+    expected = LocalPermitValidator.permit_signing_payload(permit)
+    for value in ([], 0):
+        changed = dict(permit, max_calls_per_tool=value)
+        assert not _validator(changed, keys).verify_permit()
+        decision = LocalPermitValidator(changed, {}).check(TOOL, Decimal("1"))
+        assert decision.reason == "permit_max_calls_exceeded"
+
+    for value in (None, {}):
+        changed = dict(permit, max_calls_per_tool=value)
+        assert LocalPermitValidator.permit_signing_payload(changed) == expected
+        assert _validator(changed, keys).verify_permit()
+        assert LocalPermitValidator(changed, {}).check(TOOL, Decimal("1")).allowed
+    absent = dict(permit)
+    absent.pop("max_calls_per_tool")
+    assert LocalPermitValidator.permit_signing_payload(absent) == expected
+    assert _validator(absent, keys).verify_permit()
+
+
 def test_verify_permit_fails_closed_on_unknown_key_and_malformed_input():
     permit, key_document = _build_signed_permit()
     # Key set that does not hold the signing kid.
@@ -374,6 +406,9 @@ def test_check_denies_a_different_subject_wallet():
     decision = validator.check(TOOL, Decimal("1"), wallet_id="someone-else")
     assert decision.allowed is False
     assert decision.reason == "permit_wallet_mismatch"
+    assert validator.check(TOOL, Decimal("1"), None, "someone-else").reason == (
+        "permit_wallet_mismatch"
+    )
     # Callers that do not pass a wallet keep the previous advisory check.
     assert validator.check(TOOL, Decimal("1")).allowed is True
 
@@ -395,6 +430,44 @@ def test_record_use_ignores_negative_credits():
     denied = validator.check(TOOL, Decimal("11"))
     assert denied.allowed is False
     assert denied.reason == "permit_budget_exceeded"
+
+
+def test_record_use_ignores_nonfinite_or_malformed_reservations_but_counts_calls():
+    validator = LocalPermitValidator(_permit_dict(max_credits="10", spent_credits="8"), {})
+    for amount in (
+        Decimal("-5"),
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+        None,
+    ):
+        validator.record_use(TOOL, amount)
+    assert validator.call_counts == {TOOL: 5}
+    assert validator.reserved_credits == Decimal("0")
+    assert validator.check(TOOL, Decimal("3")).reason == "permit_budget_exceeded"
+    assert validator.check(TOOL, Decimal("2")).allowed
+
+
+def test_check_denies_nested_forbidden_keys_but_not_values():
+    validator = LocalPermitValidator(_permit_dict(forbidden_fields=["password"]), {})
+    denied = validator.check(TOOL, Decimal("1"), arguments={"profile": [{"password": "secret"}]})
+    assert denied.reason == "permit_forbidden_field:password"
+    assert validator.check(TOOL, Decimal("1"), arguments={"note": "password"}).allowed
+    assert validator.check(TOOL, Decimal("1"), arguments={}).allowed
+
+
+@pytest.mark.parametrize("kind", ["dict", "list"])
+def test_check_denies_cyclic_argument_graphs(kind: str):
+    validator = LocalPermitValidator(_permit_dict(forbidden_fields=["password"]), {})
+    arguments: dict[str, Any] = {}
+    if kind == "dict":
+        arguments["self"] = arguments
+    else:
+        children: list[Any] = []
+        children.append(children)
+        arguments["children"] = children
+    decision = validator.check(TOOL, Decimal("1"), arguments=arguments)
+    assert decision.reason == "permit_forbidden_field:malformed"
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +553,68 @@ async def test_session_open_verifies_and_local_denial_skips_the_server():
         assert result.receipt.credits_charged == Decimal("2")
         assert session.validator.reserved_credits == Decimal("2")
         assert session.validator.call_counts == {TOOL: 1}
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_session_rejects_nested_and_cyclic_arguments_before_invoke():
+    permit, key_document = _build_signed_permit(forbidden_fields=["password"])
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/v1/permits/permit-local-1":
+            return httpx.Response(200, json=permit)
+        if request.url.path == "/.well-known/trust-keys.json":
+            return httpx.Response(200, json=key_document)
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    client = AgentMiddlewareClient(
+        api_key="test-key",
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        session = await GovernedEdgeSession.open(
+            client, permit_id="permit-local-1", wallet_id="wallet-1"
+        )
+        with pytest.raises(PermitDeniedError) as denied:
+            await session.invoke(
+                TOOL,
+                {"profile": [{"password": "secret"}]},
+                idempotency_key="nested-field-1",
+            )
+        assert denied.value.reason == "permit_forbidden_field:password"
+
+        self_dict: dict[str, Any] = {}
+        self_dict["self"] = self_dict
+        self_list: list[Any] = []
+        self_list.append(self_list)
+        for arguments in (self_dict, {"children": self_list}):
+            with pytest.raises(PermitDeniedError) as denied:
+                await session.invoke(TOOL, arguments, idempotency_key="cyclic-args-1")
+            assert denied.value.reason == "permit_forbidden_field:malformed"
+        assert seen == ["/v1/permits/permit-local-1", "/.well-known/trust-keys.json"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_session_open_rejects_unsafe_path_and_blank_wallet_without_request():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    client = AgentMiddlewareClient(
+        api_key="test-key",
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ValueError, match="permit_id"):
+            await GovernedEdgeSession.open(client, permit_id="../admin", wallet_id="wallet-1")
+        with pytest.raises(ValueError, match="wallet_id"):
+            await GovernedEdgeSession.open(client, permit_id="permit-local-1", wallet_id="  ")
     finally:
         await client.close()
 

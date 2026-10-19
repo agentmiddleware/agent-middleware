@@ -29,6 +29,7 @@ from ..schemas.billing import (
     WalletStatus,
     WalletType,
 )
+from .ownership import CallerIdentity, OwnershipDeniedError, require_wallet_owner
 from .wallet_status import SPENDABLE_WALLET_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -398,13 +399,19 @@ class WalletEngine:
         auto_refill_threshold: Decimal = Decimal("100.0"),
         auto_refill_amount: Decimal = Decimal("1000.0"),
         session: AsyncSession | None = None,
+        *,
+        caller: CallerIdentity,
     ) -> WalletResponse:
         """Provision a pre-paid agent wallet from a sponsor's balance.
 
         ``session``, when given, must already be inside a transaction the
         CALLER owns end to end — same contract as ``create_sponsor_wallet``.
         Omit it for the original standalone behavior.
+
+        The caller must own the sponsor: the new wallet is funded from its
+        balance.
         """
+        require_wallet_owner(caller, sponsor_wallet_id)
         if budget_credits < Decimal("0"):
             # A negative budget inverts the debit into a credit: the guard
             # ``balance >= budget_credits`` is trivially true for a negative
@@ -561,8 +568,16 @@ class WalletEngine:
         task_description: str = "",
         ttl_seconds: int | None = None,
         auto_reclaim: bool = True,
+        *,
+        caller: CallerIdentity,
     ) -> WalletResponse:
-        """Spawn a child sub-agent wallet from a parent agent's balance."""
+        """Spawn a child sub-agent wallet from a parent agent's balance.
+
+        The caller must own the parent: the new wallet is funded from its
+        balance. Checked before any row is loaded so a stranger cannot use
+        the error (or its absence) to probe which wallet ids exist.
+        """
+        require_wallet_owner(caller, parent_wallet_id)
         _validate_child_wallet_ttl(ttl_seconds)
         if budget_credits < Decimal("0"):
             # Same inversion as the sponsor path, and worse: a child opened
@@ -700,8 +715,14 @@ class WalletEngine:
             logger.info(f"Spawned child wallet {child_wallet_id} for {child_agent_id}")
             return wallet_model_to_response(child)
 
-    async def reclaim_child_wallet(self, child_wallet_id: str) -> dict:
-        """Reclaim unspent credits from a child wallet back to its parent."""
+    async def reclaim_child_wallet(
+        self, child_wallet_id: str, *, caller: CallerIdentity
+    ) -> dict:
+        """Reclaim unspent credits from a child wallet back to its parent.
+
+        The caller must own the child wallet or the parent it pays into;
+        anyone else is denied even though both rows are named by id.
+        """
         async with self._session_factory()() as session:
             async with session.begin():
                 # Discover the (immutable) parent id with an unlocked read, so
@@ -719,6 +740,16 @@ class WalletEngine:
                         )
                     )
                 ).scalar_one_or_none()
+                owns_child = (
+                    caller.wallet_id is not None and caller.wallet_id == child_wallet_id
+                )
+                owns_parent = (
+                    caller.wallet_id is not None
+                    and child_peek is not None
+                    and caller.wallet_id == child_peek.parent_wallet_id
+                )
+                if not caller.is_bootstrap_admin and not (owns_child or owns_parent):
+                    raise OwnershipDeniedError("wallet_access_denied")
                 if not child_peek:
                     raise self._wallet_not_found_error(child_wallet_id)
                 if not child_peek.parent_wallet_id:
@@ -851,6 +882,8 @@ class WalletEngine:
         amount: Decimal,
         description: str = "",
         correlation_id: str | None = None,
+        *,
+        caller: CallerIdentity,
     ) -> dict:
         """
         Transfer credits between two wallets (agent-to-agent handoff).
@@ -878,6 +911,11 @@ class WalletEngine:
 
         if from_wallet_id == to_wallet_id:
             raise ValueError("Cannot transfer to the same wallet")
+
+        # Only the source wallet's owner may move its credits. Checked before
+        # any row is loaded so a stranger cannot use the error (or its
+        # absence) to probe which wallet ids exist.
+        require_wallet_owner(caller, from_wallet_id)
 
         async with self._session_factory()() as session:
             async with session.begin():

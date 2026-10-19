@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.core.time import utc_now
+from app.services.ownership import CallerIdentity
 from app.db.database import get_session_factory
 from app.db.models import WalletModel
 from app.main import app
@@ -132,6 +133,7 @@ async def test_unknown_wallet_status_fails_closed_for_charge(client, clean_datab
         service_category=ServiceCategory.IOT_BRIDGE,
         units=Decimal("1"),
         request_path="/tests/operator-hold",
+        caller=CallerIdentity.admin(),
     )
 
     assert isinstance(result, InsufficientFundsResponse)
@@ -589,6 +591,7 @@ async def test_child_wallet_ttl_rejects_unsafe_values(
             budget_credits=10,
             max_spend=10,
             ttl_seconds=invalid_ttl,
+            caller=CallerIdentity.admin(),
         )
 
     parent = await client.get(f"/v1/billing/wallets/{agent}", headers=BOOTSTRAP)

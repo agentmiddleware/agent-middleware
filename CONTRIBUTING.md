@@ -50,6 +50,10 @@ install cannot float the type checker. Bump the dev lock, that requirements
 pin, and the workflow env vars in the same change. `gateway/scripts/core_quality_gate.sh`
 runs `ruff check .` and `mypy app/` with those pins.
 
+The pre-commit mypy hook needs `uv`. Its first run needs package registry access
+to build an isolated environment from the gateway requirements and this checkout's
+editable Python SDK; later runs can use the uv cache.
+
 ## Developer Certificate of Origin
 
 AMW uses the Developer Certificate of Origin, version 1.1. We do not require a Contributor License Agreement. By contributing, you certify that you have the right to submit the work under the applicable license and that you agree to the DCO.

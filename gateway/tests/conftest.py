@@ -79,6 +79,7 @@ DORMANT_SURFACE_TEST_MODULES = frozenset(
         "test_kyc",
         "test_mcp_trust_mode",
         "test_mcp_upstream_governed",
+        "test_owner_enforcement",
         "test_planner_constraints",
         "test_pods",
         "test_policy_bundles",

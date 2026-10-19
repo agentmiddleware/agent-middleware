@@ -58,9 +58,10 @@ prove-trust-plane-postgres: prove-crash-recovery
 # recovery, and fail-closed manual review after an ambiguous side effect
 # (never an automatic redispatch).
 #
-# Requires DATABASE_URL=postgresql+asyncpg://... pointing at a DEDICATED,
-# EMPTY database already migrated to head, STATE_BACKEND=postgres, a local/test
-# ENVIRONMENT, and explicit MCP_STRESS_DB_ISOLATED=1 acknowledgment. Provision
+# Requires DATABASE_URL=postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_*
+# pointing at a DEDICATED, EMPTY database already migrated to head,
+# STATE_BACKEND=postgres, ENVIRONMENT=test, and explicit
+# MCP_STRESS_DB_ISOLATED=1 acknowledgment. Provision
 # and migrate only the disposable database before invoking this target; this
 # target never migrates or overrides the caller's isolation settings.
 # The harness refuses to run otherwise: it fails closed on a

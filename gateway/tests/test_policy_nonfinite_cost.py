@@ -17,6 +17,8 @@ from decimal import Decimal
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.db.database import get_session_factory
+from app.db.models import PolicyBundleModel
 from app.main import app
 from app.services.policies import evaluate_wallet_policy
 
@@ -71,74 +73,32 @@ async def _capped_wallet(client: AsyncClient, agent_id: str) -> str:
 
 
 @pytest.mark.anyio
-async def test_nan_estimated_cost_denies_instead_of_crashing(client, clean_database):
-    wallet_id = await _capped_wallet(client, "policy-nan-cost")
-    evaluation = await evaluate_wallet_policy(
-        wallet_id=wallet_id,
-        tool_name="some-tool",
-        estimated_cost=float("nan"),
-        daily_spend_used=0.0,
-    )
-    assert evaluation.allowed is False
-    assert evaluation.reason == "policy_cost_invalid"
-
-
-@pytest.mark.anyio
-async def test_nan_daily_spend_denies_instead_of_crashing(client, clean_database):
-    wallet_id = await _capped_wallet(client, "policy-nan-daily")
-    evaluation = await evaluate_wallet_policy(
-        wallet_id=wallet_id,
-        tool_name="some-tool",
-        estimated_cost=1.0,
-        daily_spend_used=float("nan"),
-    )
-    assert evaluation.allowed is False
-    assert evaluation.reason == "policy_cost_invalid"
-
-
-@pytest.mark.anyio
-async def test_decimal_nan_inputs_deny(client, clean_database):
-    wallet_id = await _capped_wallet(client, "policy-decimal-nan")
-    evaluation = await evaluate_wallet_policy(
-        wallet_id=wallet_id,
-        tool_name="some-tool",
-        estimated_cost=Decimal("NaN"),
-        daily_spend_used=Decimal("NaN"),
-    )
-    assert evaluation.allowed is False
-    assert evaluation.reason == "policy_cost_invalid"
-
-
-@pytest.mark.anyio
-async def test_negative_infinity_cost_denies_instead_of_passing_caps(
-    client, clean_database
+@pytest.mark.parametrize("field", ["estimated_cost", "daily_spend_used"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        Decimal("NaN"),
+        Decimal("sNaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+    ],
+)
+async def test_nonfinite_money_denies_without_comparison(
+    client, clean_database, field, value
 ):
-    # -Infinity compares smaller than every cap, so without the guard it
-    # sailed through both monetary gates with reason "allowed".
-    wallet_id = await _capped_wallet(client, "policy-neginf-cost")
+    wallet_id = await _capped_wallet(client, "policy-nonfinite")
+    money = {"estimated_cost": 1.0, "daily_spend_used": 0.0}
+    money[field] = value
     evaluation = await evaluate_wallet_policy(
-        wallet_id=wallet_id,
-        tool_name="some-tool",
-        estimated_cost=float("-inf"),
-        daily_spend_used=0.0,
+        wallet_id=wallet_id, tool_name="some-tool", **money
     )
     assert evaluation.allowed is False
     assert evaluation.reason == "policy_cost_invalid"
-
-
-@pytest.mark.anyio
-async def test_positive_infinity_cost_denies_with_invalid_reason(
-    client, clean_database
-):
-    wallet_id = await _capped_wallet(client, "policy-inf-cost")
-    evaluation = await evaluate_wallet_policy(
-        wallet_id=wallet_id,
-        tool_name="some-tool",
-        estimated_cost=float("inf"),
-        daily_spend_used=0.0,
-    )
-    assert evaluation.allowed is False
-    assert evaluation.reason == "policy_cost_invalid"
+    assert evaluation.policy_id is None
+    assert evaluation.evaluated_constraints == {"policy_count": 1}
 
 
 @pytest.mark.anyio
@@ -154,6 +114,22 @@ async def test_finite_costs_keep_existing_allow_and_deny_behavior(
     )
     assert allowed.allowed is True
     assert allowed.reason == "allowed"
+
+    at_action_cap = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="some-tool",
+        estimated_cost=Decimal("5"),
+        daily_spend_used=0.0,
+    )
+    assert at_action_cap.allowed is True
+
+    at_daily_cap = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="some-tool",
+        estimated_cost=Decimal("2"),
+        daily_spend_used=Decimal("48"),
+    )
+    assert at_daily_cap.allowed is True
 
     over_max = await evaluate_wallet_policy(
         wallet_id=wallet_id,
@@ -175,15 +151,27 @@ async def test_finite_costs_keep_existing_allow_and_deny_behavior(
 
 
 @pytest.mark.anyio
-async def test_unknown_cost_none_keeps_skip_the_check_behavior(client, clean_database):
-    # None means "unknown, nothing to check" and stays allowed; only
-    # malformed non-finite values deny.
+async def test_unknown_cost_and_daily_spend_keep_current_contract(
+    client, clean_database
+):
     wallet_id = await _capped_wallet(client, "policy-none-cost")
     evaluation = await evaluate_wallet_policy(
-        wallet_id=wallet_id, tool_name="some-tool", estimated_cost=None
+        wallet_id=wallet_id,
+        tool_name="some-tool",
+        estimated_cost=None,
+        daily_spend_used=0,
     )
     assert evaluation.allowed is True
     assert evaluation.reason == "allowed"
+
+    missing_daily = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="some-tool",
+        estimated_cost=None,
+        daily_spend_used=None,
+    )
+    assert missing_daily.allowed is False
+    assert missing_daily.reason == "daily_spend_unknown"
 
 
 @pytest.mark.anyio
@@ -198,6 +186,14 @@ async def test_nonfinite_cost_with_no_bundles_stays_allowed(client, clean_databa
     )
     assert evaluation.allowed is True
     assert evaluation.reason == "allowed"
+
+    daily_nonfinite = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="some-tool",
+        daily_spend_used=Decimal("sNaN"),
+    )
+    assert daily_nonfinite.allowed is True
+    assert daily_nonfinite.reason == "allowed"
 
 
 @pytest.mark.anyio
@@ -221,3 +217,71 @@ async def test_explicit_empty_allowlist_denies_every_tool(client, clean_database
         )
         assert evaluation.allowed is False, tool_name
         assert evaluation.reason == "tool_not_allowed", tool_name
+
+
+@pytest.mark.anyio
+async def test_corrupt_allowlist_still_denies(client, clean_database):
+    wallet_id = await _wallet(client, "policy-corrupt-allowlist")
+    created = await client.post(
+        "/v1/policies",
+        json={"wallet_id": wallet_id, "name": "Tools", "allowed_tools": ["some-tool"]},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert created.status_code == 201
+    factory = get_session_factory()
+    async with factory() as session:
+        policy = await session.get(PolicyBundleModel, created.json()["policy_id"])
+        assert policy is not None
+        policy.allowed_tools_json = "not-json"
+        await session.commit()
+
+    evaluation = await evaluate_wallet_policy(
+        wallet_id=wallet_id, tool_name="some-tool"
+    )
+    assert evaluation.allowed is False
+    assert evaluation.reason == "policy_constraint_corrupt"
+
+
+@pytest.mark.anyio
+async def test_risk_ceiling_and_approval_gate_still_apply(client, clean_database):
+    wallet_id = await _wallet(client, "policy-risk-approval")
+    created = await client.post(
+        "/v1/policies",
+        json={
+            "wallet_id": wallet_id,
+            "name": "Low risk with approval",
+            "risk_tier": "low",
+            "human_approval_required": True,
+        },
+        headers={"X-API-Key": "test-key"},
+    )
+    assert created.status_code == 201
+
+    no_gate = await evaluate_wallet_policy(
+        wallet_id=wallet_id, tool_name="some-tool", risk_tier="low"
+    )
+    assert no_gate.allowed is False
+    assert no_gate.reason == "human_approval_required"
+
+    high_risk = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="some-tool",
+        risk_tier="high",
+        approval_gate_active=True,
+    )
+    assert high_risk.allowed is False
+    assert high_risk.reason == "risk_tier_not_allowed"
+
+    approved = await evaluate_wallet_policy(
+        wallet_id=wallet_id,
+        tool_name="some-tool",
+        risk_tier="low",
+        approval_gate_active=True,
+    )
+    assert approved.allowed is True
+    assert (
+        approved.evaluated_constraints["evaluated"][0][
+            "human_approval_satisfied_by_gate"
+        ]
+        is True
+    )

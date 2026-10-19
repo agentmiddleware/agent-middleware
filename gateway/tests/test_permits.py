@@ -658,11 +658,20 @@ async def test_permit_service_validation_denial_reasons(client, clean_database):
         key_id=provisioned["key_id"],
     )
     assert validation.allowed is False
-    assert validation.reason == "permit_scope_missing"
+    # An empty allowlist admits no tool: the tool check fires before the
+    # scope check, so the reason names the empty list, not the missing scope.
+    assert validation.reason == "permit_tool_not_allowed"
+    assert validation.details == {
+        "requested_tool": "service-validate-tool",
+        "allowed_tools": [],
+    }
 
     async with factory() as session:
         model = await session.get(PermitModel, permit.permit_id)
         assert model is not None
+        # Restore a well-formed allowlist so this block proves signature
+        # checking (not the empty-allowlist denial asserted above).
+        model.allowed_tools_json = json.dumps(["service-validate-tool"])
         model.scopes_json = json.dumps(
             ["tool:service-validate-tool:invoke", "billing:charge"]
         )

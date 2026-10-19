@@ -20,6 +20,13 @@ from app.schemas.policies import (
 
 logger = logging.getLogger(__name__)
 
+# The planner's task tiers run low < medium < high (risk budgets in
+# app/optimizer/policy.py grow with tier, and app/routers/mcp.py maps them to
+# the same order for the risk guard). A bundle's risk_tier is the highest tier
+# it permits: an action at or below the ceiling passes, anything above it is
+# denied. Tiers outside this map fail closed.
+_RISK_TIER_ORDER = {"low": 0, "medium": 1, "high": 2}
+
 
 @dataclass(frozen=True)
 class PolicyEvaluation:
@@ -267,8 +274,8 @@ async def evaluate_wallet_policy(
             # unclassified 500 with no denial recorded), and -Infinity is
             # smaller than every cap so it silently passes them. Neither can
             # be shown under a cap, so deny instead of crashing or allowing.
-            # None still means "unknown, nothing to check" and keeps its
-            # existing skip-the-check behavior.
+            # None keeps its existing meaning for each input: estimated cost
+            # skips its comparison, while unknown daily spend denies a cap.
             return PolicyEvaluation(
                 False,
                 "policy_cost_invalid",
@@ -357,18 +364,23 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
-        if (
-            policy.daily_spend_limit is not None
-            and daily is not None
-            and est is not None
-            and daily + est > policy.daily_spend_limit
-        ):
-            return PolicyEvaluation(
-                False,
-                "daily_spend_limit_exceeded",
-                policy.policy_id,
-                {"evaluated": evaluated},
-            )
+        if policy.daily_spend_limit is not None:
+            if daily is None:
+                # Past spending is unknown, so the cap cannot be shown to
+                # hold. Fail closed instead of skipping the check.
+                return PolicyEvaluation(
+                    False,
+                    "daily_spend_unknown",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
+            if est is not None and daily + est > policy.daily_spend_limit:
+                return PolicyEvaluation(
+                    False,
+                    "daily_spend_limit_exceeded",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
         if policy.require_real_effects and simulation:
             return PolicyEvaluation(
                 False,
@@ -376,8 +388,21 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
-        if risk_tier is not None and policy.risk_tier != risk_tier:
-            constraints["requested_risk_tier"] = risk_tier
+        if risk_tier is not None and policy.risk_tier is not None:
+            requested_rank = _RISK_TIER_ORDER.get(risk_tier)
+            allowed_rank = _RISK_TIER_ORDER.get(policy.risk_tier)
+            if (
+                requested_rank is None
+                or allowed_rank is None
+                or requested_rank > allowed_rank
+            ):
+                constraints["requested_risk_tier"] = risk_tier
+                return PolicyEvaluation(
+                    False,
+                    "risk_tier_not_allowed",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
 
     return PolicyEvaluation(
         True, "allowed", models[0].policy_id, {"evaluated": evaluated}

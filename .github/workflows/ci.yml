@@ -21,7 +21,10 @@ concurrency:
 env:
   FORCE_COLOR: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # Blessed ruff and mypy. Must match gateway/requirements-dev.txt.
+  # mypy must also match the exact pin in gateway/requirements.txt.
   RUFF_VERSION: "0.16.10"
+  MYPY_VERSION: "2.4.0"
   PYTEST_VERSION: "9.1.1"
 
 jobs:
@@ -94,7 +97,7 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           if grep -q '^\[tool\.mypy\]' pyproject.toml 2>/dev/null || [ -f mypy.ini ]; then
-            uv pip install mypy && uv run --no-sync mypy .
+            uv pip install "mypy==${MYPY_VERSION}" && uv run --no-sync mypy .
           else
             echo "mypy not configured; skipping"
           fi

@@ -8,7 +8,7 @@
  *
  * Licensed under Apache-2.0.
  */
-import { createHash, createPublicKey, verify as edVerify } from "node:crypto";
+import { createPublicKey, verify as edVerify } from "node:crypto";
 
 export const CANONICALIZATION = "awi-canonical-json/1";
 
@@ -201,18 +201,12 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const envelopeCanon = b.canonicalization === undefined ? CANONICALIZATION : b.canonicalization;
   if (envelopeCanon !== expectedCanon) return fail("mismatch", "bundle canonicalization differs from the signed payload", kid);
 
-  if (typeof p.payload_hash === "string") {
-    const inner: Record<string, unknown> = { ...p };
-    delete inner.payload_hash;
-    let canonical: string;
-    try {
-      canonical = canonicalJson(inner);
-    } catch {
-      return fail("malformed", "signed payload exceeds the supported JSON nesting depth", kid);
-    }
-    const computed = createHash("sha256").update(canonical, "utf8").digest("hex");
-    if (computed !== p.payload_hash) return fail("mismatch", "payload_hash does not match the signed payload", kid);
-  }
+  // payload_hash is advisory and never recomputed here. The Ed25519 check
+  // above already covers signing_input verbatim, payload_hash included, so
+  // any edit to the signed bytes is invalid. Re-serializing the parsed
+  // payload would reject genuine receipts: JSON numbers do not round-trip
+  // across languages (Python signs 1.0 and 4e-05; this parser reads them as
+  // 1 and 0.00004, and integers above 2^53 lose precision).
   const receiptId = p.receipt_id;
   if (typeof receiptId !== "string" || !receiptId) return fail("malformed", "signed payload has no receipt_id", kid);
   if (b.receipt_id !== undefined && b.receipt_id !== null && b.receipt_id !== receiptId) return fail("mismatch", "bundle receipt_id does not match the signed receipt_id", kid, receiptId);

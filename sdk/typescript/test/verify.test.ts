@@ -155,14 +155,25 @@ test("envelope kid differing from a verified payload is mismatch", () => {
   assert.equal(statusOf(bundle, new Map([["key-1", rawKey]])), "mismatch");
 });
 
-test("correct payload_hash verifies; wrong payload_hash is mismatch", () => {
+test("payload_hash is advisory: a signed wrong hash still verifies", () => {
   const inner = payload({ credits_charged: "1" });
   const good = createHash("sha256").update(canonicalJson(inner), "utf8").digest("hex");
   assert.equal(statusOf(seal({ ...inner, payload_hash: good })), "verified");
   assert.equal(
     statusOf(seal({ ...inner, payload_hash: "0".repeat(64) })),
-    "mismatch",
+    "verified",
   );
+});
+
+test("editing payload_hash without re-signing is invalid", () => {
+  const inner = payload({ credits_charged: "1" });
+  const good = createHash("sha256").update(canonicalJson(inner), "utf8").digest("hex");
+  const bundle = seal({ ...inner, payload_hash: good });
+  const forged = {
+    ...bundle,
+    signing_input: (bundle.signing_input as string).replace(good, "0".repeat(64)),
+  };
+  assert.equal(statusOf(forged), "invalid");
 });
 
 function deepField(depth: number): unknown {
@@ -171,10 +182,10 @@ function deepField(depth: number): unknown {
   return deep;
 }
 
-test("deeply nested payload with payload_hash is malformed, never a throw", () => {
+test("deeply nested payload with payload_hash still verifies, never throws", () => {
   const body = { ...payload({ payload_hash: "0".repeat(64) }), deep: deepField(3000) };
   const result = verifyBundle(seal(body), keys());
-  assert.equal(result.status, "malformed");
+  assert.equal(result.status, "verified");
 });
 
 test("deeply nested payload without payload_hash still verifies", () => {
@@ -383,13 +394,28 @@ test("disabled key verifies nothing: its receipts are unknown_key", () => {
   assert.equal(verifyBundle(seal(payload()), ks).status, "unknown_key");
 });
 
-test(
-  "float payload_hash does not round-trip across languages",
-  { skip: "JS prints 1.0 as 1, so a hash computed over Python-style 1.0 cannot verify here; numbers must be strings per spec" },
-  () => {
-    assert.equal(canonicalJson({ v: 1.0 }), '{"v":1.0}');
-  },
-);
+test("float-bearing payload signed Python-style verifies", () => {
+  // The gateway signs floats Python renders as 1.0/0.0. seal() would print
+  // them as 1/0, so the signed bytes are built as a string instead.
+  const innerJson =
+    '{"constraints_evaluated":{"jev_risk_guard":{"injected_instructions":1.0,"latency_ms":0.0}},"kid":"key-1","receipt_id":"rcpt-1"}';
+  const hash = createHash("sha256").update(innerJson, "utf8").digest("hex");
+  const signingInput = innerJson.replace(
+    ',"receipt_id"',
+    `,"payload_hash":"${hash}","receipt_id"`,
+  );
+  assert.match(signingInput, /1\.0/);
+  const signature = sign(
+    null,
+    Buffer.from(signingInput, "utf8"),
+    keyPair.privateKey,
+  ).toString("base64");
+  const result = verifyBundle(
+    { signing_input: signingInput, signature, kid: "key-1" },
+    keys(),
+  );
+  assert.equal(result.status, "verified");
+});
 
 test(
   "unexpected crypto backend failure raises instead of reporting invalid",

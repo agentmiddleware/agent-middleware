@@ -259,6 +259,23 @@ def _synthetic_cases(
 
     lied = dict(payload)
     lied["payload_hash"] = "0" * 64
+    # Numbers Python renders one way and other languages another (1.0, 0.0,
+    # 4e-05, integers above 2^53): the gateway signs such payloads inside
+    # constraints_evaluated.jev_risk_guard, so one vector carries them and
+    # must still verify without any re-serialization.
+    float_payload = _with_hash(
+        dict(
+            payload,
+            constraints_evaluated={
+                "jev_risk_guard": {
+                    "latency_ms": 0.0,
+                    "injected_instructions": 1.0,
+                    "tiny": 4e-05,
+                    "big": 9007199254740993,
+                }
+            },
+        )
+    )
     unsupported_alg = _with_hash(dict(payload, alg="RS256"))
     unsupported_canon = _with_hash(dict(payload, canonicalization="other/9"))
 
@@ -322,9 +339,17 @@ def _synthetic_cases(
             "expect": "mismatch",
         },
         {
+            # payload_hash is advisory: the signature covers the lying hash,
+            # so this still verifies. Editing the hash without re-signing is
+            # what fails, as invalid.
             "name": "synthetic.payload_hash_mismatch",
             "bundle": sign_bundle(key, lied),
-            "expect": "mismatch",
+            "expect": "verified",
+        },
+        {
+            "name": "synthetic.float_payload_verifies",
+            "bundle": sign_bundle(key, float_payload),
+            "expect": "verified",
         },
         {
             "name": "synthetic.jwk_only_key",
@@ -447,8 +472,10 @@ def render_receipts(key: Ed25519PrivateKey | None = None) -> str:
             "Receipt verification vectors. Each case is checked against keys.json "
             "unless it carries its own 'keys'. 'expect' is the verifier status. "
             "Synthetic cases cover a revoked key, envelope fields that disagree "
-            "with the signed payload, a signed payload_hash that does not match, "
-            "an unsupported algorithm, and malformed bundles."
+            "with the signed payload, an advisory payload_hash that does not match "
+            "recomputation (still verified when signed), a float-bearing payload "
+            "that verifies without re-serialization, an unsupported algorithm, "
+            "and malformed bundles."
         ),
         "cases": build_cases(key=signing),
     }

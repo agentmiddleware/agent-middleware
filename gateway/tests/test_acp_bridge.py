@@ -238,8 +238,8 @@ async def test_acp_checkout_end_to_end(client, spt_stub, clean_database):
 
 
 @pytest.mark.anyio
-async def test_acp_checkout_end_to_end_under_45ms(client, spt_stub, clean_database):
-    """Median service-level checkout latency stays under 45ms (SPT stubbed)."""
+async def test_acp_checkout_end_to_end_latency_budget(client, spt_stub, clean_database):
+    """Median service-level checkout latency stays within the selected budget."""
     ctx = await provision_agent_wallet(client)
     adapter = get_acp_commerce_adapter()
 
@@ -265,9 +265,9 @@ async def test_acp_checkout_end_to_end_under_45ms(client, spt_stub, clean_databa
         samples.append(time.perf_counter() - started)
         assert result.status == "settled"
 
-    # Median rather than max: a single noisy CI scheduling blip must not
-    # flake the suite, but the typical checkout must stay fast. The bound is
-    # env-overridable so a slow runner can widen it without editing code.
+    # Median rather than max limits sensitivity to a single scheduling blip.
+    # The default and the separate trust gate enforce 45 ms; ordinary CI uses
+    # 55 ms for shared-runner noise through the existing environment override.
     budget_s = float(os.environ.get("ACP_CHECKOUT_MEDIAN_BUDGET_S", "0.045"))
     assert statistics.median(samples) < budget_s, samples
 

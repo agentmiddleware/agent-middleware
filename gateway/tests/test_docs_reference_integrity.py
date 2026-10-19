@@ -152,10 +152,10 @@ def test_release_gate_doc_matches_committed_ci() -> None:
 
     assert "trust-release-gate:\n\tscripts/trust_release_gate.sh" in makefile
     assert "make trust-release-gate" not in workflows
-    assert "trust_release_gate.sh" not in workflows
+    assert "trust_release_gate.sh" in ci
     assert "name: CI result" in ci
     assert "`make trust-release-gate`" in proof
-    assert "does not invoke the full release-gate" in proof
+    assert "CI runs `scripts/trust_release_gate.sh`" in proof
     assert "`CI result` and `gitleaks`" in proof
     assert "rules/24444399" in proof
 

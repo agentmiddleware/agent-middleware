@@ -90,7 +90,7 @@ Full trigger table: [`../gateway/docs/failure-semantics.md`](../gateway/docs/fai
 | `mismatch` | Signature verified, but the bundle disagrees with the signed payload. Covers a different envelope `receipt_id`, `kid`, `alg`, or `canonicalization`, and a `payload_hash` that is not the SHA-256 of the canonical payload with that member removed | reject |
 | `unknown_key` | Verifier does not hold the signed `kid`, including when that key is present but `disabled` | cannot judge; refresh keys |
 | `malformed` | Bundle cannot be parsed, or the signature is not 64 bytes of base64 | cannot judge |
-| `unsupported` | The signed payload's `alg` or `canonicalization` is not implemented. The envelope alone must not produce this status | cannot judge |
+| `unsupported` | The signed payload's `alg` or `canonicalization` is not implemented, and the signature over `signing_input` checked out. The envelope alone must not produce this status | cannot judge |
 
 Reference verifiers: Python (`sdk/python`, CLI `b2a-verify-receipt`) and
 TypeScript (`sdk/typescript`). Both pass [`test-vectors/`](test-vectors/).

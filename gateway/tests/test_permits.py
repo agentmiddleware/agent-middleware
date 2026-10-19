@@ -18,6 +18,7 @@ from app.schemas.trust import (
     PermitRequestCreate,
 )
 from app.services.idempotency import get_idempotency_service
+from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
@@ -419,7 +420,9 @@ async def test_permit_service_budget_lifecycle_and_filters(
     assert total == 1
     assert permits[0].permit_id == permit.permit_id
 
-    await service.reserve_budget(permit.permit_id, Decimal("4"))
+    await service.reserve_budget(
+        permit.permit_id, Decimal("4"), caller=CallerIdentity.admin()
+    )
     validation = await service.validate_for_action(
         permit_id=permit.permit_id,
         wallet_id=provisioned["agent_wallet_id"],
@@ -430,7 +433,9 @@ async def test_permit_service_budget_lifecycle_and_filters(
     assert validation.allowed is False
     assert validation.reason == "permit_budget_exceeded"
 
-    await service.release_budget(permit.permit_id, Decimal("2"))
+    await service.release_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
     validation = await service.validate_for_action(
         permit_id=permit.permit_id,
         wallet_id=provisioned["agent_wallet_id"],
@@ -441,11 +446,17 @@ async def test_permit_service_budget_lifecycle_and_filters(
     assert validation.allowed is True
 
     with pytest.raises(PermitError) as missing_reserve:
-        await service.reserve_budget("permit-missing", Decimal("1"))
+        await service.reserve_budget(
+            "permit-missing", Decimal("1"), caller=CallerIdentity.admin()
+        )
     assert missing_reserve.value.reason == "permit_not_found"
-    await service.release_budget("permit-missing", Decimal("1"))
+    await service.release_budget(
+        "permit-missing", Decimal("1"), caller=CallerIdentity.admin()
+    )
 
-    revoked = await service.revoke_permit(permit.permit_id)
+    revoked = await service.revoke_permit(
+        permit.permit_id, caller=CallerIdentity.admin()
+    )
     assert revoked.status == "revoked"
     assert revoked.revoked_at is not None
     validation = await service.validate_for_action(
@@ -494,7 +505,10 @@ async def test_repeat_revoke_permit_keeps_original_revoked_at(
         )
     )
 
-    first = await service.revoke_permit(permit.permit_id)
+    issuer = CallerIdentity(
+        wallet_id=provisioned["agent_wallet_id"], key_id=provisioned["key_id"]
+    )
+    first = await service.revoke_permit(permit.permit_id, caller=issuer)
     assert first.status == "revoked"
     assert first.revoked_at is not None
 
@@ -506,7 +520,7 @@ async def test_repeat_revoke_permit_keeps_original_revoked_at(
         model.revoked_at = original
         await session.commit()
 
-    second = await service.revoke_permit(permit.permit_id)
+    second = await service.revoke_permit(permit.permit_id, caller=issuer)
     assert second.status == "revoked"
     assert second.revoked_at == original
     assert await _stored_permit_revocation(permit.permit_id) == ("revoked", original)
@@ -526,7 +540,7 @@ async def test_repeat_revoke_permit_keeps_original_revoked_at(
     }
 
     with pytest.raises(PermitError) as missing:
-        await service.revoke_permit("permit-does-not-exist")
+        await service.revoke_permit("permit-does-not-exist", caller=issuer)
     assert missing.value.reason == "permit_not_found"
 
 
@@ -563,7 +577,12 @@ async def test_revoke_permit_does_not_relabel_non_active_permit(
         model.revoked_at = None
         await session.commit()
 
-    returned = await service.revoke_permit(permit.permit_id)
+    returned = await service.revoke_permit(
+        permit.permit_id,
+        caller=CallerIdentity(
+            wallet_id=provisioned["agent_wallet_id"], key_id=provisioned["key_id"]
+        ),
+    )
     assert returned.status == terminal_status
     assert returned.revoked_at is None
     assert await _stored_permit_revocation(permit.permit_id) == (terminal_status, None)
@@ -837,7 +856,9 @@ async def test_reserve_budget_refuses_an_expired_permit(
             session.add(model)
 
     with pytest.raises(PermitError) as excinfo:
-        await service.reserve_budget(permit.permit_id, Decimal("1"))
+        await service.reserve_budget(
+            permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+        )
     assert str(excinfo.value) == "permit_expired"
 
     # And no budget moved.

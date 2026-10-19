@@ -484,11 +484,8 @@ async def lifespan(app: FastAPI):
     await close_db()
     await close_durable_state()
 
-    # Fixed 2s pause before process exit. This coordinates with nothing and
-    # drains nothing: graceful connection draining belongs to the server
-    # (uvicorn --timeout-graceful-shutdown), not to this sleep. Kept only as
-    # a brief settling window for background log and metric flushes.
-    await asyncio.sleep(2)
+    # Uvicorn handles graceful connection draining before lifespan shutdown;
+    # no fixed post-close sleep coordinates that work.
     logger.info(
         "app_shutdown",
         phase="complete",

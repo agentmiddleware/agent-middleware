@@ -1,5 +1,7 @@
 # Agent Middleware API - Dependencies
 # Python 3.11+
+# Bounds source of truth: [project].dependencies in pyproject.toml.
+# Keep the two in sync (enforced by tests/test_packaging_deps.py).
 
 # --- Core Framework ---
 fastapi>=0.143.0

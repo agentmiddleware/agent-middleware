@@ -26,15 +26,7 @@ from app.services.signing_keys import (
 
 
 _REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
-
-
-#: Every outcome ``create_receipt`` may sign. Each value is attested by a
-#: governed caller: success and denial shapes from the MCP router, the
-#: charged-failure shapes from the dispatch reconciler, and
-#: insufficient_funds from the pre-dispatch budget check. Anything else has
-#: no defined meaning to budget release, refund, or evidence checks, so it
-#: is rejected rather than signed into a receipt that verifies.
-RECEIPT_OUTCOMES = frozenset(
+_RECEIPT_OUTCOMES = frozenset(
     {
         "success",
         "denied",
@@ -45,11 +37,7 @@ RECEIPT_OUTCOMES = frozenset(
         "response_rejected",
     }
 )
-
-#: Outcomes that refuse the call before money moves. Every governed denial
-#: path records zero charge; a refused call that claims a charge
-#: contradicts the ledger and has no defined consumer, so it is rejected.
-UNCHARGED_OUTCOMES = frozenset({"denied", "insufficient_funds"})
+_UNCHARGED_OUTCOMES = frozenset({"denied", "insufficient_funds"})
 
 
 class ReceiptError(RuntimeError):
@@ -253,9 +241,9 @@ class ReceiptService:
         }
         if _action_binding(model) != (action_binding or {}):
             raise ReceiptError("receipt_action_binding_conflict")
-        if _loads_dict(model.constraints_evaluated_json) != (
-            constraints_evaluated or {}
-        ):
+        if canonical_json(
+            _loads_dict(model.constraints_evaluated_json)
+        ) != canonical_json(constraints_evaluated or {}):
             raise ReceiptError("receipt_idempotency_conflict")
         if any(getattr(model, name) != value for name, value in expected.items()):
             raise ReceiptError("receipt_idempotency_conflict")
@@ -296,6 +284,26 @@ class ReceiptService:
         ):
             raise ReceiptError("receipt_action_binding_conflict")
 
+    @staticmethod
+    async def effective_constraints(
+        constraints_evaluated: dict[str, Any] | None,
+        audit_event_id: str | None,
+        wallet_id: str,
+        *,
+        session: AsyncSession | None = None,
+        include_jev: bool | None = None,
+    ) -> dict[str, Any] | None:
+        """Include the same JEV evidence when signing and adopting a replay."""
+        if include_jev is None:
+            include_jev = get_settings().JEV_RISK_GUARD != DuplicateGuardMode.OFF
+        if include_jev:
+            jev = await load_jev_guard_metadata(
+                audit_event_id, wallet_id, session=session
+            )
+            if jev is not None:
+                return {**(constraints_evaluated or {}), "jev_risk_guard": jev}
+        return constraints_evaluated
+
     async def create_receipt(
         self,
         *,
@@ -325,21 +333,16 @@ class ReceiptService:
             for amount in (credits_authorized, credits_charged)
         ):
             raise ReceiptError("receipt_credits_invalid")
-        if outcome not in RECEIPT_OUTCOMES:
+        if outcome not in _RECEIPT_OUTCOMES:
             raise ReceiptError("receipt_outcome_invalid")
-        if outcome in UNCHARGED_OUTCOMES and credits_charged != Decimal("0"):
+        if outcome in _UNCHARGED_OUTCOMES and credits_charged != Decimal("0"):
             raise ReceiptError("receipt_denied_charge_invalid")
         # Reuse the existing signed JSON field; no receipt schema/migration.
         # The audit link also covers denial/refund/reconciliation helpers.
-        if get_settings().JEV_RISK_GUARD != DuplicateGuardMode.OFF:
-            jev = await load_jev_guard_metadata(
-                audit_event_id, wallet_id, session=session
-            )
-            if jev is not None:
-                constraints_evaluated = {
-                    **(constraints_evaluated or {}),
-                    "jev_risk_guard": jev,
-                }
+        requested_constraints = constraints_evaluated
+        constraints_evaluated = await self.effective_constraints(
+            constraints_evaluated, audit_event_id, wallet_id, session=session
+        )
         if reason_code is not None:
             if outcome == "success" or not _REASON_CODE_PATTERN.fullmatch(reason_code):
                 raise ReceiptError("receipt_reason_code_invalid")
@@ -396,6 +399,14 @@ class ReceiptService:
             )
             if existing is None:
                 return None
+            stored_constraints = _loads_dict(existing.constraints_evaluated_json)
+            replay_constraints = await self.effective_constraints(
+                requested_constraints,
+                audit_event_id,
+                wallet_id,
+                session=target_session,
+                include_jev="jev_risk_guard" in stored_constraints,
+            )
             self._assert_idempotent_match(
                 existing,
                 idempotency_record_id=idempotency_record_id,
@@ -413,9 +424,11 @@ class ReceiptService:
                 reason_code=reason_code,
                 audit_event_id=audit_event_id,
                 approval_id=approval_id,
-                constraints_evaluated=constraints_evaluated,
+                constraints_evaluated=replay_constraints,
                 action_binding=action_binding,
             )
+            if not await self.verify_model(existing, session=target_session):
+                raise ReceiptError("receipt_signature_invalid")
             return receipt_model_to_response(existing)
 
         target_session = session

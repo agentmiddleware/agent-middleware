@@ -27,6 +27,7 @@ from app.services.agent_money import AgentMoney, get_agent_money
 from app.services.audit_log import AuditEvent, record_audit_event
 from app.services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
 from app.services.idempotency import IdempotencyService, get_idempotency_service
+from app.services.ownership import CallerIdentity
 from app.services.mcp_dispatch_attempts import (
     DISPATCH_SENT_STATES,
     DISPATCH_PREPARED,
@@ -43,9 +44,20 @@ from app.services.permits import (
     permit_constraints_snapshot,
 )
 from app.services.receipts import ReceiptError, ReceiptService, get_receipt_service
-from app.services.signing_keys import sha256_hex
+from app.services.signing_keys import canonical_json, sha256_hex
 
 logger = logging.getLogger(__name__)
+_PERMIT_SNAPSHOT_KEYS = frozenset(
+    {
+        "max_calls_per_tool",
+        "aggregate_value_cap",
+        "forbidden_fields",
+        "recipient_domain",
+    }
+)
+_LEGACY_UNSNAPSHOTTED_OUTCOMES = frozenset(
+    {"failed_refunded", "delivery_uncertain", "response_rejected"}
+)
 
 
 @dataclass(frozen=True)
@@ -220,7 +232,10 @@ class McpDispatchReconciliationService:
                 if await self._find_operation_debit(attempt) is not None:
                     continue
             try:
-                if await self._permits.release_dispatch_budget_once(attempt.attempt_id):
+                if await self._permits.release_dispatch_budget_once(
+                    attempt.attempt_id,
+                    caller=CallerIdentity.for_wallet(attempt.wallet_id),
+                ):
                     budget_released += 1
             except Exception as exc:
                 failed.append(attempt.attempt_id)
@@ -447,6 +462,7 @@ class McpDispatchReconciliationService:
                     description=(
                         f"Reconcile refunded upstream MCP dispatch {attempt.attempt_id}"
                     ),
+                    caller=CallerIdentity.for_wallet(attempt.wallet_id),
                 )
                 await self._dispatch.mark_debit_refunded(
                     attempt_id=attempt.attempt_id,
@@ -477,7 +493,10 @@ class McpDispatchReconciliationService:
                 raise DispatchAttemptError("dispatch_receipt_outcome_conflict")
             if attempt.budget_released_at is not None:
                 return
-        await self._permits.release_dispatch_budget_once(attempt.attempt_id)
+        await self._permits.release_dispatch_budget_once(
+            attempt.attempt_id,
+            caller=CallerIdentity.for_wallet(attempt.wallet_id),
+        )
 
     async def _find_operation_debit(
         self,
@@ -724,21 +743,31 @@ class McpDispatchReconciliationService:
         audit_event_id: str,
         constraints_evaluated: dict[str, Any] | None = None,
     ) -> ReceiptResponse:
-        existing = await self._receipts.get_receipt_by_idempotency_record_id(
-            attempt.idempotency_record_id
-        )
-        if existing is not None:
+        async def adopt_existing(existing: ReceiptResponse) -> ReceiptResponse:
             valid, _, _ = await self._receipts.verify_receipt(existing.receipt_id)
             if not valid:
                 raise DispatchAttemptError("dispatch_receipt_signature_invalid")
             await self._receipts.assert_action_receipt_binding(existing)
+            effective_constraints = await self._receipts.effective_constraints(
+                constraints_evaluated,
+                audit_event_id,
+                attempt.wallet_id,
+                include_jev="jev_risk_guard" in existing.constraints_evaluated,
+            )
             self._assert_receipt_match(
                 existing,
                 attempt=attempt,
                 outcome=outcome,
                 audit_event_id=audit_event_id,
+                constraints_evaluated=effective_constraints,
             )
             return existing
+
+        existing = await self._receipts.get_receipt_by_idempotency_record_id(
+            attempt.idempotency_record_id
+        )
+        if existing is not None:
+            return await adopt_existing(existing)
         credits_charged = (
             Decimal("0")
             if attempt.state == "returned_error"
@@ -776,14 +805,7 @@ class McpDispatchReconciliationService:
             )
             if existing is None:
                 raise
-            await self._receipts.assert_action_receipt_binding(existing)
-            self._assert_receipt_match(
-                existing,
-                attempt=attempt,
-                outcome=outcome,
-                audit_event_id=audit_event_id,
-            )
-            return existing
+            return await adopt_existing(existing)
 
     @staticmethod
     def _assert_receipt_match(
@@ -792,6 +814,7 @@ class McpDispatchReconciliationService:
         attempt: McpDispatchAttemptModel,
         outcome: str,
         audit_event_id: str,
+        constraints_evaluated: dict[str, Any] | None,
     ) -> None:
         expected_charged = (
             Decimal("0")
@@ -816,6 +839,28 @@ class McpDispatchReconciliationService:
         }
         if any(getattr(receipt, key) != value for key, value in expected.items()):
             raise DispatchAttemptError("dispatch_receipt_linkage_conflict")
+        signed_constraints = receipt.constraints_evaluated
+        expected_constraints = constraints_evaluated or {}
+        if canonical_json(signed_constraints) != canonical_json(expected_constraints):
+            # Older direct failure paths signed valid receipts before permit-v2
+            # snapshots were attached. Recover only that exact legacy shape;
+            # a receipt with any signed permit evidence must match in full.
+            legacy_omission = (
+                outcome in _LEGACY_UNSNAPSHOTTED_OUTCOMES
+                and set(signed_constraints) <= {"jev_risk_guard"}
+                and set(expected_constraints)
+                <= _PERMIT_SNAPSHOT_KEYS | {"jev_risk_guard"}
+                and canonical_json(signed_constraints)
+                == canonical_json(
+                    {
+                        key: value
+                        for key, value in expected_constraints.items()
+                        if key == "jev_risk_guard"
+                    }
+                )
+            )
+            if not legacy_omission:
+                raise DispatchAttemptError("dispatch_receipt_linkage_conflict")
         expected_reason_code = (
             None
             if attempt.state == "succeeded"

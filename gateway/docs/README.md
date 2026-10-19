@@ -16,9 +16,9 @@ consequential MCP tool behind a governed boundary. Start with the
 | Measure the lost-response fault against a correctly used native idempotency key | [Failure lab](failure-lab.md) |
 | Run fourteen injected failures and get a signed evidence bundle | [Failure lab suite](failure-lab-suite.md) |
 | Review security claims and limits | [Security limitations](../SECURITY_LIMITATIONS.md) and [security review kit](security-review-kit.md) |
-| Read the public article on what the boundary does and does not guarantee | Intent is not authority |
-| Confirm which commit production is actually running | Deployment verification checklist |
+| Rotate or revoke API keys | [API key rotation](api-key-rotation.md) |
 | Plan a design-partner evaluation | [Design partner guide](../DESIGN_PARTNER_GUIDE.md) |
+| Tell plain pytest, Postgres, and live runs apart | [Test tiers](TESTING_TIERS.md) |
 | Contribute to the repository | [Contributing guide](../../CONTRIBUTING.md) |
 
 ## Agent and API discovery
@@ -48,8 +48,7 @@ use them as product onboarding or a public capability list:
 - [`agent-recipes.md`](agent-recipes.md) and
   [`human-onboarding.md`](human-onboarding.md) are legacy proof-surface
   material, not the supported one-tool pilot.
-- `mcp-registry-submission.md` is a gated
-  publication runbook; do not submit while the deployed standard MCP endpoint
-  is disabled.
-- `aegis/` and `superpowers/` contain internal planning records, not product
-  documentation.
+- [Pods](pods.md) are a dormant trust feature, not part of the supported pilot.
+- This tree has no registry-submission runbook. Do not submit the server
+  to a public MCP registry from this repository. The standard MCP endpoint
+  stays off unless `ENABLE_STANDARD_MCP_ENDPOINT` is set.

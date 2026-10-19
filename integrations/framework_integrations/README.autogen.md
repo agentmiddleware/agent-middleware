@@ -25,7 +25,9 @@ from framework_integrations import B2AClient, get_autogen_tools
 
 # Initialize client
 client = B2AClient(
-    api_url="http://localhost:8000", api_key="your-api-key", wallet_id="your-wallet-id"
+    api_url="http://localhost:8000",
+    api_key="your-api-key",
+    wallet_id="your-wallet-id"
 )
 
 # Get AutoGen-compatible function map
@@ -33,17 +35,22 @@ function_map = get_autogen_tools(client)
 
 # Create assistant agent
 assistant = autogen.AssistantAgent(
-    name="assistant", llm_config=llm_config, function_map=function_map
+    name="assistant",
+    llm_config=llm_config,
+    function_map=function_map
 )
 
 # Create user proxy
 user_proxy = autogen.UserProxyAgent(
-    name="user_proxy", human_input_mode="NEVER", max_consecutive_auto_reply=10
+    name="user_proxy",
+    human_input_mode="NEVER",
+    max_consecutive_auto_reply=10
 )
 
 # Start conversation
 user_proxy.initiate_chat(
-    assistant, message="Check my balance and emit a telemetry event"
+    assistant,
+    message="Check my balance and emit a telemetry event"
 )
 ```
 
@@ -65,19 +72,28 @@ import autogen
 
 # Create agents with B2A tools
 researcher = autogen.AssistantAgent(
-    name="researcher", llm_config=llm_config, function_map=get_autogen_tools(client)
+    name="researcher",
+    llm_config=llm_config,
+    function_map=get_autogen_tools(client)
 )
 
 writer = autogen.AssistantAgent(
-    name="writer", llm_config=llm_config, function_map=get_autogen_tools(client)
+    name="writer",
+    llm_config=llm_config,
+    function_map=get_autogen_tools(client)
 )
 
 # Group chat
-group_chat = autogen.GroupChat(agents=[researcher, writer], messages=[], max_round=10)
+group_chat = autogen.GroupChat(
+    agents=[researcher, writer],
+    messages=[],
+    max_round=10
+)
 
 manager = autogen.GroupChatManager(groupchat=group_chat)
 
 user_proxy.initiate_chat(
-    manager, message="Research AI developments and write a summary"
+    manager,
+    message="Research AI developments and write a summary"
 )
 ```

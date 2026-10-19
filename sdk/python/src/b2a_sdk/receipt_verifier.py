@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import hashlib
 import json
 from dataclasses import dataclass, field
 from enum import Enum
@@ -141,9 +140,10 @@ def canonical_json(payload: Any) -> str:
     """Serialize already-decoded JSON the way the trust plane signs it.
 
     The rules are: keys sorted at every level, no insignificant whitespace,
-    and non-ASCII escaped. Numbers and timestamps are already strings by the
-    time they reach a signed payload, so no numeric formatting rules are
-    needed here — which is what makes this reimplementable in any language.
+    and non-ASCII escaped. Signed payloads may carry JSON numbers (floats,
+    exponents, large integers), whose rendering differs between languages,
+    so this helper is for *signing* new payloads only. Verification never
+    re-serializes the signed bytes: the signature covers them verbatim.
     """
     return json.dumps(
         payload,
@@ -515,25 +515,12 @@ def verify_bundle(
             key_id=key_id,
         )
 
-    stated_hash = payload.get("payload_hash")
-    if isinstance(stated_hash, str):
-        inner = {k: v for k, v in payload.items() if k != "payload_hash"}
-        try:
-            canonical = canonical_json(inner)
-        except (RecursionError, ValueError):
-            return _fail(
-                VerificationStatus.MALFORMED,
-                "signed payload exceeds the supported JSON nesting depth",
-                key_id=key_id,
-            )
-        computed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        if computed != stated_hash:
-            return _fail(
-                VerificationStatus.MISMATCH,
-                "payload_hash does not match the signed payload",
-                key_id=key_id,
-            )
-
+    # payload_hash is advisory and never recomputed here. The Ed25519 check
+    # above already covers signing_input verbatim, payload_hash included, so
+    # any edit to the signed bytes is INVALID. Re-serializing the parsed
+    # payload would reject genuine receipts: JSON numbers do not round-trip
+    # across languages (the gateway signs floats such as 1.0 and 4e-05, and
+    # integers above 2^53 lose precision in some parsers).
     receipt_id = payload.get("receipt_id")
     if not isinstance(receipt_id, str) or not receipt_id:
         return _fail(

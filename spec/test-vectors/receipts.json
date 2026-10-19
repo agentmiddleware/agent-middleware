@@ -1,5 +1,5 @@
 {
-  "_comment": "Receipt verification vectors. Each case is checked against keys.json unless it carries its own 'keys'. 'expect' is the verifier status. Synthetic cases cover a revoked key, envelope fields that disagree with the signed payload, a signed payload_hash that does not match, an unsupported algorithm, and malformed bundles.",
+  "_comment": "Receipt verification vectors. Each case is checked against keys.json unless it carries its own 'keys'. 'expect' is the verifier status. Synthetic cases cover a revoked key, envelope fields that disagree with the signed payload, an advisory payload_hash that does not match recomputation (still verified when signed), a float-bearing payload that verifies without re-serialization, an unsupported algorithm, and malformed bundles.",
   "cases": [
     {
       "name": "denial_constraints.valid",
@@ -479,7 +479,19 @@
         "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
         "signature": "YuG5THQUP2JmMfNUX9sRqw5yQ5CH8a2kwN4aAvN3UUi6YL/WzktI+Zwq9JFI7QmpQiV4cBhisi23UehBsYHcCw=="
       },
-      "expect": "mismatch"
+      "expect": "verified"
+    },
+    {
+      "name": "synthetic.float_payload_verifies",
+      "bundle": {
+        "receipt_id": "rcpt_golden_0001",
+        "kid": "sk_golden_0001",
+        "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
+        "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"constraints_evaluated\":{\"jev_risk_guard\":{\"big\":9007199254740993,\"injected_instructions\":1.0,\"latency_ms\":0.0,\"tiny\":4e-05}},\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"11b7b9107cab5a0d55d85769c92e8c1f298c0e16687b513168606bd948be4a22\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
+        "signature": "boPfJde3bzAMu6FeEzakfZuhzrtghFFqwmsktoDzDWnFL3y1jpZ7cL8col4QCaKPrD31Kx+RcLCgk6e09jqFBw=="
+      },
+      "expect": "verified"
     },
     {
       "name": "synthetic.jwk_only_key",

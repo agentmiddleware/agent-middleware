@@ -8,7 +8,7 @@
  *
  * Licensed under Apache-2.0.
  */
-import { createHash, createPublicKey, verify as edVerify } from "node:crypto";
+import { createPublicKey, verify as edVerify } from "node:crypto";
 
 export const CANONICALIZATION = "awi-canonical-json/1";
 
@@ -26,6 +26,11 @@ export interface VerificationResult {
   reason?: string;
   receiptId?: string;
   keyId?: string;
+  /**
+   * Fields read from the signed bytes. An integer that does not fit in a JS
+   * number is the signed decimal text (a string), so the claim matches the
+   * bytes the signature covered.
+   */
   claims?: Record<string, unknown>;
 }
 
@@ -118,6 +123,66 @@ function hasLoneSurrogate(value: unknown): boolean {
   return false;
 }
 
+const PLAIN_INTEGER = /^-?(?:0|[1-9]\d*)$/;
+const JSON_NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+
+/**
+ * True when a JSON integer token is not the number JSON.parse would return.
+ * 9007199254740993 becomes 9007199254740992; the signed digits must be kept.
+ */
+function integerLexemeRounds(lexeme: string): boolean {
+  if (!PLAIN_INTEGER.test(lexeme)) return false;
+  const digits = lexeme.startsWith("-") ? lexeme.slice(1) : lexeme;
+  // A finite double stops near 1e308. Longer tokens are not that number, and
+  // they do not need a BigInt the size of the token.
+  if (digits.length > 400) return true;
+  const asNumber = Number(lexeme);
+  if (!Number.isFinite(asNumber)) return true;
+  return BigInt(lexeme) !== BigInt(asNumber);
+}
+
+/**
+ * Parse JSON, quoting integer tokens that a JS number would round.
+ * Strings are copied through, so digits inside a string stay a string.
+ */
+function parseJsonPreservingUnsafeIntegers(text: string): unknown {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i]!;
+    if (c === '"') {
+      const start = i;
+      i += 1;
+      while (i < text.length) {
+        if (text[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (text[i] === '"') {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      out += text.slice(start, i);
+      continue;
+    }
+    if (c === "-" || (c >= "0" && c <= "9")) {
+      JSON_NUMBER.lastIndex = i;
+      const match = JSON_NUMBER.exec(text);
+      if (match && match.index === i) {
+        const lexeme = match[0];
+        i += lexeme.length;
+        out += integerLexemeRounds(lexeme) ? JSON.stringify(lexeme) : lexeme;
+        continue;
+      }
+    }
+    out += c;
+    i += 1;
+  }
+  return JSON.parse(out);
+}
+
 function edOk(raw: Buffer, sig: Buffer, msg: Buffer): boolean {
   try {
     const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: raw.toString("base64url") }, format: "jwk" });
@@ -148,7 +213,9 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
 
   let payload: unknown;
   try {
-    payload = JSON.parse(signingInput);
+    // JSON.parse rounds integers above 2^53. Claims are read from this
+    // object, so those tokens stay the signed decimal text.
+    payload = parseJsonPreservingUnsafeIntegers(signingInput);
   } catch {
     return fail("malformed", "signing_input is not valid JSON", envKid);
   }
@@ -201,18 +268,13 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const envelopeCanon = b.canonicalization === undefined ? CANONICALIZATION : b.canonicalization;
   if (envelopeCanon !== expectedCanon) return fail("mismatch", "bundle canonicalization differs from the signed payload", kid);
 
-  if (typeof p.payload_hash === "string") {
-    const inner: Record<string, unknown> = { ...p };
-    delete inner.payload_hash;
-    let canonical: string;
-    try {
-      canonical = canonicalJson(inner);
-    } catch {
-      return fail("malformed", "signed payload exceeds the supported JSON nesting depth", kid);
-    }
-    const computed = createHash("sha256").update(canonical, "utf8").digest("hex");
-    if (computed !== p.payload_hash) return fail("mismatch", "payload_hash does not match the signed payload", kid);
-  }
+  // payload_hash is advisory and never recomputed here. The Ed25519 check
+  // above already covers signing_input verbatim, payload_hash included, so
+  // any edit to the signed bytes is invalid. Re-serializing the parsed
+  // payload would reject genuine receipts: JSON numbers do not round-trip
+  // across languages (Python signs 1.0 and 4e-05; this parser reads them as
+  // 1 and 0.00004). Integers that do not fit in a JS number are returned as
+  // the signed decimal text, not the rounded number.
   const receiptId = p.receipt_id;
   if (typeof receiptId !== "string" || !receiptId) return fail("malformed", "signed payload has no receipt_id", kid);
   if (b.receipt_id !== undefined && b.receipt_id !== null && b.receipt_id !== receiptId) return fail("mismatch", "bundle receipt_id does not match the signed receipt_id", kid, receiptId);

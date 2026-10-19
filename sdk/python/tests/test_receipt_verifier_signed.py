@@ -269,6 +269,46 @@ def test_payload_without_payload_hash_verifies():
     assert result.status is VerificationStatus.VERIFIED, result.reason
 
 
+def test_signed_payload_hash_is_advisory():
+    """A wrong but signed payload_hash still verifies; the signature covers it."""
+    kid, key_set, sign = _local_signer()
+    payload = _payload(kid=kid)
+    payload["payload_hash"] = "0" * 64
+
+    result = verify_bundle(_signed_bundle(payload, kid=kid, sign=sign), key_set)
+
+    assert result.status is VerificationStatus.VERIFIED, result.reason
+
+
+def test_editing_payload_hash_without_resigning_is_invalid():
+    bundle, key_set = _verified_bundle()
+    good = json.loads(bundle["signing_input"])["payload_hash"]
+
+    result = verify_bundle(_retarget(bundle, good, "0" * 64), key_set)
+
+    assert result.status is VerificationStatus.INVALID
+    assert result.is_tampered
+
+
+def test_float_bearing_payload_verifies_without_reserialization():
+    """Floats the gateway signs (1.0, 0.0) verify; numbers are never rechecked."""
+    kid, key_set, sign = _local_signer()
+    payload = _payload(kid=kid)
+    del payload["payload_hash"]
+    payload["constraints_evaluated"] = {
+        "jev_risk_guard": {"latency_ms": 0.0, "injected_instructions": 1.0}
+    }
+    inner = {k: v for k, v in payload.items() if k != "payload_hash"}
+    payload["payload_hash"] = hashlib.sha256(canonical_json(inner).encode("utf-8")).hexdigest()
+    bundle = _signed_bundle(payload, kid=kid, sign=sign)
+    assert '"latency_ms":0.0' in bundle["signing_input"]
+    assert '"injected_instructions":1.0' in bundle["signing_input"]
+
+    result = verify_bundle(bundle, key_set)
+
+    assert result.status is VerificationStatus.VERIFIED, result.reason
+
+
 def test_extra_envelope_fields_are_ignored():
     bundle, key_set = _verified_bundle()
     bundle = {**bundle, "keys_url": "/.well-known/trust-keys.json", "future_field": {"n": 1}}

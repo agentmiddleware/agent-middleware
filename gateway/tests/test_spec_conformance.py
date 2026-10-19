@@ -449,7 +449,10 @@ class TestReceiptVectors:
             payload = json.loads(case["bundle"]["signing_input"])
             assert RECEIPT_ALWAYS_SIGNED <= set(payload), case["name"]
             assert set(payload) <= RECEIPT_DOCUMENTED | RECEIPT_ADDITIVE, case["name"]
-            assert _recompute_payload_hash(payload), case["name"]
+            if case["name"] == "synthetic.payload_hash_mismatch":
+                assert not _recompute_payload_hash(payload), case["name"]
+            else:
+                assert _recompute_payload_hash(payload), case["name"]
             assert payload["outcome"] in SPEC_OUTCOMES, case["name"]
             assert re.fullmatch(r"\d+(\.\d+)?", payload["credits_authorized"])
             assert re.fullmatch(r"\d+(\.\d+)?", payload["credits_charged"])

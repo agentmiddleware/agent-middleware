@@ -368,6 +368,35 @@ def test_record_use_advances_local_reservation_and_counters():
     assert validator.check(TOOL, Decimal("0")).allowed is True
 
 
+def test_check_denies_a_different_subject_wallet():
+    """The server returns permit_wallet_mismatch. The local mirror must too."""
+    validator = LocalPermitValidator(_permit_dict(), {})
+    decision = validator.check(TOOL, Decimal("1"), wallet_id="someone-else")
+    assert decision.allowed is False
+    assert decision.reason == "permit_wallet_mismatch"
+    # Callers that do not pass a wallet keep the previous advisory check.
+    assert validator.check(TOOL, Decimal("1")).allowed is True
+
+
+def test_check_fails_closed_when_the_call_cap_is_not_a_real_int():
+    """bool, float, and digit strings must not become a permissive cap."""
+    for limit in (True, 1.5, "1"):
+        validator = LocalPermitValidator(_permit_dict(max_calls_per_tool={TOOL: limit}), {})
+        decision = validator.check(TOOL, Decimal("1"))
+        assert decision.allowed is False, limit
+        assert decision.reason == "permit_max_calls_exceeded"
+
+
+def test_record_use_ignores_negative_credits():
+    """A negative charge must not increase the budget the mirror will allow."""
+    validator = LocalPermitValidator(_permit_dict(max_credits="10", spent_credits="0"), {})
+    validator.record_use(TOOL, Decimal("-5"))
+    assert validator.reserved_credits == Decimal("0")
+    denied = validator.check(TOOL, Decimal("11"))
+    assert denied.allowed is False
+    assert denied.reason == "permit_budget_exceeded"
+
+
 # ---------------------------------------------------------------------------
 # GovernedEdgeSession over MockTransport
 # ---------------------------------------------------------------------------
@@ -510,6 +539,37 @@ async def test_session_open_rejects_a_permit_the_published_keys_cannot_verify():
         with pytest.raises(PermitDeniedError) as exc_info:
             await GovernedEdgeSession.open(client, permit_id="permit-local-1", wallet_id="wallet-1")
         assert exc_info.value.reason == "permit_signature_invalid"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_session_open_rejects_a_permit_bound_to_another_wallet():
+    """A signed permit for wallet-1 must not open a session for someone else."""
+    permit, key_document = _build_signed_permit()
+    invoked = False
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal invoked
+        if request.url.path == "/v1/permits/permit-local-1":
+            return httpx.Response(200, json=permit)
+        if request.url.path == "/.well-known/trust-keys.json":
+            return httpx.Response(200, json=key_document)
+        invoked = True
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    client = AgentMiddlewareClient(
+        api_key="test-key",
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(PermitDeniedError) as exc_info:
+            await GovernedEdgeSession.open(
+                client, permit_id="permit-local-1", wallet_id="other-wallet"
+            )
+        assert exc_info.value.reason == "permit_wallet_mismatch"
+        assert invoked is False
     finally:
         await client.close()
 

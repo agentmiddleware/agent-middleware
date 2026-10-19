@@ -17,10 +17,12 @@ async def funded_wallets(clean_database):
     sponsor = await money.create_sponsor_wallet(
         "Status boundary", "status@example.test", Decimal("100")
     )
-    agent = await money.create_agent_wallet(sponsor.wallet_id, "source", Decimal("50"), caller=CallerIdentity.admin())
+    agent = await money.create_agent_wallet(
+        sponsor.wallet_id, "source", Decimal("50"), caller=CallerIdentity.admin()
+    )
     receiver = await money.create_agent_wallet(
-        sponsor.wallet_id, "receiver", Decimal("10")
-    , caller=CallerIdentity.admin())
+        sponsor.wallet_id, "receiver", Decimal("10"), caller=CallerIdentity.admin()
+    )
     return sponsor.wallet_id, agent.wallet_id, receiver.wallet_id
 
 
@@ -48,13 +50,21 @@ async def _snapshot():
 async def _debit(operation, source_id, receiver_id):
     money = get_agent_money()
     if operation == "transfer":
-        return await money.transfer(source_id, receiver_id, Decimal("10"), caller=CallerIdentity.admin())
+        return await money.transfer(
+            source_id, receiver_id, Decimal("10"), caller=CallerIdentity.admin()
+        )
     if operation == "agent":
-        return await money.create_agent_wallet(source_id, "new", Decimal("10"), caller=CallerIdentity.admin())
+        return await money.create_agent_wallet(
+            source_id, "new", Decimal("10"), caller=CallerIdentity.admin()
+        )
     assert operation == "child"
     return await money.create_child_wallet(
-        source_id, "new-child", Decimal("10"), Decimal("10")
-    , caller=CallerIdentity.admin())
+        source_id,
+        "new-child",
+        Decimal("10"),
+        Decimal("10"),
+        caller=CallerIdentity.admin(),
+    )
 
 
 @pytest.mark.parametrize("operation", ["transfer", "agent", "child"])

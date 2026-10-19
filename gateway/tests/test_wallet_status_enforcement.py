@@ -133,7 +133,8 @@ async def test_unknown_wallet_status_fails_closed_for_charge(client, clean_datab
         service_category=ServiceCategory.IOT_BRIDGE,
         units=Decimal("1"),
         request_path="/tests/operator-hold",
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
 
     assert isinstance(result, InsufficientFundsResponse)
     assert result.error == "insufficient_funds"
@@ -590,7 +591,8 @@ async def test_child_wallet_ttl_rejects_unsafe_values(
             budget_credits=10,
             max_spend=10,
             ttl_seconds=invalid_ttl,
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
 
     parent = await client.get(f"/v1/billing/wallets/{agent}", headers=BOOTSTRAP)
     assert parent.json()["balance"] == 5000

@@ -127,7 +127,8 @@ async def test_idempotency_checkpoint_conflict_precedes_wallet_mutation(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=(await _attempt(seed.attempt_id)).idempotency_record_id,
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
 
     assert await _wallet_snapshot(seed.wallet_id) == before
     assert (
@@ -163,7 +164,8 @@ async def test_claimed_dispatch_blocks_debit_and_velocity_mutation(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=attempt.idempotency_record_id,
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
 
     assert await _wallet_snapshot(seed.wallet_id) == before
     assert await _operation_debit_count(attempt.idempotency_record_id) == 0
@@ -183,7 +185,8 @@ async def test_retry_repairs_checkpoint_without_second_debit_or_velocity_increme
         units=Decimal("1"),
         request_path=ENDPOINT,
         operation_key=attempt.idempotency_record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     assert hasattr(first, "entry_id")
     after_first = await _wallet_snapshot(seed.wallet_id)
 
@@ -204,7 +207,8 @@ async def test_retry_repairs_checkpoint_without_second_debit_or_velocity_increme
         units=Decimal("1"),
         request_path=ENDPOINT,
         operation_key=attempt.idempotency_record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
 
     assert replay.entry_id == first.entry_id
     assert await _wallet_snapshot(seed.wallet_id) == after_first
@@ -250,7 +254,8 @@ async def test_governed_failure_rolls_back_velocity_freeze_and_debit(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=attempt.idempotency_record_id,
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
 
     assert await _wallet_snapshot(seed.wallet_id) == before
     assert await _operation_debit_count(attempt.idempotency_record_id) == 0
@@ -288,7 +293,8 @@ async def test_freeze_notification_observes_committed_governed_state(
         units=Decimal("1"),
         request_path=ENDPOINT,
         operation_key=attempt.idempotency_record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
 
     assert result.error == "wallet_frozen"
     assert await _operation_debit_count(attempt.idempotency_record_id) == 0

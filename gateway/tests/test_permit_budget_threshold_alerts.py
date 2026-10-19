@@ -61,7 +61,9 @@ async def test_a_budget_threshold_alert_is_readable_through_the_alert_api(
     )
 
     # 41 of 50 credits: past 80% and short of 90%, so exactly one alert fires.
-    await get_permit_service().reserve_budget(permit["permit_id"], Decimal("41"), caller=CallerIdentity.admin())
+    await get_permit_service().reserve_budget(
+        permit["permit_id"], Decimal("41"), caller=CallerIdentity.admin()
+    )
 
     mine = await client.get("/v1/me/alerts", headers=ctx["agent_headers"])
     assert mine.status_code == 200, mine.text
@@ -107,7 +109,9 @@ async def test_every_budget_threshold_the_writer_can_store_is_readable(
 
     service = get_permit_service()
     # 82%, then 92%, then exactly 100%: one crossing per reservation.
-    await service.reserve_budget(permit_id, Decimal("41"), caller=CallerIdentity.admin())
+    await service.reserve_budget(
+        permit_id, Decimal("41"), caller=CallerIdentity.admin()
+    )
     await service.reserve_budget(permit_id, Decimal("5"), caller=CallerIdentity.admin())
     await service.reserve_budget(permit_id, Decimal("4"), caller=CallerIdentity.admin())
 

@@ -169,7 +169,8 @@ async def test_replay_after_dispatched_triggers_reconciliation(
             units=Decimal("4") / Decimal("3"),
             request_path="/test",
             operation_key=begun.record_id,
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
         await dispatch.attach_charge(
             attempt_id=attempt.attempt_id,
             ledger_entry_id=charge.entry_id,

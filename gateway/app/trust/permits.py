@@ -12,9 +12,11 @@ from app.services.permits import (
     PermitService,
     PermitValidation,
     PermitWriteContendedError,
+    extract_recipient_identity,
     get_permit_service,
     permit_constraints_snapshot,
     permit_model_to_response,
+    recipient_binding_matches,
 )
 
 __all__ = [
@@ -24,7 +26,9 @@ __all__ = [
     "PermitService",
     "PermitValidation",
     "PermitWriteContendedError",
+    "extract_recipient_identity",
     "get_permit_service",
     "permit_constraints_snapshot",
     "permit_model_to_response",
+    "recipient_binding_matches",
 ]

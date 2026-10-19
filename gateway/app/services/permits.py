@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
+from urllib.parse import urlparse
 
 from sqlalchemy import case, func, or_, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -222,6 +224,45 @@ def _find_forbidden_field(arguments: Any, forbidden: set[str]) -> str | None:
         elif isinstance(node, (list, tuple)):
             stack.extend(node)
     return None
+
+
+def extract_recipient_identity(target: str) -> str:
+    """Reduce one recipient value to the identity the permit binds.
+
+    A URL contributes its hostname; a bare value with no host part (an
+    x402 pay_to chain address, a registered origin without a scheme) counts
+    as itself. This is the same reduction the upstream MCP path has always
+    applied before comparing against the permit's recipient constraint.
+    """
+    return urlparse(target).hostname or target
+
+
+_EVM_HEX_ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
+
+
+def recipient_binding_matches(recipient_domain: str | None, target: str) -> bool:
+    """Check one recipient value against a permit's recipient constraint.
+
+    An unset constraint allows everything. Otherwise the target is reduced
+    with extract_recipient_identity and must equal the bound value.
+    x402 callers pass the demand's pay_to address: x402 demands
+    name no resource host, so the payee address is the only recipient the
+    demand names, and a permit that binds x402 spending must carry that
+    address exactly as the demand presents it.
+
+    EVM addresses are 20-byte values: hex-letter casing (lowercase vs
+    EIP-55 checksum form) does not change the identity, so two EVM-shaped
+    values compare case-insensitively. Solana base58 addresses, hostnames,
+    and every other recipient form stay case-sensitive.
+    """
+    if not recipient_domain:
+        return True
+    candidate = extract_recipient_identity(target)
+    if _EVM_HEX_ADDRESS.fullmatch(recipient_domain) and _EVM_HEX_ADDRESS.fullmatch(
+        candidate
+    ):
+        return recipient_domain.lower() == candidate.lower()
+    return candidate == recipient_domain
 
 
 def permit_model_to_response(model: PermitModel) -> PermitResponse:
@@ -867,8 +908,13 @@ class PermitService:
             return PermitValidation(
                 False, "permit_key_mismatch", model, {"bound_to": "subject_key_id"}
             )
+        # An empty allowlist names no tool, so it admits none. The previous
+        # `if allowed_tools and ...` form skipped this check for empty lists
+        # and let the scope check below decide, so a permit carrying explicit
+        # scopes but no tool restriction could authorize tools it never
+        # named. Deny-all here makes the empty case explicit.
         allowed_tools = _loads_list(model.allowed_tools_json)
-        if allowed_tools and tool_name not in allowed_tools:
+        if tool_name not in allowed_tools:
             return PermitValidation(
                 False,
                 "permit_tool_not_allowed",

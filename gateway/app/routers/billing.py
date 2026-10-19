@@ -1,11 +1,14 @@
 """
 Agent Financial Gateways Router
 ---------------------------------
-Two-tier wallet system: human sponsors (liability sinks) fund agent wallets.
-Per-action micro-metering charges fractions of a cent per API call.
-Swarm arbitrage silently books margin on every transaction.
+Two-tier wallet system: human sponsors fund agent wallets from an internal
+credit balance. Per-action micro-metering charges credits per API call
+against the calling wallet, with one ledger entry per charge.
 
-This is how the API generates revenue autonomously.
+Credits are internal metering units, topped up through verified Stripe
+webhooks where configured (or by explicit admin-gated operator issuance).
+Core routes do not pay merchants out. ACP checkout, on the expansion
+router, charges a Stripe Shared Payment Token and mints no credits.
 """
 
 from decimal import Decimal
@@ -245,8 +248,10 @@ expansion_router = APIRouter(
     description=(
         "Bootstrap operator provisioning only. Create a human-owned root "
         "account that acts as the 'liability sink' for agent spending. "
-        "Sponsors ingest fiat currency via payment rails and convert it to "
-        "ecosystem credits. Agent wallets are provisioned from sponsor balances."
+        "Sponsors hold internal credits funded by verified Stripe top-ups "
+        "(USD only, where Stripe is configured) or by this explicit "
+        "admin-gated issuance. Agent wallets are provisioned from sponsor "
+        "balances. No settlement or payouts are performed."
     ),
     responses={
         status.HTTP_403_FORBIDDEN: {
@@ -1085,7 +1090,9 @@ async def transfer_wallets(
     """
     Transfer credits between two wallets.
 
-    This enables agent-to-agent payments for completed tasks.
+    This moves internal metering units between wallets, for example when
+    one agent compensates another from its budget. It is not a payment or
+    settlement: no money moves, only internal credits.
     Both wallets are locked during the transaction for ACID compliance.
     """
     _require_wallet_access(auth, from_wallet_id)

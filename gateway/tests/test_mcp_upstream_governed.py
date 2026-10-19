@@ -345,7 +345,9 @@ async def test_remote_quote_consume_loss_preserves_legacy_denial_without_leaks(
         # A later, unrelated reservation must survive repeated sweeps. The
         # quote-loser left no attempt for reconciliation to refund twice or to
         # convert into a new receipt-bearing public response.
-        await get_permit_service().reserve_budget(permit["permit_id"], Decimal("2"), caller=CallerIdentity.admin())
+        await get_permit_service().reserve_budget(
+            permit["permit_id"], Decimal("2"), caller=CallerIdentity.admin()
+        )
         first = await get_mcp_dispatch_reconciliation_service().reconcile(
             idle_seconds=0,
             terminal_idle_seconds=0,
@@ -2602,7 +2604,9 @@ async def test_upstream_permit_denials_never_charge_or_dispatch(
             idem_key=f"partner-upstream-denied-{denial}-permit",
         )
         if denial == "revoked":
-            await get_permit_service().revoke_permit(permit["permit_id"], caller=CallerIdentity.admin())
+            await get_permit_service().revoke_permit(
+                permit["permit_id"], caller=CallerIdentity.admin()
+            )
         elif denial == "expired":
             factory = get_session_factory()
             async with factory() as session:

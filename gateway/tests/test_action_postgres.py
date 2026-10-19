@@ -1,4 +1,3 @@
-from app.services.ownership import CallerIdentity
 """Opt-in local PostgreSQL proofs for single-action accounting and lock order."""
 
 import os
@@ -6,6 +5,7 @@ import os
 import pytest
 import pytest_asyncio
 
+from app.services.ownership import CallerIdentity
 from tests import test_action_invocation as action
 from tests.conftest import clean_database as sqlite_clean_database
 from tests.support.action_database_guard import (
@@ -142,7 +142,9 @@ async def test_action_revocation_serial_orders(
         monkeypatch.setattr(permits, "_validate_model_for_action", hold_validation)
         pending = asyncio.create_task(action.prepare_action(action_runtime, args))
         await asyncio.wait_for(locked.wait(), timeout=5)
-        revocation = asyncio.create_task(permits.revoke_permit(action_runtime[2], caller=CallerIdentity.admin()))
+        revocation = asyncio.create_task(
+            permits.revoke_permit(action_runtime[2], caller=CallerIdentity.admin())
+        )
         try:
             await wait_for_lock_waiter(blocker)
         finally:

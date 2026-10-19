@@ -675,7 +675,8 @@ async def test_lost_refund_ack_releases_budget_without_double_refund(
         wallet_id=wallet_id,
         charge_entry_id=ledger_entry_id,
         description="Committed refund with lost acknowledgement",
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     assert existing_refund.entry_id == f"refund-{ledger_entry_id}"
 
     # A background budget sweep must not release a still-pending work item;
@@ -804,7 +805,9 @@ async def test_operator_refund_release_cannot_erase_a_concurrent_reservation(
     state: dict = {}
 
     async def _concurrent_reservation() -> None:
-        await get_permit_service().reserve_budget(permit_id, Decimal("1"), caller=CallerIdentity.admin())
+        await get_permit_service().reserve_budget(
+            permit_id, Decimal("1"), caller=CallerIdentity.admin()
+        )
 
     monkeypatch.setattr(
         reconciliation_module,

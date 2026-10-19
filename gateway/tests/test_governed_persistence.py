@@ -228,14 +228,16 @@ async def test_operation_key_replays_one_debit_without_recounting_velocity(
         units=Decimal("2"),
         request_path="/mcp/messages",
         operation_key=begun.record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     replay = await money.charge(
         wallet_id=wallet_id,
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("2"),
         request_path="/mcp/messages",
         operation_key=begun.record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
 
     assert first.entry_id == replay.entry_id  # type: ignore[union-attr]
     factory = get_session_factory()
@@ -278,7 +280,8 @@ async def test_operation_key_rejects_changed_debit_and_cross_wallet_identity(
         units=Decimal("1"),
         request_path="/mcp/messages",
         operation_key=begun.record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     with pytest.raises(LedgerOperationConflictError):
         await money.charge(
             wallet_id=wallet_a["agent_wallet_id"],
@@ -286,7 +289,8 @@ async def test_operation_key_rejects_changed_debit_and_cross_wallet_identity(
             units=Decimal("2"),
             request_path="/mcp/messages",
             operation_key=begun.record_id,
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
     with pytest.raises(ValueError, match="ledger_operation_record_not_found"):
         await money.charge(
             wallet_id=wallet_b["agent_wallet_id"],
@@ -294,7 +298,8 @@ async def test_operation_key_rejects_changed_debit_and_cross_wallet_identity(
             units=Decimal("1"),
             request_path="/mcp/messages",
             operation_key=begun.record_id,
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
 
     factory = get_session_factory()
     async with factory() as session:
@@ -628,7 +633,8 @@ async def test_dispatch_attempt_state_machine_and_bounded_result(
         units=Decimal("1"),
         request_path="/mcp/messages",
         operation_key=begun.record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     attached = await service.attach_charge(
         attempt_id=prepared.attempt_id,
         ledger_entry_id=charge.entry_id,  # type: ignore[union-attr]

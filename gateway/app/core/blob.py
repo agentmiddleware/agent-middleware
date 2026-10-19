@@ -45,7 +45,7 @@ class BlobBackend(ABC):
     async def put(
         self, key: str, data: bytes, content_type: str = "application/octet-stream"
     ) -> str:
-        """Store ``data`` under ``key``. Return a URL or path callers can store."""
+        """Store ``data`` under ``key``. Return an opaque ref callers can store."""
 
     @abstractmethod
     async def get(self, key: str) -> bytes:
@@ -57,7 +57,7 @@ class BlobBackend(ABC):
 
     @abstractmethod
     async def url(self, key: str) -> str:
-        """Return a URL or path reference for ``key`` without fetching it."""
+        """Return an opaque reference for ``key`` without fetching it."""
 
 
 class LocalFilesystemBlob(BlobBackend):
@@ -122,7 +122,11 @@ class LocalFilesystemBlob(BlobBackend):
 
     @staticmethod
     def _to_url(path: Path) -> str:
-        return f"file://{path}"
+        # Opaque reference: the hex digest names the object without exposing
+        # the host's absolute filesystem layout to API callers. Resolution
+        # back to bytes always goes through the original key (see _path), so
+        # the ref itself carries no location information.
+        return f"blob:{path.name}"
 
 
 class _UnimplementedBlob(BlobBackend):
@@ -167,13 +171,14 @@ def get_blob_backend() -> BlobBackend:
 
     if backend_name == "s3":
         logger.warning(
-            "S3 blob backend selected but not implemented; falling back to local"
+            "S3 blob backend selected but not implemented; blob calls will fail loudly"
         )
         return _UnimplementedBlob("s3")
 
     if backend_name == "vercel":
         logger.warning(
-            "Vercel blob backend selected but unsupported while media is frozen"
+            "Vercel blob backend selected but unsupported while media is frozen; "
+            "blob calls will fail loudly"
         )
         return _UnimplementedBlob("vercel")
 

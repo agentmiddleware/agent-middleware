@@ -241,6 +241,11 @@ async def seeded_permit() -> SeededPermit:
     finally:
         async with factory() as session:
             async with session.begin():
+                # Receipts from any test using this permit must go first:
+                # receipts reference permits (receipts_permit_id_fkey).
+                await session.execute(
+                    delete(ReceiptModel).where(ReceiptModel.permit_id == permit_id)
+                )
                 await session.execute(
                     delete(PermitModel).where(PermitModel.permit_id == permit_id)
                 )
@@ -359,29 +364,29 @@ async def seeded_refund_reconciliation(
     finally:
         async with factory() as session:
             async with session.begin():
+                # Children before parents: receipts reference the permit, the
+                # idempotency record, and ledger entries. The refund retry
+                # under test issues a second receipt via create_receipt, so
+                # sweep by permit_id instead of deleting only the seeded one.
                 await session.execute(
-                    delete(IdempotencyRecordModel).where(
-                        IdempotencyRecordModel.record_id == record_id
+                    delete(ReceiptModel).where(
+                        ReceiptModel.permit_id == seeded_permit.permit_id
                     )
                 )
                 await session.execute(
-                    delete(ReceiptModel).where(
-                        ReceiptModel.receipt_id == receipt.receipt_id
+                    delete(IdempotencyRecordModel).where(
+                        IdempotencyRecordModel.wallet_id == seeded_permit.wallet_id
                     )
                 )
                 await session.execute(
                     delete(LedgerEntryModel).where(
-                        LedgerEntryModel.entry_id.in_(
-                            [charge_entry_id, reconciliation["refund_entry_id"]]
-                        )
+                        LedgerEntryModel.wallet_id == seeded_permit.wallet_id
                     )
                 )
-                if receipt.signature_key_id != seeded_permit.signing_key_id:
-                    await session.execute(
-                        delete(SigningKeyModel).where(
-                            SigningKeyModel.key_id == receipt.signature_key_id
-                        )
-                    )
+                # The receipt signature key is suite-wide trust state owned by
+                # the receipt service, not by this fixture. Deleting it can
+                # roll back the cleanup above whenever another module's rows
+                # still reference it, so leave it in place.
 
 
 def _authorization_kwargs(seed: SeededPermit) -> dict[str, object]:
@@ -425,14 +430,16 @@ async def test_concurrent_operation_key_charge_is_one_debit_in_postgres(
                     units=Decimal("1"),
                     request_path="/mcp/messages",
                     operation_key=record_id,
-                caller=CallerIdentity.admin()),
+                    caller=CallerIdentity.admin(),
+                ),
                 money.charge(
                     wallet_id=seeded_permit.wallet_id,
                     service_category=ServiceCategory.AGENT_COMMS,
                     units=Decimal("1"),
                     request_path="/mcp/messages",
                     operation_key=record_id,
-                caller=CallerIdentity.admin()),
+                    caller=CallerIdentity.admin(),
+                ),
             ),
             timeout=10,
         )
@@ -663,7 +670,9 @@ async def test_authorization_then_revocation_is_one_valid_serial_order(
 
     async def revoke() -> object:
         revocation_started.set()
-        return await service.revoke_permit(seeded_permit.permit_id, caller=CallerIdentity.admin())
+        return await service.revoke_permit(
+            seeded_permit.permit_id, caller=CallerIdentity.admin()
+        )
 
     revocation = asyncio.create_task(revoke())
     await asyncio.wait_for(revocation_started.wait(), timeout=5)
@@ -1339,7 +1348,8 @@ async def test_inflight_governed_debit_blocks_cleanup_then_refunds_once_in_postg
                 units=Decimal("1"),
                 request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
                 operation_key=begun.record_id,
-            caller=CallerIdentity.admin())
+                caller=CallerIdentity.admin(),
+            )
         )
         await asyncio.wait_for(debit_fence_acquired.wait(), timeout=5)
         assert debit_backend_pid is not None
@@ -1537,7 +1547,8 @@ async def test_inflight_governed_debit_blocks_effect_free_abandon_in_postgres(
                 units=Decimal("1"),
                 request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
                 operation_key=begun.record_id,
-            caller=CallerIdentity.admin())
+                caller=CallerIdentity.admin(),
+            )
         )
         await asyncio.wait_for(debit_fence_acquired.wait(), timeout=5)
         assert debit_backend_pid is not None
@@ -1725,7 +1736,8 @@ async def test_dispatch_claim_cas_is_exclusive_in_postgres() -> None:
         units=Decimal("1"),
         request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
         operation_key=begun.record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     assert hasattr(charge, "entry_id")
     await dispatch.attach_charge(
         attempt_id=attempt.attempt_id,
@@ -1811,7 +1823,8 @@ async def test_dispatch_claim_cas_is_exclusive_in_postgres() -> None:
         units=Decimal("1"),
         request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
         operation_key=race_begun.record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     assert hasattr(race_charge, "entry_id")
     race_attempt = await dispatch.attach_charge(
         attempt_id=race_attempt.attempt_id,
@@ -1923,7 +1936,8 @@ async def test_concurrent_dispatch_reconcilers_create_one_signed_audit_in_postgr
         units=Decimal("1"),
         request_path=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
         operation_key=begun.record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     assert hasattr(charge, "entry_id")
     await dispatch.attach_charge(
         attempt_id=attempt.attempt_id,
@@ -2133,7 +2147,8 @@ async def test_concurrent_provisioning_never_overdraws_in_postgres() -> None:
                 sponsor_wallet_id=sponsor_id,
                 agent_id=f"pg-conc-{index}-{uuid.uuid4().hex[:6]}",
                 budget_credits=Decimal("100"),
-            caller=CallerIdentity.admin())
+                caller=CallerIdentity.admin(),
+            )
         except Exception as exc:  # refusal is a valid outcome, not a failure
             return exc
 
@@ -2163,12 +2178,14 @@ async def test_concurrent_transfers_conserve_credits_in_postgres() -> None:
         sponsor_wallet_id=sponsor_id,
         agent_id=f"pg-src-{uuid.uuid4().hex[:6]}",
         budget_credits=Decimal("300"),
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     dest = await money.create_agent_wallet(
         sponsor_wallet_id=sponsor_id,
         agent_id=f"pg-dst-{uuid.uuid4().hex[:6]}",
         budget_credits=Decimal("0"),
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
 
     async def move() -> object:
         try:
@@ -2176,7 +2193,8 @@ async def test_concurrent_transfers_conserve_credits_in_postgres() -> None:
                 from_wallet_id=source.wallet_id,
                 to_wallet_id=dest.wallet_id,
                 amount=Decimal("100"),
-            caller=CallerIdentity.admin())
+                caller=CallerIdentity.admin(),
+            )
         except Exception as exc:
             return exc
 
@@ -2203,18 +2221,22 @@ async def test_concurrent_reclaims_credit_the_parent_once_in_postgres() -> None:
         sponsor_wallet_id=sponsor_id,
         agent_id=f"pg-parent-{uuid.uuid4().hex[:6]}",
         budget_credits=Decimal("400"),
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     child = await money.create_child_wallet(
         parent_wallet_id=parent.wallet_id,
         child_agent_id=f"pg-child-{uuid.uuid4().hex[:6]}",
         budget_credits=Decimal("150"),
         max_spend=Decimal("150"),
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     parent_before = await _wallet_balance(parent.wallet_id)
 
     async def reclaim() -> object:
         try:
-            return await money.reclaim_child_wallet(child.wallet_id, caller=CallerIdentity.admin())
+            return await money.reclaim_child_wallet(
+                child.wallet_id, caller=CallerIdentity.admin()
+            )
         except Exception as exc:
             return exc
 

@@ -415,14 +415,16 @@ async def test_invalid_units_are_refused_before_any_retry(
             service_category=ServiceCategory.AGENT_COMMS,
             units=Decimal("-1"),
             operation_key="never-used",
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
     with pytest.raises(ValueError, match="finite"):
         await engine.charge(
             wallet_id="agt-does-not-matter",
             service_category=ServiceCategory.AGENT_COMMS,
             units=Decimal("Infinity"),
             operation_key="never-used",
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
     monkeypatch.undo()
     # Refused before a transaction was ever opened.
     assert fault.calls == 0

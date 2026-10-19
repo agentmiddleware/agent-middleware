@@ -378,12 +378,14 @@ async def test_refund_charge_reverses_debit(client, api_headers, clean_database)
         wallet_id=agent_wallet_id,
         charge_entry_id=charge["entry_id"],
         description="Refund failed MCP tool",
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     duplicate_refund = await get_agent_money().refund_charge(
         wallet_id=agent_wallet_id,
         charge_entry_id=charge["entry_id"],
         description="Refund failed MCP tool",
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     assert refund.action.value == "refund"
     assert refund.entry_id == f"refund-{charge['entry_id']}"
     assert duplicate_refund.entry_id == refund.entry_id
@@ -480,7 +482,8 @@ async def test_late_refund_does_not_reduce_new_period_spend(
         wallet_id=agent_wallet_id,
         charge_entry_id=charge["entry_id"],
         description="Late refund failed MCP tool",
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     assert refund.entry_id == f"refund-{charge['entry_id']}"
 
     async with factory() as session:
@@ -1376,7 +1379,8 @@ async def test_billing_engine_refuses_non_positive_units(units):
             service_category=ServiceCategory.IOT_BRIDGE,
             units=units,
             request_path="/non-positive",
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
 
 
 @pytest.mark.anyio
@@ -1399,7 +1403,8 @@ async def test_billing_engine_refuses_non_finite_units(units):
             service_category=ServiceCategory.IOT_BRIDGE,
             units=units,
             request_path="/non-finite",
-        caller=CallerIdentity.admin())
+            caller=CallerIdentity.admin(),
+        )
 
 
 @pytest.mark.anyio

@@ -75,7 +75,8 @@ async def _prepare_attempt(
         units=Decimal("1"),
         request_path="/mcp/messages",
         operation_key=begun.record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     attempt = await service.attach_charge(
         attempt_id=attempt.attempt_id,
         ledger_entry_id=debit.entry_id,
@@ -489,7 +490,8 @@ async def test_effect_free_abandon_refuses_an_operation_with_a_debit(
         units=Decimal("1"),
         request_path="/mcp/messages",
         operation_key=attempt.idempotency_record_id,
-    caller=CallerIdentity.admin())
+        caller=CallerIdentity.admin(),
+    )
     assert debit.entry_id
 
     with pytest.raises(

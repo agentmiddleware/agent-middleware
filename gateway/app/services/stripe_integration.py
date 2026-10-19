@@ -25,11 +25,11 @@ from sqlalchemy.sql.elements import ColumnElement
 from ..db.database import get_session_factory
 from ..db.models import BillingAlertModel, LedgerEntryModel, WalletModel
 from ..core.config import get_settings
+from ..core.webhook_auth import WebhookVerificationError, verify_stripe_event
 from ..core.time import utc_now
 from ..core.resilience import run_with_write_conflict_retry
 from ..schemas.billing import AlertSeverity, AlertType, WalletStatus
 from .agent_money import WalletNotFoundError
-from .stripe_webhook_auth import StripeWebhookAuthError, construct_verified_event
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -289,13 +289,13 @@ class StripeIntegration:
             ValueError: For unhandled event types
         """
         try:
-            event = construct_verified_event(
+            event = verify_stripe_event(
                 payload,
                 sig_header,
-                secret=settings.STRIPE_WEBHOOK_SECRET,
+                get_settings().STRIPE_WEBHOOK_SECRET,
             )
-        except StripeWebhookAuthError as e:
-            logger.error(f"Invalid Stripe signature: {e}")
+        except WebhookVerificationError as e:
+            logger.warning("Rejected Stripe webhook: %s", e)
             return False
 
         # The refund handler is dispatched separately because it also needs the

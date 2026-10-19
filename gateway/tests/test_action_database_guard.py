@@ -79,6 +79,7 @@ raise SystemExit(pytest.main([test_path, "-x", "-q"], plugins=[Probe()]))
         ):
             env.pop(key, None)
     for key in (
+        "AMW_TEST_DB_DISPOSABLE",
         "RUN_MCP_MULTIPROCESS_TESTS",
         "RUN_POSTGRES_CONCURRENCY_TESTS",
         "ACTION_MIGRATION_DATABASE_URL",

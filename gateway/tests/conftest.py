@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from sqlalchemy import DateTime, event, inspect as sa_inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import Session
 
 # --- Proof-surface test classification -------------------------------------
@@ -144,6 +145,21 @@ def require_disposable_test_database() -> None:
     url = os.environ.get("DATABASE_URL", "")
     if url == f"sqlite+aiosqlite:///./{TEST_DB_FILE}":
         return
+    if (
+        os.environ.get("AMW_TEST_DB_DISPOSABLE") == "1"
+        and os.environ.get("ENVIRONMENT") == "test"
+    ):
+        try:
+            marked_url = make_url(url)
+        except (ArgumentError, ValueError):
+            pass
+        else:
+            if (
+                marked_url.drivername == "postgresql+asyncpg"
+                and marked_url.host
+                and marked_url.database
+            ):
+                return
     if (
         os.environ.get("RUN_POSTGRES_CONCURRENCY_TESTS") == "1"
         or os.environ.get("RUN_MCP_MULTIPROCESS_TESTS") == "1"

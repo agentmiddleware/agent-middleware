@@ -14,6 +14,8 @@ from tests.conftest import (
 )
 
 ACTION_URL = "postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_guard_1"
+PROOF_URL = "postgresql+asyncpg://sellers@db.example.invalid/amw_pg_concurrency"
+CI_PROOF_URL = "postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_concurrency"
 
 
 @pytest.mark.parametrize(
@@ -28,8 +30,61 @@ ACTION_URL = "postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_guard_1"
 )
 def test_ordinary_runs_reject_inherited_database_url(monkeypatch, url):
     monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.delenv("AMW_TEST_DB_DISPOSABLE", raising=False)
     monkeypatch.delenv("RUN_POSTGRES_CONCURRENCY_TESTS", raising=False)
     monkeypatch.delenv("RUN_MCP_MULTIPROCESS_TESTS", raising=False)
+
+    with pytest.raises(ValueError, match="^unsafe_test_database_url$"):
+        require_disposable_test_database()
+
+
+@pytest.mark.parametrize("flag", [None, "0", "true"])
+def test_non_local_postgres_requires_explicit_disposable_flag(monkeypatch, flag):
+    monkeypatch.setenv("DATABASE_URL", PROOF_URL)
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.delenv("RUN_POSTGRES_CONCURRENCY_TESTS", raising=False)
+    monkeypatch.delenv("RUN_MCP_MULTIPROCESS_TESTS", raising=False)
+    if flag is None:
+        monkeypatch.delenv("AMW_TEST_DB_DISPOSABLE", raising=False)
+    else:
+        monkeypatch.setenv("AMW_TEST_DB_DISPOSABLE", flag)
+
+    with pytest.raises(ValueError, match="^unsafe_test_database_url$"):
+        require_disposable_test_database()
+
+
+@pytest.mark.parametrize(
+    "url, postgres_flag",
+    [(PROOF_URL, False), (CI_PROOF_URL, True)],
+)
+def test_explicit_disposable_flag_allows_postgres_proofs(
+    monkeypatch, url, postgres_flag
+):
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("AMW_TEST_DB_DISPOSABLE", "1")
+    if postgres_flag:
+        monkeypatch.setenv("RUN_POSTGRES_CONCURRENCY_TESTS", "1")
+
+    require_disposable_test_database()
+
+
+@pytest.mark.parametrize(
+    "url", ["sqlite+aiosqlite:///./other.db", "postgresql+asyncpg://"]
+)
+def test_disposable_flag_rejects_other_or_incomplete_urls(monkeypatch, url):
+    monkeypatch.setenv("DATABASE_URL", url)
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("AMW_TEST_DB_DISPOSABLE", "1")
+
+    with pytest.raises(ValueError, match="^unsafe_test_database_url$"):
+        require_disposable_test_database()
+
+
+def test_disposable_flag_requires_test_environment(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", PROOF_URL)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("AMW_TEST_DB_DISPOSABLE", "1")
 
     with pytest.raises(ValueError, match="^unsafe_test_database_url$"):
         require_disposable_test_database()
@@ -41,6 +96,7 @@ def test_ordinary_runs_reject_inherited_database_url(monkeypatch, url):
 def test_explicit_local_postgres_profile_is_allowed(monkeypatch, flag):
     monkeypatch.setenv("DATABASE_URL", ACTION_URL)
     monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.delenv("AMW_TEST_DB_DISPOSABLE", raising=False)
     monkeypatch.setenv(flag, "1")
 
     require_disposable_test_database()
@@ -52,11 +108,13 @@ def test_explicit_local_postgres_profile_is_allowed(monkeypatch, flag):
         (ACTION_URL, "production"),
         (ACTION_URL + "?host=db.example.invalid", "test"),
         (ACTION_URL.replace("amw_action_guard_1", "production"), "test"),
+        (CI_PROOF_URL, "test"),
     ],
 )
 def test_opt_in_still_rejects_unsafe_postgres_profile(monkeypatch, url, environment):
     monkeypatch.setenv("DATABASE_URL", url)
     monkeypatch.setenv("ENVIRONMENT", environment)
+    monkeypatch.delenv("AMW_TEST_DB_DISPOSABLE", raising=False)
     monkeypatch.setenv("RUN_POSTGRES_CONCURRENCY_TESTS", "1")
 
     with pytest.raises(ValueError, match="^unsafe_action_test_"):

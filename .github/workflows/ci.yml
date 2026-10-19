@@ -174,6 +174,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      AMW_TEST_DB_DISPOSABLE: "1"
     services:
       postgres:
         image: postgres:16
@@ -261,6 +263,7 @@ jobs:
       run:
         working-directory: gateway
     env:
+      AMW_TEST_DB_DISPOSABLE: "1"
       CI_STRICT: "1"
       ENVIRONMENT: test
     steps:

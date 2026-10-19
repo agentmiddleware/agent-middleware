@@ -36,8 +36,9 @@ yourself. Never use a shared or production database: the guards below
 refuse anything that does not look disposable.
 
 ```bash
-# The guard only accepts postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_*
-# with ENVIRONMENT=test. createdb, Alembic, and pytest must all use port 55439.
+# Shared test fixtures only accept postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_*
+# with ENVIRONMENT=test and an explicit Postgres test flag. createdb, Alembic,
+# and pytest must all use port 55439.
 # If the server listens on another port, forward that port onto 127.0.0.1:55439
 # before these commands. There is no forward example in this file.
 createdb -h 127.0.0.1 -p 55439 -U sellers amw_action_local

@@ -87,7 +87,7 @@ raise SystemExit(pytest.main([test_path, "-x", "-q"], plugins=[Probe()]))
     env["DATABASE_URL"] = VALID_URL + query
     if flag == "ACTION_MIGRATION_DATABASE_URL":
         env[flag] = VALID_URL + query
-        env["DATABASE_URL"] = f"sqlite+aiosqlite:///{tmp_path / 'runner.db'}"
+        env["DATABASE_URL"] = "sqlite+aiosqlite:///./test.db"
     else:
         env[flag] = "1"
     result = subprocess.run(

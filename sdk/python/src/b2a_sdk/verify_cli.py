@@ -117,7 +117,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         bundle = _read_json(args.bundle)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
+        # ValueError covers both json.JSONDecodeError and UnicodeDecodeError
+        # (e.g. a UTF-16 bundle from a PowerShell redirect): undecodable or
+        # malformed input is "could not determine", never "tampered".
         print(f"could not read bundle: {exc}", file=sys.stderr)
         return EXIT_UNDETERMINED
 

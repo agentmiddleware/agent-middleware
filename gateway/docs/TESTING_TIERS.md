@@ -58,12 +58,15 @@ accepts `postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_*` with
 `ENVIRONMENT=test`; anything else fails before connecting. The
 two-process crash harness (`make prove-crash-recovery`,
 `tests/test_mcp_postgres_multiprocess.py`) additionally needs
-`STATE_BACKEND=postgres` and `MCP_STRESS_DB_ISOLATED=1` and stays
-operator-run: CI runs the concurrency subset above, not that harness.
+`STATE_BACKEND=postgres` and `MCP_STRESS_DB_ISOLATED=1`.
 
-CI runs tier 2 on every pull request in the `postgres-concurrency` job
-(`.github/workflows/ci.yml`), against a Postgres service container with
-a database created inside the job.
+CI runs tier 2 on every pull request in `postgres-concurrency` and
+`postgres-proofs` (`.github/workflows/ci.yml`). Both jobs use disposable
+Postgres service databases. `postgres-proofs` runs row-lock, action
+accounting, migration, asyncpg driver, and both multiprocess crash suites
+(`tests/test_mcp_postgres_multiprocess.py` and
+`tests/test_action_multiprocess.py`) with `CI_STRICT=1`; its final step
+fails if any proof logged a skip.
 
 ## Tier 3: live batteries (needs a running server, sometimes keys)
 

@@ -21,7 +21,7 @@ Python 3.11+, [`uv`](https://docs.astral.sh/uv/) (or pip), `make`, and Node 22.1
 git clone https://github.com/PetrefiedThunder/agent-middleware.git
 cd agent-middleware
 python -m venv .venv && . .venv/bin/activate
-pip install -r gateway/requirements.txt -e "./sdk/python[verify]" pytest pytest-xdist pytest-timeout
+pip install -r gateway/requirements.txt -r gateway/requirements-dev.txt -e "./sdk/python[verify]" pytest pytest-xdist pytest-timeout
 
 # gateway (FSL): full suite, about a minute in parallel
 cd gateway && pytest tests -m "not production_trust" -n auto && cd ..
@@ -35,6 +35,20 @@ python verifier/check_vectors.py
 `make -C gateway prove-trust-plane` and `make -C gateway demo-ambiguous-retry`
 exercise the invariants end to end. Never commit `.env` files, keys, or local
 databases; `pre-commit install` enables the secret scan locally.
+
+## Lint and type-check versions
+
+Local lint and type-check must use the blessed versions in
+`gateway/requirements-dev.txt`. CI installs those same versions
+(`.github/workflows/ci.yml`):
+
+- ruff `0.16.10` (`RUFF_VERSION`)
+- mypy `2.4.0` (`MYPY_VERSION`)
+
+`gateway/requirements.txt` pins mypy to `2.4.0` as well, so an application
+install cannot float the type checker. Bump the dev lock, that requirements
+pin, and the workflow env vars in the same change. `gateway/scripts/core_quality_gate.sh`
+runs `ruff check .` and `mypy app/` with those pins.
 
 ## Developer Certificate of Origin
 

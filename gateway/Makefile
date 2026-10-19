@@ -28,8 +28,9 @@ live-loop-proof:
 # are skipped here — run them with `make test-all` (what CI runs) or `make test-proof`.
 # `--with-requirements` makes these self-contained: uv installs the runtime +
 # test deps for the run, so `make test` works on a fresh checkout without a
-# separate `pip install -r requirements.txt` (deps live in requirements.txt,
-# not pyproject [project.dependencies]).
+# separate `pip install -r requirements.txt` (runtime floors are declared in
+# pyproject [project.dependencies]; requirements.txt mirrors them and stays
+# the install target for Docker/CI/`--with-requirements` runs).
 test:
 	uv run --with-requirements requirements.txt pytest tests/ -q -m "not proof"
 
@@ -65,10 +66,9 @@ prove-trust-plane-postgres: prove-crash-recovery
 # The harness refuses to run otherwise: it fails closed on a
 # non-PostgreSQL URL, a production-like ENVIRONMENT, a stale Alembic revision,
 # or any application table that already holds rows, and it takes an advisory
-# lock so two runs cannot overlap. This two-process harness stays
-# operator-run: CI runs the lighter postgres concurrency subset instead
-# (the `postgres-concurrency` job in .github/workflows/ci.yml). See
-# docs/TESTING_TIERS.md for which level proves what.
+# lock so two runs cannot overlap. CI runs this harness and the action crash
+# suite in the `postgres-proofs` job, alongside the lighter
+# `postgres-concurrency` job. See docs/TESTING_TIERS.md for test levels.
 prove-crash-recovery:
 	RUN_MCP_MULTIPROCESS_TESTS=1 \
 	uv run --with-requirements requirements.txt \

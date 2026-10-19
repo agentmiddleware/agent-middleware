@@ -5,8 +5,11 @@
 # Set these BEFORE sourcing to tune the selection:
 #   PYTHON_ENV_REQUIRE     space-separated modules the interpreter must import
 #                          (default: "pytest")
+#   PYTHON_ENV_EXTRA_REQUIREMENTS
+#                          extra requirements file for the uv fallback, relative
+#                          to the gateway root (e.g. "requirements-dev.txt")
 #   PYTHON_ENV_EXTRA_WITH  space-separated extra packages for the uv fallback,
-#                          for tools absent from requirements.txt (e.g. "ruff")
+#                          for tools absent from those requirements files
 #
 # Sourcing this file sets two arrays:
 #   PYTHON_CMD  — runs a Python module/script ("${PYTHON_CMD[@]}" -m ruff check .)
@@ -35,6 +38,7 @@ REPO_ROOT="$(_python_env_repo_root)"
 cd "$REPO_ROOT"
 
 _python_env_require="${PYTHON_ENV_REQUIRE:-pytest}"
+_python_env_extra_requirements="${PYTHON_ENV_EXTRA_REQUIREMENTS:-}"
 _python_env_extra_with="${PYTHON_ENV_EXTRA_WITH:-}"
 
 _python_env_can_import_all() {
@@ -52,6 +56,9 @@ if [[ -n "${PYTHON:-}" ]]; then
   PYTHON_CMD=("$PYTHON")
 elif command -v uv >/dev/null 2>&1; then
   PYTHON_CMD=(uv run --with-requirements requirements.txt)
+  if [[ -n "${_python_env_extra_requirements}" ]]; then
+    PYTHON_CMD+=(--with-requirements "${_python_env_extra_requirements}")
+  fi
   for _extra in $_python_env_extra_with; do
     PYTHON_CMD+=(--with "$_extra")
   done
@@ -66,10 +73,17 @@ else
 fi
 
 if [[ ${#PYTHON_CMD[@]} -eq 0 ]]; then
+  _pip_req_args="-r requirements.txt"
+  if [[ -n "${_python_env_extra_requirements}" ]]; then
+    _pip_req_args+=" -r ${_python_env_extra_requirements}"
+  fi
+  if [[ -n "${_python_env_extra_with}" ]]; then
+    _pip_req_args+=" ${_python_env_extra_with}"
+  fi
   echo "[python-env] No interpreter provides: $_python_env_require" >&2
   echo "[python-env] and uv is not available. Fix with one of:" >&2
   echo "[python-env]   - install uv (https://docs.astral.sh/uv/) and re-run" >&2
-  echo "[python-env]   - python3 -m pip install -r requirements.txt $_python_env_extra_with" >&2
+  echo "[python-env]   - python3 -m pip install ${_pip_req_args}" >&2
   echo "[python-env]   - PYTHON=/path/to/python scripts/$(basename "$0")" >&2
   exit 1
 fi

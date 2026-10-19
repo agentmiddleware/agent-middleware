@@ -1,5 +1,7 @@
 # Agent Middleware API - Dependencies
 # Python 3.11+
+# Bounds source of truth: [project].dependencies in pyproject.toml.
+# Keep the two in sync (enforced by tests/test_packaging_deps.py).
 
 # --- Core Framework ---
 fastapi>=0.143.0
@@ -37,7 +39,10 @@ alembic>=1.20.0        # Database migrations
 aiosqlite>=0.22.1      # Async SQLite driver for testing
 
 # --- Development ---
+# ruff is pinned in requirements-dev.txt, not here, so the runtime image does
+# not install the linter. mypy stays an exact pin so this file cannot float
+# the type checker ahead of CI (MYPY_VERSION in .github/workflows/ci.yml).
 pytest>=9.1.1
 pytest-asyncio>=1.4.0
 pytest-cov>=7.1.0
-mypy>=2.4.0            # Type checking
+mypy==2.4.0            # Type checking. Must match requirements-dev.txt and MYPY_VERSION

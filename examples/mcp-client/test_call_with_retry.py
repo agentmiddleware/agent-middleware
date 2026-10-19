@@ -129,6 +129,13 @@ def test_receipt_reader_refuses_disagreeing_copies() -> None:
     assert client.receipt_id(disagreed_outcomes) is None
     assert client._outcome(disagreed_outcomes) is None
 
+    missing_outcome = {
+        "meta": {RECEIPT_KEY: _receipt("rcpt-1")},
+        "receipt": {"receipt_id": "rcpt-1"},
+    }
+    assert client.receipt_id(missing_outcome) is None
+    assert client._outcome(missing_outcome) is None
+
 
 def test_matching_copies_still_return_the_one_receipt_id() -> None:
     result = {
@@ -420,8 +427,22 @@ def test_main_refuses_a_bad_saved_idempotency_key_without_calling(
         [_sdk_result("   ")] * 2,
         [_sdk_result("rcpt-1"), _sdk_result("rcpt-2")],
         [{"meta": "malformed"}] * 2,
+        [
+            {
+                "meta": {RECEIPT_KEY: _receipt("rcpt-1")},
+                "receipt": {"receipt_id": "rcpt-1"},
+            }
+        ]
+        * 2,
     ],
-    ids=["denied", "missing-outcome", "blank-id", "changed-id", "malformed"],
+    ids=[
+        "denied",
+        "missing-outcome",
+        "blank-id",
+        "changed-id",
+        "malformed",
+        "missing-copy-outcome",
+    ],
 )
 def test_failed_pair_does_not_print_a_successful_receipt(
     monkeypatch: pytest.MonkeyPatch,

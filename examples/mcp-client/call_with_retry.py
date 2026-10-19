@@ -127,11 +127,10 @@ def _agreed_receipt(result: dict) -> dict | None:
         if not isinstance(receipt_value, str) or receipt_value.strip() == "":
             return None
         ids.append(receipt_value)
-        if "outcome" in receipt and receipt.get("outcome") is not None:
-            outcome = receipt.get("outcome")
-            if not isinstance(outcome, str) or outcome.strip() == "":
-                return None
-            outcomes.append(outcome)
+        outcome = receipt.get("outcome")
+        if not isinstance(outcome, str) or outcome.strip() == "":
+            return None
+        outcomes.append(outcome)
     if len(set(ids)) != 1 or len(set(outcomes)) > 1:
         return None
     return copies[0]

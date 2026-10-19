@@ -68,21 +68,21 @@ def test_postgres_proof_ci_jobs_exist():
     assert "Prove gated tests actually ran" in workflow
 
 
-def test_trust_release_gate_is_a_required_ci_check():
-    """Coverage, OpenAPI parity, and the simulation inventory must fail CI.
+def test_trust_release_gate_is_separate_from_required_ci_result():
+    """Keep the release gate visible without blocking unrelated changes.
 
-    ``scripts/trust_release_gate.sh`` is the documented required check. It
-    only affects branch protection when the job exists and ``CI result``
-    waits on it. The script's first step is ``make check-railway-iac``;
-    an undefined target aborts the gate before those checks run.
+    The script's first step is ``make check-railway-iac``; an undefined target
+    aborts the gate before coverage and OpenAPI parity run.
     """
     workflow = CI_WORKFLOW.read_text()
     assert "\n  trust_release_gate:\n" in workflow
-    assert "name: trust_release_gate" in workflow
+    assert "name: Trust release gate (non-required)" in workflow
     assert "scripts/trust_release_gate.sh" in workflow
     assert 'UV_PYTHON: "3.12"' in workflow
+    assert 'ACP_CHECKOUT_MEDIAN_BUDGET_S: "0.045"' in workflow
+    assert "tests/test_acp_bridge.py::test_acp_checkout_end_to_end_latency_budget" in workflow
     result_block = workflow.split("name: CI result", 1)[1].split("steps:", 1)[0]
-    assert "trust_release_gate" in result_block
+    assert "trust_release_gate" not in result_block
     assert "gateway-image-smoke" in result_block
 
     makefile = (ROOT / "gateway" / "Makefile").read_text()

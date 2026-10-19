@@ -14,7 +14,10 @@ lazily inserts ``signing_keys.activated_at``.
 
 The dialect-agnostic bind guard in ``app.db.database`` is the fix. The unit
 tests below run everywhere; ``TestPostgresTrustLoop`` exercises the real
-driver and is skipped unless ``TEST_POSTGRES_URL`` is set (CI sets it).
+driver and is skipped unless ``TEST_POSTGRES_URL`` is set. The
+``postgres-trust`` CI job sets that URL. ``REQUIRE_POSTGRES_TESTS=1`` in
+the same job turns a missing URL into an import error so the job cannot
+pass by skipping the class.
 """
 
 from __future__ import annotations
@@ -26,6 +29,13 @@ import pytest
 
 from app.core.time import to_naive_utc, utc_now
 from app.db.database import _normalize_bind_parameters
+
+POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL", "").strip()
+if os.environ.get("REQUIRE_POSTGRES_TESTS") == "1" and not POSTGRES_URL:
+    raise RuntimeError(
+        "REQUIRE_POSTGRES_TESTS=1 but TEST_POSTGRES_URL is unset; "
+        "Postgres trust coverage must not skip"
+    )
 
 
 class TestToNaiveUtc:
@@ -74,7 +84,25 @@ class TestNormalizeBindParameters:
         assert _normalize_bind_parameters("raw") == "raw"
 
 
-POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL", "").strip()
+def test_require_postgres_flag_refuses_a_missing_url():
+    """The CI flag must fail this module instead of skipping the trust loop."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = os.environ.copy()
+    env.pop("TEST_POSTGRES_URL", None)
+    env["REQUIRE_POSTGRES_TESTS"] = "1"
+    completed = subprocess.run(
+        [sys.executable, "-c", "import tests.test_postgres_datetime_binding"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert "TEST_POSTGRES_URL is unset" in completed.stderr
 
 
 @pytest.mark.skipif(

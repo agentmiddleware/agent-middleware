@@ -689,7 +689,7 @@ async def test_rapid_fire_invokes_all_accounted(client, clean_database):
     """Fire 20 rapid invokes; check all receipts exist and total charge is exact.
     Requires PostgreSQL for accurate row-lock accounting.
 
-    CI runs this in the postgres_trust job with REQUIRE_POSTGRES_TESTS=1, which
+    CI runs this in the postgres-trust job with REQUIRE_POSTGRES_TESTS=1, which
     turns the skip into a failure: a job that lost its PostgreSQL DATABASE_URL
     must go red rather than pass by skipping the only test it was added for.
     """

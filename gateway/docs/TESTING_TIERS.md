@@ -63,7 +63,10 @@ operator-run: CI runs the concurrency subset above, not that harness.
 
 CI runs tier 2 on every pull request in the `postgres-concurrency` job
 (`.github/workflows/ci.yml`), against a Postgres service container with
-a database created inside the job.
+a database created inside the job. A separate `postgres-trust` job runs
+`TestPostgresTrustLoop` (`TEST_POSTGRES_URL`) and
+`test_rapid_fire_invokes_all_accounted` (`REQUIRE_POSTGRES_TESTS=1`)
+against its own disposable database, and fails if either test skips.
 
 ## Tier 3: live batteries (needs a running server, sometimes keys)
 

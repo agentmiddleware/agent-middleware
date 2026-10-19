@@ -61,3 +61,21 @@ def test_postgres_concurrency_ci_job_exists():
     assert "postgres-concurrency" in workflow
     assert "RUN_POSTGRES_CONCURRENCY_TESTS" in workflow
     assert "test_action_postgres.py" in workflow
+
+
+def test_postgres_trust_ci_job_fails_when_required_tests_skip():
+    """The asyncpg trust loop and concurrent accounting must not skip in CI."""
+    workflow = CI_WORKFLOW.read_text()
+    assert "\n  postgres-trust:" in workflow
+    assert "TEST_POSTGRES_URL:" in workflow
+    assert 'REQUIRE_POSTGRES_TESTS: "1"' in workflow
+    assert "test_postgres_datetime_binding.py::TestPostgresTrustLoop" in workflow
+    assert (
+        "test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted"
+        in workflow
+    )
+    assert "skipped" in workflow
+    assert (
+        "needs: [detect, python, typescript, postgres-concurrency, postgres-trust]"
+        in workflow
+    )

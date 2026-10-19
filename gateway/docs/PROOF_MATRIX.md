@@ -31,13 +31,15 @@ It does not run the SQLite demo. The demo intentionally controls its own
 throwaway database and signing seed, including destructive tamper checks;
 passing it a deployment database is not a supported proof mode.
 
-CI's `postgres_trust` job migrates PostgreSQL first and sets `DATABASE_URL`
-for the permit, receipt, MCP, audit, key-management, and idempotency suites.
-Those suites share one event loop for asyncpg. The datetime regression suite
-runs separately with `TEST_POSTGRES_URL`, because its fixture rebuilds the
-application and owns its own connections. Wallet-status guards also run
-against PostgreSQL. The separate `postgres_permit_concurrency` job covers
-process crashes and real row-lock contention.
+CI's `postgres-trust` job migrates a disposable PostgreSQL database, then
+runs two checks the default SQLite suite skips: `TestPostgresTrustLoop`
+with `TEST_POSTGRES_URL` (its own process, because that fixture rebuilds
+the application) and `test_rapid_fire_invokes_all_accounted` with
+`DATABASE_URL` and `REQUIRE_POSTGRES_TESTS=1`. The job fails if either
+check is skipped. `postgres-concurrency` is the row-lock job
+(`RUN_POSTGRES_CONCURRENCY_TESTS=1`). Neither job is the multi-process
+crash harness, and neither runs the rest of the trust-primitive suites
+on PostgreSQL.
 
 Before this correction, the named Make target migrated PostgreSQL then
 silently ran the SQLite demo; most CI trust primitive tests also used SQLite

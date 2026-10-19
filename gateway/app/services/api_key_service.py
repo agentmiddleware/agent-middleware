@@ -711,9 +711,7 @@ class APIKeyService:
             await session.commit()
 
         if wrote:
-            logger.warning(
-                f"Revoked API key {key_id} for wallet {wallet_id}: {reason}"
-            )
+            logger.warning(f"Revoked API key {key_id} for wallet {wallet_id}: {reason}")
         return True
 
     async def emergency_revocation(

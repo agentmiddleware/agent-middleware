@@ -133,10 +133,23 @@ def check(root: Path) -> None:
         "**/.env.*",
         ".railway",
         "**/.railway",
+        ".aws",
+        "**/.aws",
+        ".ssh",
+        "**/.ssh",
         "*.pem",
         "**/*.pem",
         "*.key",
         "**/*.key",
+        "*.db",
+        "**/*.db",
+        "*.db-wal",
+        "**/*.db-wal",
+        "*.db-shm",
+        "**/*.db-shm",
+        "*.log",
+        "**/*.log",
+        "gateway/data/",
         "gateway/.build_commit_sha",
         "gateway/tests",
     }
@@ -146,6 +159,23 @@ def check(root: Path) -> None:
         )
     if any(line.startswith("!") for line in ignored):
         raise ValueError("root Docker context contains a re-inclusion rule")
+    excluded_inputs = {
+        line
+        for line in ignored
+        if line.rstrip("/")
+        in {
+            ".build_commit_sha",
+            "**/.build_commit_sha",
+            "sdk/python",
+            "gateway/scripts",
+        }
+        or line.startswith(("sdk/python/", "gateway/scripts/"))
+        or line.endswith("*.py")
+    }
+    if excluded_inputs:
+        raise ValueError(
+            f"root Docker context excludes image inputs: {sorted(excluded_inputs)}"
+        )
 
     compose = (gateway / "docker-compose.yml").read_text(encoding="utf-8")
     if not re.search(r"(?m)^\s+context:\s+\.\.\s*$", compose):
@@ -155,6 +185,13 @@ def check(root: Path) -> None:
 
     for name in ("Dockerfile", "Dockerfile.dev"):
         instructions = _instructions(gateway / name)
+        if any(
+            re.match(
+                r"^ARG\s+(?:COMMIT_SHA|BUILD_COMMIT_SHA)(?:=|\s|$)", line, re.IGNORECASE
+            )
+            for line in instructions
+        ):
+            raise ValueError(f"{name} declares a legacy provenance build argument")
         stages = [
             i for i, line in enumerate(instructions) if line.upper().startswith("FROM ")
         ]

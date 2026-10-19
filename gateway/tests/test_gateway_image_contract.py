@@ -72,10 +72,23 @@ DOCKERIGNORE = """\
 **/.env.*
 .railway
 **/.railway
+.aws
+**/.aws
+.ssh
+**/.ssh
 *.pem
 **/*.pem
 *.key
 **/*.key
+*.db
+**/*.db
+*.db-wal
+**/*.db-wal
+*.db-shm
+**/*.db-shm
+*.log
+**/*.log
+gateway/data/
 gateway/.build_commit_sha
 gateway/tests
 """
@@ -163,6 +176,13 @@ def test_release_gate_invokes_defined_image_contract_target() -> None:
         ),
         ("gateway/docker-compose.yml", "context: ..", "context: ."),
         (".dockerignore", "**/.env.*", "# nested secrets admitted"),
+        (".dockerignore", ".aws", "# local AWS credentials admitted"),
+        (".dockerignore", "**/.aws", "# nested AWS credentials admitted"),
+        (".dockerignore", "**/*.db", "# nested database admitted"),
+        (".dockerignore", "**/*.db-wal", "# database sidecar admitted"),
+        (".dockerignore", "**/*.db-shm", "# database sidecar admitted"),
+        (".dockerignore", "**/*.log", "# logs admitted"),
+        (".dockerignore", "gateway/data/", "# local state admitted"),
         (".dockerignore", "gateway/.build_commit_sha", "# nested stamp admitted"),
     ),
 )
@@ -172,6 +192,33 @@ def test_checker_rejects_source_contract_regressions(
     source = image_source / path
     source.write_text(source.read_text().replace(before, after), encoding="utf-8")
     assert _check(image_source).returncode != 0
+
+
+@pytest.mark.parametrize(
+    "excluded_input",
+    (
+        "sdk/python",
+        "sdk/python/",
+        ".build_commit_sha",
+        "**/.build_commit_sha",
+        "gateway/scripts",
+        "gateway/scripts/",
+        "**/*.py",
+    ),
+)
+def test_checker_rejects_excluded_image_inputs(
+    image_source: Path, excluded_input: str
+) -> None:
+    ignore = image_source / ".dockerignore"
+    ignore.write_text(ignore.read_text() + excluded_input + "\n", encoding="utf-8")
+    assert "excludes image inputs" in _check(image_source).stderr
+
+
+@pytest.mark.parametrize("name", ["COMMIT_SHA", "BUILD_COMMIT_SHA"])
+def test_checker_rejects_legacy_provenance_args(image_source: Path, name: str) -> None:
+    dockerfile = image_source / "gateway/Dockerfile"
+    dockerfile.write_text(dockerfile.read_text() + f"ARG {name}\n", encoding="utf-8")
+    assert "legacy provenance" in _check(image_source).stderr
 
 
 def test_checker_rejects_missing_sdk_input(image_source: Path) -> None:

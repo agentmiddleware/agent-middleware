@@ -292,9 +292,11 @@
     <div class="label">Operator index</div>
     <h1>Inspect the trust plane without invented telemetry.</h1>
     <p class="lede">
-      This origin is a private experiment, not a public product. Tool catalogs
-      and invoke require an operator-issued key. This page only points at
-      runtime posture and portable verification keys.
+      This origin is a private experiment, not a public product. On a
+      production-like boot, tool catalogs and invoke require an operator-issued
+      key. A local-compatible boot may leave the catalog anonymous. Invoke still
+      requires a key. This page only points at runtime posture and portable
+      verification keys.
     </p>
     <p class="notice">
       No tenant records or aggregate customer counts are rendered here. This page
@@ -355,7 +357,7 @@
       <div class="links">
         <a href="/.well-known/agent.json">
           <strong>Agent manifest</strong>
-          <span>Bootstrap metadata. Tool lists on this origin require a key.</span>
+          <span>Bootstrap metadata. The tool catalog requires a key on production-like boots; local-compatible boots allow anonymous catalog reads.</span>
         </a>
         <a href="/llms.txt">
           <strong>llms.txt</strong>
@@ -368,6 +370,11 @@
       <h2 id="inspection-heading">Authenticated inspection</h2>
       <p class="section-copy">
         Inspect your own permits, receipts, and audit events from a trusted terminal.
+        These routes take the wallet and key from the credential. They do not accept
+        another wallet id. A bootstrap admin key is refused with HTTP 403 and error
+        wallet_key_required. Permits and audit events are limited to this key.
+        Receipts are wallet-wide, returned in pages with optional permit, tool,
+        and outcome filters.
         Keep the key in your environment; do not paste it into a public web page.
         Set <code>API_URL</code> to the origin serving this page, without a trailing slash;
         the example below uses the local server default.

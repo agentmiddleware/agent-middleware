@@ -23,6 +23,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.db.database import get_session_factory
+from app.services.ownership import CallerIdentity
 from sqlalchemy import select
 
 from app.db.models import LedgerEntryModel, WalletModel
@@ -130,6 +131,7 @@ async def test_a_concurrent_charge_cannot_vanish_from_the_balance(
             service_category=ServiceCategory.AGENT_COMMS,
             units=Decimal("1"),
             request_path="/concurrent-b",
+            caller=CallerIdentity.admin(),
         )
 
     monkeypatch.setattr(
@@ -143,6 +145,7 @@ async def test_a_concurrent_charge_cannot_vanish_from_the_balance(
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("1"),
         request_path="/concurrent-a",
+        caller=CallerIdentity.admin(),
     )
 
     assert state.get("fired"), "the interleave never ran — the test proved nothing"
@@ -180,6 +183,7 @@ async def test_reclaiming_a_child_twice_cannot_mint_credits(
         budget_credits=Decimal("40"),
         max_spend=Decimal("40"),
         task_description="reclaim-integrity",
+        caller=CallerIdentity.admin(),
     )
     child_id = child.wallet_id
 
@@ -200,7 +204,9 @@ async def test_reclaiming_a_child_twice_cannot_mint_credits(
             raising=False,
         )
         try:
-            state["second"] = await money.reclaim_child_wallet(child_id)
+            state["second"] = await money.reclaim_child_wallet(
+                child_id, caller=CallerIdentity.admin()
+            )
         except Exception as exc:  # a refusal is a correct outcome here
             state["second"] = exc
 
@@ -211,7 +217,9 @@ async def test_reclaiming_a_child_twice_cannot_mint_credits(
     )
 
     try:
-        state["first"] = await money.reclaim_child_wallet(child_id)
+        state["first"] = await money.reclaim_child_wallet(
+            child_id, caller=CallerIdentity.admin()
+        )
     except Exception as exc:
         state["first"] = exc
 
@@ -248,6 +256,7 @@ async def test_concurrent_charges_cannot_exceed_a_child_wallet_spend_cap(
         # Plenty of balance, but only enough cap for a single charge.
         max_spend=Decimal("2"),
         task_description="cap-race",
+        caller=CallerIdentity.admin(),
     )
     child_id = child.wallet_id
 
@@ -260,6 +269,7 @@ async def test_concurrent_charges_cannot_exceed_a_child_wallet_spend_cap(
             service_category=ServiceCategory.AGENT_COMMS,
             units=Decimal("1"),
             request_path="/cap-race-b",
+            caller=CallerIdentity.admin(),
         )
 
     monkeypatch.setattr(
@@ -273,6 +283,7 @@ async def test_concurrent_charges_cannot_exceed_a_child_wallet_spend_cap(
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("1"),
         request_path="/cap-race-a",
+        caller=CallerIdentity.admin(),
     )
 
     assert state.get("fired"), "the interleave never ran — the test proved nothing"
@@ -322,6 +333,7 @@ async def test_a_rejected_charge_does_not_erase_another_charges_velocity(
             service_category=ServiceCategory.AGENT_COMMS,
             units=Decimal("1"),
             request_path="/velocity-b",
+            caller=CallerIdentity.admin(),
         )
 
     monkeypatch.setattr(
@@ -335,6 +347,7 @@ async def test_a_rejected_charge_does_not_erase_another_charges_velocity(
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("1"),
         request_path="/velocity-a",
+        caller=CallerIdentity.admin(),
     )
 
     assert state.get("fired"), "the interleave never ran — the test proved nothing"
@@ -390,6 +403,7 @@ async def test_a_wallet_frozen_mid_charge_is_not_debited(
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("1"),
         request_path="/freeze-race",
+        caller=CallerIdentity.admin(),
     )
 
     assert state.get("fired"), "the interleave never ran — the test proved nothing"
@@ -431,6 +445,7 @@ async def test_a_concurrent_charge_cannot_erase_a_refund_credit(
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("1"),
         request_path="/to-be-refunded",
+        caller=CallerIdentity.admin(),
     )
     charged = _exact_amount(charge)
     opening = await _balance(wallet_id)
@@ -446,6 +461,7 @@ async def test_a_concurrent_charge_cannot_erase_a_refund_credit(
             service_category=ServiceCategory.AGENT_COMMS,
             units=Decimal("1"),
             request_path="/concurrent-during-refund",
+            caller=CallerIdentity.admin(),
         )
 
     monkeypatch.setattr(
@@ -458,6 +474,7 @@ async def test_a_concurrent_charge_cannot_erase_a_refund_credit(
         wallet_id=wallet_id,
         charge_entry_id=charge.entry_id,
         description="refund during a concurrent charge",
+        caller=CallerIdentity.admin(),
     )
 
     assert state.get("fired"), "the interleave never ran — the test proved nothing"
@@ -494,6 +511,7 @@ async def test_a_concurrent_charge_cannot_erase_a_reconciled_refund(
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("1"),
         request_path="/undelivered",
+        caller=CallerIdentity.admin(),
     )
     charged = _exact_amount(charge)
     opening = await _balance(wallet_id)
@@ -510,6 +528,7 @@ async def test_a_concurrent_charge_cannot_erase_a_reconciled_refund(
             service_category=ServiceCategory.AGENT_COMMS,
             units=Decimal("1"),
             request_path="/concurrent-during-reconcile",
+            caller=CallerIdentity.admin(),
         )
 
     async with real_factory() as session:
@@ -615,6 +634,7 @@ async def test_a_period_rollover_is_not_charged_for_a_rejected_charge(
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("1"),
         request_path="/rollover-reversal",
+        caller=CallerIdentity.admin(),
     )
 
     assert state.get("fired"), "the interleave never ran — the test proved nothing"

@@ -22,6 +22,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.services.ownership import CallerIdentity
 from app.services.audit_log import list_audit_events
 from app.services.receipts import (
     ReceiptService,
@@ -1047,8 +1048,12 @@ async def test_release_tool_call_compensation_semantics(client, clean_database):
             return counts.get("x402.payment")
 
     # Missing permit and absent counter are silent no-ops.
-    await permits.release_tool_call("permit-does-not-exist", "x402.payment")
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        "permit-does-not-exist", "x402.payment", caller=CallerIdentity.admin()
+    )
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() is None
 
     # Two concurrent-style reservations, one release: the surviving count is
@@ -1063,13 +1068,19 @@ async def test_release_tool_call_compensation_semantics(client, clean_database):
         )
         assert validation.allowed, validation.reason
     assert await counter() == 2
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() == 1
 
     # Clamp at zero: releasing past the floor stops at 0, never negative.
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() == 0
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() == 0
 
     # A malformed boolean counter is rejected, not coerced and decremented.
@@ -1085,7 +1096,9 @@ async def test_release_tool_call_compensation_semantics(client, clean_database):
         model.tool_call_counts_json = _json.dumps({"x402.payment": True})
         session.add(model)
         await session.commit()
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() is True
 
 

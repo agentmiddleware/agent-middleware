@@ -240,7 +240,7 @@ which can contain secrets.
 ## Build and test
 
 ```bash
-uv build b2a_sdk
-python -m pytest sdk/python/tests
+uv build sdk/python --out-dir dist
+uv run --directory sdk/python --extra dev pytest
 ruff check sdk/python/src sdk/python/tests
 ```

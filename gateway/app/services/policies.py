@@ -267,6 +267,21 @@ async def evaluate_wallet_policy(
     # Decimal and the incoming cost is normalized rather than compared as float.
     est = _as_decimal(estimated_cost)
     daily = _as_decimal(daily_spend_used)
+    for amount in (est, daily):
+        if amount is not None and not amount.is_finite():
+            # A non-finite cost poisons the monetary gates below: NaN makes
+            # Decimal ordering comparisons raise InvalidOperation (an
+            # unclassified 500 with no denial recorded), and -Infinity is
+            # smaller than every cap so it silently passes them. Neither can
+            # be shown under a cap, so deny instead of crashing or allowing.
+            # None keeps its existing meaning for each input: estimated cost
+            # skips its comparison, while unknown daily spend denies a cap.
+            return PolicyEvaluation(
+                False,
+                "policy_cost_invalid",
+                None,
+                {"policy_count": len(models)},
+            )
 
     evaluated: list[dict[str, Any]] = []
     for policy in models:

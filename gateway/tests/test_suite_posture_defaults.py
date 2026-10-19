@@ -83,6 +83,7 @@ def test_trust_release_gate_is_a_required_ci_check():
     assert 'UV_PYTHON: "3.12"' in workflow
     result_block = workflow.split("name: CI result", 1)[1].split("steps:", 1)[0]
     assert "trust_release_gate" in result_block
+    assert "gateway-image-smoke" in result_block
 
     makefile = (ROOT / "gateway" / "Makefile").read_text()
     assert "\ncheck-railway-iac:" in makefile

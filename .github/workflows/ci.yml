@@ -97,10 +97,50 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           if grep -q '^\[tool\.mypy\]' pyproject.toml 2>/dev/null || [ -f mypy.ini ]; then
+            if [ "${{ matrix.project }}" = "sdk/python" ]; then
+              uv pip install -e ".[mcp]"
+            fi
             uv pip install "mypy==${MYPY_VERSION}" && uv run --no-sync mypy .
           else
             echo "mypy not configured; skipping"
           fi
+      - name: Pre-commit mypy (gateway)
+        if: matrix.project == 'gateway' && matrix.python-version == '3.12'
+        working-directory: .
+        env:
+          UV_PYTHON: "3.12"
+        run: |
+          hook=(uv tool run --from pre-commit==4.6.0 pre-commit run mypy)
+          "${hook[@]}" --all-files
+
+          probe_stem="$(mktemp gateway/typecheck/_mypy_hook_probe_XXXXXXXX)"
+          trap 'rm -f "$probe_stem" "$probe_stem.py"' EXIT
+          probe="$probe_stem.py"
+          mv "$probe_stem" "$probe"
+          cat > "$probe" <<'PY'
+          def probe() -> int:
+              return "the hook must reject this return type"
+          PY
+
+          if probe_output="$("${hook[@]}" --files "$probe" 2>&1)"; then
+            printf '%s\n' "$probe_output"
+            echo "mypy hook unexpectedly accepted the type error" >&2
+            exit 1
+          else
+            probe_status=$?
+          fi
+          printf '%s\n' "$probe_output"
+          expected="typecheck/$(basename "$probe"):2: error: Incompatible return value type (got \"str\", expected \"int\")  [return-value]"
+          if [ "$probe_status" -ne 1 ] ||
+             ! grep -Fqx "$expected" <<< "$probe_output" ||
+             ! grep -Eq '^Found 1 error in 1 file \(checked [0-9]+ source files\)$' <<< "$probe_output"; then
+            echo "mypy hook failed for a reason other than the single probe error" >&2
+            exit 1
+          fi
+
+          rm "$probe"
+          trap - EXIT
+          "${hook[@]}" --all-files
       - name: Test (pytest)
         run: |
           set +e
@@ -336,6 +376,19 @@ jobs:
           python3 gateway/tests/support/proof_log_gate.py \
             "$GITHUB_WORKSPACE"/proof-logs-{concurrency,action,migration,driver,stress,action-mp}.txt
 
+  gateway-image-smoke:
+    name: Gateway image import smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and import release and development images
+        run: bash .github/scripts/smoke_gateway_image.sh
+
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
     needs: detect
@@ -418,7 +471,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript, postgres-concurrency, postgres-proofs, trust_release_gate]
+    needs: [detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke, trust_release_gate]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

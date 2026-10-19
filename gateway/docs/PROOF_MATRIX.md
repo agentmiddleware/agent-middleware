@@ -195,10 +195,11 @@ rate limiting.
 | `make trust-coverage-gate` | 43 focused trust test files at an **80% coverage floor** across 38 named trust-plane control modules |
 | `make trust-release-gate` | The in-repo Railway deploy contract first (`Dockerfile`, `requirements.txt`, and an executable `scripts/docker_entrypoint.sh`; the hosted `.railway/railway.ts` graph is not in this repository), followed by the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates |
 
-CI runs `scripts/trust_release_gate.sh` as a dedicated required check
-(`trust_release_gate`) so `main` cannot advance past an unproven claim; the
-exact branch-protection settings are in
-`trust-release-gate-branch-protection.md`.
+From `gateway/`, run `make trust-release-gate` for the full local release gate.
+CI runs `scripts/trust_release_gate.sh` in `trust_release_gate`, which is
+included in `CI result` alongside `gateway-image-smoke`. The [active main ruleset](https://github.com/agentmiddleware/agent-middleware/rules/24444399)
+requires `CI result` and `gitleaks` with strict status checks, linear history,
+and resolved review threads.
 The [stranger test](stranger-test.md) is the human milestone that checks the
 same five claims are reachable and checkable from the published docs alone.
 

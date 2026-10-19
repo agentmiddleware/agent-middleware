@@ -121,6 +121,7 @@ All monetary comparisons are done in `Decimal` end-to-end (thresholds stored as
 
 | Check | Reason code |
 |-------|-------------|
+| Non-finite cost input (`NaN`, `Infinity`) for estimated cost or daily spend | `policy_cost_invalid` (denied; a cap that cannot be evaluated must not pass or crash) |
 | Bundle requires human approval | `human_approval_required` — satisfied instead of denied when the invoke's permit carries `requires_human_approval` (the Layer D gate provides the demanded decision; every other check below still runs) |
 | Tool not in the bundle allow-list | `tool_not_allowed` |
 | Service category not in the bundle allow-list | `service_category_not_allowed` |
@@ -283,6 +284,7 @@ authorization guarantee.
 | `max_cost_per_action_exceeded` | C | Per-action cost cap hit |
 | `daily_spend_limit_exceeded` | C | Daily spend cap hit |
 | `real_effects_required` | C | Real-effects policy vs simulation mode |
+| `policy_cost_invalid` | C | Non-finite estimated cost or daily spend cannot be compared against caps |
 | `human_approval_unavailable` | D | Approval service unreachable (**retryable**) |
 | `permit_recipient_domain_mismatch` | E | Upstream origin ≠ permit's bound domain |
 

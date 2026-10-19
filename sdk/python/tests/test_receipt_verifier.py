@@ -350,9 +350,7 @@ def test_undecodable_bundle_is_undetermined_not_tampered(tmp_path, capsys):
     keys_path = tmp_path / "keys.json"
     keys_path.write_text(json.dumps({"keys": []}))
 
-    exit_code = verify_cli.main(
-        ["--bundle", str(bundle_path), "--keys", str(keys_path)]
-    )
+    exit_code = verify_cli.main(["--bundle", str(bundle_path), "--keys", str(keys_path)])
 
     assert exit_code == verify_cli.EXIT_UNDETERMINED
     assert "could not read bundle" in capsys.readouterr().err
@@ -374,9 +372,7 @@ def test_deeply_nested_bundle_is_undetermined_not_tampered(tmp_path, monkeypatch
 
     monkeypatch.setattr(json, "load", exploding_load)
 
-    exit_code = verify_cli.main(
-        ["--bundle", str(bundle_path), "--keys", str(keys_path)]
-    )
+    exit_code = verify_cli.main(["--bundle", str(bundle_path), "--keys", str(keys_path)])
 
     assert exit_code == verify_cli.EXIT_UNDETERMINED
     assert "could not read bundle" in capsys.readouterr().err

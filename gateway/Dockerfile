@@ -2,20 +2,27 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# b2a_sdk is imported while app.main loads. The build context is the
+# repository root (not this directory): sdk/python is not inside gateway/.
+#   docker build -f gateway/Dockerfile .
+# The release stamp .build_commit_sha must sit at that context root.
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/sdk/python/src
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies, then the in-repo SDK those imports require.
+COPY sdk/python /sdk/python
+COPY gateway/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+    && pip install --no-cache-dir /sdk/python
 
 # Copy application code
-COPY . .
+COPY gateway/ /app/
 
 # Release contexts must carry a commit stamp generated from the exact Git tree.
 COPY .build_commit_sha /app/.build_commit_sha

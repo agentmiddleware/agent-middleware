@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from sqlalchemy import DateTime, event, inspect as sa_inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import Session
 
 # --- Proof-surface test classification -------------------------------------
@@ -137,6 +138,45 @@ TEST_DB_FILE = f"test_{_XDIST_WORKER}.db" if _XDIST_WORKER else "test.db"
 os.environ.setdefault("DATABASE_URL", _DEFAULT_TEST_DB_URL)
 if _XDIST_WORKER and os.environ["DATABASE_URL"] == _DEFAULT_TEST_DB_URL:
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///./{TEST_DB_FILE}"
+
+
+def require_disposable_test_database() -> None:
+    """Refuse inherited databases before test setup or destructive cleanup."""
+    url = os.environ.get("DATABASE_URL", "")
+    if url == f"sqlite+aiosqlite:///./{TEST_DB_FILE}":
+        return
+    if (
+        os.environ.get("AMW_TEST_DB_DISPOSABLE") == "1"
+        and os.environ.get("ENVIRONMENT") == "test"
+    ):
+        try:
+            marked_url = make_url(url)
+        except (ArgumentError, ValueError):
+            pass
+        else:
+            if (
+                marked_url.drivername == "postgresql+asyncpg"
+                and marked_url.host
+                and marked_url.database
+            ):
+                return
+    if (
+        os.environ.get("RUN_POSTGRES_CONCURRENCY_TESTS") == "1"
+        or os.environ.get("RUN_MCP_MULTIPROCESS_TESTS") == "1"
+    ):
+        from tests.support.action_database_guard import (
+            require_action_database_url,
+            require_action_test_environment,
+        )
+
+        require_action_test_environment(os.environ.get("ENVIRONMENT"))
+        require_action_database_url(url)
+        return
+    # An inherited URL may contain credentials; never include it in the error.
+    raise ValueError("unsafe_test_database_url")
+
+
+require_disposable_test_database()
 # Durable state stays in memory for the suite. State this explicitly: the tests
 # always ran on memory state, but only as an accident of auto-resolution
 # choosing postgres and asyncpg then failing on the SQLite DSN above. Once a
@@ -345,6 +385,7 @@ def mount_dormant_surfaces_for_marked_tests(request):
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def setup_database():
     """Set up database tables before any tests run."""
+    require_disposable_test_database()
     from app.core.durable_state import close_durable_state
     from app.db.database import init_db, close_db
 
@@ -410,6 +451,7 @@ CLEAN_DATABASE_TABLES = (
 @pytest_asyncio.fixture(scope="function")
 async def clean_database():
     """Clean database tables between tests."""
+    require_disposable_test_database()
     from app.db.database import get_session_factory
 
     factory = get_session_factory()

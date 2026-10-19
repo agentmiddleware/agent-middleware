@@ -3601,6 +3601,7 @@ async def _raise_charged_upstream_failure(
             idempotency_record_id=dispatch_attempt.idempotency_record_id,
             dispatch_attempt_id=dispatch_attempt.attempt_id,
             approval_id=(approval_check.approval_id if approval_check else None),
+            constraints_evaluated=_permit_constraints_snapshot(permit_model),
         )
     except ReceiptWriteContendedError as exc:
         # Post-charge: the tool ran and the wallet moved, so a lost receipt
@@ -3910,6 +3911,11 @@ async def _finalize_governed_denial(
             dispatch_attempt_id=dispatch_attempt_id,
             response_hash_override=response_hash_override,
             approval_id=approval_id,
+            constraints_evaluated=(
+                _permit_constraints_snapshot(permit_model)
+                if dispatch_attempt_id is not None
+                else None
+            ),
         )
     except ReceiptWriteContendedError as exc:
         if effects_committed:

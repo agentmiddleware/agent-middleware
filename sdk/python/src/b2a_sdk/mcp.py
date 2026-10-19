@@ -15,13 +15,10 @@ import argparse
 import asyncio
 import json
 import os
-from typing import Any
+import sys
+from typing import Any, Literal
 
-try:
-    import httpx
-except ImportError:
-    httpx = None
-
+import httpx
 
 DEFAULT_API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
 
@@ -45,9 +42,6 @@ def generate_manifest(
     url = f"{api_url}/mcp/tools.json"
     if category:
         url = f"{url}?category={category}"
-
-    if httpx is None:
-        raise RuntimeError("httpx required. Install: pip install httpx")
 
     response = httpx.get(url, timeout=30.0)
     response.raise_for_status()
@@ -107,7 +101,7 @@ def list_tools(
 
 
 async def serve_async(
-    transport: str = "stdio",
+    transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
 ) -> None:
@@ -128,14 +122,18 @@ async def serve_async(
     manifest = generate_manifest(api_url=api_url)
     tools = manifest.get("tools", [])
 
-    mcp = FastMCP("B2A Marketplace")
+    mcp = FastMCP("B2A Marketplace", port=port)
 
     async def call_tool(service_id: str, input_data: dict, wallet_id: str, api_key: str) -> dict:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{api_url}/v1/billing/services/{service_id}/invoke",
+                f"{api_url}/mcp/tools/{service_id}/invoke",
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-                json={"caller_wallet_id": wallet_id, "input_data": input_data},
+                json={
+                    "name": service_id,
+                    "arguments": input_data,
+                    "mcp_context": {"wallet_id": wallet_id},
+                },
                 timeout=30.0,
             )
             response.raise_for_status()
@@ -149,30 +147,36 @@ async def serve_async(
             async def handler(**kwargs) -> dict:
                 return await call_tool(
                     service_id=svc_id,
-                    input_data={"input_data": kwargs},
+                    input_data=kwargs,
                     wallet_id=os.getenv("B2A_WALLET_ID", ""),
                     api_key=os.getenv("B2A_API_KEY", ""),
                 )
 
             return handler
 
-        mcp.add_tool(name, desc, await create_handler(name, desc))
+        mcp.add_tool(await create_handler(name, desc), name=name, description=desc)
 
-    print(f"Starting MCP server with {len(tools)} tools...")
-    print(f"Transport: {transport}")
+    output = sys.stderr if transport == "stdio" else sys.stdout
+    print(f"Starting MCP server with {len(tools)} tools...", file=output)
+    print(f"Transport: {transport}", file=output)
     if transport == "sse":
-        print(f"Port: {port}")
-    print("\\nConfigure with:")
-    print("  export B2A_API_KEY=<your-key>")
-    print("  export B2A_WALLET_ID=<your-wallet>")
-    print(f"  export B2A_API_URL={api_url}")
-    print()
+        print(f"Port: {port}", file=output)
+    print("\\nConfigure with:", file=output)
+    print("  export B2A_API_KEY=<your-key>", file=output)
+    print("  export B2A_WALLET_ID=<your-wallet>", file=output)
+    print(f"  export B2A_API_URL={api_url}", file=output)
+    print(file=output)
 
-    mcp.run(transport=transport, port=port)
+    if transport == "stdio":
+        await mcp.run_stdio_async()
+    elif transport == "sse":
+        await mcp.run_sse_async()
+    else:
+        raise ValueError(f"Unknown transport: {transport}")
 
 
 def serve(
-    transport: str = "stdio",
+    transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
 ) -> None:

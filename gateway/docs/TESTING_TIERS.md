@@ -32,12 +32,13 @@ version bump and a CHANGELOG entry (see the test module docstrings).
 Concurrency and row-lock proofs skip by default because SQLite treats
 `SELECT ... FOR UPDATE` as a silent no-op with different semantics from
 Postgres. To run them, point at a throwaway database you create and drop
-yourself. Never use a shared or production database: the guards below
-refuse anything that does not look disposable.
+yourself. Never use a shared or production database. Ordinary local Postgres runs
+require the fixed disposable action-test profile below.
 
 ```bash
-# The guard only accepts postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_*
-# with ENVIRONMENT=test. createdb, Alembic, and pytest must all use port 55439.
+# Ordinary local runs only accept postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_*
+# with ENVIRONMENT=test and an explicit Postgres test flag. createdb, Alembic,
+# and pytest must all use port 55439.
 # If the server listens on another port, forward that port onto 127.0.0.1:55439
 # before these commands. There is no forward example in this file.
 createdb -h 127.0.0.1 -p 55439 -U sellers amw_action_local
@@ -62,7 +63,9 @@ two-process crash harness (`make prove-crash-recovery`,
 
 CI runs tier 2 on every pull request in `postgres-concurrency` and
 `postgres-proofs` (`.github/workflows/ci.yml`). Both jobs use disposable
-Postgres service databases. `postgres-proofs` runs row-lock, action
+Postgres service databases and set `AMW_TEST_DB_DISPOSABLE=1` in their job
+environment; the shared fixture then accepts PostgreSQL URLs with
+`ENVIRONMENT=test`. `postgres-proofs` runs row-lock, action
 accounting, migration, asyncpg driver, concurrent-invoke accounting
 (`tests/test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted`),
 and both multiprocess crash suites

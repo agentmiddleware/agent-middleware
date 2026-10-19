@@ -97,6 +97,9 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           if grep -q '^\[tool\.mypy\]' pyproject.toml 2>/dev/null || [ -f mypy.ini ]; then
+            if [ "${{ matrix.project }}" = "sdk/python" ]; then
+              uv pip install -e ".[mcp]"
+            fi
             uv pip install "mypy==${MYPY_VERSION}" && uv run --no-sync mypy .
           else
             echo "mypy not configured; skipping"
@@ -171,6 +174,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      AMW_TEST_DB_DISPOSABLE: "1"
     services:
       postgres:
         image: postgres:16
@@ -258,6 +263,7 @@ jobs:
       run:
         working-directory: gateway
     env:
+      AMW_TEST_DB_DISPOSABLE: "1"
       CI_STRICT: "1"
       ENVIRONMENT: test
     steps:
@@ -382,6 +388,19 @@ jobs:
           python3 gateway/tests/support/proof_log_gate.py \
             "$GITHUB_WORKSPACE"/proof-logs-{concurrency,action,migration,driver,accounting,stress,action-mp}.txt
 
+  gateway-image-smoke:
+    name: Gateway image import smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and import release and development images
+        run: bash .github/scripts/smoke_gateway_image.sh
+
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
     needs: detect
@@ -436,7 +455,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript, postgres-concurrency, postgres-proofs]
+    needs: [detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

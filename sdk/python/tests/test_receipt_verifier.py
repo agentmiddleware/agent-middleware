@@ -336,3 +336,47 @@ def test_edited_algorithm_or_canonicalization_is_invalid_not_unsupported():
     declared_canon_result = verify_bundle(declared_canon, keys)
     assert declared_canon_result.status is VerificationStatus.UNSUPPORTED
     assert not declared_canon_result.is_tampered
+
+
+def test_undecodable_bundle_is_undetermined_not_tampered(tmp_path, capsys):
+    """A non-UTF-8 bundle (e.g. UTF-16 from a PowerShell redirect) must exit 2.
+
+    Regression test: _read_json opens with encoding="utf-8", and the bundle
+    load only caught OSError/JSONDecodeError, so a UnicodeDecodeError escaped
+    as a traceback with interpreter exit 1 -- the "tampered" code.
+    """
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_bytes('{"a": 1}'.encode("utf-16"))
+    keys_path = tmp_path / "keys.json"
+    keys_path.write_text(json.dumps({"keys": []}))
+
+    exit_code = verify_cli.main(
+        ["--bundle", str(bundle_path), "--keys", str(keys_path)]
+    )
+
+    assert exit_code == verify_cli.EXIT_UNDETERMINED
+    assert "could not read bundle" in capsys.readouterr().err
+
+
+def test_deeply_nested_bundle_is_undetermined_not_tampered(tmp_path, monkeypatch, capsys):
+    """A bundle that exhausts the JSON parser recursion limit must exit 2."""
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_text("[]")
+    keys_path = tmp_path / "keys.json"
+    keys_path.write_text(json.dumps({"keys": []}))
+
+    real_load = json.load
+
+    def exploding_load(handle):
+        if getattr(handle, "name", "") == str(bundle_path):
+            raise RecursionError("maximum recursion depth exceeded")
+        return real_load(handle)
+
+    monkeypatch.setattr(json, "load", exploding_load)
+
+    exit_code = verify_cli.main(
+        ["--bundle", str(bundle_path), "--keys", str(keys_path)]
+    )
+
+    assert exit_code == verify_cli.EXIT_UNDETERMINED
+    assert "could not read bundle" in capsys.readouterr().err

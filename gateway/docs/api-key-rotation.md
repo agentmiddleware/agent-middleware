@@ -41,21 +41,35 @@ For a cutover with no gap where nobody can authenticate, deploy once with
 both the old key and the new key in `VALID_API_KEYS`, wait until every worker
 has restarted, then deploy again with the old key removed.
 
-Verify only after the old key is gone from every worker. The checker fails
-if the old key still returns 200.
+Retirement is complete only when host configuration and rollout evidence
+confirms that the exact intended replacement is in `VALID_API_KEYS`, the old
+value is absent, every serving worker runs that configuration revision, and
+all old workers are stopped or drained. Check this through the host secret
+manager and deployment status without printing key material.
+
+Then run `verify` as a smoke check. It makes exactly one request per key, and
+a load balancer can send those requests to different workers. Exit 0 shows only
+sampled rejection and acceptance; it proves neither fleet-wide retirement nor
+that the accepted replacement came from `VALID_API_KEYS`. Repeating random
+probes does not replace the host configuration and rollout evidence.
 
 ```bash
 export AGENT_MIDDLEWARE_API_URL=https://the-origin-you-just-rotated
-export OLD_API_KEY=...   # must now be rejected
-export NEW_API_KEY=...   # must authenticate
+export OLD_API_KEY=...   # exact old bootstrap key
+export NEW_API_KEY=...   # exact intended replacement bootstrap key
 python scripts/rotate_api_keys.py verify
 ```
 
-`verify` sends `GET /v1/audit/summary` with `X-API-Key`. It does not follow
-redirects and it does not write. Exit codes:
+Use only the intended bootstrap keys. `verify` sends `GET /v1/audit/summary`
+with `X-API-Key` and does not follow redirects or make a mutation request.
+That route also accepts wallet keys, so a 200 does not establish bootstrap
+authority or configuration provenance. Accidentally supplying a database key
+can update `last_used_at` and consume a bounded use during authentication.
+Exit codes:
 
-- 0: the old key is rejected with 401 or 403, and the new key returns 200
-- 1: either of those checks failed
+- 0: the old-key request received 401 or 403, and the new-key request returned
+  200; this is sampled response evidence only
+- 1: either sampled response did not match those conditions
 - 2: an env var is missing, or the URL is unsafe (embedded credentials, a
   path, a query, a fragment, or remote HTTP)
 
@@ -66,8 +80,8 @@ with `invalid_api_key`. A missing credential returns `401` with
 All count as "rejected" for the old key.
 
 The checker allows the canonical production origin. Point it at the
-deployment whose secret you just changed, and only after the old key should
-already be dead.
+deployment whose secret you just changed, after confirming the host rollout
+and configuration evidence above.
 
 ## Wallet keys
 
@@ -137,7 +151,7 @@ Rotation history for a wallet is `GET /v1/api-keys/{wallet_id}/logs`.
 
 | What happened | What to do |
 | --- | --- |
-| A `VALID_API_KEYS` bootstrap key leaked, or may have leaked | Generate a replacement, remove the old value from the host secret, restart every worker, then run `verify`. Treat every worker that has not restarted as still accepting the old key. |
+| A `VALID_API_KEYS` bootstrap key leaked, or may have leaked | Generate a replacement. Finish the cutover only with host evidence that the exact intended replacement is configured, the old value is absent, every serving worker runs that revision, and old workers are stopped or drained. Then run `verify` for a two-request smoke check; exit 0 alone does not close the incident. |
 | A `b2a_` wallet key leaked | `DELETE` that key, or `POST /v1/api-keys/rotate` with `revoke_old` true. To revoke every wallet key and its refresh tokens, use `POST /v1/api-keys/emergency-revoke` and set `create_new_key` explicitly. No restart. |
 | An `amw_dev_` static key leaked | Production-like processes refuse to boot when `STATIC_DEV_API_KEYS` is set, and they ignore those keys if that guard is bypassed. Remove the value from the local env if the machine is shared. Do not copy it into `VALID_API_KEYS`. Entries without the `amw_dev_` prefix never authenticate, including a live key pasted into the wrong variable. |
 | The signing private key leaked, or may have leaked | Stop and follow [key-management.md](key-management.md). This runbook does not retire signing keys, and nothing in `scripts/` does either. |

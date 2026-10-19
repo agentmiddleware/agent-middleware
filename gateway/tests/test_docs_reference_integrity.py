@@ -120,6 +120,24 @@ def test_api_key_rotation_runbook_matches_the_code() -> None:
     assert "key-management.md" in text
     # A restart is required: get_settings caches VALID_API_KEYS for the process.
     assert "restart" in text
+    bootstrap = text.split("## Bootstrap keys", 1)[1].split("## Wallet keys", 1)[0]
+    bootstrap_words = " ".join(bootstrap.split())
+    incident = text.split("## Incident table", 1)[1]
+    for claim in (
+        "exact intended replacement is in `VALID_API_KEYS`",
+        "every serving worker runs that configuration revision",
+        "all old workers are stopped or drained",
+        "exactly one request per key",
+        "different workers",
+        "neither fleet-wide retirement",
+        "Repeating random probes does not replace",
+        "That route also accepts wallet keys",
+        "can update `last_used_at` and consume a bounded use",
+        "does not follow redirects or make a mutation request",
+    ):
+        assert claim in bootstrap_words
+    assert "exit 0 alone does not close the incident" in incident
+    assert "every serving worker runs that revision" in incident
 
 
 def test_release_gate_doc_matches_committed_ci() -> None:

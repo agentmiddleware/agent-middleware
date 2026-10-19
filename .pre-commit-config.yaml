@@ -28,11 +28,17 @@ repos:
       - id: ruff-format
         args: ["--check"]
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: 2834ec6639549dd6796205c8f011dedcd587288b # frozen: v2.4.0
+  - repo: local
     hooks:
       - id: mypy
-        # Only gateway configures mypy; check its app as one package.
-        files: ^gateway/app/.*\.py$
-        args: ["--config-file=gateway/mypy.ini", "gateway/app"]
+        name: mypy
+        entry: >-
+          uv run --directory gateway --no-project --isolated --no-env-file
+          --with-requirements requirements.txt
+          --with-requirements requirements-dev.txt
+          --with-editable "../sdk/python[verify]"
+          python -m mypy --config-file mypy.ini .
+        language: system
+        files: ^(gateway/(app|typecheck)/.*\.py|gateway/(mypy\.ini|requirements(-dev)?\.txt|pyproject\.toml)|sdk/python/(src/.*|pyproject\.toml)|\.pre-commit-config\.yaml)$
         pass_filenames: false
+        require_serial: true

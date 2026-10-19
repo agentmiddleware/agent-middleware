@@ -101,6 +101,12 @@ jobs:
           else
             echo "mypy not configured; skipping"
           fi
+      - name: Pre-commit mypy (gateway)
+        if: matrix.project == 'gateway' && matrix.python-version == '3.12'
+        working-directory: .
+        env:
+          UV_PYTHON: "3.12"
+        run: uv tool run --from pre-commit==4.6.0 pre-commit run mypy --all-files
       - name: Test (pytest)
         run: |
           set +e

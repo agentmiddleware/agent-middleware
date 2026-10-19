@@ -231,10 +231,38 @@ jobs:
       - name: Test
         run: $PM run --if-present test
 
+  trust_release_gate:
+    # PROOF_MATRIX requires this script as its own check. The job id is the
+    # check name branch protection can require. CI result also needs it, so a
+    # gate failure still fails the single required aggregate.
+    name: trust_release_gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Trust release gate
+        # `uv run` in the gate scripts has no interpreter flag. Pin the same
+        # 3.12 the other gateway jobs use so the gate does not float to uv's
+        # default.
+        env:
+          UV_PYTHON: "3.12"
+        run: scripts/trust_release_gate.sh
+
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript, postgres-concurrency]
+    needs: [detect, python, typescript, postgres-concurrency, trust_release_gate]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

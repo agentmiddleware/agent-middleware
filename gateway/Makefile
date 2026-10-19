@@ -1,4 +1,4 @@
-.PHONY: quickstart quickstart-check live-loop-proof demo-ambiguous-retry demo-ambiguous-retry-check failure-lab failure-lab-check test test-all test-proof coverage prove-trust-plane prove-trust-plane-postgres prove-crash-recovery demo-trust-plane demo-trust-plane-check dogfood-trust-plane dogfood-trust-plane-check red-team-trust-plane red-team-trust-plane-check agent-ops-war-room agent-ops-war-room-check check-doc-references trust-coverage-gate trust-release-gate trust-conformance-live adversarial-battery-live failure-lab-suite failure-lab-all failure-lab-evidence failure-lab-list failure-lab-explore failure-lab-integration-check failure-lab-diagnostic failure-lab-verify-bundle
+.PHONY: quickstart quickstart-check live-loop-proof demo-ambiguous-retry demo-ambiguous-retry-check failure-lab failure-lab-check test test-all test-proof coverage prove-trust-plane prove-trust-plane-postgres prove-crash-recovery demo-trust-plane demo-trust-plane-check dogfood-trust-plane dogfood-trust-plane-check red-team-trust-plane red-team-trust-plane-check agent-ops-war-room agent-ops-war-room-check check-doc-references check-railway-iac trust-coverage-gate trust-release-gate trust-conformance-live adversarial-battery-live failure-lab-suite failure-lab-all failure-lab-evidence failure-lab-list failure-lab-explore failure-lab-integration-check failure-lab-diagnostic failure-lab-verify-bundle
 
 
 
@@ -124,6 +124,16 @@ agent-ops-war-room-check:
 check-doc-references:
 	python scripts/check_doc_references.py
 
+# First step of scripts/trust_release_gate.sh. The supported deploy path in
+# this repo is `railway up` from the Dockerfile (WEDGE.md). The hosted
+# `.railway/railway.ts` graph is not in this tree, so the in-repo contract is
+# the files that build COPYs or executes. `.build_commit_sha` is gitignored
+# and stamped at release time, after this gate.
+check-railway-iac:
+	test -f Dockerfile
+	test -f requirements.txt
+	test -f scripts/docker_entrypoint.sh
+	test -x scripts/docker_entrypoint.sh
 
 trust-coverage-gate:
 	scripts/trust_coverage_gate.sh

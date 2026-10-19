@@ -495,16 +495,41 @@ class PermitService:
         return permit_model_to_response(model)
 
     async def revoke_permit(self, permit_id: str) -> PermitResponse:
+        """Revoke an active permit.
+
+        The write matches only ``status = 'active'``. A repeat call, or a call
+        against a permit that is already expired or exhausted, returns the
+        stored row and does not move ``revoked_at`` or change ``status``.
+        """
         factory = get_session_factory()
         async with factory() as session:
-            model = await session.get(PermitModel, permit_id)
-            if not model:
+            # Guarded write, same shape as the budget reservation: a second
+            # caller cannot overwrite revoked_at after the status has left
+            # active, including when the two calls overlap.
+            await session.execute(
+                sa_update(PermitModel)
+                .where(
+                    cast(ColumnElement[bool], PermitModel.permit_id == permit_id),
+                    cast(ColumnElement[bool], PermitModel.status == "active"),
+                )
+                .values(status="revoked", revoked_at=utc_now())
+                .execution_options(synchronize_session=False)
+            )
+            model = (
+                await session.execute(
+                    select(PermitModel)
+                    .where(
+                        cast(
+                            ColumnElement[bool],
+                            PermitModel.permit_id == permit_id,
+                        )
+                    )
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if model is None:
                 raise PermitError("permit_not_found")
-            model.status = "revoked"
-            model.revoked_at = utc_now()
-            session.add(model)
             await session.commit()
-            await session.refresh(model)
             return permit_model_to_response(model)
 
     async def validate_for_action(

@@ -193,7 +193,7 @@ rate limiting.
 | Command | Enforces |
 |---|---|
 | `make trust-coverage-gate` | 43 focused trust test files at an **80% coverage floor** across 38 named trust-plane control modules |
-| `make check-gateway-image-contract` | Source preflight for the repository-root Docker context, gateway and SDK image inputs, secret exclusions, and validated release-stamp transfer. It executes the stamp writer against isolated inputs. It does not build the image, inspect hosted variables, or validate a Railway resource graph. `check-railway-iac` remains an alias for old callers. |
+| `make check-gateway-image-contract` | Source preflight for the repository-root Docker context, gateway and SDK image inputs, secret exclusions, and validated release-stamp transfer. It executes the stamp writer against isolated inputs and requires review of any changed `.dockerignore` pattern; CI image smoke checks the actual context. It does not parse Dockerfiles fully, inspect hosted variables, or validate a Railway resource graph. `check-railway-iac` remains an alias for old callers. |
 | `make trust-release-gate` | Runs the image source preflight first, then the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates. |
 
 Automatic CI runs the gateway pytest suite, including the source-preflight

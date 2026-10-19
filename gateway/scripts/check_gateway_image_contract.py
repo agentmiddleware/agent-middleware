@@ -2,7 +2,8 @@
 """Check the repository-owned inputs to the gateway images.
 
 This is a source preflight, not a Docker parser or a hosted deployment check.
-It checks the COPY/install paths and runs the stamp writer with isolated files.
+It requires review of any new Docker ignore pattern, checks the COPY/install
+paths, and runs the stamp writer with isolated files.
 """
 
 from __future__ import annotations
@@ -13,6 +14,91 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+
+# The metadata stage copies the entire filtered repository context. Keep this
+# list exact: new ignore patterns may remove SDK code or the optional root stamp,
+# so adding one requires review and the CI image canary must still pass.
+APPROVED_DOCKER_IGNORE_PATTERNS = frozenset(
+    """
+.git
+.github
+.agents
+**/.agents
+.claude
+**/.claude
+.envrc
+**/.envrc
+.vercel
+**/.vercel
+.railway
+**/.railway
+.aws
+**/.aws
+.ssh
+**/.ssh
+.npmrc
+**/.npmrc
+.pypirc
+**/.pypirc
+.netrc
+**/.netrc
+.secrets
+**/.secrets
+.venv
+**/.venv
+.venv-local
+**/.venv-local
+venv
+**/venv
+env
+**/env
+node_modules
+**/node_modules
+.pytest_cache
+**/.pytest_cache
+.ruff_cache
+**/.ruff_cache
+__pycache__
+**/__pycache__
+*.py[cod]
+**/*.py[cod]
+*.pyo
+**/*.pyo
+*.pyd
+**/*.pyd
+.env
+**/.env
+.env.*
+**/.env.*
+*.db
+**/*.db
+*.db-wal
+**/*.db-wal
+*.db-shm
+**/*.db-shm
+*.log
+**/*.log
+*.pem
+**/*.pem
+*.key
+**/*.key
+railway.json
+**/railway.json
+railway.toml
+**/railway.toml
+gateway/.build_commit_sha
+gateway/tests
+gateway/data
+gateway/docker-compose.yml
+gateway/docker-compose.prod.yml
+sdk/typescript
+integrations
+examples
+spec
+verifier
+""".split()
+)
 
 
 def _instructions(path: Path) -> list[str]:
@@ -125,62 +211,15 @@ def check(root: Path) -> None:
         for line in (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
-    required_ignores = {
-        ".git",
-        ".agents",
-        "**/.agents",
-        ".claude",
-        "**/.claude",
-        ".envrc",
-        "**/.envrc",
-        ".env",
-        ".env.*",
-        "**/.env",
-        "**/.env.*",
-        ".railway",
-        "**/.railway",
-        ".aws",
-        "**/.aws",
-        ".ssh",
-        "**/.ssh",
-        "*.pem",
-        "**/*.pem",
-        "*.key",
-        "**/*.key",
-        "*.db",
-        "**/*.db",
-        "*.db-wal",
-        "**/*.db-wal",
-        "*.db-shm",
-        "**/*.db-shm",
-        "*.log",
-        "**/*.log",
-        "gateway/data",
-        "gateway/.build_commit_sha",
-        "gateway/tests",
-    }
-    if missing_ignores := required_ignores - {line.rstrip("/") for line in ignored}:
-        raise ValueError(
-            f"root Docker context misses exclusions: {sorted(missing_ignores)}"
-        )
     if any(line.startswith("!") for line in ignored):
         raise ValueError("root Docker context contains a re-inclusion rule")
-    excluded_inputs = {
-        line
-        for line in ignored
-        if line.rstrip("/")
-        in {
-            ".build_commit_sha",
-            "**/.build_commit_sha",
-            "sdk/python",
-            "gateway/scripts",
-        }
-        or line.startswith(("sdk/python/", "gateway/scripts/"))
-        or line.endswith("*.py")
-    }
-    if excluded_inputs:
+    if unreviewed := ignored - APPROVED_DOCKER_IGNORE_PATTERNS:
         raise ValueError(
-            f"root Docker context excludes image inputs: {sorted(excluded_inputs)}"
+            f"root Docker context has unreviewed patterns: {sorted(unreviewed)}"
+        )
+    if missing_ignores := APPROVED_DOCKER_IGNORE_PATTERNS - ignored:
+        raise ValueError(
+            f"root Docker context misses reviewed exclusions: {sorted(missing_ignores)}"
         )
 
     compose = (gateway / "docker-compose.yml").read_text(encoding="utf-8")

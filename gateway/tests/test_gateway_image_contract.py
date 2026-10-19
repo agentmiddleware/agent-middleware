@@ -64,40 +64,7 @@ if not value:
 Path(os.environ["BUILD_SHA_PATH"]).write_text(value.lower() + "\\n")
 """
 
-DOCKERIGNORE = """\
-.git
-.agents
-**/.agents
-.claude
-**/.claude
-.envrc
-**/.envrc
-.env
-.env.*
-**/.env
-**/.env.*
-.railway
-**/.railway
-.aws
-**/.aws
-.ssh
-**/.ssh
-*.pem
-**/*.pem
-*.key
-**/*.key
-*.db
-**/*.db
-*.db-wal
-**/*.db-wal
-*.db-shm
-**/*.db-shm
-*.log
-**/*.log
-gateway/data
-gateway/.build_commit_sha
-gateway/tests
-"""
+DOCKERIGNORE = (REPO_ROOT.parent / ".dockerignore").read_text(encoding="utf-8")
 
 
 def _invoked_make_targets(script_text: str) -> list[str]:
@@ -164,6 +131,19 @@ def test_release_gate_invokes_defined_image_contract_target() -> None:
     assert invoked and set(invoked) <= defined
 
 
+def test_checker_accepts_reviewed_ignores_reordered(image_source: Path) -> None:
+    ignore = image_source / ".dockerignore"
+    patterns = [
+        line for line in DOCKERIGNORE.splitlines() if line and not line.startswith("#")
+    ]
+    assert "sdk" not in patterns
+    assert ".build_commit_sha" not in patterns
+    ignore.write_text("# reviewed patterns\n" + "\n".join(reversed(patterns)) + "\n")
+    (image_source / ".build_commit_sha").write_text("a" * 40 + "\n")
+    assert (image_source / "sdk/python/src/b2a_sdk/receipt_verifier.py").is_file()
+    assert _check(image_source).returncode == 0
+
+
 @pytest.mark.parametrize(
     ("path", "before", "after"),
     (
@@ -213,6 +193,11 @@ def test_checker_rejects_source_contract_regressions(
         "gateway/scripts",
         "gateway/scripts/",
         "**/*.py",
+        "sdk",
+        "gateway",
+        "sdk/*",
+        "*.toml",
+        ".build*",
     ),
 )
 def test_checker_rejects_excluded_image_inputs(
@@ -220,7 +205,13 @@ def test_checker_rejects_excluded_image_inputs(
 ) -> None:
     ignore = image_source / ".dockerignore"
     ignore.write_text(ignore.read_text() + excluded_input + "\n", encoding="utf-8")
-    assert "excludes image inputs" in _check(image_source).stderr
+    assert "unreviewed patterns" in _check(image_source).stderr
+
+
+def test_checker_rejects_reinclusion_rule(image_source: Path) -> None:
+    ignore = image_source / ".dockerignore"
+    ignore.write_text(ignore.read_text() + "!sdk/python\n", encoding="utf-8")
+    assert "re-inclusion rule" in _check(image_source).stderr
 
 
 @pytest.mark.parametrize("name", ["COMMIT_SHA", "BUILD_COMMIT_SHA"])

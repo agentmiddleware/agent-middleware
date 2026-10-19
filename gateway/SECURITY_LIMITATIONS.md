@@ -119,6 +119,8 @@ Before any hosted release, the operator must review the exact source SHA,
 image digest, deployment state, and runtime variables separately. The local
 `make check-gateway-image-contract` gate checks only repository-owned image
 inputs and stamp handling; it cannot inspect hosted resources or secret values.
+New `.dockerignore` patterns require source-checker review; CI image smoke
+checks actual context behavior.
 
 - `TRUST_MODE_ENABLED=true` and `ALLOW_LEGACY_UNPERMITTED_MCP=false` are the
   shipped defaults. A production-like environment cannot boot under any

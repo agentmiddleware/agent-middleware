@@ -77,14 +77,12 @@ def test_gateway_python312_ci_runs_the_actual_hook() -> None:
     )
     assert step["working-directory"] == "."
     assert step["env"]["UV_PYTHON"] == "3.12"
-    assert shlex.split(step["run"]) == [
-        "uv",
-        "tool",
-        "run",
-        "--from",
-        "pre-commit==4.6.0",
-        "pre-commit",
-        "run",
-        "mypy",
-        "--all-files",
-    ]
+    run = step["run"]
+    assert "hook=(uv tool run --from pre-commit==4.6.0 pre-commit run mypy)" in run
+    assert run.count('"${hook[@]}" --all-files') == 2
+    assert "mktemp gateway/typecheck/_mypy_hook_probe_XXXXXXXX" in run
+    assert 'trap \'rm -f "$probe_stem" "$probe_stem.py"\' EXIT' in run
+    assert '"${hook[@]}" --files "$probe"' in run
+    assert '"$probe_status" -ne 1' in run
+    assert "Incompatible return value type" in run
+    assert "Found 1 error in 1 file" in run

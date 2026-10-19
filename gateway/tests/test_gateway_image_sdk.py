@@ -109,6 +109,13 @@ def test_root_dockerignore_keeps_sdk_sources_and_the_stamp():
     assert "gateway/.build_commit_sha" in lines
     assert "*.pem" in lines
     assert "**/*.key" in lines
+    assert "gateway/data" in lines
+    assert "*.db-wal" in lines
+    assert "**/*.db-wal" in lines
+    assert "*.db-shm" in lines
+    assert "**/*.db-shm" in lines
+    assert "*.log" in lines
+    assert "**/*.log" in lines
 
 
 def _package_not_installed(_name: str):

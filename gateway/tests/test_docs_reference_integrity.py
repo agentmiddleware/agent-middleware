@@ -64,8 +64,8 @@ def test_docs_markdown_references_exist() -> None:
             ref = match.group(1)
             if not _markdown_ref_resolves(doc, ref, linked=True):
                 missing.append(f"{doc.name}: {ref}")
-    assert not missing, "docs name markdown files that are not in the tree:\n" + "\n".join(
-        missing
+    assert not missing, (
+        "docs name markdown files that are not in the tree:\n" + "\n".join(missing)
     )
 
 

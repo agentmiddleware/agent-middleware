@@ -55,12 +55,17 @@ def test_strict_mode_ci_run_has_content():
     assert "ALLOW_LEGACY_UNPERMITTED_MCP=false" in workflow
 
 
-def test_postgres_concurrency_ci_job_exists():
-    """Race coverage must stay proven in CI, not just present but skipped."""
+def test_postgres_proof_ci_jobs_exist():
+    """Real database and crash coverage must execute in required CI."""
     workflow = CI_WORKFLOW.read_text()
     assert "postgres-concurrency" in workflow
+    assert "postgres-proofs" in workflow
+    assert 'CI_STRICT: "1"' in workflow
     assert "RUN_POSTGRES_CONCURRENCY_TESTS" in workflow
     assert "test_action_postgres.py" in workflow
+    assert "test_mcp_postgres_multiprocess.py" in workflow
+    assert "test_action_multiprocess.py" in workflow
+    assert "Prove gated tests actually ran" in workflow
 
 
 def test_trust_release_gate_is_a_required_ci_check():

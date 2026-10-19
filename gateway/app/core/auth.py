@@ -47,7 +47,10 @@ class AuthContext:
     key_id: str | None = None
     wallet_id: str | None = None
     is_bootstrap_admin: bool = False
-    scopes: list[str] = None  # type: ignore[assignment]
+    # Omitted scopes arrive as None. __post_init__ stores [] so a constructed
+    # context carries a list; readers must still treat None as no scopes,
+    # because a context that skipped the constructor can leave None in place.
+    scopes: list[str] | None = None
     # Enterprise (Okta/Entra) bearer that accompanied an X-API-Key call. Set
     # ONLY when the Authorization header carried a token whose UNVERIFIED
     # issuer names a pinned IGA issuer (see get_auth_context). It is identity

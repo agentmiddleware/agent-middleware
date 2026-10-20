@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
   CANONICALIZATION,
+  P256_ALGORITHM,
   canonicalJson,
   keySetFromDocument,
   verifyBundle,
@@ -12,6 +13,9 @@ import {
 
 const keyPair = generateKeyPairSync("ed25519");
 const otherPair = generateKeyPairSync("ed25519");
+const p256Pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const otherP256Pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const p256PublicDer = p256Pair.publicKey.export({ type: "spki", format: "der" });
 const rawKey = Buffer.from(
   (keyPair.publicKey.export({ format: "jwk" }).x as string),
   "base64url",
@@ -46,6 +50,18 @@ function seal(
 
 function statusOf(bundle: unknown, ks: KeySet = keys(), issuer?: string): string {
   return verifyBundle(bundle, ks, issuer).status;
+}
+
+function p256Keys(status = "active", publicKeyDer = p256PublicDer): KeySet {
+  return keySetFromDocument({
+    keys: [{ kid: "p256-key", alg: P256_ALGORITHM, status, public_key_b64: publicKeyDer.toString("base64") }],
+  });
+}
+
+function sealP256(body: Record<string, unknown> = { receipt_id: "rcpt-p256", kid: "p256-key", alg: P256_ALGORITHM }): Record<string, unknown> {
+  const signingInput = JSON.stringify(body);
+  const signature = sign("sha256", Buffer.from(signingInput, "utf8"), p256Pair.privateKey).toString("base64");
+  return { signing_input: signingInput, signature, kid: "p256-key", alg: P256_ALGORITHM };
 }
 
 test("valid bundle verifies and reports claims from the signed bytes", () => {
@@ -268,6 +284,60 @@ test("signed RS256 algorithm is unsupported, driven by the signer", () => {
   assert.equal(statusOf(bundle), "unsupported");
 });
 
+test("genuine P-256 receipt is unsupported only after its DER signature verifies", () => {
+  const ks = p256Keys();
+  const key = ks.get("p256-key");
+  assert.ok(key && !Buffer.isBuffer(key));
+  assert.equal(key.alg, P256_ALGORITHM);
+  assert.deepEqual(key.publicKeyDer, p256PublicDer);
+
+  const bundle = sealP256();
+  assert.equal(statusOf(bundle, new Map()), "unknown_key");
+  const result = verifyBundle(bundle, ks);
+  assert.equal(result.status, "unsupported");
+  assert.equal(result.ok, false);
+});
+
+test("altered P-256 signed bytes and signatures are invalid", () => {
+  const bundle = sealP256();
+  assert.equal(statusOf({ ...bundle, signing_input: (bundle.signing_input as string).replace("rcpt-p256", "rcpt-f256") }, p256Keys()), "invalid");
+  const wrongSignature = sign("sha256", Buffer.from(bundle.signing_input as string), otherP256Pair.privateKey).toString("base64");
+  assert.equal(statusOf({ ...bundle, signature: wrongSignature }, p256Keys()), "invalid");
+});
+
+test("base64-decoded malformed P-256 DER signatures are malformed", () => {
+  const bundle = sealP256();
+  const notDer = Buffer.alloc(70).toString("base64");
+  const nonMinimalInteger = Buffer.from("300702020001020101", "hex").toString("base64");
+  assert.equal(statusOf({ ...bundle, signature: notDer }, p256Keys()), "malformed");
+  assert.equal(statusOf({ ...bundle, signature: nonMinimalInteger }, p256Keys()), "malformed");
+});
+
+test("missing and disabled P-256 keys are unknown_key", () => {
+  const bundle = sealP256();
+  assert.equal(statusOf(bundle, new Map()), "unknown_key");
+  assert.equal(statusOf(bundle, p256Keys("disabled")), "unknown_key");
+});
+
+test("malformed or wrong-curve P-256 public keys are malformed", () => {
+  const bundle = sealP256();
+  assert.equal(statusOf(bundle, p256Keys("active", Buffer.from("bad DER"))), "malformed");
+  const p384 = generateKeyPairSync("ec", { namedCurve: "secp384r1" });
+  const p384Der = p384.publicKey.export({ type: "spki", format: "der" });
+  assert.equal(statusOf(bundle, p256Keys("active", p384Der)), "malformed");
+  assert.equal(statusOf({ ...bundle, signature: "!!!!" }, p256Keys()), "malformed");
+});
+
+test("P-256 signed kid confusion is a mismatch", () => {
+  const bundle = sealP256({ receipt_id: "rcpt-p256", kid: "ghost", alg: P256_ALGORITHM });
+  assert.equal(statusOf(bundle, p256Keys()), "mismatch");
+});
+
+test("P-256 verification key cannot mark an Ed25519-declared receipt verified", () => {
+  const bundle = sealP256({ receipt_id: "rcpt-p256", kid: "p256-key", alg: "Ed25519" });
+  assert.equal(statusOf(bundle, p256Keys()), "unsupported");
+});
+
 test("signed unknown canonicalization is unsupported", () => {
   const bundle = seal({ ...payload(), canonicalization: "other/9" });
   assert.equal(statusOf(bundle), "unsupported");
@@ -361,7 +431,10 @@ test("key set reads raw, key_id alias and JWK mirror forms", () => {
     ],
   });
   assert.deepEqual(new Set(ks.keys()), new Set(["raw", "alias", "jwk-only"]));
-  for (const value of ks.values()) assert.equal(value.length, 32);
+  for (const value of ks.values()) {
+    assert.ok(Buffer.isBuffer(value));
+    assert.equal(value.length, 32);
+  }
 });
 
 test("key set drops disabled keys, wrong algs and unusable entries", () => {

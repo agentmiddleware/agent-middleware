@@ -21,6 +21,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -435,6 +437,47 @@ def _synthetic_cases(
     ]
 
 
+def _p256_cases(base_bundle: dict) -> list[dict]:
+    """Fixed, public test key for the dormant KMS receipt algorithm."""
+    key = ec.derive_private_key(1, ec.SECP256R1())
+    kid = "sk_p256_test"
+    algorithm = "ECDSA-P256-SHA256"
+    payload = _with_hash(dict(json.loads(base_bundle["signing_input"]), kid=kid, alg=algorithm))
+    signing_input = canonical_json(payload)
+    signature = key.sign(
+        signing_input.encode("utf-8"), ec.ECDSA(hashes.SHA256(), deterministic_signing=True)
+    )
+    bundle = {
+        "receipt_id": payload["receipt_id"],
+        "kid": kid,
+        "alg": algorithm,
+        "canonicalization": CANONICALIZATION,
+        "signing_input": signing_input,
+        "signature": b64(signature),
+    }
+    keys = {
+        "keys": [
+            {
+                "kid": kid,
+                "alg": algorithm,
+                "status": "active",
+                "public_key_b64": b64(
+                    key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+                ),
+            }
+        ]
+    }
+    return [
+        {"name": "p256.valid", "bundle": bundle, "keys": keys, "expect": "unsupported"},
+        {
+            "name": "p256.tampered_payload",
+            "bundle": dict(bundle, signing_input=tamper_outcome(signing_input)),
+            "keys": keys,
+            "expect": "invalid",
+        },
+    ]
+
+
 def build_cases(
     golden_dir: Path | None = None, key: Ed25519PrivateKey | None = None
 ) -> list[dict]:
@@ -455,6 +498,7 @@ def build_cases(
             f"{BASE_FIXTURE} fixture is required to build the synthetic cases"
         )
     cases.extend(_synthetic_cases(base_bundle, signing, _public_raw(signing)))
+    cases.extend(_p256_cases(base_bundle))
     cases.append(
         {
             "name": "malformed.no_signature",
@@ -474,7 +518,8 @@ def render_receipts(key: Ed25519PrivateKey | None = None) -> str:
             "Synthetic cases cover a revoked key, envelope fields that disagree "
             "with the signed payload, an advisory payload_hash that does not match "
             "recomputation (still verified when signed), a float-bearing payload "
-            "that verifies without re-serialization, an unsupported algorithm, "
+            "that verifies without re-serialization, a genuine P-256 signature "
+            "that is unsupported by receipt v0.1, "
             "and malformed bundles."
         ),
         "cases": build_cases(key=signing),

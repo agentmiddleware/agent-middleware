@@ -1,10 +1,12 @@
 # CI for AMW (Agent Middleware).
 # Projects are discovered at runtime (.github/scripts/detect_projects.py), so jobs only run for
 # Python/TypeScript packages that actually exist under spec/, verifier/, sdk/python, sdk/typescript,
-# integrations/, examples/ and gateway/. pull_request keeps only projects touched by the
-# diff; shared paths (.github/, spec/, repo-root files, anything outside a discovered
-# project) restore the full matrix. push, merge_group, schedule, and workflow_dispatch
-# stay on the full matrix. No workflow-level paths filter: "CI result" must always report.
+# integrations/, examples/ and gateway/. pull_request keeps projects touched by the
+# diff plus every discovered project that depends on one of those, transitively
+# (.github/scripts/project_dependents.py). shared paths (.github/, spec/, repo-root
+# files, anything outside a discovered project) restore the full matrix. push,
+# merge_group, schedule, and workflow_dispatch stay on the full matrix. No
+# workflow-level paths filter: "CI result" must always report.
 name: CI
 
 on:
@@ -64,6 +66,10 @@ jobs:
           import os
           import subprocess
           import sys
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path(".github/scripts").resolve()))
+          from project_dependents import limit_matrix
 
           detect_path = sys.argv[1]
           discovered = {}
@@ -77,20 +83,9 @@ jobs:
 
           py = json.loads(discovered["python"])
           ts = json.loads(discovered["typescript"])
-          projects = list(dict.fromkeys([*py, *ts]))
           event = os.environ.get("EVENT_NAME", "")
           shared = event != "pull_request"
           changed = []
-
-          def is_shared(path):
-              if path in (".github", "spec") or path.startswith((".github/", "spec/")):
-                  return True
-              if "/" not in path:
-                  return True
-              return not any(path == proj or path.startswith(proj + "/") for proj in projects)
-
-          def matched(path):
-              return [proj for proj in projects if path == proj or path.startswith(proj + "/")]
 
           if event == "pull_request":
               base = os.environ.get("BASE_SHA", "")
@@ -107,21 +102,14 @@ jobs:
                       print(f"git diff failed ({exc.returncode}); using the full matrix")
                       shared = True
               changed = [path.strip() for path in changed if path.strip()]
-              if not shared:
-                  keep = set()
-                  for path in changed:
-                      if is_shared(path):
-                          print(f"shared path {path}; using the full matrix")
-                          shared = True
-                          break
-                      keep.update(matched(path))
-                  if not shared:
-                      py = [proj for proj in py if proj in keep]
-                      ts = [proj for proj in ts if proj in keep]
-                      print(f"pull_request matrix limited to python={py} typescript={ts}")
 
-          gateway_postgres = event != "pull_request" or shared or any(
-              path == "gateway" or path.startswith("gateway/") for path in changed
+          py, ts, gateway_postgres = limit_matrix(
+              Path(".").resolve(),
+              py,
+              ts,
+              changed,
+              event=event,
+              force_full=shared,
           )
           payload = {
               "python": json.dumps(py),

@@ -387,6 +387,92 @@ def test_key_set_rejects_a_non_object_document():
         key_set_from_document(["not", "a", "dict"])
 
 
+def test_genuine_p256_receipt_is_unsupported_only_after_signature_verification():
+    """The dormant KMS algorithm is recognizable without accepting it as v0.1."""
+    pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_der = private_key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    kid = "p256-test-key"
+    algorithm = "ECDSA-P256-SHA256"
+    signing_input = canonical_json(_payload(kid=kid, alg=algorithm))
+    signature = private_key.sign(signing_input.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
+    bundle = {
+        "kid": kid,
+        "alg": algorithm,
+        "signing_input": signing_input,
+        "signature": base64.b64encode(signature).decode(),
+    }
+    document = {
+        "keys": [
+            {
+                "kid": kid,
+                "alg": algorithm,
+                "status": "active",
+                "public_key_b64": base64.b64encode(public_der).decode(),
+            }
+        ]
+    }
+    keys = key_set_from_document(document)
+
+    assert kid in keys
+    assert verify_bundle(bundle, {}).status is VerificationStatus.UNKNOWN_KEY
+    genuine = verify_bundle(bundle, keys)
+    assert genuine.status is VerificationStatus.UNSUPPORTED
+    assert not genuine.is_tampered
+
+    ed_claim = canonical_json(_payload(kid=kid, alg="Ed25519"))
+    ed_claim_signature = private_key.sign(ed_claim.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
+    mislabeled = dict(
+        bundle,
+        alg="Ed25519",
+        signing_input=ed_claim,
+        signature=base64.b64encode(ed_claim_signature).decode(),
+    )
+    mismatched_algorithm = verify_bundle(mislabeled, keys)
+    assert mismatched_algorithm.status is VerificationStatus.UNSUPPORTED
+    assert "verification key algorithm" in (mismatched_algorithm.reason or "")
+
+    altered = dict(
+        bundle, signing_input=signing_input.replace('"outcome":"success"', '"outcome":"denied"')
+    )
+    assert verify_bundle(altered, keys).status is VerificationStatus.INVALID
+
+    other_key = ec.generate_private_key(ec.SECP256R1())
+    wrong_signature = other_key.sign(signing_input.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
+    assert (
+        verify_bundle(
+            dict(bundle, signature=base64.b64encode(wrong_signature).decode()), keys
+        ).status
+        is VerificationStatus.INVALID
+    )
+    assert (
+        verify_bundle(dict(bundle, signature=base64.b64encode(b"\x30\x00").decode()), keys).status
+        is VerificationStatus.MALFORMED
+    )
+
+    document["keys"][0]["status"] = "disabled"
+    assert (
+        verify_bundle(bundle, key_set_from_document(document)).status
+        is VerificationStatus.UNKNOWN_KEY
+    )
+    document["keys"][0]["status"] = "active"
+    document["keys"][0]["public_key_b64"] = base64.b64encode(b"not DER").decode()
+    assert (
+        verify_bundle(bundle, key_set_from_document(document)).status
+        is VerificationStatus.MALFORMED
+    )
+    document["keys"][0]["public_key_b64"] = "!!!!"
+    assert (
+        verify_bundle(bundle, key_set_from_document(document)).status
+        is VerificationStatus.MALFORMED
+    )
+
+
 def _write_cli_inputs(tmp_path, bundle, key_set):
     bundle_path = tmp_path / "bundle.json"
     keys_path = tmp_path / "trust-keys.json"

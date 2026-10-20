@@ -76,6 +76,8 @@ REQUIRED_EDGES = {
     "synthetic.short_raw_key_uses_jwk": "verified",
     "synthetic.unsupported_alg": "unsupported",
     "synthetic.unsupported_canonicalization": "unsupported",
+    "p256.valid": "unsupported",
+    "p256.tampered_payload": "invalid",
     "synthetic.malformed_signature": "malformed",
     "synthetic.malformed_signature_length": "malformed",
     "synthetic.malformed_signing_input": "malformed",

@@ -8,7 +8,7 @@
   envelope fields that disagree with the signed payload, an advisory
   payload_hash that does not match recomputation (still verified when
   signed), a float-bearing payload that verifies without re-serialization,
-  an unsupported algorithm, and malformed bundles.
+  a genuine P-256 signature classified as unsupported, and malformed bundles.
 - `generate.py`: regenerates both files from `gateway/tests/fixtures/`.
 
 Check an implementation:

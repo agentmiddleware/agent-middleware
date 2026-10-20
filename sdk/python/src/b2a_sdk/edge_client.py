@@ -54,6 +54,7 @@ import httpx
 from .errors import PermitDeniedError
 from .receipt_verifier import (
     VerificationError,
+    VerificationKey,
     canonical_json,
     key_set_from_document,
     verify_ed25519,
@@ -299,7 +300,7 @@ class LocalPermitValidator:
     session do not silently overrun the cached budget.
     """
 
-    def __init__(self, permit: dict[str, Any], key_set: dict[str, bytes]) -> None:
+    def __init__(self, permit: dict[str, Any], key_set: dict[str, bytes | VerificationKey]) -> None:
         self._permit = dict(permit)
         self._key_set = dict(key_set)
         # Locally reserved credits and per-tool call counts, advanced by
@@ -471,7 +472,7 @@ class LocalPermitValidator:
         except (KeyError, TypeError, ValueError, ArithmeticError):
             return False
         raw_public_key = self._key_set.get(payload["kid"])
-        if raw_public_key is None or len(raw_public_key) != 32:
+        if not isinstance(raw_public_key, bytes) or len(raw_public_key) != 32:
             return False
         if len(signature) != 64:
             return False

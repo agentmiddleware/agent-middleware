@@ -28,6 +28,8 @@ REQUIRED_CASES = {
     "synthetic.float_payload_verifies": "verified",
     "synthetic.unsupported_alg": "unsupported",
     "synthetic.unsupported_canonicalization": "unsupported",
+    "p256.valid": "unsupported",
+    "p256.tampered_payload": "invalid",
     "synthetic.envelope_kid_mismatch": "mismatch",
     "synthetic.envelope_alg_mismatch": "mismatch",
     "synthetic.envelope_canonicalization_mismatch": "mismatch",

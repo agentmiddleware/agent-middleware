@@ -384,7 +384,7 @@ def _mcp_error(code: int, message: str) -> McpError:
     return McpError(mcp_types.ErrorData(code=code, message=message))
 
 
-async def _published_key_set() -> dict[str, bytes] | None:
+async def _published_key_set() -> dict[str, bytes | _receipt_verifier.VerificationKey] | None:
     """Load the same key set a verifier gets from trust-keys.json.
 
     ``None`` means "no usable keys right now" — the tool-level analogue of

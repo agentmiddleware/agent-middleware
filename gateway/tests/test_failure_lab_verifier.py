@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from failure_lab.verifier import (
@@ -29,6 +31,7 @@ from failure_lab.verifier import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 KEY_ID = "lab-test-ed25519"
+P256_KEY_ID = "lab-test-p256"
 
 
 @pytest.fixture
@@ -64,6 +67,135 @@ def signed_bundle() -> tuple[dict, dict[str, bytes]]:
         "keys_url": "/.well-known/trust-keys.json",
     }
     return bundle, {KEY_ID: raw_public}
+
+
+@pytest.fixture
+def p256_signed_bundle():
+    private = ec.generate_private_key(ec.SECP256R1())
+    public_der = private.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    payload = {
+        "kid": P256_KEY_ID,
+        "alg": "ECDSA-P256-SHA256",
+        "receipt_id": "rcpt-p256",
+    }
+    signing_input = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    bundle = {
+        "kid": P256_KEY_ID,
+        "alg": "ECDSA-P256-SHA256",
+        "receipt_id": "rcpt-p256",
+        "signing_input": signing_input,
+        "signature": base64.b64encode(
+            private.sign(signing_input.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+    }
+    document = {
+        "keys": [
+            {
+                "kid": P256_KEY_ID,
+                "alg": "ECDSA-P256-SHA256",
+                "status": "active",
+                "public_key_b64": base64.b64encode(public_der).decode(),
+            }
+        ]
+    }
+    return bundle, document, private
+
+
+def test_genuine_p256_receipt_establishes_only_signature(p256_signed_bundle):
+    bundle, document, _ = p256_signed_bundle
+    report = verify(bundle, parse_key_document(document))
+
+    assert report.signature.status is ClaimStatus.ESTABLISHED
+    assert "ECDSA-P256-SHA256" in report.signature.reason
+    assert report.issuer_trust.status is ClaimStatus.NOT_ESTABLISHED
+    assert report.downstream_execution.status is ClaimStatus.NOT_ESTABLISHED
+
+
+@pytest.mark.parametrize(
+    "signing_input",
+    [
+        lambda text: text.replace("rcpt-p256", "rcpt-other"),
+        lambda text: text.replace("ECDSA-P256-SHA256", "Ed25519"),
+    ],
+)
+def test_p256_signed_byte_edit_fails_signature(p256_signed_bundle, signing_input):
+    bundle, document, _ = p256_signed_bundle
+    changed = {**bundle, "signing_input": signing_input(bundle["signing_input"])}
+
+    report = verify(changed, parse_key_document(document))
+
+    assert report.signature.status is ClaimStatus.FAILED
+    assert report.signature.reason == "signature does not verify over signing_input"
+
+
+def test_p256_invalid_signature_and_unknown_key_fail(p256_signed_bundle):
+    bundle, document, _ = p256_signed_bundle
+    keys = parse_key_document(document)
+    malformed_signature = {
+        **bundle,
+        "signature": base64.b64encode(b"\x30\x00").decode(),
+    }
+
+    assert verify(malformed_signature, keys).signature.status is ClaimStatus.FAILED
+    assert verify(bundle, {}).signature.status is ClaimStatus.FAILED
+
+
+def test_p256_signed_algorithm_must_match_published_key(p256_signed_bundle):
+    bundle, document, private = p256_signed_bundle
+    payload = json.loads(bundle["signing_input"])
+    payload["alg"] = "Ed25519"
+    signing_input = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    mislabeled = {
+        **bundle,
+        "signing_input": signing_input,
+        "signature": base64.b64encode(
+            private.sign(signing_input.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+    }
+
+    report = verify(mislabeled, parse_key_document(document))
+
+    assert report.signature.status is ClaimStatus.FAILED
+    assert "does not match published key algorithm" in report.signature.reason
+
+
+def test_p256_key_document_rejects_disabled_wrong_curve_and_invalid_der(
+    p256_signed_bundle,
+):
+    bundle, document, _ = p256_signed_bundle
+    valid = document["keys"][0]
+    wrong_curve = (
+        ec.generate_private_key(ec.SECP384R1())
+        .public_key()
+        .public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    document = {
+        "keys": [
+            {**valid, "kid": "disabled", "status": "disabled"},
+            {
+                **valid,
+                "kid": "wrong-curve",
+                "public_key_b64": base64.b64encode(wrong_curve).decode(),
+            },
+            {
+                **valid,
+                "kid": "invalid-der",
+                "public_key_b64": base64.b64encode(b"bad").decode(),
+            },
+            valid,
+        ]
+    }
+
+    keys = parse_key_document(document)
+
+    assert set(keys) == {P256_KEY_ID}
+    assert verify(bundle, keys).signature.status is ClaimStatus.ESTABLISHED
 
 
 def test_verifier_imports_neither_the_app_nor_the_product_sdk():

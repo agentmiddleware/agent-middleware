@@ -1,3 +1,16 @@
+FROM python:3.12-slim AS build-metadata
+
+# The release archive may carry a gitignored stamp at its context root.
+# Copying the context lets the writer validate that optional input without a
+# named COPY that fails on clean trees. .dockerignore excludes local secrets.
+WORKDIR /context
+COPY . /context/
+ARG RELEASE_COMMIT_SHA
+RUN mkdir /stamp \
+    && STAGED_SHA_PATH=/context/.build_commit_sha \
+       BUILD_SHA_PATH=/stamp/.build_commit_sha \
+       python /context/gateway/scripts/write_build_commit_sha.py
+
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -24,8 +37,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
 # Copy application code
 COPY gateway/ /app/
 
-# Release contexts must carry a commit stamp generated from the exact Git tree.
-COPY .build_commit_sha /app/.build_commit_sha
+# Transfer only the validated stamp, after the app copy. A stale stamp under
+# gateway/ cannot bypass validation or overwrite this output.
+COPY --from=build-metadata /stamp/.build_commit_sha /app/.build_commit_sha
 
 RUN chmod +x scripts/docker_entrypoint.sh \
     && groupadd --system app \

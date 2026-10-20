@@ -93,7 +93,7 @@ async def test_public_operator_index_has_no_fake_data_or_browser_key_handling(
     assert "<script" not in page
     assert "railway.app" not in page
     assert "vercel.app" not in page
-    assert "https://www.thisisatest.tech/proof/" in page
+    assert "https://www.agentmiddleware.dev/proof/" in page
     for target in (
         "/health/dependencies",
         "/.well-known/trust-keys.json",

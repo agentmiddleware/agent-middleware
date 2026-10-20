@@ -1,8 +1,7 @@
 # CI for AMW (Agent Middleware).
-# Projects are discovered at runtime (.github/scripts/detect_projects.py), so jobs only run for
-# Python/TypeScript packages that actually exist under spec/, verifier/, sdk/python, sdk/typescript,
-# integrations/, examples/ and gateway/. No `paths:` filters on purpose: the "CI result" job must
-# always report, because branch protection requires it.
+# Projects are discovered at runtime (.github/scripts/detect_projects.py). Pull requests test
+# changed projects; main pushes, merge groups, and manual runs test every discovered project.
+# Keep the workflow unfiltered so the branch-protection "CI result" job always reports.
 name: CI
 
 on:
@@ -46,10 +45,119 @@ jobs:
       - id: d
         run: python3 .github/scripts/detect_projects.py
 
+  changes:
+    name: Changed projects
+    needs: detect
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      projects: ${{ steps.filter.outputs.projects }}
+      python: ${{ steps.filter.outputs.python }}
+      typescript: ${{ steps.filter.outputs.typescript }}
+      has_python: ${{ steps.filter.outputs.has_python }}
+      has_typescript: ${{ steps.filter.outputs.has_typescript }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+      shared: ${{ steps.filter.outputs.shared }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pull request checkout is the merge commit; its first parent is the base.
+          fetch-depth: 2
+          persist-credentials: false
+      - id: filter
+        env:
+          PYTHON_PROJECTS: ${{ needs.detect.outputs.python }}
+          TYPESCRIPT_PROJECTS: ${{ needs.detect.outputs.typescript }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          changed = [
+              path.decode("utf-8", "surrogateescape")
+              for path in subprocess.check_output(
+                  ["git", "diff", "--no-renames", "--name-only", "-z", "HEAD^1", "HEAD"]
+              ).split(b"\0")
+              if path
+          ]
+
+          def touched(project):
+              scope = (
+                  "/".join(project.split("/")[:2])
+                  if project.startswith(("integrations/", "examples/")) else project
+              )
+              return any(path == scope or path.startswith(scope + "/") for path in changed)
+
+          workflows = any(path.startswith(".github/workflows/") for path in changed)
+          spec = touched("spec")
+          verifier = touched("verifier")
+          examples = touched("examples")
+          framework_integrations = touched("integrations/framework_integrations")
+          sdk_python = touched("sdk/python")
+          shared = workflows or any(
+              path.startswith(".github/scripts/")
+              or (
+                  "/" not in path
+                  and (
+                      path.startswith(".")
+                      or path.endswith((".toml", ".yaml", ".yml", ".json", ".lock", ".ini", ".cfg"))
+                      or path in {"Dockerfile", "Makefile", "requirements.txt"}
+                  )
+              )
+              for path in changed
+          )
+          projects = set()
+          for path in changed:
+              for project in ("gateway", "sdk/python", "sdk/typescript", "spec", "verifier"):
+                  if path == project or path.startswith(project + "/"):
+                      projects.add(project)
+              for root in ("integrations", "examples"):
+                  if path.startswith(root + "/"):
+                      projects.add("/".join(path.split("/")[:2]))
+          if sdk_python:
+              projects.add("gateway")
+              projects.update(
+                  f"integrations/{entry.name}" for entry in os.scandir("integrations")
+                  if entry.is_dir()
+              )
+
+          # Non-package roots are exercised by the existing SDK and gateway tests.
+          python = [
+              project for project in json.loads(os.environ["PYTHON_PROJECTS"])
+              if shared or touched(project)
+              or (sdk_python and (project == "gateway" or project.startswith("integrations/")))
+              or (project == "gateway" and (spec or examples or framework_integrations))
+              or (project == "sdk/python" and (spec or verifier))
+          ]
+          typescript = [
+              project for project in json.loads(os.environ["TYPESCRIPT_PROJECTS"])
+              if shared or touched(project) or (project == "sdk/typescript" and spec)
+          ]
+          outputs = {
+              "projects": json.dumps(sorted(projects)),
+              "python": json.dumps(python),
+              "typescript": json.dumps(typescript),
+              "has_python": str(bool(python)).lower(),
+              "has_typescript": str(bool(typescript)).lower(),
+              "gateway": str(workflows or touched("gateway") or sdk_python).lower(),
+              "shared": str(shared).lower(),
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              for key, value in outputs.items():
+                  print(f"{key}={value}", file=output)
+          PY
+
   python:
     name: Python ${{ matrix.python-version }} / ${{ matrix.project }}
-    needs: detect
-    if: needs.detect.outputs.has_python == 'true'
+    needs: [detect, changes]
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_python == 'true' &&
+          (github.event_name != 'pull_request' ||
+           (needs.changes.result == 'success' && needs.changes.outputs.has_python == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -57,7 +165,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: ${{ fromJSON(needs.detect.outputs.python) }}
+        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.python || needs.detect.outputs.python) }}
         python-version: ["3.11", "3.12", "3.13", "3.14"]
         exclude:
           # crewai pulls chromadb, whose pydantic.v1 settings fail to import on 3.14.
@@ -157,6 +265,9 @@ jobs:
           # exit code 5 = no tests collected; don't fail packages that have none yet
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
           exit $rc
+      - name: Offline verifier vectors
+        if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
+        run: uv run --no-sync python ../../verifier/check_vectors.py
       - name: Collect SDK source distribution tests
         if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
         run: |
@@ -172,6 +283,10 @@ jobs:
     # see gateway/docs/TESTING_TIERS.md). The database is created fresh in
     # this job and nothing outside the job can reach it.
     name: Postgres concurrency / gateway
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -241,6 +356,10 @@ jobs:
     # databases, sets every opt-in flag, and fails loudly on any skip via
     # CI_STRICT=1 (see gateway/tests/support/db_gate.py).
     name: Postgres proofs / gateway
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -383,6 +502,11 @@ jobs:
 
   gateway-image-smoke:
     name: Gateway image import smoke
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' &&
+           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -396,8 +520,11 @@ jobs:
 
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
-    needs: detect
-    if: needs.detect.outputs.has_typescript == 'true'
+    needs: [detect, changes]
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_typescript == 'true' &&
+          (github.event_name != 'pull_request' ||
+           (needs.changes.result == 'success' && needs.changes.outputs.has_typescript == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -405,7 +532,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: ${{ fromJSON(needs.detect.outputs.typescript) }}
+        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.typescript || needs.detect.outputs.typescript) }}
         node-version: ["22", "24"]  # tests run .ts directly (Node 22.18+ type stripping)
     defaults:
       run:
@@ -450,6 +577,11 @@ jobs:
     # Keep it out of CI result until both checks are green in CI and the
     # required-check decision is made explicitly.
     name: Trust release gate (non-required)
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' &&
+           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -482,7 +614,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [detect, changes, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

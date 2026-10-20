@@ -119,8 +119,18 @@ def test_retry_receipt_parsing_returns_identical_ids() -> None:
 def test_retry_receipt_parsing_tolerates_meta_shapes() -> None:
     """The gateway may spell the envelope meta or _meta; both must parse."""
     module = _load_retry_module()
-    via_meta = {"meta": {"io.agentmiddleware/receipt": {"receipt_id": "r1"}}}
+    via_meta = {
+        "meta": {
+            "io.agentmiddleware/receipt": {
+                "receipt_id": "r1",
+                "outcome": "success",
+            }
+        }
+    }
     assert module.receipt_id(via_meta) == "r1"
+    assert module._outcome(via_meta) == "success"
+    missing_outcome = {"meta": {"io.agentmiddleware/receipt": {"receipt_id": "r1"}}}
+    assert module.receipt_id(missing_outcome) is None
     assert module.receipt_id({}) is None
 
 
@@ -144,7 +154,7 @@ def test_mcp_json_is_a_valid_local_template() -> None:
     assert server["type"] == "http"
     assert server["url"].endswith("/mcp")
     assert "X-API-Key" in server["headers"]
-    assert "Idempotency-Key" in server["headers"]
+    assert "Idempotency-Key" not in server["headers"]
 
 
 def test_readme_documents_every_script_with_status() -> None:

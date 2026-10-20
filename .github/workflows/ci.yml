@@ -97,6 +97,7 @@ jobs:
           verifier = touched("verifier")
           examples = touched("examples")
           framework_integrations = touched("integrations/framework_integrations")
+          sdk_python = touched("sdk/python")
           shared = workflows or any(
               path.startswith(".github/scripts/")
               or (
@@ -117,11 +118,18 @@ jobs:
               for root in ("integrations", "examples"):
                   if path.startswith(root + "/"):
                       projects.add("/".join(path.split("/")[:2]))
+          if sdk_python:
+              projects.add("gateway")
+              projects.update(
+                  f"integrations/{entry.name}" for entry in os.scandir("integrations")
+                  if entry.is_dir()
+              )
 
           # Non-package roots are exercised by the existing SDK and gateway tests.
           python = [
               project for project in json.loads(os.environ["PYTHON_PROJECTS"])
               if shared or touched(project)
+              or (sdk_python and (project == "gateway" or project.startswith("integrations/")))
               or (project == "gateway" and (spec or examples or framework_integrations))
               or (project == "sdk/python" and (spec or verifier))
           ]
@@ -135,7 +143,7 @@ jobs:
               "typescript": json.dumps(typescript),
               "has_python": str(bool(python)).lower(),
               "has_typescript": str(bool(typescript)).lower(),
-              "gateway": str(workflows or touched("gateway")).lower(),
+              "gateway": str(workflows or touched("gateway") or sdk_python).lower(),
               "shared": str(shared).lower(),
           }
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:

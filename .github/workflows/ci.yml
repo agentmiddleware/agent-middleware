@@ -1,12 +1,8 @@
 # CI for AMW (Agent Middleware).
-# Projects are discovered at runtime (.github/scripts/detect_projects.py), so jobs only run for
-# Python/TypeScript packages that actually exist under spec/, verifier/, sdk/python, sdk/typescript,
-# integrations/, examples/ and gateway/. pull_request keeps projects touched by the
-# diff plus every discovered project that depends on one of those, transitively
-# (.github/scripts/project_dependents.py). shared paths (.github/, spec/, repo-root
-# files, anything outside a discovered project) restore the full matrix. push,
-# merge_group, schedule, and workflow_dispatch stay on the full matrix. No
-# workflow-level paths filter: "CI result" must always report.
+# Projects are discovered at runtime (.github/scripts/detect_projects.py). Pull requests test
+# changed projects and their transitive dependents (.github/scripts/project_dependents.py).
+# Shared paths restore the full matrix. Main pushes, merge groups, and manual runs test every
+# discovered project. Keep the workflow unfiltered so "CI result" always reports.
 name: CI
 
 on:
@@ -43,25 +39,41 @@ jobs:
       typescript: ${{ steps.d.outputs.typescript }}
       has_python: ${{ steps.d.outputs.has_python }}
       has_typescript: ${{ steps.d.outputs.has_typescript }}
-      gateway_postgres: ${{ steps.d.outputs.gateway_postgres }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Three-dot diff against the PR base needs that commit present. 0 fetches
-          # full history during checkout, before credentials are dropped. Other
-          # events keep the full matrix and stay on a shallow clone.
-          # Non-empty strings are truthy in Actions expressions, so '0' survives `&&`.
-          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
       - id: d
+        run: python3 .github/scripts/detect_projects.py
+
+  changes:
+    name: Changed projects
+    needs: detect
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      projects: ${{ steps.filter.outputs.projects }}
+      python: ${{ steps.filter.outputs.python }}
+      typescript: ${{ steps.filter.outputs.typescript }}
+      has_python: ${{ steps.filter.outputs.has_python }}
+      has_typescript: ${{ steps.filter.outputs.has_typescript }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+      shared: ${{ steps.filter.outputs.shared }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pull request checkout is the merge commit; its first parent is the base.
+          fetch-depth: 2
+          persist-credentials: false
+      - id: filter
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PYTHON_PROJECTS: ${{ needs.detect.outputs.python }}
+          TYPESCRIPT_PROJECTS: ${{ needs.detect.outputs.typescript }}
         run: |
-          set -euo pipefail
-          detect_out="$(mktemp)"
-          GITHUB_OUTPUT="$detect_out" python3 .github/scripts/detect_projects.py
-          python3 - "$detect_out" <<'PY'
+          python3 - <<'PY'
           import json
           import os
           import subprocess
@@ -69,68 +81,68 @@ jobs:
           from pathlib import Path
 
           sys.path.insert(0, str(Path(".github/scripts").resolve()))
-          from project_dependents import limit_matrix
+          from project_dependents import is_shared, limit_matrix
 
-          detect_path = sys.argv[1]
-          discovered = {}
-          with open(detect_path, encoding="utf-8") as fh:
-              for line in fh:
-                  line = line.rstrip("\n")
-                  if "=" not in line:
-                      continue
-                  key, value = line.split("=", 1)
-                  discovered[key] = value
+          changed = [
+              path.decode("utf-8", "surrogateescape")
+              for path in subprocess.check_output(
+                  ["git", "diff", "--no-renames", "--name-only", "-z", "HEAD^1", "HEAD"]
+              ).split(b"\0")
+              if path
+          ]
 
-          py = json.loads(discovered["python"])
-          ts = json.loads(discovered["typescript"])
-          event = os.environ.get("EVENT_NAME", "")
-          shared = event != "pull_request"
-          changed = []
+          def touched(project):
+              scope = (
+                  "/".join(project.split("/")[:2])
+                  if project.startswith(("integrations/", "examples/")) else project
+              )
+              return any(path == scope or path.startswith(scope + "/") for path in changed)
 
-          if event == "pull_request":
-              base = os.environ.get("BASE_SHA", "")
-              if not base:
-                  print("pull_request has no base SHA; using the full matrix")
-                  shared = True
-              else:
-                  try:
-                      changed = subprocess.check_output(
-                          ["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"],
-                          text=True,
-                      ).splitlines()
-                  except subprocess.CalledProcessError as exc:
-                      print(f"git diff failed ({exc.returncode}); using the full matrix")
-                      shared = True
-              changed = [path.strip() for path in changed if path.strip()]
+          sdk_python = touched("sdk/python")
+          projects = set()
+          for path in changed:
+              for project in ("gateway", "sdk/python", "sdk/typescript", "spec", "verifier"):
+                  if path == project or path.startswith(project + "/"):
+                      projects.add(project)
+              for root in ("integrations", "examples"):
+                  if path.startswith(root + "/"):
+                      projects.add("/".join(path.split("/")[:2]))
+          if sdk_python:
+              projects.add("gateway")
+              projects.update(
+                  f"integrations/{entry.name}" for entry in os.scandir("integrations")
+                  if entry.is_dir()
+              )
 
-          py, ts, gateway_postgres = limit_matrix(
-              Path(".").resolve(),
-              py,
-              ts,
-              changed,
-              event=event,
-              force_full=shared,
+          discovered_python = json.loads(os.environ["PYTHON_PROJECTS"])
+          discovered_typescript = json.loads(os.environ["TYPESCRIPT_PROJECTS"])
+          discovered = list(dict.fromkeys([*discovered_python, *discovered_typescript]))
+          python, typescript, gateway = limit_matrix(
+              Path(".").resolve(), discovered_python, discovered_typescript,
+              changed, event="pull_request", force_full=False,
           )
-          payload = {
-              "python": json.dumps(py),
-              "typescript": json.dumps(ts),
-              "has_python": "true" if py else "false",
-              "has_typescript": "true" if ts else "false",
-              "gateway_postgres": "true" if gateway_postgres else "false",
+          shared = any(is_shared(path, discovered) for path in changed)
+          outputs = {
+              "projects": json.dumps(sorted(projects)),
+              "python": json.dumps(python),
+              "typescript": json.dumps(typescript),
+              "has_python": str(bool(python)).lower(),
+              "has_typescript": str(bool(typescript)).lower(),
+              "gateway": str(gateway).lower(),
+              "shared": str(shared).lower(),
           }
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              for key, value in payload.items():
-                  fh.write(f"{key}={value}\n")
-          print(
-              f"event={event} gateway_postgres={payload['gateway_postgres']} "
-              f"has_python={payload['has_python']} has_typescript={payload['has_typescript']}"
-          )
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              for key, value in outputs.items():
+                  print(f"{key}={value}", file=output)
           PY
 
   python:
     name: Python ${{ matrix.python-version }} / ${{ matrix.project }}
-    needs: detect
-    if: needs.detect.outputs.has_python == 'true'
+    needs: [detect, changes]
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_python == 'true' &&
+          (github.event_name != 'pull_request' ||
+           (needs.changes.result == 'success' && needs.changes.outputs.has_python == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -138,9 +150,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # An empty fromJSON fails the workflow before `if` can skip it. The placeholder
-        # is unused: has_python is false in that case, so the job is skipped.
-        project: ${{ fromJSON(needs.detect.outputs.has_python == 'true' && needs.detect.outputs.python || '["skip"]') }}
+        # An empty fromJSON fails before `if` can skip the job; use an unused placeholder.
+        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.has_python == 'true' && needs.changes.outputs.python || github.event_name != 'pull_request' && needs.detect.outputs.has_python == 'true' && needs.detect.outputs.python || '["skip"]') }}
         python-version: ["3.11", "3.12", "3.13", "3.14"]
         exclude:
           # crewai pulls chromadb, whose pydantic.v1 settings fail to import on 3.14.
@@ -240,6 +251,9 @@ jobs:
           # exit code 5 = no tests collected; don't fail packages that have none yet
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
           exit $rc
+      - name: Offline verifier vectors
+        if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
+        run: uv run --no-sync python ../../verifier/check_vectors.py
       - name: Collect SDK source distribution tests
         if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
         run: |
@@ -255,8 +269,10 @@ jobs:
     # see gateway/docs/TESTING_TIERS.md). The database is created fresh in
     # this job and nothing outside the job can reach it.
     name: Postgres concurrency / gateway
-    needs: detect
-    if: github.event_name != 'pull_request' || needs.detect.outputs.gateway_postgres == 'true'
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -326,8 +342,10 @@ jobs:
     # databases, sets every opt-in flag, and fails loudly on any skip via
     # CI_STRICT=1 (see gateway/tests/support/db_gate.py).
     name: Postgres proofs / gateway
-    needs: detect
-    if: github.event_name != 'pull_request' || needs.detect.outputs.gateway_postgres == 'true'
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -470,6 +488,11 @@ jobs:
 
   gateway-image-smoke:
     name: Gateway image import smoke
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' &&
+           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -483,8 +506,11 @@ jobs:
 
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
-    needs: detect
-    if: needs.detect.outputs.has_typescript == 'true'
+    needs: [detect, changes]
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_typescript == 'true' &&
+          (github.event_name != 'pull_request' ||
+           (needs.changes.result == 'success' && needs.changes.outputs.has_typescript == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -493,7 +519,7 @@ jobs:
       fail-fast: false
       matrix:
         # Same empty-matrix guard as the Python job. Node versions stay 22 and 24.
-        project: ${{ fromJSON(needs.detect.outputs.has_typescript == 'true' && needs.detect.outputs.typescript || '["skip"]') }}
+        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.has_typescript == 'true' && needs.changes.outputs.typescript || github.event_name != 'pull_request' && needs.detect.outputs.has_typescript == 'true' && needs.detect.outputs.typescript || '["skip"]') }}
         node-version: ["22", "24"]  # tests run .ts directly (Node 22.18+ type stripping)
     defaults:
       run:
@@ -538,6 +564,11 @@ jobs:
     # Keep it out of CI result until both checks are green in CI and the
     # required-check decision is made explicitly.
     name: Trust release gate (non-required)
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' &&
+           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -570,7 +601,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [detect, changes, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

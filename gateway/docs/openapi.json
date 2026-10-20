@@ -3106,12 +3106,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PreflightRequest",
-                "default": {
-                  "base_url": "",
-                  "stripe_secret_key": "",
-                  "campaign_source_url": ""
-                }
+                "$ref": "#/components/schemas/PreflightRequest"
               }
             }
           }

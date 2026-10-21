@@ -114,8 +114,8 @@ exactly-once side effects.
    - `max_credits: MAX_CREDITS`
    - `Idempotency-Key` on permit create
 4. Governed invoke via `POST /mcp/messages`. `mcpContext` carrying `wallet_id`,
-   `permit_id`, and `idempotency_key` goes directly in `params` — not in
-   `_meta`. A misplaced context returns `Missing wallet_id in mcpContext`.
+   `permit_id`, and `idempotency_key` goes directly in `params` rather than
+   `_meta`.
 5. Show ledger debit + `POST /v1/receipts/verify` with the receipt ID and the
    authorized agent credential:
 

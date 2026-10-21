@@ -18,7 +18,7 @@ We welcome bug fixes, tests, documentation, examples, integrations, SDK improvem
 Python 3.11+, [`uv`](https://docs.astral.sh/uv/) (or pip), `make`, and Node 22.18+ for the TypeScript verifier.
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware
 cd agent-middleware
 python -m venv .venv && . .venv/bin/activate
 pip install -r gateway/requirements.txt -r gateway/requirements-dev.txt -e "./sdk/python[verify]" pytest pytest-xdist pytest-timeout

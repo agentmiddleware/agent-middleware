@@ -419,7 +419,7 @@ def _jsonrpc_error_response(
 class McpContext(BaseModel):
     """MCP execution context passed in tool calls."""
 
-    wallet_id: str = Field(..., description="Wallet to charge for this call")
+    wallet_id: str | None = Field(None, description="Wallet to charge for this call")
     request_path: str | None = Field(
         None, description="Optional request path for tracking"
     )
@@ -4505,6 +4505,7 @@ async def _handle_tools_call(
         idempotency_key=idempotency_key,
         request_payload=request_payload,
     )
+    governed_request.wallet_id = governed_request.wallet_id or auth.wallet_id
     result = await _mcp_adapter.invoke(governed_request)
     return await _mcp_adapter.normalize_response(result)
 
@@ -4543,7 +4544,7 @@ async def invoke_tool(
         # here; McpContext would otherwise raise a pydantic ValidationError
         # inside the handler, which is a 500, not the 400 it should be.
         argument_wallet = request.arguments.get("wallet_id", "")
-        if not isinstance(argument_wallet, str):
+        if argument_wallet is not None and not isinstance(argument_wallet, str):
             raise HTTPException(status_code=400, detail="Missing wallet_id")
         mcp_context = McpContext(
             wallet_id=argument_wallet,
@@ -4553,7 +4554,8 @@ async def invoke_tool(
             idempotency_key=None,
         )
 
-    if not mcp_context.wallet_id:
+    wallet_id = mcp_context.wallet_id or auth.wallet_id
+    if not wallet_id:
         raise HTTPException(status_code=400, detail="Missing wallet_id")
 
     # Same rule as the JSON-RPC transports: a present-but-unusable key in the
@@ -4580,7 +4582,7 @@ async def invoke_tool(
         "name": service_id,
         "arguments": request.arguments,
         "mcpContext": {
-            "wallet_id": mcp_context.wallet_id,
+            "wallet_id": wallet_id,
             "permit_id": mcp_context.permit_id,
             "quote_id": mcp_context.quote_id,
             "idempotency_key": mcp_context.idempotency_key,

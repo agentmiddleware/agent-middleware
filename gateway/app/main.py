@@ -14,6 +14,8 @@ import math
 from pathlib import Path
 import sys
 import time
+import traceback
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -47,6 +49,7 @@ from .core.product_positioning import (
 from .core.rate_limiter import RateLimitMiddleware, rate_limit_discovery
 from .core.runtime_mode import get_simulation_modes
 from .middleware.head_method import HeadMethodMiddleware
+from .middleware.error_envelope import ErrorEnvelopeMiddleware, error_envelope
 from .middleware.request_body_limit import RequestBodyLimitMiddleware
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .core.trust_mode import (
@@ -628,6 +631,10 @@ if "*" in cors_origins:
 # and stamping rate-limit 429s and CORS preflights too is the point.
 app.add_middleware(SecurityHeadersMiddleware)
 
+# All HTTP refusals, including those emitted by outer request and rate limit
+# middleware, use the same envelope. JSON RPC errors keep their protocol shape.
+app.add_middleware(ErrorEnvelopeMiddleware)
+
 # HEAD → GET translation, outermost. FastAPI's APIRoute does not auto-register
 # HEAD for GET routes (plain Starlette routes like /openapi.json do), which
 # made HEAD answer 405 on most public GETs. Outermost placement means every
@@ -662,6 +669,21 @@ async def request_validation_error_handler(
     return JSONResponse(
         status_code=422,
         content={"detail": _json_safe_numbers(jsonable_encoder(exc.errors()))},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    correlation_id = uuid.uuid4().hex
+    logging.getLogger(__name__).error(
+        "unhandled_error correlation_id=%s exception_type=%s traceback:\n%s",
+        correlation_id,
+        type(exc).__name__,
+        "".join(traceback.format_tb(exc.__traceback__)),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={**error_envelope("internal_error"), "correlation_id": correlation_id},
     )
 
 

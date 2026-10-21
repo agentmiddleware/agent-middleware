@@ -51,6 +51,8 @@ class AuthContext:
     # context carries a list; readers must still treat None as no scopes,
     # because a context that skipped the constructor can leave None in place.
     scopes: list[str] | None = None
+    allowed_tools: tuple[str, ...] | None = None
+    tenant: str | None = None
     # Enterprise (Okta/Entra) bearer that accompanied an X-API-Key call. Set
     # ONLY when the Authorization header carried a token whose UNVERIFIED
     # issuer names a pinned IGA issuer (see get_auth_context). It is identity
@@ -95,6 +97,40 @@ class AuthContext:
                 "message": "This operation requires a bootstrap admin API key.",
             },
         )
+
+
+async def _key_tenant_for_auth(key_tenant: str | None, wallet_id: str) -> str | None:
+    """Apply demo confinement to the key and its owning wallet."""
+    from ..services.demo_tenant_boundary import (
+        DEMO_KEY_ROUTE_FORBIDDEN,
+        DEMO_TENANT_DISABLED,
+        DEMO_TENANT_LABEL,
+        current_demo_request,
+        demo_route_allowed,
+        resolve_effective_tenant,
+    )
+
+    tenant = await resolve_effective_tenant(key_tenant, wallet_id)
+    if tenant != DEMO_TENANT_LABEL:
+        return tenant
+    if not get_settings().ENABLE_DEMO_TENANT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": DEMO_TENANT_DISABLED,
+                "message": "The demo tenant is currently disabled.",
+            },
+        )
+    current = current_demo_request()
+    if current is None or not demo_route_allowed(*current):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": DEMO_KEY_ROUTE_FORBIDDEN,
+                "message": "This demo key may not call this route.",
+            },
+        )
+    return tenant
 
 
 # Internal marker on a response that failed *authentication* rather than
@@ -272,12 +308,17 @@ async def _resolve_auth_context(
         db_key = None
 
     if db_key:
+        from ..services.demo_tenant_boundary import parse_allowlist
+
+        tenant = await _key_tenant_for_auth(db_key.tenant, db_key.wallet_id)
         return AuthContext(
             source="db",
             raw_key=stripped,
             key_id=db_key.key_id,
             wallet_id=db_key.wallet_id,
             is_bootstrap_admin=False,
+            allowed_tools=parse_allowlist(db_key.allowed_tools_json),
+            tenant=tenant,
         )
 
     # Configured static dev keys close DEBUG open mode the same way
@@ -417,6 +458,37 @@ async def _auth_from_jwt(token: str) -> AuthContext:
             },
         )
 
+    key_row = await get_api_key_service().get_key_record(payload.key_id)
+    if key_row is None:
+        # Signed legacy tokens remain valid when the originating-key liveness
+        # check succeeds without a readable key row. A demo wallet must have
+        # a matching key row so its tenant and tool policy can be enforced.
+        from ..services.demo_tenant_boundary import (
+            DEMO_TENANT_LABEL,
+            resolve_effective_tenant,
+        )
+
+        if await resolve_effective_tenant(None, payload.sub) != DEMO_TENANT_LABEL:
+            return AuthContext(
+                source="jwt",
+                raw_key=f"jwt:{payload.key_id}",
+                wallet_id=payload.sub,
+                key_id=payload.key_id,
+                is_bootstrap_admin=False,
+                scopes=payload.scopes,
+            )
+
+    if key_row is None or key_row.wallet_id != payload.sub:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "no_active_api_key",
+                "message": "The API key that issued this access token is no longer active.",
+            },
+        )
+    from ..services.demo_tenant_boundary import parse_allowlist
+
+    tenant = await _key_tenant_for_auth(key_row.tenant, key_row.wallet_id)
     return AuthContext(
         source="jwt",
         # Not a credential: a stable, non-secret handle for the API key that
@@ -427,6 +499,8 @@ async def _auth_from_jwt(token: str) -> AuthContext:
         key_id=payload.key_id,
         is_bootstrap_admin=False,
         scopes=payload.scopes,
+        allowed_tools=parse_allowlist(key_row.allowed_tools_json),
+        tenant=tenant,
     )
 
 

@@ -70,6 +70,7 @@ class WalletModel(SQLModel, table=True):
 
     # Status and metadata
     status: str = Field(default="active", max_length=20)
+    tenant: Optional[str] = Field(default=None, max_length=32, index=True)
     kyc_status: str = Field(default="not_required", max_length=30)
     kyc_verified_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
     metadata_json: Optional[str] = Field(default=None)
@@ -282,6 +283,7 @@ class APIKeyModel(SQLModel, table=True):
 
     last_used_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
     last_used_ip: Optional[str] = Field(default=None, max_length=45)
+    first_used_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
 
     created_at: datetime = Field(
         sa_type=NaiveUTCDateTime, default_factory=utc_now, index=True
@@ -293,6 +295,16 @@ class APIKeyModel(SQLModel, table=True):
     # overshot by concurrent requests.
     max_uses: Optional[int] = Field(default=None)
     use_count: int = Field(default=0)
+
+    # NULL permits all tools; a JSON empty list permits none.
+    allowed_tools_json: Optional[str] = Field(default=None)
+    tenant: Optional[str] = Field(default=None, max_length=32, index=True)
+    utm_source: Optional[str] = Field(default=None, max_length=128)
+    utm_medium: Optional[str] = Field(default=None, max_length=128)
+    utm_campaign: Optional[str] = Field(default=None, max_length=128)
+    utm_content: Optional[str] = Field(default=None, max_length=128)
+    utm_term: Optional[str] = Field(default=None, max_length=128)
+    referrer: Optional[str] = Field(default=None, max_length=512)
 
     revoked_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
     revoke_reason: Optional[str] = Field(default=None, max_length=255)

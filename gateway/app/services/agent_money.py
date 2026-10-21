@@ -143,6 +143,7 @@ class AgentMoney:
         metadata: dict | None = None,
         require_kyc: bool | None = None,
         session: AsyncSession | None = None,
+        tenant: str | None = None,
     ) -> WalletResponse:
         return await self._wallet_engine.create_sponsor_wallet(
             sponsor_name=sponsor_name,
@@ -152,6 +153,7 @@ class AgentMoney:
             metadata=metadata,
             require_kyc=require_kyc,
             session=session,
+            tenant=tenant,
         )
 
     async def create_agent_wallet(

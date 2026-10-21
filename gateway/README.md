@@ -23,6 +23,18 @@ make test                   # the test suite (excluding proof-surface tests)
 Walkthrough: [`docs/quickstart.md`](docs/quickstart.md) and the shorter
 [`../QUICKSTART.md`](../QUICKSTART.md).
 
+## Demo keys
+
+`GET /v1/demo/keys` explains the issuance request. When
+`ENABLE_DEMO_TENANT=true`, an anonymous `POST /v1/demo/keys` with a JSON body
+issues a demo sponsor wallet, agent wallet, and API key. The body may contain
+`utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, and
+`referrer`; all are optional. The key is returned once and stored as a hash.
+Issuance is limited per IP and globally. Demo wallets use synthetic credits
+and are confined to the demo tenant. Browser origins for this route are set
+with `DEMO_ALLOWED_ORIGINS` (comma-separated); the default includes both
+`thisisatest.tech` and `agentmiddleware.dev`, with and without `www`.
+
 ## How it works
 
 ```text
@@ -75,7 +87,8 @@ is receipted `delivery_uncertain` and never silently re-sent. See
 - Credits are created by admin-gated sponsor issuance
   (`POST /v1/billing/wallets/sponsor`) and, only when
   `ENABLE_PROOF_SURFACES` is on, by verified Stripe top-up (USD only, where
-  Stripe keys are configured). Sponsor wallets may require KYC before a
+  Stripe keys are configured). The opt-in demo-key route creates synthetic
+  credits confined to demo wallets. Sponsor wallets may require KYC before a
   top-up is prepared. There is no subscription, invoice, or payout flow in
   this gateway. Direct client-token top-up answers `410 Gone`.
 - x402 and ACP mount only with `ENABLE_PROOF_SURFACES`. x402 prepares a

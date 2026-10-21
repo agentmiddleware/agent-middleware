@@ -384,6 +384,7 @@ class PermitService:
         request: PermitCreateRequest,
         subject_key_id: str | None = None,
         permit_id: str | None = None,
+        auth: Any | None = None,
     ) -> PermitResponse:
         """Mint a signed permit.
 
@@ -397,6 +398,16 @@ class PermitService:
             for field in ActionPermitFields.model_fields
         ):
             raise PermitCreationRejectedError("action_permit_requires_trusted_issuance")
+        from app.services.demo_tenant_boundary import (
+            DemoPermitDenied,
+            KeyAllowlistDenied,
+            enforce_permit_bounds,
+        )
+
+        try:
+            await enforce_permit_bounds(request, auth)
+        except (KeyAllowlistDenied, DemoPermitDenied) as exc:
+            raise PermitCreationRejectedError(exc.error) from exc
         return await self._persist_permit(request, subject_key_id, permit_id)
 
     async def _persist_permit(

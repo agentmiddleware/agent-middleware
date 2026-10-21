@@ -66,6 +66,7 @@ class Settings(BaseSettings):
 
     # --- Authentication ---
     API_KEY_HEADER: str = "X-API-Key"
+    API_KEY_PEPPER: SecretStr = SecretStr("")
     # Comma-separated list of valid API keys (use a secrets manager in production)
     VALID_API_KEYS: str = ""
     # Comma-separated static development/training keys for local testing.
@@ -83,6 +84,81 @@ class Settings(BaseSettings):
     # production-like environments refuse to boot when this is true, and the
     # handler independently fails closed there. See docs/static-dev-api-keys.md.
     ENABLE_DEV_KEY_SELF_PROVISION: bool = False
+
+    # --- Self-serve demo tenant (POST /v1/demo/keys) ---
+    ENABLE_DEMO_TENANT: bool = False
+    DEMO_ALLOWED_TOOLS: str = ""
+    DEMO_KEY_TTL_DAYS: int | None = None
+    DEMO_KEY_MAX_USES: int | None = None
+    DEMO_WALLET_CREDITS: Decimal = Decimal("1000")
+    DEMO_WALLET_DAILY_LIMIT: Decimal | None = None
+    DEMO_MAX_PERMIT_CREDITS: Decimal | None = None
+    DEMO_MAX_PERMIT_TTL_MINUTES: int | None = None
+    DEMO_ISSUE_PER_IP_PER_DAY: int = 3
+    DEMO_ISSUE_GLOBAL_PER_HOUR: int = 30
+    DEMO_ISSUE_GLOBAL_PER_DAY: int = 200
+    DEMO_MAX_LIVE_KEYS: int = 500
+    DEMO_ALLOWED_ORIGINS: str = (
+        "https://www.thisisatest.tech,"
+        "https://thisisatest.tech,"
+        "https://www.agentmiddleware.dev,"
+        "https://agentmiddleware.dev"
+    )
+
+    @field_validator(
+        "DEMO_KEY_TTL_DAYS",
+        "DEMO_KEY_MAX_USES",
+        "DEMO_MAX_PERMIT_TTL_MINUTES",
+        "DEMO_ISSUE_PER_IP_PER_DAY",
+        "DEMO_ISSUE_GLOBAL_PER_HOUR",
+        "DEMO_ISSUE_GLOBAL_PER_DAY",
+        "DEMO_MAX_LIVE_KEYS",
+    )
+    @classmethod
+    def _validate_demo_ints(cls, value: int | None, info) -> int | None:
+        if value is None:
+            if info.field_name in (
+                "DEMO_KEY_TTL_DAYS",
+                "DEMO_KEY_MAX_USES",
+                "DEMO_MAX_PERMIT_TTL_MINUTES",
+            ):
+                return None
+            raise ValueError(f"{info.field_name} is required")
+        bounds = {
+            "DEMO_KEY_TTL_DAYS": (1, 30),
+            "DEMO_KEY_MAX_USES": (1, 10_000),
+            "DEMO_MAX_PERMIT_TTL_MINUTES": (1, 1_440),
+            "DEMO_ISSUE_PER_IP_PER_DAY": (1, 1_000),
+            "DEMO_ISSUE_GLOBAL_PER_HOUR": (1, 100_000),
+            "DEMO_ISSUE_GLOBAL_PER_DAY": (1, 1_000_000),
+            "DEMO_MAX_LIVE_KEYS": (1, 100_000),
+        }
+        low, high = bounds[info.field_name]
+        if not low <= value <= high:
+            raise ValueError(f"{info.field_name} must be between {low} and {high}")
+        return value
+
+    @field_validator(
+        "DEMO_WALLET_CREDITS", "DEMO_MAX_PERMIT_CREDITS", "DEMO_WALLET_DAILY_LIMIT"
+    )
+    @classmethod
+    def _validate_demo_credits(cls, value: Decimal | None, info) -> Decimal | None:
+        if value is None:
+            if info.field_name in (
+                "DEMO_MAX_PERMIT_CREDITS",
+                "DEMO_WALLET_DAILY_LIMIT",
+            ):
+                return None
+            raise ValueError(f"{info.field_name} is required")
+        if not value.is_finite() or value <= 0 or value > Decimal("100000"):
+            raise ValueError(
+                f"{info.field_name} must be a positive amount up to 100000"
+            )
+        return value
+
+    @property
+    def demo_allowed_tools_list(self) -> list[str]:
+        return [t.strip() for t in self.DEMO_ALLOWED_TOOLS.split(",") if t.strip()]
 
     # --- Enterprise IGA bridge (OIDC -> PolicyBundle) ---
     # JSON object mapping a trusted enterprise OIDC issuer URL to its pinned

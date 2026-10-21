@@ -20,10 +20,11 @@ from datetime import datetime, timedelta
 from typing import Any, Optional, cast
 from uuid import uuid4
 
-from sqlalchemy import case, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
+from ..core.config import get_settings
 from ..core.time import to_naive_utc, utc_now
 from ..db.database import get_session_factory
 from ..db.models import (
@@ -41,6 +42,40 @@ logger = logging.getLogger(__name__)
 
 API_KEY_LENGTH = 32
 API_KEY_PREFIX_LENGTH = 8
+
+
+def _demo_attribution_field(
+    attribution: dict[str, str] | None, field: str
+) -> str | None:
+    if not attribution:
+        return None
+    value = attribution.get(field)
+    return value if isinstance(value, str) and value else None
+
+
+def _configured_pepper() -> bytes | None:
+    raw = get_settings().API_KEY_PEPPER
+    secret = raw.get_secret_value() if hasattr(raw, "get_secret_value") else raw
+    return str(secret).encode("utf-8") if secret else None
+
+
+def _plain_key_hash(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode()).hexdigest()
+
+
+def hash_api_key(api_key: str, pepper: bytes | None = None) -> str:
+    if pepper is None:
+        pepper = _configured_pepper()
+    if pepper:
+        return hmac.new(pepper, api_key.encode(), hashlib.sha256).hexdigest()
+    return _plain_key_hash(api_key)
+
+
+def candidate_key_hashes(api_key: str) -> list[str]:
+    pepper = _configured_pepper()
+    candidates = [hash_api_key(api_key, pepper=pepper)] if pepper else []
+    candidates.append(_plain_key_hash(api_key))
+    return candidates
 
 
 class APIKeyError(Exception):
@@ -91,7 +126,7 @@ def generate_api_key() -> tuple[str, str, str]:
         tuple: (full_key, key_hash, key_prefix)
     """
     full_key = f"b2a_{secrets.token_urlsafe(API_KEY_LENGTH)}"
-    key_hash = hashlib.sha256(full_key.encode()).hexdigest()
+    key_hash = hash_api_key(full_key)
     key_prefix = full_key[:API_KEY_PREFIX_LENGTH]
     return full_key, key_hash, key_prefix
 
@@ -138,6 +173,9 @@ class APIKeyService:
         expires_in_days: int | None = None,
         max_uses: int | None = None,
         session: AsyncSession | None = None,
+        allowed_tools: list[str] | None = None,
+        tenant: str | None = None,
+        attribution: dict[str, str] | None = None,
     ) -> dict:
         """
         Create a new API key for a wallet.
@@ -174,15 +212,21 @@ class APIKeyService:
             result = await session.execute(
                 select(WalletModel).where(col(WalletModel.wallet_id) == wallet_id)
             )
-            if result.scalar_one_or_none() is None:
+            wallet = result.scalar_one_or_none()
+            if wallet is None:
                 raise WalletNotFoundError(wallet_id)
+            if wallet.tenant:
+                tenant = wallet.tenant
         else:
             async with self._session_factory()() as check_session:
                 result = await check_session.execute(
                     select(WalletModel).where(col(WalletModel.wallet_id) == wallet_id)
                 )
-                if result.scalar_one_or_none() is None:
+                wallet = result.scalar_one_or_none()
+                if wallet is None:
                     raise WalletNotFoundError(wallet_id)
+                if wallet.tenant:
+                    tenant = wallet.tenant
 
         full_key, key_hash, key_prefix = generate_api_key()
         key_id = f"key_{uuid4().hex[:12]}"
@@ -201,6 +245,16 @@ class APIKeyService:
             metadata_json=json.dumps({"name": key_name}),
             expires_at=(to_naive_utc(expires_at) if expires_at else None),
             max_uses=max_uses,
+            allowed_tools_json=(
+                json.dumps(list(allowed_tools)) if allowed_tools is not None else None
+            ),
+            tenant=tenant,
+            utm_source=_demo_attribution_field(attribution, "utm_source"),
+            utm_medium=_demo_attribution_field(attribution, "utm_medium"),
+            utm_campaign=_demo_attribution_field(attribution, "utm_campaign"),
+            utm_content=_demo_attribution_field(attribution, "utm_content"),
+            utm_term=_demo_attribution_field(attribution, "utm_term"),
+            referrer=_demo_attribution_field(attribution, "referrer"),
         )
 
         if session is not None:
@@ -223,7 +277,17 @@ class APIKeyService:
             "created_at": now,
             "expires_at": expires_at,
             "max_uses": max_uses,
+            "allowed_tools": list(allowed_tools) if allowed_tools is not None else None,
+            "tenant": tenant,
         }
+
+    async def get_key_record(self, key_id: str) -> APIKeyModel | None:
+        """Load a key row after a derived credential has been validated."""
+        async with self._session_factory()() as session:
+            result = await session.execute(
+                select(APIKeyModel).where(col(APIKeyModel.key_id) == key_id)
+            )
+            return result.scalar_one_or_none()
 
     async def get_keys(self, wallet_id: str) -> dict:
         """
@@ -362,6 +426,7 @@ class APIKeyService:
                         else_=APIKeyModel.use_count + 1,
                     ),
                     last_used_at=now,
+                    first_used_at=func.coalesce(APIKeyModel.first_used_at, now),
                 )
                 .execution_options(synchronize_session=False)
             )
@@ -385,7 +450,12 @@ class APIKeyService:
             key = result.scalar_one_or_none()
         if key is None:
             return True
-        return key.max_uses is not None or key.expires_at is not None
+        return (
+            key.max_uses is not None
+            or key.expires_at is not None
+            or key.allowed_tools_json is not None
+            or key.tenant is not None
+        )
 
     async def validate_key(self, api_key: str) -> Optional[APIKeyModel]:
         """
@@ -401,7 +471,7 @@ class APIKeyService:
             return None
 
         key_prefix = api_key[:API_KEY_PREFIX_LENGTH]
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        candidates = candidate_key_hashes(api_key)
 
         async with self._session_factory()() as session:
             # Look up by the indexed full digest, not the prefix alone: the
@@ -412,7 +482,7 @@ class APIKeyService:
             # failed every request for both keys with a 500.
             result = await session.execute(
                 select(APIKeyModel).where(
-                    col(APIKeyModel.key_hash) == key_hash,
+                    col(APIKeyModel.key_hash).in_(candidates),
                     col(APIKeyModel.key_prefix) == key_prefix,
                     col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
                 )
@@ -422,7 +492,9 @@ class APIKeyService:
             if not key:
                 return None
 
-            if not hmac.compare_digest(key.key_hash, key_hash):
+            if not any(
+                hmac.compare_digest(key.key_hash, candidate) for candidate in candidates
+            ):
                 return None
 
             now = utc_now()
@@ -453,6 +525,9 @@ class APIKeyService:
                     .values(
                         use_count=APIKeyModel.use_count + 1,
                         last_used_at=to_naive_utc(now),
+                        first_used_at=func.coalesce(
+                            APIKeyModel.first_used_at, to_naive_utc(now)
+                        ),
                     )
                     .execution_options(synchronize_session=False)
                 )
@@ -460,9 +535,27 @@ class APIKeyService:
                 if (cast(Any, consumed).rowcount or 0) == 0:
                     return None
             else:
-                key.last_used_at = to_naive_utc(now)
-                session.add(key)
+                used = await session.execute(
+                    update(APIKeyModel)
+                    .where(
+                        col(APIKeyModel.key_id) == key.key_id,
+                        col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
+                        or_(
+                            col(APIKeyModel.expires_at).is_(None),
+                            col(APIKeyModel.expires_at) >= to_naive_utc(utc_now()),
+                        ),
+                    )
+                    .values(
+                        last_used_at=to_naive_utc(now),
+                        first_used_at=func.coalesce(
+                            APIKeyModel.first_used_at, to_naive_utc(now)
+                        ),
+                    )
+                    .execution_options(synchronize_session=False)
+                )
                 await session.commit()
+                if (cast(Any, used).rowcount or 0) == 0:
+                    return None
 
         return key
 
@@ -516,12 +609,15 @@ class APIKeyService:
             wallet_result = await session.execute(
                 select(WalletModel).where(col(WalletModel.wallet_id) == wallet_id)
             )
-            if not wallet_result.scalar_one_or_none():
+            wallet = wallet_result.scalar_one_or_none()
+            if wallet is None:
                 raise WalletNotFoundError(wallet_id)
 
             inherited_expires_at = None
             inherited_max_uses = None
             inherited_name = "rotated_key"
+            inherited_allowed_tools_json = None
+            inherited_tenant = wallet.tenant
 
             if key_id:
                 # FOR UPDATE so a concurrent validate_key cannot consume a
@@ -574,6 +670,8 @@ class APIKeyService:
                 inherited_expires_at = old_key.expires_at
                 if old_key.max_uses is not None:
                     inherited_max_uses = max(old_key.max_uses - old_key.use_count, 0)
+                inherited_allowed_tools_json = old_key.allowed_tools_json
+                inherited_tenant = wallet.tenant or old_key.tenant
                 if old_key.metadata_json:
                     try:
                         inherited_name = json.loads(old_key.metadata_json).get(
@@ -595,6 +693,8 @@ class APIKeyService:
                 expires_at=inherited_expires_at,
                 max_uses=inherited_max_uses,
                 metadata_json=json.dumps({"name": inherited_name}),
+                allowed_tools_json=inherited_allowed_tools_json,
+                tenant=inherited_tenant,
             )
             session.add(new_key)
 
@@ -749,7 +849,8 @@ class APIKeyService:
             wallet_result = await session.execute(
                 select(WalletModel).where(col(WalletModel.wallet_id) == wallet_id)
             )
-            if not wallet_result.scalar_one_or_none():
+            wallet = wallet_result.scalar_one_or_none()
+            if wallet is None:
                 raise WalletNotFoundError(wallet_id)
 
             # FOR UPDATE so a concurrent validate_key cannot consume a use
@@ -837,6 +938,8 @@ class APIKeyService:
             if create_new_key:
                 emergency_expires_at = None
                 emergency_max_uses = None
+                emergency_allowed_tools_json = None
+                emergency_tenant = wallet.tenant
                 if bounding_keys:
                     # Inherit BOTH bounds from one donor credential rather
                     # than combining the loosest budget and loosest expiry
@@ -860,6 +963,8 @@ class APIKeyService:
                     emergency_expires_at = donor.expires_at
                     if donor.max_uses is not None:
                         emergency_max_uses = max(donor.max_uses - donor.use_count, 0)
+                    emergency_allowed_tools_json = donor.allowed_tools_json
+                    emergency_tenant = wallet.tenant or donor.tenant
 
                 full_key, key_hash, key_prefix = generate_api_key()
                 new_key_id = f"key_{uuid4().hex[:12]}"
@@ -872,6 +977,8 @@ class APIKeyService:
                     metadata_json=json.dumps({"name": "emergency_key"}),
                     expires_at=emergency_expires_at,
                     max_uses=emergency_max_uses,
+                    allowed_tools_json=emergency_allowed_tools_json,
+                    tenant=emergency_tenant,
                 )
                 session.add(emergency_key)
                 new_key_data = {

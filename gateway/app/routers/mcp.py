@@ -1237,6 +1237,22 @@ async def _execute_registered_tool_inner(
         )
         raise ToolPermissionDenied(tenant_decision.reason)
 
+    # Refuse bounded credentials before permit lookup, idempotency, or dispatch.
+    if auth.allowed_tools is not None and tool_name not in auth.allowed_tools:
+        raise ToolPermissionDenied("key_tool_not_allowed")
+    demo_tools = settings.demo_allowed_tools_list
+    if demo_tools:
+        from app.db.models import WalletModel
+
+        async with get_session_factory()() as session:
+            wallet = await session.get(WalletModel, wallet_id)
+        if (
+            wallet is not None
+            and getattr(wallet, "tenant", None) == "demo"
+            and tool_name not in demo_tools
+        ):
+            raise ToolPermissionDenied("demo_tool_not_allowed")
+
     governed_call = bool(permit_id) or (
         settings.TRUST_MODE_ENABLED and not settings.ALLOW_LEGACY_UNPERMITTED_MCP
     )

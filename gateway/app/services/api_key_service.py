@@ -24,7 +24,6 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
-from ..core.config import get_settings
 from ..core.time import to_naive_utc, utc_now
 from ..db.database import get_session_factory
 from ..db.models import (
@@ -51,31 +50,6 @@ def _demo_attribution_field(
         return None
     value = attribution.get(field)
     return value if isinstance(value, str) and value else None
-
-
-def _configured_pepper() -> bytes | None:
-    raw = get_settings().API_KEY_PEPPER
-    secret = raw.get_secret_value() if hasattr(raw, "get_secret_value") else raw
-    return str(secret).encode("utf-8") if secret else None
-
-
-def _plain_key_hash(api_key: str) -> str:
-    return hashlib.sha256(api_key.encode()).hexdigest()
-
-
-def hash_api_key(api_key: str, pepper: bytes | None = None) -> str:
-    if pepper is None:
-        pepper = _configured_pepper()
-    if pepper:
-        return hmac.new(pepper, api_key.encode(), hashlib.sha256).hexdigest()
-    return _plain_key_hash(api_key)
-
-
-def candidate_key_hashes(api_key: str) -> list[str]:
-    pepper = _configured_pepper()
-    candidates = [hash_api_key(api_key, pepper=pepper)] if pepper else []
-    candidates.append(_plain_key_hash(api_key))
-    return candidates
 
 
 class APIKeyError(Exception):
@@ -126,7 +100,7 @@ def generate_api_key() -> tuple[str, str, str]:
         tuple: (full_key, key_hash, key_prefix)
     """
     full_key = f"b2a_{secrets.token_urlsafe(API_KEY_LENGTH)}"
-    key_hash = hash_api_key(full_key)
+    key_hash = hashlib.sha256(full_key.encode()).hexdigest()
     key_prefix = full_key[:API_KEY_PREFIX_LENGTH]
     return full_key, key_hash, key_prefix
 
@@ -457,21 +431,28 @@ class APIKeyService:
             or key.tenant is not None
         )
 
-    async def validate_key(self, api_key: str) -> Optional[APIKeyModel]:
+    async def validate_key(
+        self, api_key: str, *, consume: bool = True
+    ) -> Optional[APIKeyModel]:
         """
         Validate an API key and return the key model if valid.
 
         Args:
             api_key: The API key to validate
+            consume: Set False only for the demo policy preflight. It matches
+                the digest, prefix, and active status without checking expiry
+                or remaining uses or recording usage. Authenticate with the
+                default True afterward.
 
         Returns:
-            APIKeyModel if valid, None if invalid
+            Live APIKeyModel if valid, None if invalid. The read-only preflight
+            may return an expired or exhausted key for policy classification.
         """
         if not api_key or len(api_key) < 8:
             return None
 
         key_prefix = api_key[:API_KEY_PREFIX_LENGTH]
-        candidates = candidate_key_hashes(api_key)
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
 
         async with self._session_factory()() as session:
             # Look up by the indexed full digest, not the prefix alone: the
@@ -482,7 +463,7 @@ class APIKeyService:
             # failed every request for both keys with a 500.
             result = await session.execute(
                 select(APIKeyModel).where(
-                    col(APIKeyModel.key_hash).in_(candidates),
+                    col(APIKeyModel.key_hash) == key_hash,
                     col(APIKeyModel.key_prefix) == key_prefix,
                     col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
                 )
@@ -492,10 +473,11 @@ class APIKeyService:
             if not key:
                 return None
 
-            if not any(
-                hmac.compare_digest(key.key_hash, candidate) for candidate in candidates
-            ):
+            if not hmac.compare_digest(key.key_hash, key_hash):
                 return None
+
+            if not consume:
+                return key
 
             now = utc_now()
             expires_at = key.expires_at

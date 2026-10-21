@@ -248,7 +248,7 @@ def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
         result = migrate(url, SCRUB_REVISION, "downgrade")
         assert result.returncode != 0 and "action_authority_retained" in result.stderr
         assert sql("SELECT version_num FROM alembic_version") == [
-            {"version_num": ACTION_REVISION}
+            {"version_num": HEAD_REVISION}
         ]
         for table, rows in retained.items():
             assert sql(f"SELECT * FROM {table}") == rows

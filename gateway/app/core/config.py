@@ -66,7 +66,6 @@ class Settings(BaseSettings):
 
     # --- Authentication ---
     API_KEY_HEADER: str = "X-API-Key"
-    API_KEY_PEPPER: SecretStr = SecretStr("")
     # Comma-separated list of valid API keys (use a secrets manager in production)
     VALID_API_KEYS: str = ""
     # Comma-separated static development/training keys for local testing.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -22,6 +21,7 @@ from app.core.config import Settings, get_settings
 from app.db.database import get_session_factory
 from app.db.models import APIKeyModel, WalletModel
 from app.main import app
+from app.services.api_key_service import get_api_key_service
 from app.services.demo_tenant import _memory_counters
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
@@ -124,9 +124,13 @@ async def test_issued_key_shape_wallets_and_hash(
     key = await _key_row(body["key_id"])
     assert key.wallet_id == body["wallet_id"]
     assert key.tenant == "demo"
-    assert key.key_hash == hashlib.sha256(body["api_key"].encode()).hexdigest()
+    assert len(key.key_hash) == 64
     assert key.key_hash != body["api_key"]
-    assert key.first_used_at is None
+    matched = await get_api_key_service().validate_key(body["api_key"], consume=False)
+    assert matched is not None and matched.key_id == key.key_id
+    after_lookup = await _key_row(body["key_id"])
+    assert after_lookup.use_count == 0
+    assert after_lookup.first_used_at is None
 
     async with get_session_factory()() as session:
         agent = await session.get(WalletModel, body["wallet_id"])

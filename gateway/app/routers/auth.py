@@ -74,29 +74,19 @@ async def exchange_api_key_for_tokens(
     The refresh token can be used at /v1/auth/refresh to obtain
     a new access token without re-presenting the API key.
     """
-    from app.services.api_key_service import (
-        API_KEY_PREFIX_LENGTH,
-        candidate_key_hashes,
-        get_api_key_service,
-    )
+    from app.services.api_key_service import get_api_key_service
 
     # Reject demo credentials before validation consumes a use or records
     # first_used_at. Older keys may lack tenant even when their wallet is demo.
     factory = get_session_factory()
-    async with factory() as session:
-        result = await session.execute(
-            select(APIKeyModel).where(
-                col(APIKeyModel.key_hash).in_(candidate_key_hashes(request.api_key)),
-                col(APIKeyModel.key_prefix) == request.api_key[:API_KEY_PREFIX_LENGTH],
-                col(APIKeyModel.status) == "active",
-            )
-        )
-        candidate = result.scalar_one_or_none()
-        if candidate is not None and await _is_demo_key(session, candidate):
-            raise _demo_auth_error()
+    key_svc = get_api_key_service()
+    candidate = await key_svc.validate_key(request.api_key, consume=False)
+    if candidate is not None:
+        async with factory() as session:
+            if await _is_demo_key(session, candidate):
+                raise _demo_auth_error()
 
     # Validate the API key
-    key_svc = get_api_key_service()
     db_key = await key_svc.validate_key(request.api_key)
     if not db_key:
         raise HTTPException(

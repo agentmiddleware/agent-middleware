@@ -9,7 +9,7 @@ Prerequisites: Python 3.11+, [`uv`](https://docs.astral.sh/uv/), `make`, `curl`.
 ## 1. Boot a local gateway
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware
 cd agent-middleware/gateway
 make quickstart        # strict trust mode, SQLite, a locally generated signing key
 ```
@@ -50,8 +50,10 @@ uv run --with "mcp>=1.29,<2" python ../examples/mcp-client/call_with_retry.py
 
 ```text
 first receipt: rcpt-...
-retry receipt: rcpt-...      <- the same id: no second dispatch, no second debit
+retry receipt: rcpt-...      <- the same id
 ```
+
+For this key, a retry with the same key returns the original receipt instead of dispatching again.
 
 Check the effect count yourself: `wc -l data/dogfood_partner_notes.jsonl` grew
 by one, not two.

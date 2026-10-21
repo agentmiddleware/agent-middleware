@@ -123,7 +123,7 @@ def test_error_copy_has_no_dashes():
             "Get a new demo key, or add credits to the wallet.",
         ),
         (
-            "idempotency_key_conflict",
+            "idempotency_key_reused",
             "This request key was already used with different arguments.",
             "Use a new request key for a new action.",
         ),
@@ -145,4 +145,13 @@ def test_top_ten_error_copy_is_exact(code, message, fix):
         "message": message,
         "fix": fix,
         "docs_url": f"https://www.agentmiddleware.dev/docs/errors#{code}",
+    }
+
+
+def test_header_body_key_conflict_copy_is_exact():
+    assert error_envelope("idempotency_key_conflict") == {
+        "code": "idempotency_key_conflict",
+        "message": "The request key in the header and the body do not match. Send the same key in both.",
+        "fix": "Send one request key, or use the same key in the header and the body.",
+        "docs_url": "https://www.agentmiddleware.dev/docs/errors#idempotency_key_conflict",
     }

@@ -2560,6 +2560,12 @@ async def test_agent_wallet_provisioning_replays_on_idempotency_key(
     )
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["error"] == "idempotency_key_reused"
+    assert conflict.json()["code"] == "idempotency_key_reused"
+    assert conflict.json()["message"] == (
+        "This request key was already used with different arguments."
+    )
+    assert conflict.json()["fix"] == "Use a new request key for a new action."
+    assert conflict.json()["docs_url"].endswith("#idempotency_key_reused")
 
 
 @pytest.mark.anyio

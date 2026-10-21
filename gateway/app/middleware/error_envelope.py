@@ -10,7 +10,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
 # Common gateway error copy. The top ten follow ux-spec Part B except for the
-# explicitly required longer missing_wallet_id message.
+# explicitly required longer missing_wallet_id message and corrected key codes.
 ERROR_COPY: dict[str, tuple[str, str]] = {
     "missing_wallet_id": (
         "This call needs a wallet. Pass wallet_id from your demo key response, or use a key with one wallet.",
@@ -29,6 +29,10 @@ ERROR_COPY: dict[str, tuple[str, str]] = {
         "Wait for the limit to reset before sending another request.",
     ),
     "idempotency_key_conflict": (
+        "The request key in the header and the body do not match. Send the same key in both.",
+        "Send one request key, or use the same key in the header and the body.",
+    ),
+    "idempotency_key_reused": (
         "This request key was already used with different arguments.",
         "Use a new request key for a new action.",
     ),

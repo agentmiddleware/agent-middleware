@@ -1,11 +1,10 @@
 # Agent Middleware (AMW)
 
-> **Agents retry. Consequential tools should not run or charge twice.**
+> **With Agent Middleware, a retry with the same key returns the original receipt instead of dispatching again.**
 
 Agent Middleware is a gateway that sits in front of an agent's irreversible MCP
 tools (refunds, payouts, writes to systems of record). Agents act under a
-permit; a same-key retry returns the original receipt, no second call or
-charge.
+permit; a retry with the same key returns the original receipt instead of dispatching again.
 
 ```text
 scoped signed permit -> governed MCP call (idempotency key) -> one dispatch, one debit -> Ed25519-signed receipt
@@ -21,7 +20,7 @@ npm yet; install from source.
 Prerequisites: Python 3.11+, [`uv`](https://docs.astral.sh/uv/), and `make`.
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware
 cd agent-middleware/gateway
 make demo-ambiguous-retry
 ```
@@ -48,9 +47,8 @@ receipt check.
 
 ## What it guarantees, and what it does not
 
-- **At most one gateway dispatch and at most one debit per accepted idempotency
-  key.** A retry with the same key returns the original signed receipt. The same
-  key with a different payload fails closed.
+- **Accepted retries:** a retry with the same key returns the original receipt instead of dispatching again.
+  The same key with a different payload fails closed.
 - **Authority before money.** Out-of-scope, expired, revoked, or tampered permits
   are denied before any debit.
 - **Offline-verifiable receipts.** Ed25519 signatures over canonical JSON,
@@ -76,6 +74,8 @@ before evaluating it for anything real.
 | [`integrations/`](integrations/) | LangChain, CrewAI, AutoGen, OpenAI Agents wrappers; LangGraph, PydanticAI, LlamaIndex adapters | Apache-2.0 |
 | [`examples/`](examples/) | Runnable examples, including an MCP client config | Apache-2.0 |
 | [`gateway/`](gateway/) | The gateway itself: permits, idempotency, dispatch fence, metering, receipts, audit chain, MCP endpoints, migrations, tests, failure lab | **Fair Source: FSL-1.1-ALv2** |
+
+Apache 2.0 (gateway is Fair Source, FSL-1.1).
 
 The gateway is **Fair Source, not open source**. Under the Functional Source
 License you can read, modify, and self-host it for your own agents, and use it

@@ -553,7 +553,7 @@ class TestMcpInvokeRoute:
                 "This call needs a wallet. Pass wallet_id from your demo key "
                 "response, or use a key with one wallet."
             ),
-            "fix": "Pass wallet_id from the demo key response or use a key with one wallet.",
+            "fix": "Pass wallet_id from your demo key response, or use a key with one wallet.",
             "docs_url": "https://www.agentmiddleware.dev/docs/errors#missing_wallet_id",
         }
 

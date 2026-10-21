@@ -9,9 +9,12 @@ misconfigured partner service refuses to start.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import secrets
+import traceback
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Annotated, Any
@@ -174,8 +177,18 @@ class _BearerAuthMiddleware:
         await self._app(scope, receive, send)
 
 
-async def _unhandled_error(_request: Request, _exc: Exception) -> JSONResponse:
-    return JSONResponse(error_envelope("internal_error"), status_code=500)
+async def _unhandled_error(_request: Request, exc: Exception) -> JSONResponse:
+    correlation_id = uuid.uuid4().hex
+    logging.getLogger(__name__).error(
+        "unhandled_error correlation_id=%s exception_type=%s traceback:\n%s",
+        correlation_id,
+        type(exc).__name__,
+        "".join(traceback.format_tb(exc.__traceback__)),
+    )
+    return JSONResponse(
+        {**error_envelope("internal_error"), "correlation_id": correlation_id},
+        status_code=500,
+    )
 
 
 def _is_mcp_path(path: str) -> bool:

@@ -5,7 +5,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.config import get_settings
 from app.main import app
-from app.middleware.error_envelope import ERROR_COPY
+from app.middleware.error_envelope import ERROR_COPY, error_envelope
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS
 
 
@@ -76,6 +76,73 @@ async def test_rest_invoke_missing_wallet_has_specific_code(clean_database):
 
 
 def test_error_copy_has_no_dashes():
-    assert len(ERROR_COPY) == 10
     for message, fix in ERROR_COPY.values():
-        assert not any(mark in text for text in (message, fix) for mark in "-–—")
+        assert not any(
+            mark in text.replace("X-API-Key", "")
+            for text in (message, fix)
+            for mark in "-–—"
+        )
+
+
+@pytest.mark.parametrize(
+    ("code", "message", "fix"),
+    [
+        (
+            "missing_wallet_id",
+            "This call needs a wallet. Pass wallet_id from your demo key response, or use a key with one wallet.",
+            "Pass wallet_id from your demo key response, or use a key with one wallet.",
+        ),
+        (
+            "invalid_api_key",
+            "Your key was not accepted.",
+            "Check the X-API-Key header, or get a new demo key.",
+        ),
+        (
+            "permit_not_found",
+            "We could not find that permit.",
+            "Create a permit first and pass its permit_id.",
+        ),
+        (
+            "permit_expired",
+            "Your permit has expired.",
+            "Create a new permit with a later expires_at.",
+        ),
+        (
+            "permit_tool_not_allowed",
+            "Your permit does not include this tool.",
+            "Create a permit that lists this tool in allowed_tools.",
+        ),
+        (
+            "permit_budget_exceeded",
+            "This call costs more credits than the permit has left.",
+            "Create a permit with a larger max_credits.",
+        ),
+        (
+            "insufficient_funds",
+            "Your wallet does not have enough credits.",
+            "Get a new demo key, or add credits to the wallet.",
+        ),
+        (
+            "idempotency_key_conflict",
+            "This request key was already used with different arguments.",
+            "Use a new request key for a new action.",
+        ),
+        (
+            "idempotency_key_too_long",
+            "This request key is too long.",
+            "Use a shorter request key, such as a UUID.",
+        ),
+        (
+            "delivery_uncertain",
+            "We charged this call but do not know if the tool finished.",
+            "Check the tool directly before you try again. We never resend it on our own.",
+        ),
+    ],
+)
+def test_top_ten_error_copy_is_exact(code, message, fix):
+    assert error_envelope(code) == {
+        "code": code,
+        "message": message,
+        "fix": fix,
+        "docs_url": f"https://www.agentmiddleware.dev/docs/errors#{code}",
+    }

@@ -9,16 +9,16 @@ from typing import Any
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
-# Copy for common gateway errors. Reconcile the other nine entries with the
-# ux-spec Part B table before merge.
+# Common gateway error copy. The top ten follow ux-spec Part B except for the
+# explicitly required longer missing_wallet_id message.
 ERROR_COPY: dict[str, tuple[str, str]] = {
     "missing_wallet_id": (
         "This call needs a wallet. Pass wallet_id from your demo key response, or use a key with one wallet.",
-        "Pass wallet_id from the demo key response or use a key with one wallet.",
+        "Pass wallet_id from your demo key response, or use a key with one wallet.",
     ),
     "invalid_api_key": (
-        "The API key is invalid.",
-        "Check the API key and send the request again.",
+        "Your key was not accepted.",
+        "Check the X-API-Key header, or get a new demo key.",
     ),
     "wallet_scoped_key_required": (
         "This call needs a key for one wallet.",
@@ -29,24 +29,40 @@ ERROR_COPY: dict[str, tuple[str, str]] = {
         "Wait for the limit to reset before sending another request.",
     ),
     "idempotency_key_conflict": (
-        "This key was used with a different request.",
-        "Use a new key for a different request.",
+        "This request key was already used with different arguments.",
+        "Use a new request key for a new action.",
+    ),
+    "idempotency_key_too_long": (
+        "This request key is too long.",
+        "Use a shorter request key, such as a UUID.",
     ),
     "idempotency_in_progress": (
         "A call with this key is still in progress.",
         "Wait for it to finish before checking the receipt.",
     ),
     "insufficient_funds": (
-        "This wallet does not have enough funds.",
-        "Add funds or use a wallet with enough funds.",
+        "Your wallet does not have enough credits.",
+        "Get a new demo key, or add credits to the wallet.",
+    ),
+    "permit_not_found": (
+        "We could not find that permit.",
+        "Create a permit first and pass its permit_id.",
     ),
     "permit_expired": (
-        "The permit has expired.",
-        "Request a new permit before calling the tool.",
+        "Your permit has expired.",
+        "Create a new permit with a later expires_at.",
+    ),
+    "permit_tool_not_allowed": (
+        "Your permit does not include this tool.",
+        "Create a permit that lists this tool in allowed_tools.",
+    ),
+    "permit_budget_exceeded": (
+        "This call costs more credits than the permit has left.",
+        "Create a permit with a larger max_credits.",
     ),
     "delivery_uncertain": (
-        "The outcome of the dispatched call is uncertain.",
-        "Reconcile the outcome with the tool before taking another action.",
+        "We charged this call but do not know if the tool finished.",
+        "Check the tool directly before you try again. We never resend it on our own.",
     ),
     "internal_error": (
         "The request could not be completed.",

@@ -724,6 +724,15 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
     )
     assert conflict.status_code == 400, conflict.text
     assert conflict.json()["detail"]["reason_code"] == "idempotency_key_conflict"
+    assert conflict.json()["code"] == "idempotency_key_conflict"
+    assert conflict.json()["message"] == (
+        "The request key in the header and the body do not match. "
+        "Send the same key in both."
+    )
+    assert conflict.json()["fix"] == (
+        "Send one request key, or use the same key in the header and the body."
+    )
+    assert conflict.json()["docs_url"].endswith("#idempotency_key_conflict")
     assert await _snapshot(client, provisioned, counted_tool) == before
 
     # Control: the same body with agreeing sources executes once and replays.

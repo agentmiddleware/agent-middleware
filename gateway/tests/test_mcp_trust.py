@@ -186,10 +186,13 @@ async def test_legacy_mcp_wallet_defaults_only_when_omitted(
             assert calls == []
             if transport == "jsonrpc":
                 assert response.status_code == 200
-                assert response.json()["error"] == {
-                    "code": -32602,
-                    "message": "Invalid params: mcpContext.wallet_id must be a string",
-                }
+                error = response.json()["error"]
+                assert error["code"] == -32602
+                assert error["message"] == (
+                    "Invalid params: mcpContext.wallet_id must be a string"
+                )
+                assert error["data"]["code"] == "invalid_params"
+                assert set(error["data"]) == {"code", "message", "fix", "docs_url"}
             else:
                 assert response.status_code == 422
         elif wallet_case == "foreign":
@@ -273,10 +276,11 @@ async def test_legacy_mcp_missing_wallet_still_rejected_without_bound_key(
             headers=BOOTSTRAP_HEADERS,
         )
         assert response.status_code == 200
-        assert response.json()["error"] == {
-            "code": -32602,
-            "message": "Missing wallet_id in mcpContext",
-        }
+        error = response.json()["error"]
+        assert error["code"] == -32602
+        assert error["message"] == "Missing wallet_id in mcpContext"
+        assert error["data"]["code"] == "missing_wallet_id"
+        assert set(error["data"]) == {"code", "message", "fix", "docs_url"}
     else:
         response = await client.post(
             "/mcp/tools/anything/invoke",

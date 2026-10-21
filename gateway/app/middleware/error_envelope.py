@@ -44,6 +44,10 @@ ERROR_COPY: dict[str, tuple[str, str]] = {
         "A call with this key is still in progress.",
         "Wait for it to finish before checking the receipt.",
     ),
+    "human_approval_pending": (
+        "This call is waiting for human approval.",
+        "Wait for a human decision, then send the same call with the same request key to check the decision.",
+    ),
     "insufficient_funds": (
         "Your wallet does not have enough credits.",
         "Get a new demo key, or add credits to the wallet.",

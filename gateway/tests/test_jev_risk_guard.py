@@ -303,6 +303,14 @@ async def test_enforce_uses_existing_approval_gate(
         assert response.status_code == 202, response.text
         assert response.json()["detail"]["error"] == "human_approval_pending"
         assert response.json()["code"] == "human_approval_pending"
+        assert response.json()["message"] == "This call is waiting for human approval."
+        assert response.json()["fix"] == (
+            "Wait for a human decision, then send the same call with the same "
+            "request key to check the decision."
+        )
+        assert response.json()["docs_url"] == (
+            "https://www.agentmiddleware.dev/docs/errors#human_approval_pending"
+        )
         assert registered_tool == []
         # Pending frees the record, but the verdict must survive that deletion.
         mock_jev.body = _response(injected=0.0)

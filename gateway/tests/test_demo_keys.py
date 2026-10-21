@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,6 +19,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, func, inspect, select, text
 
 from app.core.config import Settings, get_settings
+from app.core.jwt import get_jwt_service
 from app.db.database import get_session_factory
 from app.db.models import APIKeyModel, WalletModel
 from app.main import app
@@ -217,6 +219,77 @@ async def test_first_authenticated_use_is_recorded_only_once(
         else:
             assert row.first_used_at == first_used_at
     assert row.last_used_at is not None and row.last_used_at >= first_used_at
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("credential", ["api_key", "jwt"])
+@pytest.mark.parametrize("legacy_wallet_label", [False, True])
+async def test_denied_demo_auth_does_not_consume_capped_key(
+    client: AsyncClient,
+    clean_database: None,
+    demo_enabled,
+    monkeypatch: pytest.MonkeyPatch,
+    credential: str,
+    legacy_wallet_label: bool,
+) -> None:
+    demo_enabled.DEMO_KEY_MAX_USES = 1
+    body = await _issue(client)
+    if legacy_wallet_label:
+        async with get_session_factory()() as session:
+            key = await session.get(APIKeyModel, body["key_id"])
+            assert key is not None
+            key.tenant = None
+            await session.commit()
+
+    if credential == "jwt":
+        monkeypatch.setattr(
+            demo_enabled,
+            "TRUST_SIGNING_PRIVATE_KEY_B64",
+            base64.b64encode(bytes(range(32))).decode(),
+        )
+        token = get_jwt_service().create_access_token(
+            wallet_id=body["wallet_id"], key_id=body["key_id"], scopes=[]
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+    else:
+        headers = {"X-API-Key": body["api_key"]}
+
+    forbidden = await client.get(_FUNNEL_PATH, headers=headers)
+    assert forbidden.status_code == 403
+    assert forbidden.json()["detail"]["error"] == "demo_key_route_forbidden"
+    row = await _key_row(body["key_id"])
+    assert (row.first_used_at, row.last_used_at, row.use_count) == (None, None, 0)
+
+    demo_enabled.ENABLE_DEMO_TENANT = False
+    disabled = await client.get("/v1/me/authority", headers=headers)
+    assert disabled.status_code == 403
+    assert disabled.json()["detail"]["error"] == "demo_tenant_disabled"
+    row = await _key_row(body["key_id"])
+    assert (row.first_used_at, row.last_used_at, row.use_count) == (None, None, 0)
+
+    demo_enabled.ENABLE_DEMO_TENANT = True
+    allowed = await client.get("/v1/me/authority", headers=headers)
+    assert allowed.status_code == 200
+    row = await _key_row(body["key_id"])
+    assert row.first_used_at is not None
+    assert row.last_used_at is not None
+    assert row.use_count == 1
+
+    expected_error = "no_active_api_key" if credential == "jwt" else "invalid_api_key"
+    expected_status = 401 if credential == "jwt" else 403
+    exhausted = await client.get(_FUNNEL_PATH, headers=headers)
+    assert exhausted.status_code == expected_status
+    assert exhausted.json()["detail"]["error"] == expected_error
+    demo_enabled.ENABLE_DEMO_TENANT = False
+    disabled_exhausted = await client.get("/v1/me/authority", headers=headers)
+    assert disabled_exhausted.status_code == expected_status
+    assert disabled_exhausted.json()["detail"]["error"] == expected_error
+    after = await _key_row(body["key_id"])
+    assert (after.first_used_at, after.last_used_at, after.use_count) == (
+        row.first_used_at,
+        row.last_used_at,
+        1,
+    )
 
 
 @pytest.mark.anyio

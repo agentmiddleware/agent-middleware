@@ -15,6 +15,7 @@ from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from .config import get_settings
 from .oidc_iga import EnterprisePrincipal, IGADecision, IGAError, is_iga_issuer_token
+from .time import utc_now
 from .trust_mode import is_production_like_environment
 
 settings = get_settings()
@@ -301,10 +302,21 @@ async def _resolve_auth_context(
         )
 
     try:
-        from ..services.api_key_service import get_api_key_service
+        from ..services.api_key_service import _key_is_live, get_api_key_service
 
-        db_key = await get_api_key_service().validate_key(stripped)
+        key_service = get_api_key_service()
+        candidate = await key_service.validate_key(stripped, consume=False)
     except RuntimeError:
+        candidate = None
+
+    if candidate:
+        if _key_is_live(candidate, utc_now()):
+            await _key_tenant_for_auth(candidate.tenant, candidate.wallet_id)
+        try:
+            db_key = await key_service.validate_key(stripped)
+        except RuntimeError:
+            db_key = None
+    else:
         db_key = None
 
     if db_key:
@@ -443,11 +455,18 @@ async def _auth_from_jwt(token: str) -> AuthContext:
             },
         )
 
-    from ..services.api_key_service import get_api_key_service
+    from ..services.api_key_service import _key_is_live, get_api_key_service
 
-    if not await get_api_key_service().consume_derived_key_use(
-        payload.key_id, payload.sub
+    key_service = get_api_key_service()
+    candidate = await key_service.get_key_record(payload.key_id)
+    if (
+        candidate is not None
+        and candidate.wallet_id == payload.sub
+        and _key_is_live(candidate, utc_now())
     ):
+        await _key_tenant_for_auth(candidate.tenant, candidate.wallet_id)
+
+    if not await key_service.consume_derived_key_use(payload.key_id, payload.sub):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
@@ -458,7 +477,7 @@ async def _auth_from_jwt(token: str) -> AuthContext:
             },
         )
 
-    key_row = await get_api_key_service().get_key_record(payload.key_id)
+    key_row = await key_service.get_key_record(payload.key_id)
     if key_row is None:
         # Signed legacy tokens remain valid when the originating-key liveness
         # check succeeds without a readable key row. A demo wallet must have

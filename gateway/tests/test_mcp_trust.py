@@ -26,7 +26,11 @@ from app.services.idempotency import (
 from app.services.permits import get_permit_service
 from app.services.receipts import ReceiptService
 from app.services.service_registry import get_service_registry
-from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
+from tests.test_trust_helpers import (
+    BOOTSTRAP_HEADERS,
+    create_tool_permit,
+    provision_agent_wallet,
+)
 
 
 @pytest.fixture
@@ -113,6 +117,174 @@ async def test_governed_mcp_invoke_returns_receipt_and_replay_does_not_double_ch
         assert stored_permit.spent_credits == 2
     finally:
         registry.unregister_local("trust-echo")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("transport", ["jsonrpc", "http"])
+@pytest.mark.parametrize(
+    "wallet_case", ["absent", "null", "empty", "matching", "foreign", "invalid"]
+)
+async def test_legacy_mcp_wallet_defaults_only_when_omitted(
+    client, clean_database, transport, wallet_case
+):
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    tool_name = "wallet-default-tool"
+    calls = []
+    registry = get_service_registry()
+    registry.register_local(
+        service_id=tool_name,
+        name="Wallet Default Tool",
+        description="Wallet selection test tool",
+        category=ServiceCategory.AGENT_COMMS,
+        func=lambda: calls.append(True) or {"ok": True},
+        credits_per_unit=2.0,
+        unit_name="call",
+    )
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=wallet_id,
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+        )
+        context = {
+            "permit_id": permit["permit_id"],
+            "idempotency_key": f"wallet-default-{transport}-{wallet_case}",
+        }
+        if wallet_case != "absent":
+            context["wallet_id"] = {
+                "null": None,
+                "empty": "",
+                "matching": wallet_id,
+                "foreign": provisioned["sponsor_wallet_id"],
+                "invalid": 123,
+            }[wallet_case]
+        if transport == "jsonrpc":
+            response = await client.post(
+                "/mcp/messages",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "wallet-default-call",
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": {},
+                        "mcpContext": context,
+                    },
+                },
+                headers=provisioned["agent_headers"],
+            )
+        else:
+            response = await client.post(
+                f"/mcp/tools/{tool_name}/invoke",
+                json={"name": tool_name, "arguments": {}, "mcp_context": context},
+                headers=provisioned["agent_headers"],
+            )
+
+        if wallet_case == "invalid":
+            assert calls == []
+            if transport == "jsonrpc":
+                assert response.status_code == 200
+                assert response.json()["error"] == {
+                    "code": -32602,
+                    "message": "Invalid params: mcpContext.wallet_id must be a string",
+                }
+            else:
+                assert response.status_code == 422
+        elif wallet_case == "foreign":
+            assert calls == []
+            if transport == "jsonrpc":
+                assert response.status_code == 200
+                assert response.json()["error"]["code"] == -32003
+                assert response.json()["error"]["message"] == "wallet_access_denied"
+            else:
+                assert response.status_code == 403
+                assert response.json()["detail"]["error"] == "wallet_access_denied"
+        else:
+            assert response.status_code == 200, response.text
+            result = (
+                response.json()["result"] if transport == "jsonrpc" else response.json()
+            )
+            assert result["isError"] is False
+            assert result["receipt"]["wallet_id"] == wallet_id
+            assert calls == [True]
+    finally:
+        registry.unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("argument_wallet", ["absent", None, ""])
+async def test_http_invoke_without_context_uses_bound_key_wallet(
+    client, clean_database, argument_wallet
+):
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "wallet-default-arguments-tool"
+    registry = get_service_registry()
+    registry.register_local(
+        service_id=tool_name,
+        name="Wallet Default Arguments Tool",
+        description="Legacy HTTP wallet selection test tool",
+        category=ServiceCategory.AGENT_COMMS,
+        func=lambda wallet_id=None: {"wallet_id": wallet_id},
+        credits_per_unit=2.0,
+        unit_name="call",
+    )
+    try:
+        arguments = (
+            {} if argument_wallet == "absent" else {"wallet_id": argument_wallet}
+        )
+        response = await client.post(
+            f"/mcp/tools/{tool_name}/invoke",
+            json={"name": tool_name, "arguments": arguments},
+            headers=provisioned["agent_headers"],
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["isError"] is False
+        ledger = await client.get(
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert ledger.status_code == 200
+        debits = [
+            entry
+            for entry in ledger.json()["entries"]
+            if tool_name in entry.get("description", "")
+        ]
+        assert len(debits) == 1
+    finally:
+        registry.unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("transport", ["jsonrpc", "http"])
+async def test_legacy_mcp_missing_wallet_still_rejected_without_bound_key(
+    client, transport
+):
+    if transport == "jsonrpc":
+        response = await client.post(
+            "/mcp/messages",
+            json={
+                "jsonrpc": "2.0",
+                "id": "missing-wallet",
+                "method": "tools/call",
+                "params": {"name": "anything", "arguments": {}, "mcpContext": {}},
+            },
+            headers=BOOTSTRAP_HEADERS,
+        )
+        assert response.status_code == 200
+        assert response.json()["error"] == {
+            "code": -32602,
+            "message": "Missing wallet_id in mcpContext",
+        }
+    else:
+        response = await client.post(
+            "/mcp/tools/anything/invoke",
+            json={"name": "anything", "arguments": {}, "mcp_context": {}},
+            headers=BOOTSTRAP_HEADERS,
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Missing wallet_id"
 
 
 @pytest.mark.anyio

@@ -7109,7 +7109,14 @@
       "McpContext": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id",
             "description": "Wallet to charge for this call"
           },
@@ -7163,9 +7170,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "wallet_id"
-        ],
         "title": "McpContext",
         "description": "MCP execution context passed in tool calls."
       },

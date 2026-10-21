@@ -16,6 +16,7 @@ tables and fails closed if they are missing.
 
 import logging
 import os
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, AsyncGenerator
@@ -142,6 +143,59 @@ def _get_database_url() -> str | None:
     return as_sqlalchemy_url(raw)
 
 
+class _StatementReleasingCursor(sqlite3.Cursor):
+    """Release a failed statement on the aiosqlite worker thread that ran it.
+
+    Through CPython 3.11, ``sqlite3.Cursor.execute``/``executemany`` leave the
+    prepared statement attached to the cursor when the step fails (unique
+    violation, "database is locked", ...); 3.12 resets and drops it in the
+    error path of the C-level query executor instead. A cursor that still owns
+    a statement resets it again when it is destroyed, and that sqlite3_reset()
+    call takes the connection mutex. The destruction happens wherever the
+    cyclic GC runs, in practice the event-loop thread, since the failed
+    cursor survives in the traceback of the exception the caller handled,
+    while aiosqlite executes statements on a per-connection worker thread. If
+    that worker is inside sqlite3_step() waiting in SQLite's busy handler (it
+    holds the mutex for the whole wait), the event loop blocks until the busy
+    timeout expires; the writer being waited for can only commit from the
+    event loop, so the wait always runs to the full timeout. Under concurrent
+    governed MCP writes this surfaced as a 30 s stall plus "database is
+    locked", on the Python 3.11 CI leg only. Closing the cursor here, on the
+    worker thread that owns the connection, resets and detaches the statement
+    immediately, so its later destruction never enters SQLite. On 3.12+ the
+    close is a no-op for the statement and remains harmless.
+    """
+
+    def execute(self, sql, parameters=(), /):  # noqa: ANN001, ANN201
+        try:
+            return super().execute(sql, parameters)
+        except BaseException:
+            self._release_statement()
+            raise
+
+    def executemany(self, sql, seq_of_parameters, /):  # noqa: ANN001, ANN201
+        try:
+            return super().executemany(sql, seq_of_parameters)
+        except BaseException:
+            self._release_statement()
+            raise
+
+    def _release_statement(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            # The connection is already closed or otherwise unusable, so the
+            # statement cannot be reset; the original error is what matters.
+            pass
+
+
+class _StatementReleasingConnection(sqlite3.Connection):
+    """sqlite3 connection whose cursors are ``_StatementReleasingCursor``."""
+
+    def cursor(self, factory=_StatementReleasingCursor):  # noqa: ANN001, ANN201
+        return super().cursor(factory)
+
+
 def get_engine() -> AsyncEngine | None:
     """Get or create the async database engine.
 
@@ -166,8 +220,13 @@ def get_engine() -> AsyncEngine | None:
             # SQLite doesn't benefit from a large pool (single-writer) and
             # choking on concurrent writes manifests as OperationalError
             # "database is locked". connect_args + WAL mode below solve it
-            # for dev/test; production runs on PostgreSQL.
-            engine_kwargs["connect_args"] = {"timeout": 30}
+            # for dev/test; production runs on PostgreSQL. The connection
+            # factory keeps failed statements from being released on the
+            # event-loop thread (see _StatementReleasingCursor).
+            engine_kwargs["connect_args"] = {
+                "timeout": 30,
+                "factory": _StatementReleasingConnection,
+            }
         else:
             engine_kwargs["pool_size"] = get_settings().DB_POOL_SIZE
             engine_kwargs["max_overflow"] = get_settings().DB_MAX_OVERFLOW

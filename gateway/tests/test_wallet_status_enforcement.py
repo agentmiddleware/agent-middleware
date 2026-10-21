@@ -332,7 +332,8 @@ async def test_expired_child_wallet_cannot_charge(client, clean_database):
     assert response.status_code == 403
     assert replay.status_code == 403
     assert replay.json() == response.json()
-    assert set(response.json()) == {"detail"}
+    assert set(response.json()) == {"detail", "code", "message", "fix", "docs_url"}
+    assert response.json()["code"] == "wallet_expired"
     assert response.json()["detail"]["error"] == "wallet_expired"
     assert "expired" in response.json()["detail"]["message"].lower()
     async with get_session_factory()() as session:
@@ -364,7 +365,8 @@ async def test_expired_child_wallet_cannot_transfer_out(client, clean_database):
     assert response.status_code == 403
     assert replay.status_code == 403
     assert replay.json() == response.json()
-    assert set(response.json()) == {"detail"}
+    assert set(response.json()) == {"detail", "code", "message", "fix", "docs_url"}
+    assert response.json()["code"] == "wallet_expired"
     assert response.json()["detail"]["error"] == "wallet_expired"
     assert "expired" in response.json()["detail"]["message"].lower()
     source = await client.get(f"/v1/billing/wallets/{child}", headers=BOOTSTRAP)

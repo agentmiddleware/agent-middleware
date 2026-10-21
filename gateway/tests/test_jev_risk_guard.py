@@ -302,6 +302,7 @@ async def test_enforce_uses_existing_approval_gate(
     if approval_status == "pending":
         assert response.status_code == 202, response.text
         assert response.json()["detail"]["error"] == "human_approval_pending"
+        assert response.json()["code"] == "human_approval_pending"
         assert registered_tool == []
         # Pending frees the record, but the verdict must survive that deletion.
         mock_jev.body = _response(injected=0.0)

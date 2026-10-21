@@ -1,11 +1,12 @@
 # Agent Middleware (AMW)
 
+Apache 2.0 (gateway is Fair Source, FSL-1.1).
+
 > **Agents retry. Consequential tools should not run or charge twice.**
 
 Agent Middleware is a gateway that sits in front of an agent's irreversible MCP
 tools (refunds, payouts, writes to systems of record). Agents act under a
-permit; a same-key retry returns the original receipt, no second call or
-charge.
+permit; a retry with the same key returns the original receipt instead of dispatching again.
 
 ```text
 scoped signed permit -> governed MCP call (idempotency key) -> one dispatch, one debit -> Ed25519-signed receipt
@@ -49,7 +50,7 @@ receipt check.
 ## What it guarantees, and what it does not
 
 - **At most one gateway dispatch and at most one debit per accepted idempotency
-  key.** A retry with the same key returns the original signed receipt. The same
+  key:** a retry with the same key returns the original receipt instead of dispatching again. The same
   key with a different payload fails closed.
 - **Authority before money.** Out-of-scope, expired, revoked, or tampered permits
   are denied before any debit.

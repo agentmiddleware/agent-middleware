@@ -196,6 +196,8 @@ async def test_standard_legacy_context_key_conflicting_with_meta_is_refused(
     error = response.json()["error"]
     assert error["code"] == -32602
     assert error["data"]["reason_code"] == "idempotency_key_conflict"
+    assert error["data"]["code"] == "idempotency_key_conflict"
+    assert error["data"]["docs_url"].endswith("#idempotency_key_conflict")
     assert "params.mcpContext.idempotency_key" in error["data"]["source"]
     assert caller["effects"] == []
     assert await _debits(client, caller["provisioned"]) == 0

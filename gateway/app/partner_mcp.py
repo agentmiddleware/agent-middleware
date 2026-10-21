@@ -25,6 +25,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from .middleware.error_envelope import ErrorEnvelopeMiddleware, error_envelope
+
 _BEARER_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9\-._~+/]+=*")
 _MIN_BEARER_TOKEN_LENGTH = 32
 _MAX_BEARER_TOKEN_LENGTH = 512
@@ -172,6 +174,10 @@ class _BearerAuthMiddleware:
         await self._app(scope, receive, send)
 
 
+async def _unhandled_error(_request: Request, _exc: Exception) -> JSONResponse:
+    return JSONResponse(error_envelope("internal_error"), status_code=500)
+
+
 def _is_mcp_path(path: str) -> bool:
     return path == "/mcp" or path.startswith("/mcp/")
 
@@ -268,6 +274,8 @@ def create_partner_mcp_app(
         _BearerAuthMiddleware,
         expected_token_digest=expected_token_digest,
     )
+    application.add_middleware(ErrorEnvelopeMiddleware)
+    application.add_exception_handler(Exception, _unhandled_error)
     return application
 
 

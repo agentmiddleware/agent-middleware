@@ -54,8 +54,8 @@ is receipted `delivery_uncertain` and never silently re-sent. See
 ## Guarantees and limits
 
 - At most one gateway dispatch and at most one debit per accepted idempotency
-  key; a same-key retry returns the original receipt; same key with a different
-  payload fails closed.
+  key; a retry with the same key returns the original receipt instead of dispatching again.
+  The same key with a different payload fails closed.
 - Budget, scope, expiry, and revocation are checked before money moves.
 - **Not exactly-once.** A remote side effect is deduplicated only if the remote
   tool honors the forwarded idempotency key, and an agent that restarts with a

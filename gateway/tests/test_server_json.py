@@ -3,6 +3,8 @@ import tomllib
 from pathlib import Path
 from urllib.parse import urlparse
 
+from app.services.mcp_generator import MCP_SERVER_VERSION
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,6 +33,7 @@ def test_server_identity_and_version():
     )
     assert server["repository"]["source"] == "github"
     assert server["version"] == gateway_version
+    assert server["version"] == MCP_SERVER_VERSION
     assert "packages" not in server
 
 

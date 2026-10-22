@@ -22,7 +22,7 @@ from app.services.idempotency import (
     IdempotencyInProgressError,
     get_idempotency_service,
 )
-from app.services.mcp_generator import McpGenerator
+from app.services.mcp_generator import MCP_SERVER_VERSION, McpGenerator
 from app.services.service_registry import get_service_registry
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
@@ -137,6 +137,7 @@ async def test_initialize_negotiates_requested_protocol(client, standard_mcp_ena
     assert result["protocolVersion"] == "2025-03-26"
     assert result["capabilities"]["tools"] == {"listChanged": False}
     assert result["serverInfo"]["name"] == McpGenerator.MANIFEST_NAME
+    assert result["serverInfo"]["version"] == MCP_SERVER_VERSION
     assert "Transaction-integrity boundary" in result["instructions"]
     assert "delivery_uncertain" in result["instructions"]
     assert "legacy compatibility identifier" in result["instructions"]

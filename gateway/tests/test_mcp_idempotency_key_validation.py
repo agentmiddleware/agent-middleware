@@ -22,6 +22,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
+from b2a_sdk import request_key
 from app.core.config import get_settings
 from app.db.database import get_session_factory
 from app.db.models import IdempotencyRecordModel, PermitModel
@@ -34,6 +35,7 @@ from tests.test_trust_helpers import (
     create_tool_permit,
     provision_agent_wallet,
 )
+from tests.test_request_key_vectors import VECTORS
 
 META_KEY = "io.agentmiddleware/idempotency_key"
 MCP_HEADERS = {
@@ -712,7 +714,9 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
     assert blank.status_code == 400, blank.text
     assert blank.json()["detail"]["reason_code"] == "idempotency_key_blank"
 
-    context["idempotency_key"] = "rest-body-1"
+    context["idempotency_key"] = request_key(counted_tool.name, {"text": "one"})
+    vector = next(case for case in VECTORS["vectors"] if case["name"] == "rest_invoke")
+    assert context["idempotency_key"] == vector["key"]
     conflict = await client.post(
         f"/mcp/tools/{counted_tool.name}/invoke",
         json={
@@ -720,7 +724,10 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
             "arguments": {"text": "one"},
             "mcp_context": context,
         },
-        headers={**provisioned["agent_headers"], "Idempotency-Key": "rest-header-1"},
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": request_key(counted_tool.name, {"text": "two"}),
+        },
     )
     assert conflict.status_code == 400, conflict.text
     assert conflict.json()["detail"]["reason_code"] == "idempotency_key_conflict"
@@ -736,7 +743,10 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
     assert await _snapshot(client, provisioned, counted_tool) == before
 
     # Control: the same body with agreeing sources executes once and replays.
-    headers = {**provisioned["agent_headers"], "Idempotency-Key": "rest-body-1"}
+    headers = {
+        **provisioned["agent_headers"],
+        "Idempotency-Key": context["idempotency_key"],
+    }
     first = await client.post(
         f"/mcp/tools/{counted_tool.name}/invoke",
         json={
@@ -759,4 +769,37 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
     assert (
         replay.json()["receipt"]["receipt_id"] == first.json()["receipt"]["receipt_id"]
     )
+    assert counted_tool.effects == ["one"]
+
+
+async def test_rest_invoke_changed_excluded_argument_conflicts(
+    client, governed_legacy, counted_tool
+):
+    """Dropping a field from the key does not drop it from the gateway request."""
+    provisioned, permit = governed_legacy
+    key = request_key(counted_tool.name, {"text": "one"}, exclude=["text"])
+    assert key == request_key(counted_tool.name, {"text": "two"}, exclude=["text"])
+    headers = {**provisioned["agent_headers"], "Idempotency-Key": key}
+    context = {
+        "wallet_id": provisioned["agent_wallet_id"],
+        "permit_id": permit["permit_id"],
+        "idempotency_key": key,
+    }
+    body = {
+        "name": counted_tool.name,
+        "arguments": {"text": "one"},
+        "mcp_context": context,
+    }
+    first = await client.post(
+        f"/mcp/tools/{counted_tool.name}/invoke", json=body, headers=headers
+    )
+    assert first.status_code == 200, first.text
+
+    changed = await client.post(
+        f"/mcp/tools/{counted_tool.name}/invoke",
+        json={**body, "arguments": {"text": "two"}},
+        headers=headers,
+    )
+    assert changed.status_code == 409, changed.text
+    assert changed.json()["detail"] == "idempotency_key_reused"
     assert counted_tool.effects == ["one"]

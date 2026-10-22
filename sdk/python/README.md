@@ -100,6 +100,13 @@ Callers must provide nonblank idempotency keys when creating permits and
 invoking tools. Reusing a key with a different request raises
 `IdempotencyConflictError`.
 
+For governed tool calls, `request_key(tool, args, business_id=...)` makes a
+stable key from strict JSON arguments. `request_key.explain(...)` shows which
+argument fields were used or dropped. Pass the result as `idempotency_key`,
+or use `idempotency_key="auto"` with `business_id` on `invoke_tool`. See the
+[request keys guide](../../gateway/docs/concepts/request-keys.md) for the
+derivation rule and retry limits.
+
 The client defaults to `http://localhost:8000`, never a hosted server.
 Pass `base_url` explicitly for any other deployment.
 

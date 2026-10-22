@@ -25,6 +25,9 @@ _MARKDOWN_DOCS: dict[str, Path] = {
         _REPO_ROOT / "docs" / "partner-api-key-bootstrap.md"
     ),
     "/docs/agent-accountability.md": (_REPO_ROOT / "docs" / "agent-accountability.md"),
+    "/docs/concepts/request-keys": (
+        _REPO_ROOT / "docs" / "concepts" / "request-keys.md"
+    ),
 }
 
 
@@ -153,6 +156,16 @@ async def get_partner_api_key_bootstrap_md():
 )
 async def get_agent_accountability_md():
     return _serve_markdown("/docs/agent-accountability.md")
+
+
+@router.get(
+    "/docs/concepts/request-keys",
+    summary="Request keys",
+    description="Python helper for stable request keys and safe retries.",
+    response_class=PlainTextResponse,
+)
+async def get_request_keys_md():
+    return _serve_markdown("/docs/concepts/request-keys")
 
 
 @router.get(

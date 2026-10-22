@@ -4681,6 +4681,8 @@ async def invoke_tool(
             )
         if message == "insufficient_funds":
             raise HTTPException(status_code=402, detail=message)
+        if message == "idempotency_key_reused":
+            raise HTTPException(status_code=409, detail=message)
         if message in {"wallet_frozen", "wallet_expired"}:
             raise HTTPException(status_code=403, detail={"error": message})
         if message.startswith("Tool not found"):

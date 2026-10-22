@@ -99,6 +99,9 @@ class SyncAgentMiddlewareClient:
         wallet_id: str,
         permit_id: str,
         idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
     ) -> InvocationResult:
         """Invoke one MCP tool through the governed permit and receipt loop."""
         return asyncio.run(
@@ -108,6 +111,9 @@ class SyncAgentMiddlewareClient:
                 wallet_id=wallet_id,
                 permit_id=permit_id,
                 idempotency_key=idempotency_key,
+                business_id=business_id,
+                include=include,
+                exclude=exclude,
             )
         )
 

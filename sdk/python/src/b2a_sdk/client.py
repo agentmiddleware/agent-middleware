@@ -38,6 +38,7 @@ from .models import (
     ReceiptVerification,
     ToolDefinition,
 )
+from .request_key import request_key
 
 logger = logging.getLogger("b2a_sdk")
 
@@ -465,12 +466,25 @@ class AgentMiddlewareClient:
         wallet_id: str,
         permit_id: str,
         idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
     ) -> InvocationResult:
         """Invoke one MCP tool through the governed permit and receipt loop."""
         for label, value in (("tool", name), ("wallet_id", wallet_id), ("permit_id", permit_id)):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} must not be blank")
-        key = self._validate_idempotency_key(idempotency_key)
+        key = self._validate_idempotency_key(
+            request_key(
+                name,
+                arguments,
+                business_id=business_id,
+                include=include,
+                exclude=exclude,
+            )
+            if idempotency_key == "auto"
+            else idempotency_key
+        )
         request_payload = {
             "jsonrpc": "2.0",
             "id": key,

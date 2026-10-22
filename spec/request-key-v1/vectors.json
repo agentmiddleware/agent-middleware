@@ -1,0 +1,318 @@
+{
+  "version": 1,
+  "canonicalization": "amw-action-json-v1",
+  "vectors": [
+    {
+      "name": "refund",
+      "tool": "partner.refund",
+      "args": {
+        "order_id": "A1",
+        "amount": "12.00"
+      },
+      "business_id": "A1",
+      "scope": null,
+      "include": null,
+      "exclude": null,
+      "canonical_args": {
+        "order_id": "A1",
+        "amount": "12.00"
+      },
+      "used_fields": [
+        "amount",
+        "order_id"
+      ],
+      "dropped_fields": [],
+      "canonical_json": "{\"args\":{\"amount\":\"12.00\",\"order_id\":\"A1\"},\"business_id\":\"A1\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
+      "key": "amwk1_TBMF76EGCDTZ2QOYALVJEORMTO273UW5CJH4RJLBLID33FEATMVA"
+    },
+    {
+      "name": "reordered_refund",
+      "tool": "partner.refund",
+      "args": {
+        "amount": "12.00",
+        "order_id": "A1"
+      },
+      "business_id": "A1",
+      "scope": null,
+      "include": null,
+      "exclude": null,
+      "canonical_args": {
+        "amount": "12.00",
+        "order_id": "A1"
+      },
+      "used_fields": [
+        "amount",
+        "order_id"
+      ],
+      "dropped_fields": [],
+      "canonical_json": "{\"args\":{\"amount\":\"12.00\",\"order_id\":\"A1\"},\"business_id\":\"A1\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
+      "key": "amwk1_TBMF76EGCDTZ2QOYALVJEORMTO273UW5CJH4RJLBLID33FEATMVA"
+    },
+    {
+      "name": "unicode_nested",
+      "tool": "partner.refund",
+      "args": {
+        "recipient": "Café",
+        "details": {
+          "label": "返金",
+          "nonce": "random",
+          "city": "München"
+        }
+      },
+      "business_id": null,
+      "scope": "wallet/☕",
+      "include": null,
+      "exclude": null,
+      "canonical_args": {
+        "recipient": "Café",
+        "details": {
+          "label": "返金",
+          "city": "München"
+        }
+      },
+      "used_fields": [
+        "details.city",
+        "details.label",
+        "recipient"
+      ],
+      "dropped_fields": [
+        "details.nonce"
+      ],
+      "canonical_json": "{\"args\":{\"details\":{\"city\":\"München\",\"label\":\"返金\"},\"recipient\":\"Café\"},\"business_id\":null,\"scope\":\"wallet/☕\",\"tool\":\"partner.refund\",\"v\":1}",
+      "key": "amwk1_DWNOKBC3EWZLSIYYJSCZC66LYQ2W6XOBGKL3ZEIQJUBCURNUATUQ"
+    },
+    {
+      "name": "volatile_defaults",
+      "tool": "partner.refund",
+      "args": {
+        "order_id": "A2",
+        "amount_minor": 1200,
+        "timestamp": "2026-10-21T10:00:00Z",
+        "ts": 42,
+        "nonce": "random",
+        "request_id": "r1",
+        "trace_id": "t1",
+        "attempt": 2,
+        "requested_at": "2026-10-21T10:00:00Z",
+        "now": "2026-10-21T10:00:00Z",
+        "note": "first wording",
+        "reason": "because",
+        "memo": "memo",
+        "permit_id": "p1"
+      },
+      "business_id": "A2",
+      "scope": null,
+      "include": null,
+      "exclude": null,
+      "canonical_args": {
+        "order_id": "A2",
+        "amount_minor": 1200
+      },
+      "used_fields": [
+        "amount_minor",
+        "order_id"
+      ],
+      "dropped_fields": [
+        "attempt",
+        "memo",
+        "nonce",
+        "note",
+        "now",
+        "permit_id",
+        "reason",
+        "request_id",
+        "requested_at",
+        "timestamp",
+        "trace_id",
+        "ts"
+      ],
+      "canonical_json": "{\"args\":{\"amount_minor\":1200,\"order_id\":\"A2\"},\"business_id\":\"A2\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
+      "key": "amwk1_NSIF3KKSTSNMFBKQECQUZA3ZKZWMTD4NKW2PFAHBYVT3O3GFLE3A"
+    },
+    {
+      "name": "include_override",
+      "tool": "partner.refund",
+      "args": {
+        "order_id": "A1",
+        "amount": "99.00",
+        "note": "send receipt",
+        "request_id": "r2"
+      },
+      "business_id": "A1",
+      "scope": null,
+      "include": [
+        "order_id",
+        "note"
+      ],
+      "exclude": null,
+      "canonical_args": {
+        "order_id": "A1",
+        "note": "send receipt"
+      },
+      "used_fields": [
+        "note",
+        "order_id"
+      ],
+      "dropped_fields": [
+        "amount",
+        "request_id"
+      ],
+      "canonical_json": "{\"args\":{\"note\":\"send receipt\",\"order_id\":\"A1\"},\"business_id\":\"A1\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
+      "key": "amwk1_VZXJZUMZSREUI3SOGCQZOZUVPHAIJ6MECJANOSQ6SM3XDP753N2Q"
+    },
+    {
+      "name": "explicit_exclude_nested",
+      "tool": "partner.refund",
+      "args": {
+        "order": {
+          "id": "A3",
+          "amount_minor": 500
+        },
+        "metadata": {
+          "source": "api",
+          "retry_token": "r3",
+          "attempt": 1
+        },
+        "recipient": "bob"
+      },
+      "business_id": "A3",
+      "scope": null,
+      "include": null,
+      "exclude": [
+        "metadata.retry_token"
+      ],
+      "canonical_args": {
+        "order": {
+          "id": "A3",
+          "amount_minor": 500
+        },
+        "metadata": {
+          "source": "api"
+        },
+        "recipient": "bob"
+      },
+      "used_fields": [
+        "metadata.source",
+        "order.amount_minor",
+        "order.id",
+        "recipient"
+      ],
+      "dropped_fields": [
+        "metadata.attempt",
+        "metadata.retry_token"
+      ],
+      "canonical_json": "{\"args\":{\"metadata\":{\"source\":\"api\"},\"order\":{\"amount_minor\":500,\"id\":\"A3\"},\"recipient\":\"bob\"},\"business_id\":\"A3\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
+      "key": "amwk1_VMFR5TVXLI62JQKSRNYBLGDAGO7SWHOH75U3N4ORGWEJOPAWUXFA"
+    },
+    {
+      "name": "numeric_arguments",
+      "tool": "exchange.quote",
+      "args": {
+        "rate": 12.5,
+        "quantity": 2,
+        "active": true,
+        "nullable": null
+      },
+      "business_id": null,
+      "scope": null,
+      "include": null,
+      "exclude": null,
+      "canonical_args": {
+        "rate": 12.5,
+        "quantity": 2,
+        "active": true,
+        "nullable": null
+      },
+      "used_fields": [
+        "active",
+        "nullable",
+        "quantity",
+        "rate"
+      ],
+      "dropped_fields": [],
+      "canonical_json": "{\"args\":{\"active\":true,\"nullable\":null,\"quantity\":2,\"rate\":12.5},\"business_id\":null,\"scope\":null,\"tool\":\"exchange.quote\",\"v\":1}",
+      "key": "amwk1_YQB6OJAWNMAOLLBM6FO6HDUY4NY3FXZERAUZ5KQ6LDYSQRXDS53Q"
+    },
+    {
+      "name": "billing_charge",
+      "tool": "billing.charge",
+      "args": {
+        "service": "iot_bridge",
+        "units": 10
+      },
+      "business_id": null,
+      "scope": null,
+      "include": null,
+      "exclude": null,
+      "canonical_args": {
+        "service": "iot_bridge",
+        "units": 10
+      },
+      "used_fields": [
+        "service",
+        "units"
+      ],
+      "dropped_fields": [],
+      "canonical_json": "{\"args\":{\"service\":\"iot_bridge\",\"units\":10},\"business_id\":null,\"scope\":null,\"tool\":\"billing.charge\",\"v\":1}",
+      "key": "amwk1_J5IKSYJW3NMWZNQH3GY5T2V7QZ46ZTUGS3JVKIRPEADJICHCZ2EQ"
+    },
+    {
+      "name": "rest_invoke",
+      "tool": "keycheck.effect",
+      "args": {
+        "text": "one"
+      },
+      "business_id": null,
+      "scope": null,
+      "include": null,
+      "exclude": null,
+      "canonical_args": {
+        "text": "one"
+      },
+      "used_fields": [
+        "text"
+      ],
+      "dropped_fields": [],
+      "canonical_json": "{\"args\":{\"text\":\"one\"},\"business_id\":null,\"scope\":null,\"tool\":\"keycheck.effect\",\"v\":1}",
+      "key": "amwk1_7OAXKE3H5SILB7B5KOP2M5DMO2XMVGCSXDI3QOSJGLOMIUNCWGLA"
+    },
+    {
+      "name": "array_and_escaped_path",
+      "tool": "batch.refund",
+      "args": {
+        "items": [
+          {"order_id": "A1", "note": "first"},
+          {"order_id": "A2", "note": "second"}
+        ],
+        "session": {"id": "S1"},
+        "a.b": "literal"
+      },
+      "business_id": null,
+      "scope": null,
+      "include": null,
+      "exclude": ["a\\.b"],
+      "canonical_args": {
+        "items": [{"order_id": "A1"}, {"order_id": "A2"}],
+        "session": {"id": "S1"}
+      },
+      "used_fields": ["items.order_id", "session.id"],
+      "dropped_fields": ["a\\.b", "items.note"],
+      "canonical_json": "{\"args\":{\"items\":[{\"order_id\":\"A1\"},{\"order_id\":\"A2\"}],\"session\":{\"id\":\"S1\"}},\"business_id\":null,\"scope\":null,\"tool\":\"batch.refund\",\"v\":1}",
+      "key": "amwk1_GG5LOHBNMFMHJ63FVLJ2GKN45WPVJ5OLLV7OLTVYPRXUQLL7BG4A"
+    },
+    {
+      "name": "empty_arguments",
+      "tool": "jobs.noop",
+      "args": {},
+      "business_id": null,
+      "scope": null,
+      "include": null,
+      "exclude": null,
+      "canonical_args": {},
+      "used_fields": [],
+      "dropped_fields": [],
+      "canonical_json": "{\"args\":{},\"business_id\":null,\"scope\":null,\"tool\":\"jobs.noop\",\"v\":1}",
+      "key": "amwk1_HNZHO3IALSOPOR5O2PSHL5ZH7DIF7HEBWBSYCFHREGHF7UHI47OQ"
+    }
+  ]
+}

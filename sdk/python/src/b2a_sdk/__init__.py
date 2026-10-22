@@ -40,6 +40,7 @@ from .receipt_verifier import (
     key_set_from_document,
     verify_bundle,
 )
+from .request_key import RequestKeyExplanation, request_key
 
 __version__ = "0.5.0"
 
@@ -117,6 +118,7 @@ __all__ = [
     "PermitRequest",
     "Receipt",
     "ReceiptVerification",
+    "RequestKeyExplanation",
     "SyncAgentMiddlewareClient",
     "ToolDefinition",
     "TransportError",
@@ -129,5 +131,6 @@ __all__ = [
     "monitored",
     "key_set_from_document",
     "parse_402_response",
+    "request_key",
     "verify_bundle",
 ]

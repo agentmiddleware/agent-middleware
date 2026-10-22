@@ -52,6 +52,7 @@ from ..core.oidc_iga import (
 from ..trust import (
     AuditChainContendedError,
     AuditEventConflictError,
+    GovernedRequest,
     RefundReconciliationContendedError,
 )
 from ..services.billing_engine import (
@@ -110,6 +111,7 @@ from ..trust import (
     decode_idempotency_key_header,
     McpGovernedAdapter,
     PermitWriteContendedError,
+    PermitError,
     PolicyDecision,
     ReceiptWriteContendedError,
     evaluate_tool_invocation,
@@ -130,6 +132,7 @@ from ..trust import (
     sha256_hex,
     tool_price,
     validate_tools_call_params,
+    wallet_human_approval_required,
 )
 
 logger = logging.getLogger(__name__)
@@ -450,6 +453,7 @@ class ToolCallResponse(BaseModel):
     isError: bool = False  # noqa: N815
     structuredContent: dict[str, Any] | None = None  # noqa: N815
     receipt: dict[str, Any] | None = None
+    permit_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 @router.get(
@@ -4500,6 +4504,62 @@ async def _audit_mcp_invocation(
         raise TerminalRecordContendedError(AUDIT_CHAIN_CONTENDED_AFTER_EFFECTS) from exc
 
 
+async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
+    """Use the standard MCP mint for a demo call without a permit."""
+    if request.auth.tenant != "demo" or request.permit_id is not None:
+        return None
+    if not request.auth.wallet_id or request.wallet_id != request.auth.wallet_id:
+        raise ToolPermissionDenied("wallet_access_denied")
+    demo_tools = get_settings().demo_allowed_tools_list
+    if (
+        request.tool_name != "partner.echo"
+        or request.tool_name not in demo_tools
+        or (
+            request.auth.allowed_tools is not None
+            and request.tool_name not in request.auth.allowed_tools
+        )
+    ):
+        raise ToolPermissionDenied("demo_tool_not_allowed")
+    _ensure_local_mcp_tools_registered()
+    registry = get_service_registry()
+    record = registry.get_local(request.tool_name)
+    if record is None:
+        raise ValueError(f"Tool not found: {request.tool_name}")
+    if registry.get_action_binding(record) is not None:
+        raise ToolPermissionDenied("action_permit_required")
+
+    from .mcp_standard import _mint_auto_permit, _permit_error
+
+    try:
+        permit_id = await _mint_auto_permit(
+            auth=request.auth,
+            tool_name=request.tool_name,
+            record=record,
+            client_key=request.idempotency_key,
+            requires_human_approval=await wallet_human_approval_required(
+                request.auth.wallet_id
+            ),
+            map_mcp_errors=False,
+        )
+    except PermitWriteContendedError:
+        raise
+    except PermitError as exc:
+        mapped = _permit_error(exc, tool_name=request.tool_name, record=record)
+        if mapped.error.code == -32004:
+            raise GovernedToolError(
+                exc.reason,
+                extra_data=mapped.error.data,
+                status_code=402,
+                jsonrpc_code=mapped.error.code,
+            ) from exc
+        raise ToolPermissionDenied(exc.reason) from exc
+    except IdempotencyConflictError as exc:
+        raise ValueError("idempotency_key_reused") from exc
+    request.permit_id = permit_id
+    request.idempotency_key = request.idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
+    return permit_id
+
+
 async def _handle_tools_call(
     params: dict,
     *,
@@ -4522,8 +4582,12 @@ async def _handle_tools_call(
         request_payload=request_payload,
     )
     governed_request.wallet_id = governed_request.wallet_id or auth.wallet_id
+    auto_permit_id = await _maybe_mint_demo_permit(governed_request)
     result = await _mcp_adapter.invoke(governed_request)
-    return await _mcp_adapter.normalize_response(result)
+    response = await _mcp_adapter.normalize_response(result)
+    if auto_permit_id:
+        response["permit_id"] = auto_permit_id
+    return response
 
 
 @router.post(
@@ -4615,8 +4679,12 @@ async def invoke_tool(
             idempotency_key=client_idempotency_key,
             request_payload=request.model_dump(mode="json"),
         )
+        auto_permit_id = await _maybe_mint_demo_permit(governed_request)
         result = await _mcp_adapter.invoke(governed_request)
-        return ToolCallResponse(**await _mcp_adapter.normalize_response(result))
+        response = await _mcp_adapter.normalize_response(result)
+        if auto_permit_id:
+            response["permit_id"] = auto_permit_id
+        return ToolCallResponse(**response)
     except HumanApprovalPendingSignal as exc:
         detail: dict[str, Any] = {"error": str(exc)}
         if exc.data:

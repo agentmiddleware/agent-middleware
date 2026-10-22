@@ -277,6 +277,7 @@ async def _mint_auto_permit(
     record: dict[str, Any],
     client_key: str | None,
     requires_human_approval: bool = False,
+    map_mcp_errors: bool = True,
 ) -> str:
     """Mint the bounded single-tool permit backing this call.
 
@@ -296,12 +297,40 @@ async def _mint_auto_permit(
     ttl_seconds = settings.STANDARD_MCP_PERMIT_TTL_SECONDS
     if requires_human_approval:
         ttl_seconds += approval_window_seconds()
+    budget = _tool_call_budget(record)
+    if auth.tenant == "demo":
+        demo_tools = settings.demo_allowed_tools_list
+        if (
+            tool_name != "partner.echo"
+            or tool_name not in demo_tools
+            or (auth.allowed_tools is not None and tool_name not in auth.allowed_tools)
+        ):
+            error = PermitError("demo_tool_not_allowed")
+            if map_mcp_errors:
+                raise _permit_error(error, tool_name=tool_name, record=record)
+            raise error
+        if requires_human_approval:
+            error = PermitError("human_approval_required")
+            if map_mcp_errors:
+                raise _permit_error(error, tool_name=tool_name, record=record)
+            raise error
+        credit_cap = settings.DEMO_AUTO_PERMIT_MAX_CREDITS
+        if settings.DEMO_MAX_PERMIT_CREDITS is not None:
+            credit_cap = min(credit_cap, settings.DEMO_MAX_PERMIT_CREDITS)
+        if budget > credit_cap:
+            error = PermitError("demo_auto_permit_budget_exceeded")
+            if map_mcp_errors:
+                raise _permit_error(error, tool_name=tool_name, record=record)
+            raise error
+        ttl_seconds = min(ttl_seconds, settings.DEMO_AUTO_PERMIT_TTL_SECONDS)
+        if settings.DEMO_MAX_PERMIT_TTL_MINUTES is not None:
+            ttl_seconds = min(ttl_seconds, settings.DEMO_MAX_PERMIT_TTL_MINUTES * 60)
     permit_request = PermitCreateRequest(
         issuer_wallet_id=wallet_id,
         subject_wallet_id=wallet_id,
         subject_key_id=auth.key_id,
         allowed_tools=[tool_name],
-        max_credits=_tool_call_budget(record),
+        max_credits=budget,
         expires_at=utc_now() + timedelta(seconds=ttl_seconds),
         requires_human_approval=requires_human_approval,
     )
@@ -312,7 +341,9 @@ async def _mint_auto_permit(
                 permit_request, subject_key_id=auth.key_id, auth=auth
             )
         except PermitError as exc:
-            raise _permit_error(exc, tool_name=tool_name, record=record) from exc
+            if map_mcp_errors:
+                raise _permit_error(exc, tool_name=tool_name, record=record) from exc
+            raise
         return permit.permit_id
 
     idem = get_idempotency_service()
@@ -336,9 +367,13 @@ async def _mint_auto_permit(
             request_payload=mint_payload,
         )
     except IdempotencyConflictError as exc:
-        raise _mcp_error(-32003, "idempotency_key_reused") from exc
+        if map_mcp_errors:
+            raise _mcp_error(-32003, "idempotency_key_reused") from exc
+        raise
     except IdempotencyInProgressError as exc:
-        raise _mcp_error(-32005, "idempotency_in_progress") from exc
+        if map_mcp_errors:
+            raise _mcp_error(-32005, "idempotency_in_progress") from exc
+        raise
     if mint_replay and mint_replay.response_json:
         return mint_replay.response_json["permit_id"]
 
@@ -352,7 +387,9 @@ async def _mint_auto_permit(
             endpoint=_AUTO_PERMIT_ENDPOINT,
             idempotency_key=mint_key,
         )
-        raise _permit_error(exc, tool_name=tool_name, record=record) from exc
+        if map_mcp_errors:
+            raise _permit_error(exc, tool_name=tool_name, record=record) from exc
+        raise
     await idem.complete(
         wallet_id=wallet_id,
         endpoint=_AUTO_PERMIT_ENDPOINT,
@@ -417,6 +454,7 @@ async def _governed_tools_call(
             },
         )
 
+    auto_minted = permit_id is None
     idempotency_key = client_idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
     permit_id = permit_id or await _mint_auto_permit(
         auth=auth,
@@ -442,7 +480,7 @@ async def _governed_tools_call(
         "params": {"name": tool_name, "arguments": arguments},
     }
     try:
-        return await _handle_tools_call(
+        result = await _handle_tools_call(
             call_params,
             auth=auth,
             money=get_agent_money(),
@@ -452,6 +490,9 @@ async def _governed_tools_call(
             idempotency_key=idempotency_key,
             request_payload=request_payload,
         )
+        if auto_minted and auth.tenant == "demo":
+            result["permit_id"] = permit_id
+        return result
     except HumanApprovalPendingSignal as e:
         reason = str(e)
         pending_data = dict(e.data)

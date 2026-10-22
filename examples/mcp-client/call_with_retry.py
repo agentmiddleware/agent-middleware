@@ -19,7 +19,12 @@ import os
 import uuid
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
+
+try:  # mcp 2.x ships its own httpx fork
+    import httpx2 as httpx
+except ImportError:  # mcp 1.x
+    import httpx
 
 URL = os.environ.get("AMW_MCP_URL", "http://127.0.0.1:8000/mcp")
 TOOL = os.environ.get("AMW_TOOL", "partner.notes.write")
@@ -27,11 +32,14 @@ TOOL = os.environ.get("AMW_TOOL", "partner.notes.write")
 
 async def call_once(api_key: str, idempotency_key: str) -> dict:
     headers = {"X-API-Key": api_key, "Idempotency-Key": idempotency_key}
-    async with streamablehttp_client(URL, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(TOOL, {"text": "hello from an MCP client"})
-            return result.model_dump(mode="json")
+    async with (
+        httpx.AsyncClient(headers=headers) as http_client,
+        streamable_http_client(URL, http_client=http_client) as (read, write, *_),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        result = await session.call_tool(TOOL, {"text": "hello from an MCP client"})
+        return result.model_dump(mode="json")
 
 
 RECEIPT_META_KEY = "io.agentmiddleware/receipt"

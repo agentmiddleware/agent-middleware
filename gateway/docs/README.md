@@ -50,6 +50,10 @@ use them as product onboarding or a public capability list:
   [`human-onboarding.md`](human-onboarding.md) are legacy proof-surface
   material, not the supported one-tool pilot.
 - [Pods](pods.md) are a dormant trust feature, not part of the supported pilot.
-- This tree has no registry-submission runbook. Do not submit the server
-  to a public MCP registry from this repository. The standard MCP endpoint
-  stays off unless `ENABLE_STANDARD_MCP_ENDPOINT` is set.
+- `server.json` at the repository root is the official MCP registry
+  manifest. It advertises the standard MCP endpoint
+  (`https://api.thisisatest.tech/mcp`), which stays off (404) unless
+  `ENABLE_STANDARD_MCP_ENDPOINT` is set. Publishing requires owner approval,
+  and the flag must be enabled on that host first: confirm an
+  unauthenticated `POST /mcp` returns 401, not 404, before running
+  `mcp-publisher publish`.

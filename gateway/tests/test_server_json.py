@@ -1,7 +1,6 @@
 import json
 import tomllib
 from pathlib import Path
-from urllib.parse import urlparse
 
 from app.services.mcp_generator import MCP_SERVER_VERSION
 
@@ -51,11 +50,9 @@ def test_server_has_one_streamable_http_remote_with_api_key():
     remote = remotes[0]
     assert remote["type"] == "streamable-http"
 
-    url = remote["url"]
-    parsed_url = urlparse(url)
-    assert parsed_url.scheme == "https"
-    assert parsed_url.netloc
-    assert url.endswith("/mcp")
+    # The advertised remote is the opt-in standard MCP surface. It is off by
+    # default (ENABLE_STANDARD_MCP_ENDPOINT=False), so the host must enable it.
+    assert remote["url"] == "https://api.thisisatest.tech/mcp"
     assert remote["headers"] == [
         {
             "name": "X-API-Key",

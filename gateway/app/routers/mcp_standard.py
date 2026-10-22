@@ -91,6 +91,7 @@ from app.routers.mcp import (
     HumanApprovalPendingSignal,
     TerminalRecordContendedError,
     ToolPermissionDenied,
+    _ensure_local_mcp_tools_registered,
     _handle_tools_call,
     _handle_tools_list,
     _header_idempotency_key_sources,
@@ -421,6 +422,9 @@ async def _governed_tools_call(
             "caller's wallet; authenticate with a wallet-scoped API key",
         )
 
+    # Flag-gated local tools register lazily; a fresh gateway must not
+    # require a prior tools/list before they resolve here.
+    _ensure_local_mcp_tools_registered()
     record = get_service_registry().get_local(tool_name)
     if record is None:
         raise _mcp_error(-32001, f"Tool not found: {tool_name}")

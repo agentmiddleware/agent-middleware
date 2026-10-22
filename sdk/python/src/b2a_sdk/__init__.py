@@ -53,6 +53,7 @@ __version__ = "0.5.0"
 _LAZY_ATTRS = {
     "AgentMiddlewareClient": "client",
     "B2AClient": "client",
+    "Client": "sync_client",
     "B2AEdgeClient": "edge_client",
     "GovernedEdgeSession": "edge_client",
     "LocalDecision": "edge_client",
@@ -74,7 +75,7 @@ if TYPE_CHECKING:  # let type checkers and IDEs resolve the lazy names staticall
         LocalDecision,
         LocalPermitValidator,
     )
-    from .sync_client import SyncAgentMiddlewareClient
+    from .sync_client import Client, SyncAgentMiddlewareClient
     from .x402 import X402Client, parse_402_response
 
 
@@ -105,6 +106,7 @@ __all__ = [
     "AuthorizationError",
     "B2AClient",
     "B2AEdgeClient",
+    "Client",
     "DeliveryUncertainError",
     "EvidenceBundle",
     "GovernedEdgeSession",

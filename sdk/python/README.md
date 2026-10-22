@@ -49,6 +49,45 @@ python -m pip install ./b2a_sdk-0.4.0-py3-none-any.whl
 `httpx` is the only runtime dependency. Offline receipt verification
 additionally needs `cryptography`, kept behind the `verify` extra.
 
+## Short tool call
+
+`Client.call(tool, args, key=None, permit_id=None, wallet_id=None)` is a
+blocking call through the existing governed MCP route. The gateway requires a
+wallet and an existing permit. Supply their IDs in `call()` or when creating
+`Client`. An API key alone does not provide either ID.
+
+```python
+from b2a_sdk import Client
+
+with Client(
+    "YOUR_DEMO_KEY",
+    base_url="https://your-gateway.example.com",
+) as client:
+    receipt = client.call(
+        "partner.echo",
+        {"message": "hi"},
+        key="order-123",
+        permit_id="YOUR_PERMIT_ID",
+        wallet_id="YOUR_WALLET_ID",
+    )
+    result = receipt.verify()
+    assert result.ok
+```
+
+`call()` returns a `Receipt` with `.id`, `.request_key`, and `.raw`. It also
+reads the authorized portable receipt and the gateway's published trust keys.
+`verify()` uses those held documents offline and returns a
+`VerificationResult`. If either read fails, `call()` still returns the receipt.
+You can later pass both documents as `receipt.verify(bundle=bundle, keys=keys)`.
+When `result.ok`, read authenticated fields from `result.claims`. For
+independent issuer assurance, supply keys obtained from a source you trust.
+
+When `key` is omitted, `call()` uses `request_key(tool, args)` and exposes the
+result as `receipt.request_key` and `client.last_request_key`. The client sets
+`last_request_key` before dispatch. Keep the key because
+a retry with the same key returns the original receipt instead of dispatching again.
+The request key is client metadata and is not a field in the signed receipt JSON.
+
 ## Governed tool call
 
 ```python

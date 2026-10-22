@@ -254,7 +254,7 @@ async def test_twenty_fresh_keys_two_workers_and_restart(runtime):
 
 
 @pytest.mark.parametrize(
-    "fault,effects,debits,state,charged",
+    ("fault", "effects", "debits", "state", "charged"),
     [
         ("before_owner_commit", 0, 0, None, 0),
         ("after_action_prepare", 0, 0, "returned_error", 0),

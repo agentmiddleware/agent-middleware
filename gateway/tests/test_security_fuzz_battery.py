@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -27,6 +27,7 @@ from app.schemas.billing import ServiceCategory
 from app.services.receipts import get_receipt_service
 from app.services.service_registry import get_service_registry
 from app.services.signing_keys import canonical_json, sha256_hex
+from tests.support.db_gate import require_live_postgres
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
 
@@ -684,80 +685,95 @@ async def test_oversized_payload_on_invoke_is_refused(client, clean_database):
 # ─── Track 5: Rate Limit Behavior ────────────────────────────────────────────
 
 
-@pytest.mark.anyio
-async def test_rapid_fire_invokes_all_accounted(client, clean_database):
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rapid_fire_invokes_all_accounted():
     """Fire 20 rapid invokes; check all receipts exist and total charge is exact.
-    Requires PostgreSQL for accurate row-lock accounting.
 
-    CI runs this in the postgres_trust job with REQUIRE_POSTGRES_TESTS=1, which
-    turns the skip into a failure: a job that lost its PostgreSQL DATABASE_URL
-    must go red rather than pass by skipping the only test it was added for.
+    Requires PostgreSQL for accurate row-lock accounting: the concurrent
+    debit path serializes on a real row lock, which SQLite silently no-ops.
+
+    CI runs this in the ``postgres-proofs`` job with
+    ``RUN_POSTGRES_CONCURRENCY_TESTS=1`` and ``CI_STRICT=1`` (see
+    ``tests/support/db_gate.py``), so a job that lost its PostgreSQL
+    ``DATABASE_URL`` goes red instead of passing by skipping the only
+    accounting proof it was added for.
+
+    The HTTP client is built inside the test on the session event loop,
+    like the other PostgreSQL concurrency proofs: the shared function-scoped
+    fixtures live on a different loop, which tore connections down
+    mid-request under asyncpg.
     """
-    from app.db.database import get_engine
-
-    engine = get_engine()
-    if engine is None or engine.dialect.name != "postgresql":
-        if os.environ.get("REQUIRE_POSTGRES_TESTS") == "1":
-            pytest.fail(
-                "REQUIRE_POSTGRES_TESTS=1 but the suite is not running on "
-                "PostgreSQL; check DATABASE_URL"
-            )
-        pytest.skip("requires PostgreSQL for accurate concurrent budget accounting")
-
-    provisioned = await provision_agent_wallet(client)
-    wallet_id = provisioned["agent_wallet_id"]
-    key_id = provisioned["key_id"]
-    agent_headers = provisioned["agent_headers"]
-    tool_name = "fuzz-rl-1"
+    require_live_postgres(
+        flag="RUN_POSTGRES_CONCURRENCY_TESTS",
+        reason=(
+            "requires PostgreSQL for accurate concurrent budget accounting; "
+            "set RUN_POSTGRES_CONCURRENCY_TESTS=1 only with an isolated "
+            "PostgreSQL test database"
+        ),
+    )
+    suffix = uuid.uuid4().hex[:12]
+    tool_name = f"fuzz-rl-{suffix}"
     _register_tool(tool_name)
     try:
-        permit = await _create_permit(
-            client,
-            wallet_id,
-            key_id,
-            tool_name,
-            extra={"max_calls_per_tool": {tool_name: 100}},
-        )
-        permit_id = permit["permit_id"]
-
-        async def fire(i: int):
-            return await _invoke(
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            provisioned = await provision_agent_wallet(client)
+            wallet_id = provisioned["agent_wallet_id"]
+            key_id = provisioned["key_id"]
+            agent_headers = provisioned["agent_headers"]
+            permit = await _create_permit(
                 client,
                 wallet_id,
-                permit_id,
+                key_id,
                 tool_name,
-                arguments={"input": f"rapid-{i}"},
-                headers=agent_headers,
-                idem_key=f"rl-{i}",
+                extra={"max_calls_per_tool": {tool_name: 100}},
+                idem_key=f"permit-rl-{suffix}",
+            )
+            permit_id = permit["permit_id"]
+
+            async def fire(i: int):
+                return await _invoke(
+                    client,
+                    wallet_id,
+                    permit_id,
+                    tool_name,
+                    arguments={"input": f"rapid-{i}"},
+                    headers=agent_headers,
+                    idem_key=f"rl-{suffix}-{i}",
+                )
+
+            # Fire 20 calls as fast as possible. Bounded so a pool or row-lock
+            # stall fails fast instead of hanging the job to its timeout.
+            responses = await asyncio.wait_for(
+                asyncio.gather(*[fire(i) for i in range(20)]),
+                timeout=120,
             )
 
-        # Fire 20 calls as fast as possible
-        responses = await asyncio.gather(*[fire(i) for i in range(20)])
+            success_count = 0
+            total_charged = Decimal("0")
+            for resp in responses:
+                assert resp.status_code == 200
+                body = resp.json()
+                if "error" in body:
+                    receipt = body["error"]["data"]["receipt"]
+                    await _verify_receipt_outcome(
+                        receipt["receipt_id"], "denied", Decimal("0")
+                    )
+                else:
+                    success_count += 1
+                    receipt = body["result"]["receipt"]
+                    total_charged += Decimal(str(receipt["credits_charged"]))
 
-        success_count = 0
-        total_charged = Decimal("0")
-        for resp in responses:
-            assert resp.status_code == 200
-            body = resp.json()
-            if "error" in body:
-                receipt = body["error"]["data"]["receipt"]
-                await _verify_receipt_outcome(
-                    receipt["receipt_id"], "denied", Decimal("0")
-                )
-            else:
-                success_count += 1
-                receipt = body["result"]["receipt"]
-                total_charged += Decimal(str(receipt["credits_charged"]))
+            assert success_count == 20, f"Expected 20 successes, got {success_count}"
+            assert total_charged == Decimal("20"), (
+                f"Expected charge 20, got {total_charged}"
+            )
 
-        assert success_count == 20, f"Expected 20 successes, got {success_count}"
-        assert total_charged == Decimal("20"), (
-            f"Expected charge 20, got {total_charged}"
-        )
-
-        # Verify permit spent_credits
-        factory = get_session_factory()
-        async with factory() as session:
-            model = await session.get(PermitModel, permit_id)
-            assert model.spent_credits == Decimal("20")
+            # Verify permit spent_credits
+            factory = get_session_factory()
+            async with factory() as session:
+                model = await session.get(PermitModel, permit_id)
+                assert model is not None
+                assert model.spent_credits == Decimal("20")
     finally:
         get_service_registry().unregister_local(tool_name)

@@ -115,6 +115,10 @@ async def test_request_keys_guide_is_listed_and_served(client):
     assert guide.headers["content-type"].startswith("text/markdown")
     assert guide.text.startswith("# Request keys\n")
     assert "idempotency_key_reused" in guide.text
+    operation = (await client.get("/openapi.json")).json()["paths"][
+        "/docs/concepts/request-keys"
+    ]["get"]
+    assert "text/markdown" in operation["responses"]["200"]["content"]
 
 
 @pytest.mark.anyio

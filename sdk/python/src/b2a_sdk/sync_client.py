@@ -14,7 +14,7 @@ work, use :class:`b2a_sdk.client.AgentMiddlewareClient` directly.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, overload
 
 from .models import (
     EvidenceBundle,
@@ -90,6 +90,31 @@ class SyncAgentMiddlewareClient:
     ) -> Permit:
         """Create a signed permit using a caller-owned idempotency key."""
         return asyncio.run(self._client.create_permit(request, idempotency_key=idempotency_key))
+
+    @overload
+    def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+    ) -> InvocationResult: ...
+
+    @overload
+    def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
+    ) -> InvocationResult: ...
 
     def invoke_tool(
         self,

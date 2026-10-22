@@ -1013,7 +1013,7 @@ async def test_charge_reused_idempotency_key_with_different_payload_conflicts(
     vector = next(
         case for case in VECTORS["vectors"] if case["name"] == "billing_charge"
     )
-    assert key == vector["key"]
+    assert key == vector["expected"]
     assert request_key("billing.charge", {**args, "units": 20}) != key
     headers = {**api_headers, "Idempotency-Key": key}
     first = await client.post(

@@ -34,10 +34,10 @@ def test_request_key_vector_matches_gateway_canonical_json(case: dict) -> None:
     assert canonical == case["canonical_json"]
     digest = hashlib.sha256(canonical.encode("utf-8")).digest()
     key = "amwk1_" + base64.b32encode(digest).decode("ascii").rstrip("=")[:52]
-    assert key == case["key"]
+    assert key == case["expected"]
     assert len(key) == 58 <= 128
 
 
 def test_request_key_vectors_pin_argument_order_independence() -> None:
     by_name = {case["name"]: case for case in VECTORS["vectors"]}
-    assert by_name["refund"]["key"] == by_name["reordered_refund"]["key"]
+    assert by_name["refund"]["expected"] == by_name["reordered_refund"]["expected"]

@@ -645,7 +645,13 @@ async def _status_for(app, path: str, *, api_key: str | None = None) -> int:
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "path",
-    ["/health?other", "/health#other", "/docs?other", "/docs#other"],
+    [
+        "/health?other",
+        "/health#other",
+        "/docs?other",
+        "/docs#other",
+        "/docs/concepts/request-keys?other",
+    ],
 )
 async def test_encoded_delimiter_in_path_does_not_skip_limit(path: str) -> None:
     """The decoded router path is different from the exempt route."""
@@ -662,7 +668,7 @@ async def test_encoded_delimiter_in_path_does_not_skip_limit(path: str) -> None:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("path", ["/health", "/docs"])
+@pytest.mark.parametrize("path", ["/health", "/docs", "/docs/concepts/request-keys"])
 async def test_actual_health_and_docs_paths_stay_exempt(path: str) -> None:
     async def ok(scope, receive, send):
         await PlainTextResponse("ok")(scope, receive, send)

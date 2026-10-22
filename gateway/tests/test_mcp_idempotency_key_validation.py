@@ -716,7 +716,7 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
 
     context["idempotency_key"] = request_key(counted_tool.name, {"text": "one"})
     vector = next(case for case in VECTORS["vectors"] if case["name"] == "rest_invoke")
-    assert context["idempotency_key"] == vector["key"]
+    assert context["idempotency_key"] == vector["expected"]
     conflict = await client.post(
         f"/mcp/tools/{counted_tool.name}/invoke",
         json={

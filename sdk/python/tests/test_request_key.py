@@ -54,6 +54,56 @@ def test_request_key_array_paths_and_escaped_field_names() -> None:
     assert included.used_fields == ("items.amount",)
 
 
+def test_nested_include_omits_array_items_without_the_path() -> None:
+    args = {
+        "items": [
+            {"payment": {"amount": "12.00", "note": "first"}},
+            "unused",
+            {"other": "unused"},
+            {"payment": "unused"},
+            {"payment": {"amount": "13.00", "note": "second"}},
+        ]
+    }
+    with pytest.warns(UserWarning, match="unstable_field"):
+        info = request_key.explain("batch.refund", args, include=["items.payment.amount"])
+    assert info.used_fields == ("items.payment.amount",)
+    assert info.dropped_fields == (
+        "items",
+        "items.other",
+        "items.payment",
+        "items.payment.note",
+    )
+    projected = {"items": [{"payment": {"amount": "12.00"}}, {"payment": {"amount": "13.00"}}]}
+    assert info.key == request_key("batch.refund", projected, include=["items.payment.amount"])
+    args["items"][1] = "changed"
+    with pytest.warns(UserWarning, match="unstable_field"):
+        assert info.key == request_key("batch.refund", args, include=["items.payment.amount"])
+    assert info.key != request_key(
+        "batch.refund",
+        {"items": [{"payment": {"amount": "14.00"}}]},
+        include=["items.payment.amount"],
+    )
+
+
+@pytest.mark.parametrize("empty", [{}, []])
+def test_nested_include_keeps_selected_empty_array_item(empty: object) -> None:
+    args = {"items": [{"payment": empty}, "unused", {}, [], {"other": "unused"}]}
+    info = request_key.explain("batch.refund", args, include=["items.payment"])
+    assert info.used_fields == ("items.payment",)
+    assert info.dropped_fields == ("items", "items.other")
+    assert info.key == request_key(
+        "batch.refund", {"items": [{"payment": empty}]}, include=["items.payment"]
+    )
+
+
+def test_nested_include_warns_for_volatile_field_in_omitted_item() -> None:
+    args = {"items": [{"payment": {"amount": "12.00"}}, {"note": "volatile"}]}
+    with pytest.warns(UserWarning, match="unstable_field.*items.note"):
+        info = request_key.explain("batch.refund", args, include=["items.payment.amount"])
+    assert info.used_fields == ("items.payment.amount",)
+    assert info.dropped_fields == ("items.note",)
+
+
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
 def test_request_key_rejects_non_finite_numbers(bad: float) -> None:
     with pytest.raises(ValueError, match="finite JSON"):
@@ -84,7 +134,7 @@ def test_published_request_key_vectors() -> None:
                 include=case["include"],
                 exclude=case["exclude"],
             )
-        assert info.key == case["key"], case["name"]
+        assert info.key == case["expected"], case["name"]
         assert list(info.used_fields) == case["used_fields"], case["name"]
         assert list(info.dropped_fields) == case["dropped_fields"], case["name"]
 

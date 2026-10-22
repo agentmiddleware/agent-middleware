@@ -139,10 +139,22 @@ def _filter_args(
     unstable: list[str],
 ) -> Any:
     if type(value) is list:
-        return [
-            _filter_args(child, path, shown_path, include, exclude, dropped, unstable)
-            for child in value
-        ]
+        nested_include = (
+            {item for item in include if item[: len(path)] == path}
+            if include is not None and not any(path[: len(item)] == item for item in include)
+            else set()
+        )
+        kept_items: list[Any] = []
+        for child in value:
+            if nested_include and not nested_include.intersection(_field_paths(child, path)):
+                # Preserve warnings for volatile fields in omitted items.
+                _filter_args(child, path, shown_path, include, exclude, dropped, unstable)
+                dropped.extend(_paths(child, shown_path))
+                continue
+            kept_items.append(
+                _filter_args(child, path, shown_path, include, exclude, dropped, unstable)
+            )
+        return kept_items
     if type(value) is not dict:
         return value
     kept: dict[str, Any] = {}

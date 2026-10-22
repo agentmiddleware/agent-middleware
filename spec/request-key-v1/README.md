@@ -28,6 +28,9 @@ dotted leaf paths for fields used and dropped. The committed
 [`vectors.json`](vectors.json) pins the input, filtered arguments, canonical
 bytes, and expected key for independent implementations.
 Paths through arrays apply to every item and omit array indices in `explain`.
+When `include` names a descendant of an array, an item without that path is
+omitted. `explain` reports its dropped leaf paths, or the array path for a
+scalar or empty item. An explicitly selected empty object or array remains.
 A literal dot or backslash in a field name is escaped with a backslash in a
 field path.
 
@@ -38,4 +41,4 @@ REST and MCP REST invoke routes return HTTP 409 for that code. JSON-RPC
 surfaces report it inside their protocol error envelope. Keep the arguments
 sent on a retry the same as the first try.
 
-License: Apache-2.0. The gateway implementation is FSL-1.1.
+Apache 2.0 (gateway is Fair Source, FSL-1.1)

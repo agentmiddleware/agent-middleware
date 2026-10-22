@@ -12,7 +12,7 @@ import logging
 import re
 import warnings
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, overload
 from urllib.parse import urlsplit
 
 import httpx
@@ -457,6 +457,31 @@ class AgentMiddlewareClient:
         if error.get("code") == -32003:
             raise AuthorizationError(reason, status_code=403, payload=envelope)
         raise APIError(reason, payload=envelope)
+
+    @overload
+    async def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+    ) -> InvocationResult: ...
+
+    @overload
+    async def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
+    ) -> InvocationResult: ...
 
     async def invoke_tool(
         self,

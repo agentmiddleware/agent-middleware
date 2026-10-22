@@ -12,6 +12,11 @@ from ..core.config import get_settings
 
 router = APIRouter(tags=["Static"])
 
+
+class _MarkdownResponse(PlainTextResponse):
+    media_type = "text/markdown"
+
+
 _PUBLIC_URL_PLACEHOLDER = "{{PUBLIC_URL}}"
 _LOCAL_EXAMPLE = "http://localhost:8000"
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -161,8 +166,8 @@ async def get_agent_accountability_md():
 @router.get(
     "/docs/concepts/request-keys",
     summary="Request keys",
-    description="Python helper for stable request keys and safe retries.",
-    response_class=PlainTextResponse,
+    description="Python helper for stable request keys.",
+    response_class=_MarkdownResponse,
 )
 async def get_request_keys_md():
     return _serve_markdown("/docs/concepts/request-keys")

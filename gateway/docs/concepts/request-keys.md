@@ -1,12 +1,11 @@
 # Request keys
 
-A request key names one action. A completed retry with the same key and the
-same request returns the stored result and receipt.
+A request key names one action. When the full request is identical and the
+first call completed, a retry with the same key returns the original receipt instead of dispatching again.
 
-Use a stable key when a response may be lost. The gateway can then return the
-first result instead of dispatching that request again. A request key does not
-prove that a remote tool ran exactly once. If delivery is uncertain, reconcile
-the remote action before deciding what to do next.
+Use a stable key when a response may be lost. A request key does not prove that
+a remote tool ran exactly once. If delivery is uncertain, reconcile the remote
+action before deciding what to do next.
 
 ## Let the helper make it
 
@@ -63,11 +62,17 @@ args = {"order_id": "A1", "amount": "12.00"}
 key = request_key("partner.refund", args, business_id="A1")
 
 first = await client.invoke_tool(
-    "partner.refund", args, wallet_id=wallet_id, permit_id=permit_id,
+    "partner.refund",
+    args,
+    wallet_id=wallet_id,
+    permit_id=permit_id,
     idempotency_key=key,
 )
 retry = await client.invoke_tool(
-    "partner.refund", args, wallet_id=wallet_id, permit_id=permit_id,
+    "partner.refund",
+    args,
+    wallet_id=wallet_id,
+    permit_id=permit_id,
     idempotency_key=key,
 )
 assert first.receipt.receipt_id == retry.receipt.receipt_id

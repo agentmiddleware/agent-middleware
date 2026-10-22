@@ -23,7 +23,7 @@
       ],
       "dropped_fields": [],
       "canonical_json": "{\"args\":{\"amount\":\"12.00\",\"order_id\":\"A1\"},\"business_id\":\"A1\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
-      "key": "amwk1_TBMF76EGCDTZ2QOYALVJEORMTO273UW5CJH4RJLBLID33FEATMVA"
+      "expected": "amwk1_TBMF76EGCDTZ2QOYALVJEORMTO273UW5CJH4RJLBLID33FEATMVA"
     },
     {
       "name": "reordered_refund",
@@ -46,7 +46,7 @@
       ],
       "dropped_fields": [],
       "canonical_json": "{\"args\":{\"amount\":\"12.00\",\"order_id\":\"A1\"},\"business_id\":\"A1\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
-      "key": "amwk1_TBMF76EGCDTZ2QOYALVJEORMTO273UW5CJH4RJLBLID33FEATMVA"
+      "expected": "amwk1_TBMF76EGCDTZ2QOYALVJEORMTO273UW5CJH4RJLBLID33FEATMVA"
     },
     {
       "name": "unicode_nested",
@@ -79,7 +79,7 @@
         "details.nonce"
       ],
       "canonical_json": "{\"args\":{\"details\":{\"city\":\"München\",\"label\":\"返金\"},\"recipient\":\"Café\"},\"business_id\":null,\"scope\":\"wallet/☕\",\"tool\":\"partner.refund\",\"v\":1}",
-      "key": "amwk1_DWNOKBC3EWZLSIYYJSCZC66LYQ2W6XOBGKL3ZEIQJUBCURNUATUQ"
+      "expected": "amwk1_DWNOKBC3EWZLSIYYJSCZC66LYQ2W6XOBGKL3ZEIQJUBCURNUATUQ"
     },
     {
       "name": "volatile_defaults",
@@ -127,7 +127,7 @@
         "ts"
       ],
       "canonical_json": "{\"args\":{\"amount_minor\":1200,\"order_id\":\"A2\"},\"business_id\":\"A2\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
-      "key": "amwk1_NSIF3KKSTSNMFBKQECQUZA3ZKZWMTD4NKW2PFAHBYVT3O3GFLE3A"
+      "expected": "amwk1_NSIF3KKSTSNMFBKQECQUZA3ZKZWMTD4NKW2PFAHBYVT3O3GFLE3A"
     },
     {
       "name": "include_override",
@@ -158,7 +158,7 @@
         "request_id"
       ],
       "canonical_json": "{\"args\":{\"note\":\"send receipt\",\"order_id\":\"A1\"},\"business_id\":\"A1\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
-      "key": "amwk1_VZXJZUMZSREUI3SOGCQZOZUVPHAIJ6MECJANOSQ6SM3XDP753N2Q"
+      "expected": "amwk1_VZXJZUMZSREUI3SOGCQZOZUVPHAIJ6MECJANOSQ6SM3XDP753N2Q"
     },
     {
       "name": "explicit_exclude_nested",
@@ -202,7 +202,7 @@
         "metadata.retry_token"
       ],
       "canonical_json": "{\"args\":{\"metadata\":{\"source\":\"api\"},\"order\":{\"amount_minor\":500,\"id\":\"A3\"},\"recipient\":\"bob\"},\"business_id\":\"A3\",\"scope\":null,\"tool\":\"partner.refund\",\"v\":1}",
-      "key": "amwk1_VMFR5TVXLI62JQKSRNYBLGDAGO7SWHOH75U3N4ORGWEJOPAWUXFA"
+      "expected": "amwk1_VMFR5TVXLI62JQKSRNYBLGDAGO7SWHOH75U3N4ORGWEJOPAWUXFA"
     },
     {
       "name": "numeric_arguments",
@@ -231,7 +231,7 @@
       ],
       "dropped_fields": [],
       "canonical_json": "{\"args\":{\"active\":true,\"nullable\":null,\"quantity\":2,\"rate\":12.5},\"business_id\":null,\"scope\":null,\"tool\":\"exchange.quote\",\"v\":1}",
-      "key": "amwk1_YQB6OJAWNMAOLLBM6FO6HDUY4NY3FXZERAUZ5KQ6LDYSQRXDS53Q"
+      "expected": "amwk1_YQB6OJAWNMAOLLBM6FO6HDUY4NY3FXZERAUZ5KQ6LDYSQRXDS53Q"
     },
     {
       "name": "billing_charge",
@@ -254,7 +254,7 @@
       ],
       "dropped_fields": [],
       "canonical_json": "{\"args\":{\"service\":\"iot_bridge\",\"units\":10},\"business_id\":null,\"scope\":null,\"tool\":\"billing.charge\",\"v\":1}",
-      "key": "amwk1_J5IKSYJW3NMWZNQH3GY5T2V7QZ46ZTUGS3JVKIRPEADJICHCZ2EQ"
+      "expected": "amwk1_J5IKSYJW3NMWZNQH3GY5T2V7QZ46ZTUGS3JVKIRPEADJICHCZ2EQ"
     },
     {
       "name": "rest_invoke",
@@ -274,7 +274,7 @@
       ],
       "dropped_fields": [],
       "canonical_json": "{\"args\":{\"text\":\"one\"},\"business_id\":null,\"scope\":null,\"tool\":\"keycheck.effect\",\"v\":1}",
-      "key": "amwk1_7OAXKE3H5SILB7B5KOP2M5DMO2XMVGCSXDI3QOSJGLOMIUNCWGLA"
+      "expected": "amwk1_7OAXKE3H5SILB7B5KOP2M5DMO2XMVGCSXDI3QOSJGLOMIUNCWGLA"
     },
     {
       "name": "array_and_escaped_path",
@@ -298,7 +298,7 @@
       "used_fields": ["items.order_id", "session.id"],
       "dropped_fields": ["a\\.b", "items.note"],
       "canonical_json": "{\"args\":{\"items\":[{\"order_id\":\"A1\"},{\"order_id\":\"A2\"}],\"session\":{\"id\":\"S1\"}},\"business_id\":null,\"scope\":null,\"tool\":\"batch.refund\",\"v\":1}",
-      "key": "amwk1_GG5LOHBNMFMHJ63FVLJ2GKN45WPVJ5OLLV7OLTVYPRXUQLL7BG4A"
+      "expected": "amwk1_GG5LOHBNMFMHJ63FVLJ2GKN45WPVJ5OLLV7OLTVYPRXUQLL7BG4A"
     },
     {
       "name": "empty_arguments",
@@ -312,7 +312,65 @@
       "used_fields": [],
       "dropped_fields": [],
       "canonical_json": "{\"args\":{},\"business_id\":null,\"scope\":null,\"tool\":\"jobs.noop\",\"v\":1}",
-      "key": "amwk1_HNZHO3IALSOPOR5O2PSHL5ZH7DIF7HEBWBSYCFHREGHF7UHI47OQ"
+      "expected": "amwk1_HNZHO3IALSOPOR5O2PSHL5ZH7DIF7HEBWBSYCFHREGHF7UHI47OQ"
+    },
+    {
+      "name": "mixed_array_nested_include",
+      "tool": "batch.refund",
+      "args": {
+        "items": [
+          {
+            "payment": {
+              "amount": "12.00",
+              "note": "first"
+            }
+          },
+          "unused",
+          {
+            "other": "unused"
+          },
+          {
+            "payment": "unused"
+          },
+          {
+            "payment": {
+              "amount": "13.00",
+              "note": "second"
+            }
+          }
+        ]
+      },
+      "business_id": null,
+      "scope": null,
+      "include": [
+        "items.payment.amount"
+      ],
+      "exclude": null,
+      "canonical_args": {
+        "items": [
+          {
+            "payment": {
+              "amount": "12.00"
+            }
+          },
+          {
+            "payment": {
+              "amount": "13.00"
+            }
+          }
+        ]
+      },
+      "used_fields": [
+        "items.payment.amount"
+      ],
+      "dropped_fields": [
+        "items",
+        "items.other",
+        "items.payment",
+        "items.payment.note"
+      ],
+      "canonical_json": "{\"args\":{\"items\":[{\"payment\":{\"amount\":\"12.00\"}},{\"payment\":{\"amount\":\"13.00\"}}]},\"business_id\":null,\"scope\":null,\"tool\":\"batch.refund\",\"v\":1}",
+      "expected": "amwk1_PDWEBJNKZX7AKGOIZAWVJFNSUEBUQ5VOD5BCUKXC3MEZZAOUPDYQ"
     }
   ]
 }

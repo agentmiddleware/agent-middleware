@@ -65,7 +65,7 @@ _TRUST_PLANE_SECTIONS = [
         "title": "Request keys",
         "path": "/docs/concepts/request-keys",
         "content_type": "text/markdown",
-        "summary": "Python helper for stable request keys and safe retries.",
+        "summary": "Python helper for stable request keys.",
     },
     {
         "id": "overview",

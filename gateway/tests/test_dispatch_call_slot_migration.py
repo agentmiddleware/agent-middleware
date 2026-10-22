@@ -107,6 +107,4 @@ def test_dispatch_call_slot_upgrade_recovers_after_concurrent_index_failure(
         command.upgrade(config, REVISION)
 
     command.upgrade(config, "head")
-    assert sql("SELECT version_num FROM alembic_version") == [
-        ("042_permit_action_binding",)
-    ]
+    assert sql("SELECT version_num FROM alembic_version") == [("043_demo_key_fields",)]

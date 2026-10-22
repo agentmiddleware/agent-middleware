@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from importlib import import_module
 from pathlib import Path
 
 import httpx
 import pytest
 
-from b2a_sdk import Client, Receipt, VerificationStatus, request_key
+from b2a_sdk import Client, Receipt, VerificationStatus
 
 VECTORS = Path(__file__).resolve().parents[3] / "spec" / "test-vectors"
 CASES = {
@@ -51,7 +52,9 @@ def _evidence_response(request: httpx.Request) -> httpx.Response:
     raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
 
 
-def test_explicit_key_replay_returns_the_same_receipt() -> None:
+@pytest.mark.parametrize("sdk_name", ["b2a_sdk", "amw"])
+def test_explicit_key_replay_returns_the_same_receipt(sdk_name: str) -> None:
+    sdk = import_module(sdk_name)
     calls: list[tuple[str, dict]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -61,7 +64,7 @@ def test_explicit_key_replay_returns_the_same_receipt() -> None:
         calls.append((request.headers["idempotency-key"], body))
         return _mcp_response(request.headers["idempotency-key"])
 
-    with Client(
+    with sdk.Client(
         "YOUR_DEMO_KEY", base_url="http://test", transport=httpx.MockTransport(handler)
     ) as client:
         first = client.call(
@@ -78,9 +81,9 @@ def test_explicit_key_replay_returns_the_same_receipt() -> None:
             wallet_id=SIGNED_CLAIMS["wallet_id"],
             permit_id=SIGNED_CLAIMS["permit_id"],
         )
-        assert first.verify().status is VerificationStatus.VERIFIED
+        assert first.verify().status is sdk.VerificationStatus.VERIFIED
 
-    assert isinstance(first, Receipt)
+    assert isinstance(first, sdk.Receipt)
     assert first.id == second.id == SIGNED_CLAIMS["receipt_id"]
     assert first.request_key == second.request_key == client.last_request_key == "order-123"
     assert first.raw["receipt_id"] == first.id
@@ -94,9 +97,11 @@ def test_explicit_key_replay_returns_the_same_receipt() -> None:
         }
 
 
-def test_omitted_key_uses_request_key_and_exposes_it() -> None:
+@pytest.mark.parametrize("sdk_name", ["b2a_sdk", "amw"])
+def test_omitted_key_uses_request_key_and_exposes_it(sdk_name: str) -> None:
+    sdk = import_module(sdk_name)
     args = {"message": "hi"}
-    expected_key = request_key(SIGNED_CLAIMS["tool"], args)
+    expected_key = sdk.request_key(SIGNED_CLAIMS["tool"], args)
     seen_keys: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -107,7 +112,7 @@ def test_omitted_key_uses_request_key_and_exposes_it() -> None:
         assert json.loads(request.content)["params"]["mcpContext"]["idempotency_key"] == key
         return _mcp_response(key)
 
-    with Client(
+    with sdk.Client(
         "YOUR_DEMO_KEY",
         base_url="http://test",
         wallet_id=SIGNED_CLAIMS["wallet_id"],

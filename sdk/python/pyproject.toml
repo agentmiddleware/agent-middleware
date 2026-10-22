@@ -60,6 +60,7 @@ dev = [
 ]
 
 [project.scripts]
+amw = "amw.cli:main"
 b2a-verify-receipt = "b2a_sdk.verify_cli:main"
 
 [project.urls]
@@ -81,10 +82,11 @@ ignore = ["E501"]
 python_version = "3.10"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/b2a_sdk"]
+packages = ["src/amw", "src/b2a_sdk"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+    "src/amw",
     "src/b2a_sdk",
     "tests",
     "CHANGELOG.md",

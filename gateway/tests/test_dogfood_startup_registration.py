@@ -22,12 +22,21 @@ def test_lifespan_registers_dogfood_tool_without_discovery(
     get_settings.cache_clear()
     monkeypatch.setattr(dogfood_tool, "DOGFOOD_NOTES_PATH", tmp_path / "notes.jsonl")
     registry = get_service_registry()
+    missing = object()
+    tool_id = dogfood_tool.DOGFOOD_TOOL_ID
+    saved_entries = (
+        (registry._local_registry, registry._local_registry.get(tool_id, missing)),
+        (registry._func_registry, registry._func_registry.get(tool_id, missing)),
+        (registry._executor_registry, registry._executor_registry.get(tool_id, missing)),
+    )
+    saved_registered = dogfood_tool._registered
+    saved_note_count = dogfood_tool._note_count
     # Start from an unregistered state so other tests cannot satisfy the assert.
-    dogfood_tool.unregister_dogfood_tool()
-    registry.unregister_local(dogfood_tool.DOGFOOD_TOOL_ID)
-    assert registry.get_local(dogfood_tool.DOGFOOD_TOOL_ID) is None
-
     try:
+        dogfood_tool.unregister_dogfood_tool()
+        registry.unregister_local(dogfood_tool.DOGFOOD_TOOL_ID)
+        assert registry.get_local(dogfood_tool.DOGFOOD_TOOL_ID) is None
+
         with TestClient(app):
             # No tools/list or other discovery call: only the lifespan ran.
             assert registry.get_local(dogfood_tool.DOGFOOD_TOOL_ID) is not None
@@ -35,3 +44,10 @@ def test_lifespan_registers_dogfood_tool_without_discovery(
         dogfood_tool.unregister_dogfood_tool()
         monkeypatch.setenv("ENABLE_DOGFOOD_TOOL", "false")
         get_settings.cache_clear()
+        for entries, saved_value in saved_entries:
+            if saved_value is missing:
+                entries.pop(tool_id, None)
+            else:
+                entries[tool_id] = saved_value
+        dogfood_tool._registered = saved_registered
+        dogfood_tool._note_count = saved_note_count

@@ -4528,7 +4528,7 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
     if registry.get_action_binding(record) is not None:
         raise ToolPermissionDenied("action_permit_required")
 
-    from .mcp_standard import _mint_auto_permit
+    from .mcp_standard import _mint_auto_permit, _permit_error
 
     try:
         permit_id = await _mint_auto_permit(
@@ -4544,6 +4544,14 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
     except PermitWriteContendedError:
         raise
     except PermitError as exc:
+        mapped = _permit_error(exc, tool_name=request.tool_name, record=record)
+        if mapped.error.code == -32004:
+            raise GovernedToolError(
+                exc.reason,
+                extra_data=mapped.error.data,
+                status_code=402,
+                jsonrpc_code=mapped.error.code,
+            ) from exc
         raise ToolPermissionDenied(exc.reason) from exc
     except IdempotencyConflictError as exc:
         raise ValueError("idempotency_key_reused") from exc

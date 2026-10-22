@@ -423,13 +423,14 @@ curl -sS -X POST "$API_URL/v1/demo/keys" \
   -d '{}'
 ```
 
-The response shows `api_key` once and includes `wallet_id`. Replace
-`YOUR_DEMO_KEY` and `YOUR_DEMO_WALLET_ID` below with those values:
+The response shows `api_key` once and includes `wallet_id`. Set
+`AMW_DEMO_KEY` to `api_key` in your shell, and replace
+`YOUR_DEMO_WALLET_ID` below with `wallet_id`:
 
 ```bash
 curl -sS -X POST "$API_URL/mcp/messages" \
   -H 'Content-Type: application/json' \
-  -H 'X-API-Key: YOUR_DEMO_KEY' \
+  -H "X-API-Key: $AMW_DEMO_KEY" \
   -H 'Idempotency-Key: demo-echo-1' \
   -d '{"jsonrpc":"2.0","id":"demo-echo-1","method":"tools/call","params":{"name":"partner.echo","arguments":{"message":"hello"},"mcpContext":{"wallet_id":"YOUR_DEMO_WALLET_ID"}}}'
 ```

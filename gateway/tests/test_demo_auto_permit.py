@@ -367,6 +367,53 @@ async def test_demo_auto_mint_refuses_tool_above_credit_cap(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("transport", ["rest", "jsonrpc"])
+async def test_demo_auto_mint_preserves_insufficient_funds_error(
+    client: AsyncClient,
+    clean_database,
+    demo_settings,
+    echo_tools,
+    monkeypatch: pytest.MonkeyPatch,
+    transport: str,
+) -> None:
+    monkeypatch.setattr(demo_settings, "DEMO_WALLET_CREDITS", Decimal("3"))
+    demo = await _demo_key(client)
+    call = dict(
+        transport=transport,
+        tool="partner.echo",
+        wallet_id=demo["wallet_id"],
+        api_key=demo["api_key"],
+    )
+    first = _result(
+        await _call(client, **call, request_key="demo-funds-first"), transport
+    )
+    assert first["isError"] is False
+
+    response = await _call(client, **call, request_key="demo-funds-second")
+    body = response.json()
+    if transport == "rest":
+        assert response.status_code == 402, response.text
+        assert body["detail"]["error"] == "authority_required"
+        envelope = body
+    else:
+        assert response.status_code == 200, response.text
+        assert body["error"]["code"] == -32004
+        assert body["error"]["message"] == "permit_budget_exceeds_wallet_balance"
+        envelope = body["error"]["data"]
+    detail = body["detail"] if transport == "rest" else envelope
+    assert detail["reason_code"] == "permit_budget_exceeds_wallet_balance"
+    assert detail["requested"]["tool"] == "partner.echo"
+    assert detail["requested"]["estimated_credits"] == "2.0"
+    assert detail["remediation"]["type"] == "fund_wallet_or_request_authority"
+    assert envelope["code"] == "permit_budget_exceeds_wallet_balance"
+    assert envelope["message"]
+    assert envelope["fix"]
+    assert envelope["docs_url"].endswith("#permit_budget_exceeds_wallet_balance")
+    assert len(await _permits_for(demo["wallet_id"])) == 1
+    assert echo_tools == ["partner.echo"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("transport", ["rest", "jsonrpc"])
 async def test_demo_auto_mint_refuses_empty_tool_allowlist(
     client: AsyncClient,
     clean_database,

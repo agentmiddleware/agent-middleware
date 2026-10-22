@@ -121,10 +121,6 @@ class BrowserSessionLimitExceeded(RuntimeError):
     """Raised when DOM bridge session capacity is exhausted."""
 
 
-class NavigationBlocked(ValueError):
-    """Raised when the URL guard refuses a navigation target."""
-
-
 class TranslationMode(str, Enum):
     """Browser automation mode."""
 
@@ -504,12 +500,6 @@ class AWIPlaywrightBridge:
         try:
             await self._create_browser_context(session, headless, viewport)
             await self._navigate_to(session, target_url)
-        except NavigationBlocked:
-            # The guard refused the target at the last moment (DNS rebound
-            # after the pre-flight check). Fail like the pre-flight does
-            # instead of returning a live session on a blank page.
-            await self.destroy_session(session_id)
-            raise
         except Exception as e:
             logger.warning(f"Browser setup for session {session_id}: {e}")
             # A refused or failed navigation must not leave the session
@@ -2050,7 +2040,7 @@ class AWIPlaywrightBridge:
         # last-moment check is the closest pinning available on this path.
         block_reason = await check_outbound_url(url)
         if block_reason:
-            raise NavigationBlocked(f"navigation blocked ({block_reason}): {url}")
+            raise ValueError(f"navigation blocked ({block_reason}): {url}")
 
         try:
             await session._page.goto(

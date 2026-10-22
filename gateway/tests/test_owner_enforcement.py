@@ -9,15 +9,22 @@ then proves the owner (and the bootstrap admin) still succeeds.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from app.core.dependencies import get_agent_money as get_route_agent_money
 from app.db.database import get_session_factory
-from app.db.models import LedgerEntryModel, McpDispatchAttemptModel, WalletModel
+from app.db.models import (
+    LedgerEntryModel,
+    McpDispatchAttemptModel,
+    WalletModel,
+)
 from app.main import app
 from app.schemas.billing import LedgerAction, ServiceCategory
 from app.schemas.trust import PermitCreateRequest
@@ -28,7 +35,7 @@ from app.services.permits import (
     PermitAccessDeniedError,
     get_permit_service,
 )
-from tests.test_trust_helpers import provision_agent_wallet
+from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
 
 @pytest.fixture
@@ -495,3 +502,102 @@ async def test_transfer_route_answers_403_for_a_stranger_key(client, clean_datab
         headers=stranger["agent_headers"],
     )
     assert denied.status_code == 403
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["create", "transfer"])
+async def test_billing_ownership_backstop_replays_exact_denial(
+    client, clean_database, monkeypatch, operation
+):
+    owner = await provision_agent_wallet(client)
+    stranger = await provision_agent_wallet(client)
+    if operation == "create":
+        wallet_id = owner["sponsor_wallet_id"]
+        endpoint = "/v1/billing/wallets/agent"
+        request_key = "json"
+        payload = {
+            "sponsor_wallet_id": wallet_id,
+            "agent_id": "backstop-agent",
+            "budget_credits": 10,
+        }
+        changed_payload = {**payload, "budget_credits": 11}
+        method = "create_agent_wallet"
+        owner_headers = BOOTSTRAP_HEADERS
+    else:
+        wallet_id = owner["agent_wallet_id"]
+        endpoint = "/v1/billing/transfer"
+        request_key = "params"
+        payload = {
+            "from_wallet_id": wallet_id,
+            "to_wallet_id": stranger["agent_wallet_id"],
+            "amount": 5,
+        }
+        changed_payload = {**payload, "amount": 6}
+        method = "transfer"
+        owner_headers = owner["agent_headers"]
+
+    key = f"owner-backstop-{operation}"
+    denied_call = AsyncMock(side_effect=OwnershipDeniedError("service_backstop"))
+    monkeypatch.setattr(get_route_agent_money(), method, denied_call)
+
+    async def money_state():
+        async with get_session_factory()() as session:
+            wallets = (await session.execute(select(WalletModel))).scalars().all()
+            ledger_ids = (
+                (await session.execute(select(LedgerEntryModel.entry_id)))
+                .scalars()
+                .all()
+            )
+        return (
+            sorted(
+                (wallet.wallet_id, wallet.balance, wallet.lifetime_debits)
+                for wallet in wallets
+            ),
+            sorted(ledger_ids),
+        )
+
+    before = await money_state()
+    stranger_response = await client.post(
+        endpoint,
+        **{request_key: payload},
+        headers={**stranger["agent_headers"], "Idempotency-Key": key},
+    )
+    assert stranger_response.status_code == 403
+    denied_call.assert_not_awaited()
+    idem = get_idempotency_service()
+    assert (
+        await idem.get_record(
+            wallet_id=wallet_id, endpoint=endpoint, idempotency_key=key
+        )
+        is None
+    )
+
+    headers = {**owner_headers, "Idempotency-Key": key}
+    first = await client.post(endpoint, **{request_key: payload}, headers=headers)
+    expected = {
+        "detail": {
+            "error": "wallet_access_denied",
+            "message": "API key is not authorized for this wallet.",
+            "wallet_id": wallet_id,
+        }
+    }
+    assert first.status_code == 403
+    assert first.json()["detail"] == expected["detail"]
+    assert first.json()["code"] == "wallet_access_denied"
+    stored = await idem.get_record(
+        wallet_id=wallet_id, endpoint=endpoint, idempotency_key=key
+    )
+    assert stored is not None
+    assert stored.status_code == 403
+    assert json.loads(stored.response_json) == expected
+
+    replay = await client.post(endpoint, **{request_key: payload}, headers=headers)
+    assert replay.status_code == 403
+    assert replay.content == first.content
+    changed = await client.post(
+        endpoint, **{request_key: changed_payload}, headers=headers
+    )
+    assert changed.status_code == 409
+    assert changed.json()["detail"]["error"] == "idempotency_key_reused"
+    denied_call.assert_awaited_once()
+    assert await money_state() == before

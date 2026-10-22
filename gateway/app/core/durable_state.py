@@ -32,8 +32,8 @@ import redis.asyncio as redis
 
 from .config import get_settings
 from .db_urls import (
-    _is_in_memory_sqlite,
     as_asyncpg_url,
+    is_in_memory_sqlite_url,
     is_postgres_url,
     is_sqlite_url,
     sqlite_path_from_url,
@@ -160,20 +160,27 @@ class DurableStateStore:
         # an in-memory spelling resolves to ":memory:".
         raw_sqlite_url = settings.SQLITE_URL.strip()
         if raw_sqlite_url and is_sqlite_url(raw_sqlite_url):
-            # SQLAlchemy URL form, any driver (sqlite://, sqlite+aiosqlite://,
-            # sqlite+pysqlite://): strip the scheme to the database part.
-            # Only an empty or in-memory database part is memory, and it
-            # must become ":memory:", not "", or the DATABASE_URL fallback
-            # below would write the state to disk. Every in-memory spelling
-            # (including ``file::memory:?...``, which aiosqlite would treat
-            # as a literal filename without uri=True) maps to plain
-            # ":memory:"; the store holds a single connection, so all reads
-            # and writes see the same database. Anything else is a file.
-            _, _, remainder = raw_sqlite_url.partition("://")
-            database = remainder[1:] if remainder.startswith("/") else remainder
-            self._sqlite_url = (
-                ":memory:" if _is_in_memory_sqlite(database) else database
-            )
+            # SQLAlchemy URL form: normalize to the file path aiosqlite
+            # expects. sqlite_path_from_url returns "" for in-memory
+            # spellings; that must become ":memory:" here, not "", or the
+            # DATABASE_URL fallback below would write the state to disk.
+            # Every in-memory spelling (including ``file::memory:?...``,
+            # which aiosqlite would treat as a literal filename without
+            # uri=True) maps to plain ":memory:". The store holds a single
+            # connection, so all reads and writes see the same database.
+            # Only a recognized in-memory spelling maps to ":memory:"; a
+            # SQLite URL that cannot be parsed fails loudly rather than
+            # silently discarding state the operator expects on disk.
+            sqlite_path = sqlite_path_from_url(raw_sqlite_url)
+            if sqlite_path:
+                self._sqlite_url = sqlite_path
+            elif is_in_memory_sqlite_url(raw_sqlite_url):
+                self._sqlite_url = ":memory:"
+            else:
+                raise DurableStateConfigError(
+                    "SQLITE_URL is a SQLite URL that could not be parsed; use "
+                    "sqlite[+driver]:///path/to/state.db or a plain file path"
+                )
         else:
             # Documented raw-path form (or the ":memory:" shorthand).
             self._sqlite_url = raw_sqlite_url
@@ -619,7 +626,7 @@ class DurableStateStore:
         self._backend = "memory"
 
 
-@lru_cache()
+@lru_cache
 def get_durable_state() -> DurableStateStore:
     return DurableStateStore()
 

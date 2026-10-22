@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.auth import AuthContext, get_auth_context
+from app.core.wallet_resolution import resolve_wallet_id
 from app.schemas.billing import ServiceCategory
 from app.schemas.trust import QuoteCreateRequest, QuoteResponse
 from app.services.service_registry import get_service_registry
@@ -33,7 +34,7 @@ async def create_quote(
     on the wallet, and a duplicate quote is simply a second unspent
     commitment that expires on its own.
     """
-    auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
 
     registry = get_service_registry()
     service = registry.get_local(request.tool)
@@ -53,7 +54,7 @@ async def create_quote(
         raise HTTPException(status_code=400, detail="tool_price_invalid")
     try:
         return await get_quote_service().create_quote(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             tool=request.tool,
             quoted_credits=quoted_credits,
             category=category.value,

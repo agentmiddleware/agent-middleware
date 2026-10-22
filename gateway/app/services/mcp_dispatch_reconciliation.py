@@ -56,7 +56,7 @@ _PERMIT_SNAPSHOT_KEYS = frozenset(
     }
 )
 _LEGACY_UNSNAPSHOTTED_OUTCOMES = frozenset(
-    {"failed_refunded", "delivery_uncertain", "response_rejected"}
+    {"success", "failed_refunded", "delivery_uncertain", "response_rejected"}
 )
 
 
@@ -842,7 +842,7 @@ class McpDispatchReconciliationService:
         signed_constraints = receipt.constraints_evaluated
         expected_constraints = constraints_evaluated or {}
         if canonical_json(signed_constraints) != canonical_json(expected_constraints):
-            # Older direct failure paths signed valid receipts before permit-v2
+            # Older direct finalization paths signed valid receipts before permit-v2
             # snapshots were attached. Recover only that exact legacy shape;
             # a receipt with any signed permit evidence must match in full.
             legacy_omission = (

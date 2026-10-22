@@ -14,18 +14,6 @@ from ..services.kyc_service import get_kyc_service
 
 logger = logging.getLogger(__name__)
 
-
-def _require_sig_header(request: Request) -> str:
-    """Return the Stripe signature header or refuse the delivery as unsigned."""
-    sig_header = request.headers.get("stripe-signature", "")
-    if not sig_header:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing Stripe signature",
-        )
-    return sig_header
-
-
 router = APIRouter(
     prefix="/v1/webhooks",
     tags=["Webhooks"],
@@ -49,8 +37,12 @@ async def handle_stripe_webhook(request: Request):
     - identity.verification_session.requires_input → Log
     - identity.verification_session.redacted → Expire verification
     """
+    # Signature checks live in app.core.webhook_auth (fail closed, constant
+    # time); this router only maps the verdict to a status code. Missing and
+    # bad signatures both answer 401 with the same body, so probes cannot
+    # tell an unconfigured receiver from a wrong secret.
     payload = await request.body()
-    sig_header = _require_sig_header(request)
+    sig_header = request.headers.get("stripe-signature", "")
 
     stripe_integration = get_stripe_integration()
     try:
@@ -67,7 +59,7 @@ async def handle_stripe_webhook(request: Request):
 
     if not success:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Stripe signature",
         )
 
@@ -83,15 +75,17 @@ async def handle_stripe_identity_webhook(request: Request):
     Note: Stripe often sends these to the same /webhooks/stripe endpoint,
     but we handle them separately here for clarity.
     """
+    # Same shared verification as the payment receiver above: missing and
+    # bad signatures both answer 401 with the same body.
     payload = await request.body()
-    sig_header = _require_sig_header(request)
+    sig_header = request.headers.get("stripe-signature", "")
 
     kyc_service = get_kyc_service()
     success = await kyc_service.handle_webhook(payload, sig_header)
 
     if not success:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Stripe signature",
         )
 

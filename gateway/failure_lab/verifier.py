@@ -15,7 +15,7 @@ The three claims
 ----------------
 
 ``SIGNATURE_VALID``
-    The Ed25519 signature verifies over the exact ``signing_input`` bytes,
+    The signature verifies over the exact ``signing_input`` bytes,
     under the key named *inside* those signed bytes. This says the holder of
     that private key signed this statement. Nothing more.
 
@@ -53,7 +53,9 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 ED25519_RAW_LENGTH = 32
@@ -73,6 +75,11 @@ class KeySource(str, Enum):
     #: Pinned out of band (a key distributed through a channel the issuing
     #: origin does not control).
     OUT_OF_BAND_PIN = "out_of_band_pin"
+
+
+@dataclass(frozen=True)
+class _P256Key:
+    public_key: ec.EllipticCurvePublicKey
 
 
 @dataclass(frozen=True)
@@ -138,8 +145,8 @@ def _b64(value: Any, *, urlsafe: bool = False) -> bytes | None:
         return None
 
 
-def parse_key_document(document: Any) -> dict[str, bytes]:
-    """Read ``/.well-known/trust-keys.json`` into ``{kid: raw_public_key}``.
+def parse_key_document(document: Any) -> dict[str, bytes | _P256Key]:
+    """Read raw Ed25519 or DER SPKI P-256 keys from ``trust-keys.json``.
 
     Keys the issuing plane marks disabled are dropped: a revoked key must not
     keep validating receipts because a cached document still lists it.
@@ -149,7 +156,7 @@ def parse_key_document(document: Any) -> dict[str, bytes]:
     entries = document.get("keys")
     if not isinstance(entries, list):
         raise ValueError("key document has no 'keys' list")
-    keys: dict[str, bytes] = {}
+    keys: dict[str, bytes | _P256Key] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -157,6 +164,20 @@ def parse_key_document(document: Any) -> dict[str, bytes]:
         if not isinstance(kid, str) or not kid:
             continue
         if entry.get("status") == "disabled":
+            continue
+        if entry.get("alg") == "ECDSA-P256-SHA256":
+            der = _b64(entry.get("public_key_b64", ""))
+            if der is None:
+                continue
+            try:
+                public_key = serialization.load_der_public_key(der)
+            except (ValueError, UnsupportedAlgorithm):
+                continue
+            if not isinstance(public_key, ec.EllipticCurvePublicKey) or not isinstance(
+                public_key.curve, ec.SECP256R1
+            ):
+                continue
+            keys[kid] = _P256Key(public_key)
             continue
         if entry.get("alg") not in (None, "Ed25519"):
             continue
@@ -215,7 +236,7 @@ def field_coverage(bundle: dict[str, Any]) -> dict[str, str]:
 
 def verify(
     bundle: Any,
-    keys: dict[str, bytes],
+    keys: dict[str, bytes | _P256Key],
     *,
     key_source: KeySource = KeySource.ISSUER_ORIGIN,
     expected_issuer: str | None = None,
@@ -287,32 +308,45 @@ def verify(
         return fail("signed payload names no key", key_id=None)
 
     algorithm = payload.get("alg", "Ed25519")
-    if algorithm != "Ed25519":
-        return fail(f"unsupported signature algorithm {algorithm!r}", key_id=key_id)
-
     signature = _b64(signature_b64)
-    if signature is None or len(signature) != ED25519_SIGNATURE_LENGTH:
-        return fail("signature is not a 64-byte Ed25519 signature", key_id=key_id)
+    if signature is None:
+        return fail("signature is not valid base64", key_id=key_id)
 
-    raw_key = keys.get(key_id)
-    if raw_key is None:
+    key = keys.get(key_id)
+    if key is None:
         return fail(f"no published key for kid {key_id!r}", key_id=key_id)
-    if len(raw_key) != ED25519_RAW_LENGTH:
-        return fail(f"key {key_id!r} is not a 32-byte Ed25519 key", key_id=key_id)
 
     try:
-        Ed25519PublicKey.from_public_bytes(raw_key).verify(
-            signature, signing_input.encode("utf-8")
-        )
+        signing_bytes = signing_input.encode("utf-8")
+        if isinstance(key, _P256Key):
+            key_algorithm = "ECDSA-P256-SHA256"
+            key.public_key.verify(signature, signing_bytes, ec.ECDSA(hashes.SHA256()))
+        else:
+            key_algorithm = "Ed25519"
+            if len(signature) != ED25519_SIGNATURE_LENGTH:
+                return fail(
+                    "signature is not a 64-byte Ed25519 signature", key_id=key_id
+                )
+            if len(key) != ED25519_RAW_LENGTH:
+                return fail(
+                    f"key {key_id!r} is not a 32-byte Ed25519 key", key_id=key_id
+                )
+            Ed25519PublicKey.from_public_bytes(key).verify(signature, signing_bytes)
     except InvalidSignature:
         return fail("signature does not verify over signing_input", key_id=key_id)
     except (ValueError, UnicodeEncodeError) as exc:
         return fail(f"signature could not be checked: {exc}", key_id=key_id)
 
+    if algorithm != key_algorithm:
+        return fail(
+            f"signed algorithm {algorithm!r} does not match published key algorithm {key_algorithm!r}",
+            key_id=key_id,
+        )
+
     signature_claim = Claim(
         "SIGNATURE_VALID",
         ClaimStatus.ESTABLISHED,
-        f"Ed25519 signature verifies over signing_input under kid {key_id!r}",
+        f"{key_algorithm} signature verifies over signing_input under kid {key_id!r}",
     )
 
     # Envelope/payload disagreement: the signature still verifies, so this is

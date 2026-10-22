@@ -4,11 +4,11 @@
  * Mirrors the Python verifier in sdk/python (b2a_sdk.receipt_verifier):
  * every reported field is read from the signed bytes, and "cannot tell"
  * (unknown_key, malformed, unsupported) is kept apart from "rejected"
- * (invalid, mismatch). No network access; Node's built-in Ed25519 only.
+ * (invalid, mismatch). No network access; uses Node's built-in cryptography.
  *
  * Licensed under Apache-2.0.
  */
-import { createHash, createPublicKey, verify as edVerify } from "node:crypto";
+import { createPublicKey, verify as cryptoVerify } from "node:crypto";
 
 export const CANONICALIZATION = "awi-canonical-json/1";
 
@@ -26,10 +26,23 @@ export interface VerificationResult {
   reason?: string;
   receiptId?: string;
   keyId?: string;
+  /**
+   * Fields read from the signed bytes. An integer that does not fit in a JS
+   * number is the signed decimal text (a string), so the claim matches the
+   * bytes the signature covered.
+   */
   claims?: Record<string, unknown>;
 }
 
-export type KeySet = Map<string, Buffer>;
+export const P256_ALGORITHM = "ECDSA-P256-SHA256";
+
+export interface P256VerificationKey {
+  alg: typeof P256_ALGORITHM;
+  /** DER SubjectPublicKeyInfo, as returned by AWS KMS GetPublicKey. */
+  publicKeyDer: Buffer;
+}
+
+export type KeySet = Map<string, Buffer | P256VerificationKey>;
 
 const RAW_KEY_LEN = 32;
 const SIG_LEN = 64;
@@ -61,7 +74,7 @@ export function canonicalJson(value: unknown): string {
   return ser(value);
 }
 
-/** Extract usable Ed25519 public keys from a trust-keys.json document. */
+/** Extract verification keys from a trust-keys.json document. */
 export function keySetFromDocument(doc: unknown): KeySet {
   const keys: KeySet = new Map();
   if (!doc || typeof doc !== "object" || !Array.isArray((doc as { keys?: unknown }).keys)) {
@@ -73,6 +86,12 @@ export function keySetFromDocument(doc: unknown): KeySet {
     const kid = (e.kid ?? e.key_id) as unknown;
     if (typeof kid !== "string" || !kid) continue;
     if (e.status === "disabled") continue;
+    if (e.alg === P256_ALGORITHM) {
+      // Retain malformed published material so verification reports malformed
+      // instead of treating a known kid as an unknown key.
+      keys.set(kid, { alg: P256_ALGORITHM, publicKeyDer: b64(e.public_key_b64 ?? "") ?? Buffer.alloc(0) });
+      continue;
+    }
     if (e.alg !== undefined && e.alg !== null && e.alg !== "Ed25519") continue;
     let raw = b64(e.public_key_b64 ?? "");
     if (!raw || raw.length !== RAW_KEY_LEN) {
@@ -118,13 +137,126 @@ function hasLoneSurrogate(value: unknown): boolean {
   return false;
 }
 
+const PLAIN_INTEGER = /^-?(?:0|[1-9]\d*)$/;
+const JSON_NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+
+/**
+ * True when a JSON integer token is not the number JSON.parse would return.
+ * 9007199254740993 becomes 9007199254740992; the signed digits must be kept.
+ */
+function integerLexemeRounds(lexeme: string): boolean {
+  if (!PLAIN_INTEGER.test(lexeme)) return false;
+  const digits = lexeme.startsWith("-") ? lexeme.slice(1) : lexeme;
+  // A finite double stops near 1e308. Longer tokens are not that number, and
+  // they do not need a BigInt the size of the token.
+  if (digits.length > 400) return true;
+  const asNumber = Number(lexeme);
+  if (!Number.isFinite(asNumber)) return true;
+  return BigInt(lexeme) !== BigInt(asNumber);
+}
+
+/**
+ * Parse JSON, quoting integer tokens that a JS number would round.
+ * Strings are copied through, so digits inside a string stay a string.
+ */
+function parseJsonPreservingUnsafeIntegers(text: string): unknown {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i]!;
+    if (c === '"') {
+      const start = i;
+      i += 1;
+      while (i < text.length) {
+        if (text[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (text[i] === '"') {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      out += text.slice(start, i);
+      continue;
+    }
+    if (c === "-" || (c >= "0" && c <= "9")) {
+      JSON_NUMBER.lastIndex = i;
+      const match = JSON_NUMBER.exec(text);
+      if (match && match.index === i) {
+        const lexeme = match[0];
+        i += lexeme.length;
+        out += integerLexemeRounds(lexeme) ? JSON.stringify(lexeme) : lexeme;
+        continue;
+      }
+    }
+    out += c;
+    i += 1;
+  }
+  return JSON.parse(out);
+}
+
 function edOk(raw: Buffer, sig: Buffer, msg: Buffer): boolean {
   try {
     const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: raw.toString("base64url") }, format: "jwk" });
-    return edVerify(null, msg, key, sig);
+    return cryptoVerify(null, msg, key, sig);
   } catch {
     return false;
   }
+}
+
+function p256PublicKey(key: P256VerificationKey): ReturnType<typeof createPublicKey> | null {
+  if (!Buffer.isBuffer(key.publicKeyDer)) return null;
+  try {
+    const publicKey = createPublicKey({ key: key.publicKeyDer, format: "der", type: "spki" });
+    return publicKey.asymmetricKeyType === "ec" && publicKey.asymmetricKeyDetails?.namedCurve === "prime256v1"
+      ? publicKey : null;
+  } catch {
+    return null;
+  }
+}
+
+function derLength(bytes: Buffer, offset: number): [number, number] | null {
+  if (offset >= bytes.length) return null;
+  const first = bytes[offset++]!;
+  if (first < 0x80) return [first, offset];
+  const count = first & 0x7f;
+  if (count === 0 || count > 6 || offset + count > bytes.length || bytes[offset] === 0) return null;
+  let length = 0;
+  for (let i = 0; i < count; i++) length = length * 256 + bytes[offset++]!;
+  return length >= 0x80 ? [length, offset] : null;
+}
+
+function isDerEcdsaSignature(sig: Buffer): boolean {
+  if (sig[0] !== 0x30) return false;
+  const sequence = derLength(sig, 1);
+  if (!sequence || sequence[0] !== sig.length - sequence[1]) return false;
+  let offset = sequence[1];
+  for (let i = 0; i < 2; i++) {
+    if (sig[offset++] !== 0x02) return false;
+    const integer = derLength(sig, offset);
+    if (!integer || integer[0] === 0 || integer[0] > sig.length - integer[1]) return false;
+    offset = integer[1];
+    const first = sig[offset]!;
+    if (first & 0x80 || (integer[0] > 1 && first === 0 && !(sig[offset + 1]! & 0x80))) return false;
+    offset += integer[0];
+  }
+  return offset === sig.length;
+}
+
+function p256Ok(key: ReturnType<typeof createPublicKey>, sig: Buffer, msg: Buffer): boolean {
+  try {
+    return cryptoVerify("sha256", msg, key, sig);
+  } catch {
+    return false;
+  }
+}
+
+function signatureValid(key: Buffer | P256VerificationKey, sig: Buffer, msg: Buffer): boolean {
+  if (Buffer.isBuffer(key)) return key.length === RAW_KEY_LEN && sig.length === SIG_LEN && edOk(key, sig, msg);
+  const publicKey = key.alg === P256_ALGORITHM ? p256PublicKey(key) : null;
+  return publicKey !== null && isDerEcdsaSignature(sig) && p256Ok(publicKey, sig, msg);
 }
 
 /** Verify one portable receipt bundle against a caller-supplied key set. */
@@ -148,7 +280,9 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
 
   let payload: unknown;
   try {
-    payload = JSON.parse(signingInput);
+    // JSON.parse rounds integers above 2^53. Claims are read from this
+    // object, so those tokens stay the signed decimal text.
+    payload = parseJsonPreservingUnsafeIntegers(signingInput);
   } catch {
     return fail("malformed", "signing_input is not valid JSON", envKid);
   }
@@ -170,26 +304,29 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
 
   const sig = b64(sigB64);
   if (!sig) return fail("malformed", "signature is not valid base64", kid);
-  if (sig.length !== SIG_LEN) return fail("malformed", "signature is not a 64-byte Ed25519 signature", kid);
   const msg = Buffer.from(signingInput, "utf8");
 
   const raw = keySet.get(kid);
-  // A key that is present but the wrong length cannot be judged. Reporting
-  // that as invalid would call the receipt tampered.
-  if (raw && raw.length !== RAW_KEY_LEN) {
-    return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);
-  }
   if (!raw) {
     const envKey = envKid !== kid ? keySet.get(envKid) : undefined;
-    if (envKey && envKey.length === RAW_KEY_LEN && edOk(envKey, sig, msg)) {
+    if (envKey && signatureValid(envKey, sig, msg)) {
       return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);
     }
     return fail("unknown_key", `no published key for kid ${kid}`, kid);
   }
-  if (raw.length !== RAW_KEY_LEN) return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);
-  if (!edOk(raw, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
+  if (Buffer.isBuffer(raw)) {
+    if (sig.length !== SIG_LEN) return fail("malformed", "signature is not a 64-byte Ed25519 signature", kid);
+    if (raw.length !== RAW_KEY_LEN) return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);
+    if (!edOk(raw, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
+  } else {
+    const publicKey = raw.alg === P256_ALGORITHM ? p256PublicKey(raw) : null;
+    if (!publicKey) return fail("malformed", `public key for kid ${kid} is not a P-256 DER SPKI key`, kid);
+    if (!isDerEcdsaSignature(sig)) return fail("malformed", "signature is not a DER ECDSA signature", kid);
+    if (!p256Ok(publicKey, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
+  }
 
   if (alg !== "Ed25519") return fail("unsupported", `unsupported signature algorithm: ${String(alg)}`, kid);
+  if (!Buffer.isBuffer(raw)) return fail("unsupported", `unsupported verification key algorithm: ${raw.alg}`, kid);
   if (typeof signedCanon === "string" && signedCanon !== CANONICALIZATION) {
     return fail("unsupported", `unsupported canonicalization: ${signedCanon}`, kid);
   }
@@ -201,18 +338,13 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const envelopeCanon = b.canonicalization === undefined ? CANONICALIZATION : b.canonicalization;
   if (envelopeCanon !== expectedCanon) return fail("mismatch", "bundle canonicalization differs from the signed payload", kid);
 
-  if (typeof p.payload_hash === "string") {
-    const inner: Record<string, unknown> = { ...p };
-    delete inner.payload_hash;
-    let canonical: string;
-    try {
-      canonical = canonicalJson(inner);
-    } catch {
-      return fail("malformed", "signed payload exceeds the supported JSON nesting depth", kid);
-    }
-    const computed = createHash("sha256").update(canonical, "utf8").digest("hex");
-    if (computed !== p.payload_hash) return fail("mismatch", "payload_hash does not match the signed payload", kid);
-  }
+  // payload_hash is advisory and never recomputed here. The Ed25519 check
+  // above already covers signing_input verbatim, payload_hash included, so
+  // any edit to the signed bytes is invalid. Re-serializing the parsed
+  // payload would reject genuine receipts: JSON numbers do not round-trip
+  // across languages (Python signs 1.0 and 4e-05; this parser reads them as
+  // 1 and 0.00004). Integers that do not fit in a JS number are returned as
+  // the signed decimal text, not the rounded number.
   const receiptId = p.receipt_id;
   if (typeof receiptId !== "string" || !receiptId) return fail("malformed", "signed payload has no receipt_id", kid);
   if (b.receipt_id !== undefined && b.receipt_id !== null && b.receipt_id !== receiptId) return fail("mismatch", "bundle receipt_id does not match the signed receipt_id", kid, receiptId);

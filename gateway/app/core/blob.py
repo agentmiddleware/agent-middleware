@@ -162,7 +162,7 @@ class _UnimplementedBlob(BlobBackend):
         )
 
 
-@lru_cache()
+@lru_cache
 def get_blob_backend() -> BlobBackend:
     """Resolve the configured blob backend. Cached per-process."""
     backend_name = os.environ.get("BLOB_BACKEND", "local").strip().lower()

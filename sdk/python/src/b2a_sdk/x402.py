@@ -101,7 +101,7 @@ class X402Client:
                 # Source of truth for the User-Agent string is
                 # AgentMiddlewareClient.__init__ in client.py (it exposes no
                 # importable constant); keep the two in lockstep.
-                "User-Agent": "b2a-sdk/0.5.0",
+                "User-Agent": "amw-sdk/0.5.0",
             },
             timeout=timeout,
             transport=transport,

@@ -11,6 +11,7 @@ import pytest
 from app.core.db_urls import (
     as_asyncpg_url,
     as_sqlalchemy_url,
+    is_in_memory_sqlite_url,
     is_postgres_url,
     sqlite_path_from_url,
 )
@@ -191,12 +192,58 @@ def test_in_memory_sqlite_url_never_writes_the_database_url_file(
         reset_runtime_degradation()
 
 
-def test_pysqlite_sqlite_url_is_a_file_not_memory(monkeypatch, tmp_path):
-    """``sqlite+pysqlite:///path`` names a file and must persist there.
+_SQLITE_SCHEMES = [
+    "sqlite",
+    "sqlite+aiosqlite",
+    "sqlite+pysqlite",
+    "sqlite+pysqlcipher",
+    "SQLITE+PYSQLITE",
+]
 
-    Only an empty or in-memory database part means memory. A driver prefix
-    the path helper does not list must not be mistaken for an in-memory URL
-    (which would silently drop durability) or for the DATABASE_URL file.
+
+@pytest.mark.parametrize("scheme", _SQLITE_SCHEMES)
+@pytest.mark.parametrize(
+    ("database", "expected"),
+    [
+        ("/state.db", "state.db"),
+        ("//var/data/state.db", "/var/data/state.db"),
+        ("/mode=memory.db", "mode=memory.db"),
+    ],
+)
+def test_every_sqlite_driver_spelling_keeps_its_file_path(scheme, database, expected):
+    """Regression: ``sqlite+pysqlite:///state.db`` parsed as "" (memory)."""
+    url = f"{scheme}://{database}"
+    assert sqlite_path_from_url(url) == expected
+    assert not is_in_memory_sqlite_url(url)
+
+
+@pytest.mark.parametrize("scheme", _SQLITE_SCHEMES)
+@pytest.mark.parametrize(
+    "database",
+    ["", "/", "/:memory:", "/file::memory:?cache=shared", "/file:x?mode=memory"],
+)
+def test_every_sqlite_driver_spelling_recognizes_memory(scheme, database):
+    url = f"{scheme}://{database}"
+    assert sqlite_path_from_url(url) == ""
+    assert is_in_memory_sqlite_url(url)
+
+
+@pytest.mark.parametrize(
+    "url", ["", "postgresql://u:p@h/db", "sqlite+pysqlite:state.db", "/state.db"]
+)
+def test_non_sqlite_urls_are_neither_file_nor_memory(url):
+    assert sqlite_path_from_url(url) == ""
+    assert not is_in_memory_sqlite_url(url)
+
+
+@pytest.mark.parametrize("scheme", _SQLITE_SCHEMES)
+def test_file_sqlite_url_with_any_driver_persists_to_that_file(
+    monkeypatch, tmp_path, scheme
+):
+    """A file-backed SQLITE_URL must be used as a file, whatever the driver.
+
+    Regression: drivers other than ``sqlite``/``sqlite+aiosqlite`` normalized
+    to "" and then to ":memory:", so saved state vanished on restart.
     """
     reset_runtime_degradation()
     reset_durable_state_for_tests()
@@ -204,7 +251,7 @@ def test_pysqlite_sqlite_url_is_a_file_not_memory(monkeypatch, tmp_path):
     db_file = tmp_path / "database_url.db"
     monkeypatch.setenv("ENVIRONMENT", "local")
     monkeypatch.setenv("STATE_BACKEND", "auto")
-    monkeypatch.setenv("SQLITE_URL", f"sqlite+pysqlite:///{state_file}")
+    monkeypatch.setenv("SQLITE_URL", f"{scheme}:///{state_file}")
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
     monkeypatch.setenv("REDIS_URL", "")
     from app.core.config import get_settings
@@ -220,14 +267,29 @@ def test_pysqlite_sqlite_url_is_a_file_not_memory(monkeypatch, tmp_path):
             await store.close()
 
     try:
-        asyncio.run(exercise())
         assert store._sqlite_url == str(state_file)
-        assert state_file.exists()
+        asyncio.run(exercise())
+        assert state_file.exists(), "file-backed SQLITE_URL was not written"
         assert not db_file.exists()
     finally:
         get_settings.cache_clear()
         reset_durable_state_for_tests()
         reset_runtime_degradation()
+
+
+def test_unparseable_sqlite_url_fails_instead_of_using_memory(monkeypatch):
+    reset_durable_state_for_tests()
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("SQLITE_URL", "sqlite+pysqlite:state.db")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(DurableStateConfigError, match="could not be parsed"):
+            DurableStateStore()
+    finally:
+        get_settings.cache_clear()
+        reset_durable_state_for_tests()
 
 
 def test_auto_backend_uses_sqlite_for_a_sqlite_database_url(monkeypatch):

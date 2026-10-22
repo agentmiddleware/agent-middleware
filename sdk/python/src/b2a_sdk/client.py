@@ -9,9 +9,11 @@ Provides wallet management, telemetry, and billing for agent swarms.
 from __future__ import annotations
 
 import logging
+import re
 import warnings
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, overload
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -36,8 +38,42 @@ from .models import (
     ReceiptVerification,
     ToolDefinition,
 )
+from .request_key import request_key
 
 logger = logging.getLogger("b2a_sdk")
+
+_UNSAFE_PATH_SEGMENT = re.compile(r"[\x00-\x20\x7f\\/?#%]")
+
+
+def require_path_segment(value: object, label: str) -> str:
+    """Reject an identifier that could change the URL route before sending it."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or _UNSAFE_PATH_SEGMENT.search(value)
+    ):
+        raise ValueError(f"{label} is not a safe path segment")
+    return value
+
+
+def _top_up_url(value: Any) -> str | None:
+    """Keep a valid server link verbatim without masking a 402 parsing error."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        # Accessing port also validates malformed values such as :not-a-port.
+        _ = parsed.port
+        if parsed.scheme in {"http", "https"}:
+            return value if parsed.hostname else None
+        if not parsed.scheme and value.startswith("/") and not value.startswith("//"):
+            return value
+    except ValueError:
+        return None
+    return None
 
 
 class DryRunSimulation:
@@ -100,8 +136,9 @@ class DryRunSimulation:
         """End the simulation session and get summary."""
         if self.session_id:
             try:
+                safe_id = require_path_segment(self.session_id, "session_id")
                 response = await self._client._client.delete(
-                    f"/v1/billing/dry-run/session/{self.session_id}"
+                    f"/v1/billing/dry-run/session/{safe_id}"
                 )
                 if response.status_code == 200:
                     return response.json()
@@ -166,7 +203,7 @@ class AgentMiddlewareClient:
         headers = {
             "X-API-Key": api_key,
             "Content-Type": "application/json",
-            "User-Agent": "b2a-sdk/0.5.0",
+            "User-Agent": "amw-sdk/0.5.0",
         }
         if bearer_token is not None:
             token = bearer_token.strip()
@@ -201,6 +238,8 @@ class AgentMiddlewareClient:
 
     @staticmethod
     def _validate_idempotency_key(idempotency_key: str) -> str:
+        if not isinstance(idempotency_key, str):
+            raise ValueError("idempotency_key must be a string")
         key = idempotency_key.strip()
         if not key:
             raise ValueError("idempotency_key must not be blank")
@@ -240,10 +279,16 @@ class AgentMiddlewareClient:
         if status_code == 402:
             body_detail = payload.get("detail")
             detail_payload = body_detail if isinstance(body_detail, dict) else {}
+            reported_wallet = detail_payload.get("wallet_id")
             raise InsufficientFundsError(
-                wallet_id=wallet_id or "unknown",
+                wallet_id=(
+                    reported_wallet
+                    if isinstance(reported_wallet, str) and reported_wallet.strip()
+                    else wallet_id or "unknown"
+                ),
                 shortfall=detail_payload.get("shortfall"),
-                top_up_url=detail_payload.get("top_up_url"),
+                shortfall_exact=detail_payload.get("shortfall_exact"),
+                top_up_url=_top_up_url(detail_payload.get("top_up_url")),
                 payload=payload,
             )
         if status_code == 403:
@@ -413,6 +458,7 @@ class AgentMiddlewareClient:
             raise AuthorizationError(reason, status_code=403, payload=envelope)
         raise APIError(reason, payload=envelope)
 
+    @overload
     async def invoke_tool(
         self,
         name: str,
@@ -421,9 +467,49 @@ class AgentMiddlewareClient:
         wallet_id: str,
         permit_id: str,
         idempotency_key: str,
+    ) -> InvocationResult: ...
+
+    @overload
+    async def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
+    ) -> InvocationResult: ...
+
+    async def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
     ) -> InvocationResult:
         """Invoke one MCP tool through the governed permit and receipt loop."""
-        key = self._validate_idempotency_key(idempotency_key)
+        for label, value in (("tool", name), ("wallet_id", wallet_id), ("permit_id", permit_id)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label} must not be blank")
+        key = self._validate_idempotency_key(
+            request_key(
+                name,
+                arguments,
+                business_id=business_id,
+                include=include,
+                exclude=exclude,
+            )
+            if idempotency_key == "auto"
+            else idempotency_key
+        )
         request_payload = {
             "jsonrpc": "2.0",
             "id": key,
@@ -493,7 +579,8 @@ class AgentMiddlewareClient:
 
     async def get_receipt(self, receipt_id: str) -> Receipt:
         """Fetch a wallet-authorized signed receipt."""
-        payload = await self._request_json("GET", f"/v1/receipts/{receipt_id}")
+        safe_id = require_path_segment(receipt_id, "receipt_id")
+        payload = await self._request_json("GET", f"/v1/receipts/{safe_id}")
         receipt = self._parse_receipt(payload, response_name="get")
         if receipt.receipt_id != receipt_id:
             raise APIError("receipt_id_mismatch", payload=payload)
@@ -501,6 +588,7 @@ class AgentMiddlewareClient:
 
     async def verify_receipt(self, receipt_id: str) -> ReceiptVerification:
         """Ask the trust plane to verify a receipt signature and linkage."""
+        require_path_segment(receipt_id, "receipt_id")
         payload = await self._request_json(
             "POST",
             "/v1/receipts/verify",
@@ -526,7 +614,8 @@ class AgentMiddlewareClient:
 
     async def get_evidence(self, receipt_id: str) -> EvidenceBundle:
         """Fetch the buyer-facing verification bundle for a receipt."""
-        payload = await self._request_json("GET", f"/v1/evidence/{receipt_id}")
+        safe_id = require_path_segment(receipt_id, "receipt_id")
+        payload = await self._request_json("GET", f"/v1/evidence/{safe_id}")
         receipt = self._parse_receipt(payload.get("receipt"), response_name="evidence")
         envelope_id = payload.get("receipt_id")
         if receipt.receipt_id != receipt_id or (
@@ -634,20 +723,16 @@ class AgentMiddlewareClient:
                 raise APIError("invalid_object_response", status_code=402)
             detail = body.get("detail")
             detail_payload = detail if isinstance(detail, dict) else {}
-            shortfall = detail_payload.get("shortfall", "unknown")
-            if shortfall is not None and shortfall != "unknown":
-                try:
-                    float(shortfall)
-                except (TypeError, ValueError):
-                    shortfall = "unknown"
-            top_up = detail_payload.get("top_up_url")
-            if not isinstance(top_up, str) or not top_up:
-                top_up = None
             detail_wallet = detail_payload.get("wallet_id")
             raise InsufficientFundsError(
-                wallet_id=str(detail_wallet) if detail_wallet else wallet_id,
-                shortfall=shortfall,
-                top_up_url=top_up,
+                wallet_id=(
+                    detail_wallet
+                    if isinstance(detail_wallet, str) and detail_wallet.strip()
+                    else wallet_id
+                ),
+                shortfall=detail_payload.get("shortfall"),
+                shortfall_exact=detail_payload.get("shortfall_exact"),
+                top_up_url=_top_up_url(detail_payload.get("top_up_url")),
                 payload=body,
             )
         # A 409 is an idempotency conflict only when a key was sent; unkeyed
@@ -777,7 +862,8 @@ class AgentMiddlewareClient:
 
     async def get_wallet(self, wallet_id: str) -> dict[str, Any]:
         """Get wallet details by ID."""
-        response = await self._client.get(f"/v1/billing/wallets/{wallet_id}")
+        safe_id = require_path_segment(wallet_id, "wallet_id")
+        response = await self._client.get(f"/v1/billing/wallets/{safe_id}")
         response.raise_for_status()
         return response.json()
 

@@ -17,7 +17,7 @@ from app.services.upstream_mcp import (
 
 
 @pytest.mark.parametrize(
-    "path,method",
+    ("path", "method"),
     [
         ("/v1/permits", "get"),
         ("/v1/permits", "post"),

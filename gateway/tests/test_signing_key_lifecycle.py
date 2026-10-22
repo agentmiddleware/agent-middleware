@@ -402,7 +402,7 @@ _UNAUTHORIZED_CREDENTIALS = (
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("headers,expected_status", _UNAUTHORIZED_CREDENTIALS)
+@pytest.mark.parametrize(("headers", "expected_status"), _UNAUTHORIZED_CREDENTIALS)
 async def test_active_signing_key_requires_authentication(
     client, clean_database, headers, expected_status
 ):
@@ -413,7 +413,7 @@ async def test_active_signing_key_requires_authentication(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("headers,expected_status", _UNAUTHORIZED_CREDENTIALS)
+@pytest.mark.parametrize(("headers", "expected_status"), _UNAUTHORIZED_CREDENTIALS)
 async def test_signing_key_by_id_requires_authentication(
     client, clean_database, headers, expected_status
 ):

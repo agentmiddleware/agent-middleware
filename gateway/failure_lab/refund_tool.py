@@ -196,7 +196,7 @@ class _BearerAuth:
 
     def __init__(self, app: Any, token: str) -> None:
         self._app = app
-        self._expected = f"Bearer {token}".encode("utf-8")
+        self._expected = f"Bearer {token}".encode()
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") == "http":

@@ -235,7 +235,7 @@ def test_repeat_window_seconds_rejects_booleans(value):
 
 
 @pytest.mark.parametrize(
-    "fields, expected",
+    ("fields", "expected"),
     [
         ({}, None),
         ({"repeat_window_seconds": None}, None),

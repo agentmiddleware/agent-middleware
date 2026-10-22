@@ -30,7 +30,8 @@ def _isolated_provider_singleton(monkeypatch):
         get_settings.cache_clear()
 
 
-def test_provider_refuses_without_explicit_dev_flag(_isolated_provider_singleton):
+@pytest.mark.usefixtures("_isolated_provider_singleton")
+def test_provider_refuses_without_explicit_dev_flag():
     with pytest.raises(RuntimeError, match="not a production login path") as exc_info:
         get_webauthn_provider()
     message = str(exc_info.value)
@@ -38,9 +39,8 @@ def test_provider_refuses_without_explicit_dev_flag(_isolated_provider_singleton
     assert "ENABLE_PROOF_SURFACES=true" in message
 
 
-def test_provider_available_with_explicit_dev_flag(
-    _isolated_provider_singleton, monkeypatch
-):
+@pytest.mark.usefixtures("_isolated_provider_singleton")
+def test_provider_available_with_explicit_dev_flag(monkeypatch):
     monkeypatch.setenv("ENABLE_PROOF_SURFACES", "true")
     get_settings.cache_clear()
 
@@ -51,9 +51,8 @@ def test_provider_available_with_explicit_dev_flag(
     assert get_webauthn_provider() is provider
 
 
-async def test_execute_action_skips_passkey_without_dev_flag(
-    _isolated_provider_singleton,
-):
+@pytest.mark.usefixtures("_isolated_provider_singleton")
+async def test_execute_action_skips_passkey_without_dev_flag():
     """Without the dev flag there is no passkey surface, so execution must
     not crash building the gated provider, even for high-risk actions."""
     from app.schemas.awi import (

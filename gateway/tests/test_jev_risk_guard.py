@@ -238,7 +238,8 @@ async def test_off_has_zero_calls_and_no_metadata(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "mode,injected,verdict", [("log", 0.95, "escalate"), ("enforce", 0.0, "pass")]
+    ("mode", "injected", "verdict"),
+    [("log", 0.95, "escalate"), ("enforce", 0.0, "pass")],
 )
 async def test_success_metadata_and_replay(
     client,
@@ -527,7 +528,7 @@ async def test_cross_wallet_denial_never_calls_jev(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "failure,status",
+    ("failure", "status"),
     [
         ("timeout", "timeout"),
         ("http_500", "http_500"),
@@ -576,7 +577,7 @@ async def test_failures_fail_open_with_metadata(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "tier,count,status",
+    ("tier", "count", "status"),
     [
         ("low", 0, "skipped_tier"),
         ("medium", 1, "ok"),
@@ -673,7 +674,7 @@ async def test_reversed_choice_averaging(mock_jev, monkeypatch):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "field,value,tier,approval,reason",
+    ("field", "value", "tier", "approval", "reason"),
     [
         ("injected_instructions", 0.699, "medium", False, None),
         ("injected_instructions", 0.70, "medium", False, "injected_instructions"),
@@ -707,7 +708,7 @@ async def test_thresholds(mock_jev, monkeypatch, field, value, tier, approval, r
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "irreversible,money,tier,escalated",
+    ("irreversible", "money", "tier", "escalated"),
     [
         (0.8, 0.8, "low", True),
         (0.799, 0.8, "low", False),

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, overload
 
+from .errors import AgentMiddlewareError
 from .models import (
     EvidenceBundle,
     InvocationResult,
@@ -25,6 +26,7 @@ from .models import (
     ReceiptVerification,
     ToolDefinition,
 )
+from .request_key import request_key
 
 
 class SyncAgentMiddlewareClient:
@@ -165,4 +167,105 @@ class SyncAgentMiddlewareClient:
         self.close()
 
 
-__all__ = ["SyncAgentMiddlewareClient"]
+class Client:
+    """Blocking client with a short governed tool call method."""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "http://localhost:8000",
+        timeout: float = 10.0,
+        *,
+        wallet_id: str | None = None,
+        permit_id: str | None = None,
+        transport: Any | None = None,
+        bearer_token: str | None = None,
+    ) -> None:
+        from .client import AgentMiddlewareClient
+
+        self._client = AgentMiddlewareClient(
+            api_key,
+            base_url=base_url,
+            timeout=timeout,
+            transport=transport,
+            bearer_token=bearer_token,
+        )
+        self._loop = asyncio.new_event_loop()
+        self._default_wallet_id = wallet_id
+        self._default_permit_id = permit_id
+        self.last_request_key: str | None = None
+
+    @property
+    def base_url(self) -> str:
+        """Return the gateway origin used by this client."""
+        return self._client.base_url
+
+    @property
+    def api_key(self) -> str:
+        """Return the API key sent by this client."""
+        return self._client.api_key
+
+    def call(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        key: str | None = None,
+        permit_id: str | None = None,
+        wallet_id: str | None = None,
+    ) -> Receipt:
+        """Call a permitted tool and retain its portable verification material."""
+        selected_wallet = wallet_id if wallet_id is not None else self._default_wallet_id
+        selected_permit = permit_id if permit_id is not None else self._default_permit_id
+        if not isinstance(selected_wallet, str) or not selected_wallet.strip():
+            raise ValueError("wallet_id must not be blank")
+        if not isinstance(selected_permit, str) or not selected_permit.strip():
+            raise ValueError("permit_id must not be blank")
+        if key == "auto":
+            raise ValueError("key must not be 'auto'; omit key to generate one")
+        selected_key = self._client._validate_idempotency_key(
+            request_key(tool, args) if key is None else key
+        )
+        self.last_request_key = selected_key
+
+        async def invoke() -> Receipt:
+            from .client import require_path_segment
+
+            result = await self._client.invoke_tool(
+                tool,
+                args,
+                wallet_id=selected_wallet,
+                permit_id=selected_permit,
+                idempotency_key=selected_key,
+            )
+            receipt = result.receipt
+            receipt.request_key = selected_key
+            try:
+                safe_id = require_path_segment(receipt.receipt_id, "receipt_id")
+                receipt.portable_bundle = await self._client._request_json(
+                    "GET", f"/v1/receipts/{safe_id}/portable"
+                )
+                receipt.trust_keys_document = await self._client._request_json(
+                    "GET", "/.well-known/trust-keys.json"
+                )
+            except (AgentMiddlewareError, ValueError):
+                pass
+            return receipt
+
+        return self._loop.run_until_complete(invoke())
+
+    def close(self) -> None:
+        """Close the HTTP client and its event loop."""
+        if not self._loop.is_closed():
+            try:
+                self._loop.run_until_complete(self._client.close())
+            finally:
+                self._loop.close()
+
+    def __enter__(self) -> Client:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+
+__all__ = ["Client", "SyncAgentMiddlewareClient"]

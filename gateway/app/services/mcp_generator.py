@@ -19,6 +19,7 @@ from typing import Any
 from .. import __version__
 from ..core.product_positioning import (
     LEGACY_MCP_SERVER_NAME,
+    PLAIN_PRODUCT_DESCRIPTION,
     POSITIONING_DESCRIPTION,
     get_product_positioning,
 )
@@ -77,7 +78,8 @@ class McpGenerator:
     # Stable protocol identity retained for existing MCP clients. Canonical
     # category metadata lives in the versioned ``positioning`` object.
     MANIFEST_NAME = LEGACY_MCP_SERVER_NAME
-    MANIFEST_DESCRIPTION = (
+    MANIFEST_DESCRIPTION = PLAIN_PRODUCT_DESCRIPTION
+    MANIFEST_DETAILS = (
         f"{POSITIONING_DESCRIPTION} Tools listed here are "
         "executable local, configured upstream, or dogfood endpoints — not a "
         "metadata-only service catalog."
@@ -91,6 +93,7 @@ class McpGenerator:
             "version": MCP_TOOLS_JSON_VERSION,
             "name": self.MANIFEST_NAME,
             "description": self.MANIFEST_DESCRIPTION,
+            "details": self.MANIFEST_DETAILS,
             "positioning": get_product_positioning(),
             "tools": tools,
             "generated_at": datetime.now(timezone.utc).isoformat(),

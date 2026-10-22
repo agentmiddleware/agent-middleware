@@ -664,6 +664,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             "/llm.txt",
             "/llms.txt",
             "/docs/index",
+            "/docs/concepts/request-keys",
             "/WEDGE.md",
             "/SECURITY_LIMITATIONS.md",
             "/DESIGN_PARTNER_GUIDE.md",

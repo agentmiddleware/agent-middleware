@@ -112,6 +112,9 @@ def test_public_discovery_is_not_forced_no_store() -> None:
     app = Starlette(
         routes=[
             Route("/openapi.json", lambda request: PlainTextResponse("{}")),
+            Route(
+                "/docs/concepts/request-keys", lambda request: PlainTextResponse("{}")
+            ),
             Route("/v1/discover", lambda request: PlainTextResponse("{}")),
             Route(
                 "/.well-known/agent.json",
@@ -122,7 +125,11 @@ def test_public_discovery_is_not_forced_no_store() -> None:
     app.add_middleware(SecurityHeadersMiddleware)
     client = TestClient(app)
 
-    for path in ("/openapi.json", "/.well-known/agent.json"):
+    for path in (
+        "/openapi.json",
+        "/docs/concepts/request-keys",
+        "/.well-known/agent.json",
+    ):
         assert "cache-control" not in client.get(path).headers
 
 

@@ -27,7 +27,7 @@ Typical use::
 The only dependency beyond the standard library is ``cryptography``, installed
 via the ``verify`` extra::
 
-    pip install "b2a-sdk[verify]"
+    pip install "amw-sdk[verify]"
 """
 
 from __future__ import annotations
@@ -249,7 +249,7 @@ def _load_verifier(raw_public_key: bytes):
     except ImportError as exc:  # pragma: no cover - depends on install extras
         raise VerificationError(
             "Ed25519 verification requires the 'cryptography' package. "
-            'Install it with: pip install "b2a-sdk[verify]"'
+            'Install it with: pip install "amw-sdk[verify]"'
         ) from exc
     return Ed25519PublicKey.from_public_bytes(raw_public_key)
 
@@ -265,7 +265,7 @@ def _verify_ed25519_signature(
     except ImportError as exc:  # pragma: no cover - depends on install extras
         raise VerificationError(
             "Ed25519 verification requires the 'cryptography' package. "
-            'Install it with: pip install "b2a-sdk[verify]"'
+            'Install it with: pip install "amw-sdk[verify]"'
         ) from exc
 
     try:
@@ -296,7 +296,7 @@ def _verify_p256_signature(
     except ImportError as exc:  # pragma: no cover - depends on install extras
         raise VerificationError(
             "P-256 verification requires the 'cryptography' package. "
-            'Install it with: pip install "b2a-sdk[verify]"'
+            'Install it with: pip install "amw-sdk[verify]"'
         ) from exc
 
     try:

@@ -32,6 +32,7 @@ import redis.asyncio as redis
 
 from .config import get_settings
 from .db_urls import (
+    _is_in_memory_sqlite,
     as_asyncpg_url,
     is_postgres_url,
     is_sqlite_url,
@@ -156,15 +157,23 @@ class DurableStateStore:
         # aiosqlite.connect would create a file with that literal name while
         # the operator believes state is durable elsewhere. Accept the URL
         # form too; anything that is not a SQLite URL stays a raw path, and
-        # an in-memory spelling resolves to "" so it keeps the deliberate
-        # non-durable treatment below instead of a garbage file.
+        # an in-memory spelling resolves to ":memory:".
         raw_sqlite_url = settings.SQLITE_URL.strip()
         if raw_sqlite_url and is_sqlite_url(raw_sqlite_url):
-            # SQLAlchemy URL form: normalize to the file path aiosqlite
-            # expects. An in-memory spelling normalizes to "" so it keeps
-            # the deliberate non-durable treatment instead of becoming a
-            # file with a URL for a name.
-            self._sqlite_url = sqlite_path_from_url(raw_sqlite_url)
+            # SQLAlchemy URL form, any driver (sqlite://, sqlite+aiosqlite://,
+            # sqlite+pysqlite://): strip the scheme to the database part.
+            # Only an empty or in-memory database part is memory, and it
+            # must become ":memory:", not "", or the DATABASE_URL fallback
+            # below would write the state to disk. Every in-memory spelling
+            # (including ``file::memory:?...``, which aiosqlite would treat
+            # as a literal filename without uri=True) maps to plain
+            # ":memory:"; the store holds a single connection, so all reads
+            # and writes see the same database. Anything else is a file.
+            _, _, remainder = raw_sqlite_url.partition("://")
+            database = remainder[1:] if remainder.startswith("/") else remainder
+            self._sqlite_url = (
+                ":memory:" if _is_in_memory_sqlite(database) else database
+            )
         else:
             # Documented raw-path form (or the ":memory:" shorthand).
             self._sqlite_url = raw_sqlite_url

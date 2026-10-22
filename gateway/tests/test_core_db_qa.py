@@ -1077,7 +1077,13 @@ def test_durable_sqlite_url_accepts_url_and_path_forms(monkeypatch, tmp_path):
     raw = str(tmp_path / "r.db")
     assert _durable(monkeypatch, SQLITE_URL=raw)._sqlite_url == raw
     assert _durable(monkeypatch, SQLITE_URL=":memory:")._sqlite_url == ":memory:"
-    assert _durable(monkeypatch, SQLITE_URL="sqlite:///:memory:")._sqlite_url == ""
+    # URL form must match the raw shorthand; "" fell through to DATABASE_URL.
+    assert (
+        _durable(monkeypatch, SQLITE_URL="sqlite:///:memory:")._sqlite_url == ":memory:"
+    )
+    # Any SQLAlchemy driver spelling with a real database part is a file.
+    pysqlite = f"sqlite+pysqlite:///{tmp_path}/p.db"
+    assert _durable(monkeypatch, SQLITE_URL=pysqlite)._sqlite_url == f"{tmp_path}/p.db"
 
 
 @pytest.mark.anyio

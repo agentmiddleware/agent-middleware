@@ -11,7 +11,38 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.config import get_settings
 from app.main import app
+from app.routers.well_known import _build_agent_manifest
 from app.services.mcp_generator import McpGenerator
+
+
+PLAIN_DESCRIPTION = (
+    "Agent Middleware is a gateway for an agent's configured upstream tools. "
+    "It checks signed permits, sends each accepted request at most once per key, "
+    "and returns signed receipts anyone can verify offline."
+)
+PRECISE_DESCRIPTION = (
+    "Transaction-integrity boundary for consequential autonomous actions on the "
+    "configured upstream-MCP path: one logical action binds scoped authority and "
+    "configured consumption to at most one gateway dispatch and debit, records "
+    "delivery_uncertain instead of automatically redispatching, and links gateway "
+    "evidence for required external reconciliation."
+)
+
+
+def _assert_plain_description(description: str) -> None:
+    assert description == PLAIN_DESCRIPTION
+    assert len(description) < 300
+    assert description.count(".") == 2
+    assert not any(dash in description for dash in ("-", "–", "—"))
+    assert not any(
+        jargon in description.lower()
+        for jargon in (
+            "trust plane",
+            "transaction boundary",
+            "wedge",
+            "bounded authority",
+        )
+    )
 
 
 @pytest.fixture
@@ -49,14 +80,40 @@ async def test_tools_json_envelope_has_versioned_transaction_positioning(client)
     assert body["name"] == McpGenerator.MANIFEST_NAME
     assert "B2A Service Marketplace" not in body["name"]
     assert "B2A" not in body["name"]
-    assert "transaction-integrity boundary" in body["description"].lower()
+    _assert_plain_description(body["description"])
+    assert body["details"] == (
+        PRECISE_DESCRIPTION
+        + " Tools listed here are executable local, configured upstream, or "
+        "dogfood endpoints — not a metadata-only service catalog."
+    )
     assert body["positioning"]["schema_version"] == "1.0"
     assert body["positioning"]["id"] == (
         "transaction_integrity_for_consequential_autonomous_actions"
     )
-    assert "executable" in body["description"].lower()
-    assert "configured upstream" in body["description"].lower()
-    assert "metadata-only" in body["description"].lower()
+
+
+@pytest.mark.anyio
+async def test_agent_json_preserves_precise_copy_beside_plain_description(
+    client, proof_surfaces_off
+):
+    resp = await client.get("/.well-known/agent.json")
+    assert resp.status_code == 200
+    body = resp.json()
+    _assert_plain_description(body["description"])
+    assert body["details"] == PRECISE_DESCRIPTION
+    assert body["name"] == "agent-middleware-api"
+    assert "agent_first" in body
+
+
+def test_agent_json_preserves_precise_proof_surface_copy(monkeypatch):
+    monkeypatch.setattr(get_settings(), "ENABLE_PROOF_SURFACES", True)
+    body = _build_agent_manifest().model_dump(mode="json")
+    _assert_plain_description(body["description"])
+    assert body["details"] == (
+        PRECISE_DESCRIPTION
+        + " Additional routers are labeled proof surfaces, outside the "
+        "transaction-integrity boundary."
+    )
 
 
 @pytest.mark.anyio

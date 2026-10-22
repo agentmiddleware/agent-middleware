@@ -93,6 +93,8 @@ class Settings(BaseSettings):
     DEMO_WALLET_DAILY_LIMIT: Decimal | None = None
     DEMO_MAX_PERMIT_CREDITS: Decimal | None = None
     DEMO_MAX_PERMIT_TTL_MINUTES: int | None = None
+    DEMO_AUTO_PERMIT_MAX_CREDITS: Decimal = Decimal("5")
+    DEMO_AUTO_PERMIT_TTL_SECONDS: int = 120
     DEMO_ISSUE_PER_IP_PER_DAY: int = 3
     DEMO_ISSUE_GLOBAL_PER_HOUR: int = 30
     DEMO_ISSUE_GLOBAL_PER_DAY: int = 200
@@ -108,6 +110,7 @@ class Settings(BaseSettings):
         "DEMO_KEY_TTL_DAYS",
         "DEMO_KEY_MAX_USES",
         "DEMO_MAX_PERMIT_TTL_MINUTES",
+        "DEMO_AUTO_PERMIT_TTL_SECONDS",
         "DEMO_ISSUE_PER_IP_PER_DAY",
         "DEMO_ISSUE_GLOBAL_PER_HOUR",
         "DEMO_ISSUE_GLOBAL_PER_DAY",
@@ -127,6 +130,7 @@ class Settings(BaseSettings):
             "DEMO_KEY_TTL_DAYS": (1, 30),
             "DEMO_KEY_MAX_USES": (1, 10_000),
             "DEMO_MAX_PERMIT_TTL_MINUTES": (1, 1_440),
+            "DEMO_AUTO_PERMIT_TTL_SECONDS": (1, 600),
             "DEMO_ISSUE_PER_IP_PER_DAY": (1, 1_000),
             "DEMO_ISSUE_GLOBAL_PER_HOUR": (1, 100_000),
             "DEMO_ISSUE_GLOBAL_PER_DAY": (1, 1_000_000),
@@ -138,7 +142,10 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "DEMO_WALLET_CREDITS", "DEMO_MAX_PERMIT_CREDITS", "DEMO_WALLET_DAILY_LIMIT"
+        "DEMO_WALLET_CREDITS",
+        "DEMO_MAX_PERMIT_CREDITS",
+        "DEMO_WALLET_DAILY_LIMIT",
+        "DEMO_AUTO_PERMIT_MAX_CREDITS",
     )
     @classmethod
     def _validate_demo_credits(cls, value: Decimal | None, info) -> Decimal | None:

@@ -79,17 +79,11 @@ def _reject_jcs(node: Any) -> None:
     if node is None or isinstance(node, bool):
         return
     if isinstance(node, int):
-        try:
-            as_float = float(node)
-        except OverflowError as exc:
+        # Even exactly representable integers such as 2**60 can serialize
+        # differently in Python and ECMAScript.
+        if abs(node) > 2**53 - 1:
             raise TranscodeError(
-                "integer is outside the range JSON numbers can represent"
-            ) from exc
-        # 2**53+1 survives Python json.dumps but not JSON.stringify. Signing
-        # those digits would not match another JCS implementation.
-        if not as_float.is_integer() or int(as_float) != node:
-            raise TranscodeError(
-                "integers that are not exact JSON numbers are not supported "
+                "integers outside the safe JSON range are not supported "
                 "by this JCS subset; represent them as strings"
             )
         return
@@ -129,7 +123,7 @@ def jcs_canonicalize(value: Any) -> bytes:
     """Minimal RFC 8785 (JCS) canonicalization for the value shapes we emit.
 
     Object keys are ordered by UTF-16 code units. Floats, lone surrogates,
-    and integers that are not exact JSON numbers are rejected: a signature
+    and integers outside the safe range are rejected: a signature
     over ambiguous bytes is worse than no signature. Amounts belong in
     strings, as the trust plane already stores them.
     """

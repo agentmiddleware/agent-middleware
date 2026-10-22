@@ -33,7 +33,9 @@ TOOL = os.environ.get("AMW_TOOL", "partner.notes.write")
 async def call_once(api_key: str, idempotency_key: str) -> dict:
     headers = {"X-API-Key": api_key, "Idempotency-Key": idempotency_key}
     async with (
-        httpx.AsyncClient(headers=headers) as http_client,
+        httpx.AsyncClient(
+            headers=headers, timeout=httpx.Timeout(30, read=300)
+        ) as http_client,
         streamable_http_client(URL, http_client=http_client) as (read, write, *_),
         ClientSession(read, write) as session,
     ):

@@ -91,10 +91,17 @@ def test_lone_surrogate_is_refused() -> None:
         interop.jcs_canonicalize({"text": "\ud800"})
 
 
-def test_non_exact_integer_is_refused() -> None:
-    """Integers that are not exact JSON numbers would diverge across languages."""
+def test_largest_safe_integer_is_accepted() -> None:
+    assert interop.jcs_canonicalize({"n": 2**53 - 1}) == b'{"n":9007199254740991}'
+
+
+@pytest.mark.parametrize(
+    "value", [2**53, 2**53 + 1, 2**60, -(2**53), -(2**53 + 1), -(2**60)]
+)
+def test_unsafe_integer_is_refused(value: int) -> None:
+    """Out-of-range integers can serialize differently across languages."""
     with pytest.raises(interop.TranscodeError, match="integer"):
-        interop.jcs_canonicalize({"n": 2**53 + 1})
+        interop.jcs_canonicalize({"n": value})
 
 
 def test_tuple_is_not_silently_signed_as_an_array() -> None:

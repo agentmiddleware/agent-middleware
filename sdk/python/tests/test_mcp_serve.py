@@ -38,15 +38,31 @@ def test_serve_async_registers_tool_and_starts_transport(monkeypatch, tmp_path, 
     assert len(started) == 1
     assert started[0][0] == transport
     server = started[0][1]
-    assert [(tool.name, tool.description) for tool in asyncio.run(server.list_tools())] == [
+    registered_tools = asyncio.run(server.list_tools())
+    assert [(tool.name, tool.description) for tool in registered_tools] == [
         ("partner.search", "Search")
     ]
+    assert {"permit_id", "idempotency_key"} <= registered_tools[0].inputSchema["properties"].keys()
+    assert not {"permit_id", "idempotency_key"} & set(
+        registered_tools[0].inputSchema.get("required", [])
+    )
+    assert registered_tools[0].inputSchema["properties"]["kwargs"]["type"] == "object"
     if transport == "sse":
         assert server.settings.port == 8765
 
 
-@pytest.mark.parametrize("status_code", [200, 403])
-def test_serve_async_tool_invokes_gateway_with_arguments(monkeypatch, tmp_path, status_code):
+@pytest.mark.parametrize(
+    "status_code, detail, permit_id, idempotency_key",
+    [
+        (200, None, None, None),
+        (200, None, "permit-123", "invoke-123"),
+        (403, "other_denial", None, None),
+        (403, "permit_required", None, None),
+    ],
+)
+def test_serve_async_tool_invokes_gateway_with_arguments(
+    monkeypatch, tmp_path, status_code, detail, permit_id, idempotency_key
+):
     fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
     httpx = pytest.importorskip("httpx")
     monkeypatch.chdir(tmp_path)
@@ -58,6 +74,7 @@ def test_serve_async_tool_invokes_gateway_with_arguments(monkeypatch, tmp_path, 
         lambda **kwargs: {"tools": [{"name": "partner.search", "description": "Search"}]},
     )
     registered = []
+    started = []
     requests = []
     add_tool = fastmcp.add_tool
 
@@ -66,11 +83,14 @@ def test_serve_async_tool_invokes_gateway_with_arguments(monkeypatch, tmp_path, 
         return add_tool(self, handler, **kwargs)
 
     async def run_stdio(self):
-        pass
+        started.append(self)
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(status_code, json={"content": [{"type": "text", "text": "ok"}]})
+        body = (
+            {"content": [{"type": "text", "text": "ok"}]} if detail is None else {"detail": detail}
+        )
+        return httpx.Response(status_code, json=body)
 
     client_type = httpx.AsyncClient
     transport = httpx.MockTransport(respond)
@@ -80,22 +100,40 @@ def test_serve_async_tool_invokes_gateway_with_arguments(monkeypatch, tmp_path, 
 
     asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
     assert len(registered) == 1
+    assert len(started) == 1
+    caller_context = {}
+    if permit_id is not None:
+        caller_context = {"permit_id": permit_id, "idempotency_key": idempotency_key}
     if status_code == 200:
-        assert asyncio.run(registered[0](query="sample")) == {
-            "content": [{"type": "text", "text": "ok"}]
-        }
+        result = asyncio.run(
+            started[0].call_tool(
+                "partner.search", {"kwargs": {"query": "sample"}, **caller_context}
+            )
+        )
+        assert result.isError is False
+        assert result.content[0].text == "ok"
+    elif detail == "permit_required":
+        result = asyncio.run(
+            started[0].call_tool("partner.search", {"kwargs": {"query": "sample"}})
+        )
+        assert result.isError is True
+        assert result.structuredContent["error"] == "permit_required"
+        assert "permit_id" in result.content[0].text
     else:
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            asyncio.run(registered[0](query="sample"))
+            asyncio.run(registered[0](query="sample", **caller_context))
         assert exc_info.value.response.status_code == 403
     assert len(requests) == 1
     assert requests[0].method == "POST"
     assert str(requests[0].url) == "https://unused.invalid/mcp/tools/partner.search/invoke"
     assert requests[0].headers["X-API-Key"] == "test-key"
+    mcp_context = {"wallet_id": "test-wallet"}
+    if permit_id is not None:
+        mcp_context.update({"permit_id": permit_id, "idempotency_key": idempotency_key})
     assert json.loads(requests[0].content) == {
         "name": "partner.search",
         "arguments": {"query": "sample"},
-        "mcp_context": {"wallet_id": "test-wallet"},
+        "mcp_context": mcp_context,
     }
 
 

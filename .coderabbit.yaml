@@ -1,0 +1,186 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: false
+  high_level_summary_in_walkthrough: false
+  collapse_walkthrough: true
+  changed_files_summary: false
+  sequence_diagrams: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  in_progress_fortune: false
+  poem: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+    ignore_title_keywords:
+      - WIP
+      - "[skip review]"
+    ignore_usernames:
+      - dependabot[bot]
+      - renovate[bot]
+
+  # Golden signing fixtures (gateway/tests/fixtures/*_signing_golden) and
+  # spec/test-vectors are deliberately NOT excluded: they are crypto test data.
+  path_filters:
+    # Lockfiles
+    - "!**/uv.lock"
+    - "!**/package-lock.json"
+    - "!**/pnpm-lock.yaml"
+    - "!**/yarn.lock"
+    - "!**/poetry.lock"
+    # Build output, dependencies, vendored code
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/node_modules/**"
+    - "!**/vendor/**"
+    - "!**/third_party/**"
+    - "!**/*.egg-info/**"
+    - "!**/__pycache__/**"
+    - "!**/htmlcov/**"
+    # Generated and minified files
+    - "!**/*_pb2.py"
+    - "!**/*_pb2.pyi"
+    - "!**/*.generated.*"
+    - "!**/*.min.js"
+    - "!**/*.min.css"
+    - "!**/*.map"
+    # Snapshot output (snapshot *tests* in gateway/tests stay reviewed)
+    - "!**/__snapshots__/**"
+    - "!**/*.snap"
+    # Large data and dumps
+    - "!**/*.csv"
+    - "!**/*.jsonl"
+    - "!**/*.parquet"
+    - "!**/*.dump"
+    - "!**/*.sql.gz"
+    - "!**/data/dumps/**"
+    # Backups and scratch
+    - "!**/*.bak"
+    - "!**/*.orig"
+    - "!**/*~"
+    - "!**/backups/**"
+    - "!**/tmp/**"
+    - "!**/.tmp/**"
+
+  path_instructions:
+    - path: "gateway/**"
+      instructions: |
+        Agent Middleware gateway: Python FastAPI service (app/routers, app/services,
+        app/trust, app/core), Alembic migrations in gateway/migrations. Licensed
+        FSL-1.1-ALv2 (Fair Source), not Apache-2.0. Focus on correctness of
+        security-critical behavior:
+        - Permit checks (app/trust/permits.py, app/services/permits.py,
+          action_permits.py, app/core/scopes.py) must fail closed. A missing,
+          expired, revoked, mis-scoped or unparseable permit, or any exception
+          during the check, must deny the action. Flag any code path that
+          executes or charges when a permit check errors or is skipped.
+        - Signed receipts (app/trust/receipts.py, app/trust/signing.py,
+          app/services/receipts.py, signing_keys.py) must be correct and offline
+          verifiable: signed bytes come from the canonical JSON form, every field
+          a verifier reports is inside the signature, key IDs resolve through the
+          published key set, and denials and failures are receipted as well as
+          successes. Flag changes to the signing input that are not matched by
+          updated golden fixtures in gateway/tests/fixtures and spec/test-vectors.
+        - Idempotency (app/trust/idempotency.py, app/services/idempotency.py,
+          app/routers/http_idempotency.py) must prevent double execution and
+          double charging under retries and concurrent requests. Check that the
+          key is reserved before side effects, the same key with a different
+          request body is rejected, and replays return the stored result
+          without re-executing.
+        - Wallet and billing (wallet_engine.py, wallet_resolution.py,
+          billing_engine.py, credits.py, quotes.py, refund_reconciliation.py,
+          x402_engine.py): balance checks and debits must be atomic; insufficient
+          funds must deny before execution with a clear error and no partial
+          debit; refunds must not double-credit. Flag float arithmetic on money.
+        - Tenant isolation: queries must be scoped to the authenticated tenant or
+          wallet; flag cross-tenant reads or writes.
+        - No secrets in logs, errors or receipts: API keys, JWTs, signing keys,
+          webhook secrets, Stripe keys, request keys. Flag new logging of request
+          headers or raw bodies.
+        - Migrations: flag destructive or non-reversible changes without a
+          downgrade path.
+        - Security-critical changes should include negative-path tests
+          (unauthorized, cross-tenant, replay, insufficient funds).
+        Follow gateway/app/services/AGENTS.md where it applies.
+
+    - path: "**/*.{py,ts,mjs,js,sh}"
+      instructions: |
+        Licensing is per directory (see LICENSING.md): gateway/ is FSL-1.1-ALv2
+        (gateway/LICENSE.md); everything else is Apache-2.0. Files currently
+        carry no per-file license headers, so do not request one on every file.
+        Do flag: an SPDX or license header that contradicts the file's directory
+        (Apache-2.0 inside gateway/, or FSL outside gateway/); a single file
+        declaring both licenses; and code copied from gateway/ into an Apache-2.0
+        directory (sdk/, verifier/, spec/, integrations/, examples/) or the
+        reverse, which changes its license.
+
+    - path: "sdk/**"
+      instructions: |
+        Public SDKs, Apache-2.0. Python package in sdk/python/src (new name
+        `amw`, legacy name `b2a_sdk`); TypeScript verifier in sdk/typescript
+        (@agent-middleware/verify).
+        - Public API stability: flag removed or renamed public symbols, changed
+          function signatures, changed defaults, or changed exception types
+          without a deprecation path and a CHANGELOG entry.
+        - The b2a -> amw rename must stay backward compatible: `import b2a_sdk`
+          and old b2a-named entry points must keep working and emit a
+          DeprecationWarning, and every name exported by `amw` must also resolve
+          through the legacy alias. Flag anything that breaks existing b2a users.
+        - Python and TypeScript verifiers must agree on the same receipt bundle;
+          a behavior change in one should have the matching change in the other
+          and pass spec/test-vectors.
+        - No network calls in verification code paths.
+
+    - path: "integrations/**"
+      instructions: |
+        Framework integrations (LangChain, OpenAI Agents, CrewAI, AutoGen,
+        LangGraph), Apache-2.0. Package names still use *_b2a; keep them
+        importable. Check that permit and receipt handling is passed through
+        from the SDK, not reimplemented, and that a gateway denial is never
+        swallowed and turned into a tool success.
+
+    - path: "verifier/**"
+      instructions: |
+        Offline receipt verifier, Apache-2.0. Crypto correctness is the product:
+        Ed25519 signatures are verified over the exact canonical bytes; every
+        reported field is read from the signed payload, not from unsigned
+        envelope data; unknown key IDs, malformed input and unsupported versions
+        produce an explicit failure or "cannot tell", never a pass. Use
+        constant-time comparisons where secrets are compared. No network access.
+
+    - path: "spec/**"
+      instructions: |
+        Format specifications (permit, receipt, key set, request-key) and test
+        vectors, Apache-2.0. Check that spec text, the gateway implementation,
+        the Python and TypeScript verifiers, and spec/test-vectors agree. Flag
+        field names, canonicalization rules, signature inputs or status values
+        that are changed in one place but not the others. keys.json holds the
+        public key of a fixed, published test seed (see generate.py); do not
+        flag it as a leaked secret.
+
+    - path: "examples/**"
+      instructions: |
+        Example code, Apache-2.0. Light touch: only flag code that would not
+        run against the current SDK, hardcoded real credentials, or patterns
+        that would be unsafe if copied into production. Skip style nits.
+
+chat:
+  art: false
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: auto
+  issues:
+    scope: auto
+  pull_requests:
+    scope: auto

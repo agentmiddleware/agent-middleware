@@ -409,6 +409,39 @@ and a call with no key at all is a new charged operation every time.
 `tests/test_minimal_path_e2e.py` drives exactly this with the official
 Python SDK client.
 
+## 11. Call the demo tenant with curl (optional)
+
+This path needs a gateway with `ENABLE_DEMO_TENANT=true`,
+`DEMO_ALLOWED_TOOLS=partner.echo`, and `partner.echo` registered. The local
+quickstart server above does not enable the demo tenant by default. Set
+`API_URL` to the configured gateway's base URL. No SDK or existing permit
+is needed.
+
+```bash
+curl -sS -X POST "$API_URL/v1/demo/keys" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+The response shows `api_key` once and includes `wallet_id`. Replace
+`YOUR_DEMO_KEY` and `YOUR_DEMO_WALLET_ID` below with those values:
+
+```bash
+curl -sS -X POST "$API_URL/mcp/messages" \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: YOUR_DEMO_KEY' \
+  -H 'Idempotency-Key: demo-echo-1' \
+  -d '{"jsonrpc":"2.0","id":"demo-echo-1","method":"tools/call","params":{"name":"partner.echo","arguments":{"message":"hello"},"mcpContext":{"wallet_id":"YOUR_DEMO_WALLET_ID"}}}'
+```
+
+The `result` includes `permit_id` and a signed `receipt` with the same
+`permit_id`. The permit allows only `partner.echo`. Its credit and lifetime
+limits are bounded by `DEMO_AUTO_PERMIT_MAX_CREDITS` and
+`DEMO_AUTO_PERMIT_TTL_SECONDS`. Configured `DEMO_MAX_PERMIT_CREDITS` and
+`DEMO_MAX_PERMIT_TTL_MINUTES` can lower those bounds. Send the same request
+again with the same `Idempotency-Key`:
+a retry with the same key returns the original receipt instead of dispatching again.
+
 ## Starting over
 
 State persists across restarts (`make quickstart` resumes where you left

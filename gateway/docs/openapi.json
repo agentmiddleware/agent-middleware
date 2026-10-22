@@ -10168,6 +10168,17 @@
               }
             ],
             "title": "Receipt"
+          },
+          "permit_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Id"
           }
         },
         "type": "object",

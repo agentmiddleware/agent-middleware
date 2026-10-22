@@ -17,8 +17,9 @@ from app.services.mcp_generator import McpGenerator
 
 PLAIN_DESCRIPTION = (
     "Agent Middleware is a gateway for an agent's configured upstream tools. "
-    "It checks signed permits, sends each accepted request at most once per key, "
-    "and returns signed receipts anyone can verify offline."
+    "For governed calls, it checks a signed permit and sends each accepted "
+    "upstream request at most once per key; its signed receipts can be "
+    "verified offline."
 )
 PRECISE_DESCRIPTION = (
     "Transaction-integrity boundary for consequential autonomous actions on the "
@@ -50,6 +51,22 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+@pytest.mark.anyio
+async def test_permissive_discovery_scopes_guarantees_to_governed_calls(
+    client, monkeypatch
+):
+    cfg = get_settings()
+    monkeypatch.setattr(cfg, "TRUST_MODE_ENABLED", True)
+    monkeypatch.setattr(cfg, "ALLOW_LEGACY_UNPERMITTED_MCP", True)
+
+    for path in ("/mcp/tools.json", "/.well-known/agent.json"):
+        resp = await client.get(path)
+        assert resp.status_code == 200
+        description = resp.json()["description"]
+        _assert_plain_description(description)
+        assert "For governed calls," in description
 
 
 @pytest.fixture

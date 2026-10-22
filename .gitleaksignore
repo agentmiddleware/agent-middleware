@@ -34,7 +34,6 @@ gateway/tests/test_iga_policy.py:generic-api-key:1124
 gateway/tests/test_iga_policy.py:generic-api-key:1201
 gateway/tests/test_iga_policy.py:generic-api-key:987
 gateway/tests/test_jev_risk_guard.py:amw-private-key-material:597
-gateway/tests/test_jev_risk_guard.py:amw-private-key-material:605
 gateway/tests/test_jwt_auth.py:generic-api-key:24
 gateway/tests/test_mcp_dispatch_reconciliation.py:generic-api-key:1286
 gateway/tests/test_mcp_internal_error_disclosure.py:generic-api-key:302

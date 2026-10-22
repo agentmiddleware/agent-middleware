@@ -50,8 +50,8 @@ def test_server_has_one_streamable_http_remote_with_api_key():
     remote = remotes[0]
     assert remote["type"] == "streamable-http"
 
-    # The advertised remote is the opt-in standard MCP surface. It is off by
-    # default (ENABLE_STANDARD_MCP_ENDPOINT=False), so the host must enable it.
+    # The advertised remote is the standard MCP surface. It is on by default
+    # (ENABLE_STANDARD_MCP_ENDPOINT=True) and always requires an API key.
     assert remote["url"] == "https://api.thisisatest.tech/mcp"
     assert remote["headers"] == [
         {

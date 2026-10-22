@@ -58,7 +58,8 @@ async def test_agent_manifest_points_to_canonical_control_plane_surfaces(client)
     assert endpoints["billing"] == "/v1/billing"
     assert endpoints["mcp_json_rpc"] == "/mcp/messages"
     assert endpoints["mcp_tools"] == "/mcp/tools.json"
-    assert "mcp" not in endpoints
+    # The standard MCP endpoint is on by default.
+    assert endpoints["mcp"] == "/mcp"
     assert endpoints["permits"] == "/v1/permits"
     assert endpoints["receipts"] == "/v1/receipts"
     assert endpoints["health"] == "/health"
@@ -182,7 +183,8 @@ async def test_openapi_contains_core_control_plane_routes(client):
         "Missing credentials on production-like boots"
         in catalog_responses["401"]["description"]
     )
-    assert "/mcp" not in paths
+    # include_in_schema follows ENABLE_STANDARD_MCP_ENDPOINT, which defaults on.
+    assert "/mcp" in paths
     legacy_mcp_description = paths["/mcp/messages"]["post"]["description"]
     assert "does not implement the standard MCP initialization lifecycle" in (
         legacy_mcp_description

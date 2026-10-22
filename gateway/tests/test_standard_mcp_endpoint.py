@@ -114,9 +114,32 @@ async def test_discovery_preserves_typed_tools_alongside_no_argument_tool(
 
 
 @pytest.mark.anyio
-async def test_endpoint_disabled_by_default(client):
-    resp = await client.post("/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS)
-    assert resp.status_code == 404
+async def test_endpoint_enabled_by_default_and_requires_auth(client, monkeypatch):
+    monkeypatch.delenv("ENABLE_STANDARD_MCP_ENDPOINT", raising=False)
+    get_settings.cache_clear()
+    try:
+        assert get_settings().ENABLE_STANDARD_MCP_ENDPOINT is True
+        resp = await client.post("/mcp", json=_initialize(), headers=MCP_HEADERS)
+        assert resp.status_code == 401
+        resp = await client.post(
+            "/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS
+        )
+        assert resp.status_code == 200
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_endpoint_returns_404_when_disabled(client, monkeypatch):
+    monkeypatch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", "false")
+    get_settings.cache_clear()
+    try:
+        resp = await client.post(
+            "/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS
+        )
+        assert resp.status_code == 404
+    finally:
+        get_settings.cache_clear()
 
 
 @pytest.mark.anyio

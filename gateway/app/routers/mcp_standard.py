@@ -51,10 +51,9 @@ The endpoint is stateless: each POST gets a fresh SDK transport in JSON mode
 server-initiated stream and GET/DELETE answer 405. The signed receipt is
 returned on every ``tools/call`` result both under
 ``_meta["io.agentmiddleware/receipt"]`` (the spec's extension point) and as a
-top-level ``receipt`` field (the pre-SDK contract). Disabled by default —
-``ENABLE_STANDARD_MCP_ENDPOINT`` must be set explicitly, so the surface cannot
-be advertised (or preflighted by the registry publish gate) before an operator
-turns it on.
+top-level ``receipt`` field (the pre-SDK contract). Enabled by default and
+always authenticated; set ``ENABLE_STANDARD_MCP_ENDPOINT=false`` to answer 404
+and stop advertising it.
 """
 
 from __future__ import annotations

@@ -52,8 +52,7 @@ use them as product onboarding or a public capability list:
 - [Pods](pods.md) are a dormant trust feature, not part of the supported pilot.
 - `server.json` at the repository root is the official MCP registry
   manifest. It advertises the standard MCP endpoint
-  (`https://api.thisisatest.tech/mcp`), which stays off (404) unless
-  `ENABLE_STANDARD_MCP_ENDPOINT` is set. Publishing requires owner approval,
-  and the flag must be enabled on that host first: confirm an
-  unauthenticated `POST /mcp` returns 401, not 404, before running
-  `mcp-publisher publish`.
+  (`https://api.thisisatest.tech/mcp`). `ENABLE_STANDARD_MCP_ENDPOINT`
+  defaults to on; a host that sets it false answers 404. Publishing requires
+  owner approval: confirm an unauthenticated `POST /mcp` on that host
+  returns 401, not 404, before running `mcp-publisher publish`.

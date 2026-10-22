@@ -3452,6 +3452,62 @@
         }
       }
     },
+    "/mcp": {
+      "post": {
+        "tags": [
+          "MCP Standard Endpoint"
+        ],
+        "summary": "Standard MCP endpoint (official MCP SDK, stateless Streamable HTTP, JSON responses)",
+        "description": "Hand one standard MCP message to the official SDK's transport.\n\nAuthentication and origin validation happen here at the HTTP layer; the\nSDK owns the protocol. The governed ``tools/call`` handler reads the\nauthenticated caller back from ``request.state``.",
+        "operationId": "MCP_Streamable_HTTP_Endpoint_mcp_post",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/mcp/public": {
       "post": {
         "tags": [

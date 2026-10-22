@@ -101,6 +101,8 @@ You reused an `Idempotency-Key` with different payload. Use a fresh UUID for eac
 ### `delivery_uncertain` receipt
 The gateway claimed a send but has no trustworthy terminal result. Delivery and the downstream effect may or may not have occurred; this receipt does not prove upstream acceptance or execution. Under the configured conservative policy, the charge stands and replaying the same key returns the uncertain outcome without redispatching. Do not retry automatically. Reconcile against authoritative downstream state before making a new attempt. See [docs/partner-first-tool-runbook.md](docs/partner-first-tool-runbook.md).
 
+If the upstream exposes a status endpoint, a deployment can pass an optional per-origin `status_lookups` hook to `McpDispatchReconciliationService`. It is injected through the constructor; there is no environment setting for it. The reconciler asks that hook about a stale `dispatch_claimed` attempt *before* it writes `delivery_uncertain`. If the provider confirms the call ran, the attempt finalizes as a `success` receipt and the charge stands. If the provider confirms the call never ran, the attempt finalizes as a `failed_refunded` receipt (reason `failed_refunded`, internal error code `reconciled_not_delivered`) and goes through the normal refund and budget release. If the hook is not configured, raises, times out, returns nothing, or returns an answer that cannot be stored, you still get `delivery_uncertain`. The hook never re-sends the call. It also never touches an attempt that already has a signed `delivery_uncertain` receipt, so those still need manual reconciliation. The cleanup log field `dispatch_status_resolved` counts the attempts the hook resolved.
+
 ---
 
 ## Examples fail

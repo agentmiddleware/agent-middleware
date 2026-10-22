@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -29,12 +29,14 @@ from app.services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadat
 from app.services.idempotency import IdempotencyService, get_idempotency_service
 from app.services.ownership import CallerIdentity
 from app.services.mcp_dispatch_attempts import (
+    DISPATCH_CLAIMED,
     DISPATCH_SENT_STATES,
     DISPATCH_PREPARED,
     DISPATCH_TERMINAL_STATES,
     DispatchAttemptContext,
     DispatchAttemptConflictError,
     DispatchAttemptError,
+    DispatchResultRejectedError,
     McpDispatchAttemptService,
     get_mcp_dispatch_attempt_service,
 )
@@ -58,6 +60,47 @@ _PERMIT_SNAPSHOT_KEYS = frozenset(
 _LEGACY_UNSNAPSHOTTED_OUTCOMES = frozenset(
     {"success", "failed_refunded", "delivery_uncertain", "response_rejected"}
 )
+STATUS_NOT_DELIVERED_ERROR_CODE = "reconciled_not_delivered"
+
+
+@dataclass(frozen=True)
+class UpstreamDispatchStatusQuery:
+    """Read-only identity of one stale claimed dispatch.
+
+    ``invocation_id`` is the value the gateway forwarded upstream as
+    ``io.agentmiddleware/invocation_id``. ``idempotency_key`` is the client
+    key; a tool with a native idempotency field may have received that
+    instead.
+    """
+
+    attempt_id: str
+    invocation_id: str
+    idempotency_key: str
+    upstream_origin: str
+    upstream_tool_name: str
+    request_hash: str
+    dispatched_at: datetime | None
+
+
+@dataclass(frozen=True)
+class UpstreamDispatchStatus:
+    """Authoritative upstream answer for one stale claimed dispatch.
+
+    ``delivered=True`` requires the upstream result payload and finalizes the
+    attempt as ``succeeded`` with the charge standing. ``delivered=False``
+    asserts the upstream never performed the call and finalizes it through the
+    existing refund path.
+    """
+
+    delivered: bool
+    result_payload: dict[str, Any] | None = None
+
+
+# A status lookup may only read upstream state. Returning None (or raising)
+# means "not proven either way" and leaves the attempt delivery_uncertain.
+UpstreamDispatchStatusLookup = Callable[
+    [UpstreamDispatchStatusQuery], Awaitable[UpstreamDispatchStatus | None]
+]
 
 
 @dataclass(frozen=True)
@@ -70,6 +113,7 @@ class DispatchReconciliationResult:
     idempotency_recovered: int
     budget_released: int
     failed_attempt_ids: tuple[str, ...]
+    status_resolved: int = 0
 
     @property
     def repaired(self) -> int:
@@ -79,6 +123,7 @@ class DispatchReconciliationResult:
             + self.terminal_recovered
             + self.idempotency_recovered
             + self.budget_released
+            + self.status_resolved
         )
 
 
@@ -94,7 +139,11 @@ class McpDispatchReconciliationService:
         receipt_service: ReceiptService | None = None,
         idempotency_service: IdempotencyService | None = None,
         max_result_bytes: int | None = None,
+        status_lookups: Mapping[str, UpstreamDispatchStatusLookup] | None = None,
     ) -> None:
+        # Optional, keyed by upstream_origin. An origin without a lookup keeps
+        # the conservative stale-claim -> delivery_uncertain behaviour.
+        self._status_lookups = dict(status_lookups or {})
         self._dispatch = dispatch_service or get_mcp_dispatch_attempt_service()
         self._money = money or get_agent_money()
         self._permits = permit_service or get_permit_service()
@@ -127,6 +176,7 @@ class McpDispatchReconciliationService:
         terminal_recovered = 0
         idempotency_recovered = 0
         budget_released = 0
+        status_resolved = 0
         failed: list[str] = []
         processed: set[str] = set()
 
@@ -145,6 +195,8 @@ class McpDispatchReconciliationService:
                     dispatched_uncertain += 1
                 elif outcome == "terminal_recovered":
                     terminal_recovered += 1
+                elif outcome == "status_resolved":
+                    status_resolved += 1
             except Exception as exc:
                 failed.append(attempt_id)
                 logger.warning(
@@ -253,6 +305,7 @@ class McpDispatchReconciliationService:
             idempotency_recovered=idempotency_recovered,
             budget_released=budget_released,
             failed_attempt_ids=tuple(dict.fromkeys(failed)),
+            status_resolved=status_resolved,
         )
 
     async def reconcile_attempt(
@@ -330,6 +383,30 @@ class McpDispatchReconciliationService:
             await self._finalize_terminal(terminal)
             return "prepared_finalized"
         elif attempt.state in DISPATCH_SENT_STATES:
+            resolved = await self._lookup_status(fresh)
+            if resolved is not None:
+                try:
+                    await self._dispatch.complete(
+                        attempt_id=attempt.attempt_id,
+                        max_result_bytes=self._max_result_bytes,
+                        **resolved,
+                    )
+                except DispatchResultRejectedError:
+                    # An unstorable answer is not proof; fall back below.
+                    logger.warning(
+                        "mcp_dispatch_status_lookup_result_rejected attempt_id=%s",
+                        attempt.attempt_id,
+                    )
+                except DispatchAttemptConflictError:
+                    raced = await self._required_context(attempt.attempt_id)
+                    if raced.attempt.state not in DISPATCH_TERMINAL_STATES:
+                        raise
+                    await self._finalize_terminal(raced)
+                    return "terminal_recovered"
+                else:
+                    terminal = await self._required_context(attempt.attempt_id)
+                    await self._finalize_terminal(terminal)
+                    return "status_resolved"
             try:
                 await self._dispatch.complete(
                     attempt_id=attempt.attempt_id,
@@ -349,6 +426,59 @@ class McpDispatchReconciliationService:
             return "dispatched_uncertain"
         else:
             raise DispatchAttemptError("dispatch_reconciliation_state_invalid")
+
+    async def _lookup_status(
+        self,
+        context: DispatchAttemptContext,
+    ) -> dict[str, Any] | None:
+        """Ask the optional per-upstream hook how a stale claim ended.
+
+        Returns ``complete()`` keyword arguments for a proven outcome, or None
+        when the attempt must stay delivery_uncertain. The hook receives only
+        an immutable query, never the executor, so it has no way to resend.
+        Legacy ``dispatched`` rows are skipped: ``complete()`` only lets them
+        become delivery_uncertain.
+        """
+        attempt = context.attempt
+        lookup = self._status_lookups.get(attempt.upstream_origin)
+        if lookup is None or attempt.state != DISPATCH_CLAIMED:
+            return None
+        query = UpstreamDispatchStatusQuery(
+            attempt_id=attempt.attempt_id,
+            invocation_id=attempt.idempotency_record_id,
+            idempotency_key=context.idempotency_key,
+            upstream_origin=attempt.upstream_origin,
+            upstream_tool_name=attempt.upstream_tool_name,
+            request_hash=attempt.request_hash,
+            dispatched_at=attempt.dispatched_at,
+        )
+        try:
+            status = await lookup(query)
+        except Exception as exc:
+            logger.warning(
+                "mcp_dispatch_status_lookup_failed attempt_id=%s error=%s",
+                attempt.attempt_id,
+                type(exc).__name__,
+            )
+            return None
+        if status is None:
+            return None
+        if status.delivered:
+            if not isinstance(status.result_payload, dict):
+                return None
+            return {
+                "state": "succeeded",
+                "result_payload": status.result_payload,
+                "error_code": None,
+            }
+        return {
+            "state": "returned_error",
+            "result_payload": {
+                "error": "failed_refunded",
+                "error_code": STATUS_NOT_DELIVERED_ERROR_CODE,
+            },
+            "error_code": STATUS_NOT_DELIVERED_ERROR_CODE,
+        }
 
     async def _complete_prepared_failure(
         self,
@@ -934,7 +1064,10 @@ class McpDispatchReconciliationService:
             return attempt.error_code
         if attempt.error_code == "upstream_returned_error":
             return "upstream_returned_error"
-        if attempt.error_code == "reconciled_stale_prepared":
+        if attempt.error_code in {
+            "reconciled_stale_prepared",
+            STATUS_NOT_DELIVERED_ERROR_CODE,
+        }:
             return "failed_refunded"
         return "upstream_pre_dispatch_failed"
 

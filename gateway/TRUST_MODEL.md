@@ -96,6 +96,26 @@ globally conservative 11,430-second window before treating the claim as stale.
 That window covers the maximum supported 600-second connection timeout, three
 maximum 3,600-second call phases, and cleanup margin; it does not shrink when a
 new worker is deployed with smaller local settings.
+
+By default, reconciling a `delivery_uncertain` attempt is an operator task. A
+deployment can optionally inject a per-upstream-origin status lookup
+(`status_lookups` on `McpDispatchReconciliationService`). For a stale
+`dispatch_claimed` attempt, the reconciler asks that lookup before it writes the
+terminal state. The lookup gets an immutable query (attempt id, forwarded
+invocation id, idempotency key, origin, tool, request hash). It does not get
+the executor, so it cannot redispatch. There are only two outcomes it can force:
+provider-confirmed success, which finalizes as `succeeded` and keeps the charge,
+or provider-confirmed non-delivery, which finalizes as `returned_error` and is
+refunded through the existing compensation path. Any other answer leaves the
+attempt `delivery_uncertain`: an exception, `None`, a success with no result, or
+a result that cannot be stored. The resolution goes through the same guarded
+terminal transition as the live finalizer. If a live owner or another sweep
+lands first, this sweep adopts that terminal state, so the attempt resolves
+exactly once. Because the outcome is decided before the first receipt is
+signed, no receipt is ever rewritten. Attempts that already hold a signed
+`delivery_uncertain` receipt, and historical `dispatched` rows, are never
+offered to the lookup. The lookup's correctness is only as good as the
+provider's status answer.
 Local (non-upstream) governed tools have no dispatch state machine; a crash
 there fails closed into manual review instead. See
 [`docs/failure-semantics.md`](docs/failure-semantics.md).

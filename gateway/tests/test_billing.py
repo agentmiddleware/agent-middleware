@@ -12,6 +12,7 @@ from httpx import AsyncClient, ASGITransport
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from b2a_sdk import request_key
 from app.main import app
 from app.services.ownership import CallerIdentity
 from app.core.config import Settings, get_settings
@@ -19,6 +20,7 @@ from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, WalletModel
 from app.services.agent_money import get_agent_money
 from app.services.audit_log import list_audit_events
+from tests.test_request_key_vectors import VECTORS
 
 
 @pytest.fixture
@@ -1006,16 +1008,25 @@ async def test_charge_reused_idempotency_key_with_different_payload_conflicts(
     )
     agent_wallet_id = agent_resp.json()["wallet_id"]
 
-    headers = {**api_headers, "Idempotency-Key": "retry-key-2"}
-    await client.post(
+    args = {"service": "iot_bridge", "units": 10}
+    key = request_key("billing.charge", args)
+    vector = next(
+        case for case in VECTORS["vectors"] if case["name"] == "billing_charge"
+    )
+    assert key == vector["expected"]
+    assert request_key("billing.charge", {**args, "units": 20}) != key
+    headers = {**api_headers, "Idempotency-Key": key}
+    first = await client.post(
         f"/v1/billing/charge?wallet_id={agent_wallet_id}&service=iot_bridge&units=10",
         headers=headers,
     )
+    assert first.status_code == 200, first.text
     conflict = await client.post(
         f"/v1/billing/charge?wallet_id={agent_wallet_id}&service=iot_bridge&units=20",
         headers=headers,
     )
     assert conflict.status_code == 409
+    assert conflict.json()["detail"]["error"] == "idempotency_key_reused"
 
 
 @pytest.mark.anyio

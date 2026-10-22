@@ -12,6 +12,7 @@ consequential MCP tool behind a governed boundary. Start with the
 | Run the core loop locally | [Quickstart](quickstart.md) |
 | Configure one real upstream MCP tool | [Partner first-tool runbook](partner-first-tool-runbook.md) |
 | Use the typed Python SDK and offline verifier | [Python SDK](../../sdk/python/README.md) |
+| Make stable keys for governed retries | [Request keys](concepts/request-keys.md) |
 | Understand retry, debit, and crash outcomes | [Failure semantics](failure-semantics.md) |
 | Measure the lost-response fault against a correctly used native idempotency key | [Failure lab](failure-lab.md) |
 | Run fourteen injected failures and get a signed evidence bundle | [Failure lab suite](failure-lab-suite.md) |

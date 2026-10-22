@@ -120,7 +120,7 @@ async def serve_async(
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError:
-        print('Error: mcp package required. Install: pip install "b2a-sdk[mcp]"')
+        print('Error: mcp package required. Install: pip install "amw-sdk[mcp]"')
         return
 
     manifest = generate_manifest(api_url=api_url)

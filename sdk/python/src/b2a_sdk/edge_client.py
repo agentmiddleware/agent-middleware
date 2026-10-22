@@ -285,7 +285,7 @@ class LocalPermitValidator:
 
     * :meth:`verify_permit` — does the permit's Ed25519 signature verify
       against the issuer's published keys? (Requires the ``cryptography``
-      package: ``pip install "b2a-sdk[verify]"``.)
+      package: ``pip install "amw-sdk[verify]"``.)
     * :meth:`check` — would the server's validation obviously deny this call
       right now (expiry, status, tool scope, budget, per-tool call caps)?
 

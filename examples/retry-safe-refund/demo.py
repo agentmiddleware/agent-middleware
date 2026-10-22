@@ -76,7 +76,8 @@ class LoseFirstPayoutResponse(httpx.AsyncBaseTransport):
         response = await self.inner.handle_async_request(request)
         if request.url.path == "/mcp/messages" and self.dropped_result is None:
             await response.aread()
-            assert response.status_code == 200
+            if response.status_code != 200:
+                raise AssertionError(f"first payout status: {response.status_code}")
             self.dropped_result = response.json()["result"]
             await response.aclose()
             raise httpx.ReadError("simulated response loss", request=request)
@@ -94,7 +95,8 @@ async def post(
     expected_status: int,
 ) -> dict[str, Any]:
     response = await client.post(path, json=body, headers=headers)
-    assert response.status_code == expected_status, f"{path}: {response.status_code}"
+    if response.status_code != expected_status:
+        raise AssertionError(f"{path}: {response.status_code}")
     return response.json()
 
 
@@ -204,40 +206,54 @@ async def run(admin_key: str) -> tuple[dict[str, Any], dict[str, Any], int]:
             try:
                 await client.post("/mcp/messages", json=body, headers=agent_headers)
             except httpx.ReadError as exc:
-                assert str(exc) == "simulated response loss"
+                if str(exc) != "simulated response loss":
+                    raise AssertionError("unexpected response loss") from exc
             else:
                 raise AssertionError("the first response was not lost")
 
             original = transport.dropped_result
-            assert original is not None and original["isError"] is False
-            assert len(dispatches) == 1
+            if original is None or original["isError"] is not False:
+                raise AssertionError("original payout did not succeed")
+            if len(dispatches) != 1:
+                raise AssertionError("original payout did not dispatch exactly once")
 
             replay = await post(client, "/mcp/messages", body, agent_headers, 200)
             result = replay["result"]
-            assert result["isError"] is False
-            assert result["receipt"] == original["receipt"]
-            assert result["content"] == original["content"]
-            assert len(dispatches) == 1
+            if result["isError"] is not False:
+                raise AssertionError("replayed payout failed")
+            if result["receipt"] != original["receipt"]:
+                raise AssertionError("replay returned a different receipt")
+            if result["content"] != original["content"]:
+                raise AssertionError("replay returned a different outcome")
+            if len(dispatches) != 1:
+                raise AssertionError("replay dispatched the payout again")
 
             changed = json.loads(json.dumps(body))
             changed["params"]["arguments"]["amount_usd"] = "50.00"
             conflict = await post(client, "/mcp/messages", changed, agent_headers, 200)
-            assert conflict["error"]["message"] == "idempotency_key_reused"
-            assert len(dispatches) == 1
+            if conflict["error"]["message"] != "idempotency_key_reused":
+                raise AssertionError("changed payout was not rejected")
+            if len(dispatches) != 1:
+                raise AssertionError("changed payout dispatched again")
 
             receipt_id = result["receipt"]["receipt_id"]
             portable_response = await client.get(
                 f"/v1/receipts/{receipt_id}/portable", headers=agent_headers
             )
-            assert portable_response.status_code == 200
+            if portable_response.status_code != 200:
+                raise AssertionError("portable receipt request failed")
             keys_response = await client.get("/.well-known/trust-keys.json")
-            assert keys_response.status_code == 200
+            if keys_response.status_code != 200:
+                raise AssertionError("trust keys request failed")
             portable = portable_response.json()
             keys = keys_response.json()
-            assert portable["receipt_id"] == receipt_id
-            assert keys["alg"] == "Ed25519"
+            if portable["receipt_id"] != receipt_id:
+                raise AssertionError("portable receipt ID differs")
+            if keys["alg"] != "Ed25519":
+                raise AssertionError("unexpected trust key algorithm")
 
-        assert len(dispatches) == 1
+        if len(dispatches) != 1:
+            raise AssertionError("payout dispatched more than once")
         return portable, keys, len(dispatches)
     finally:
         registry.unregister_local(TOOL)
@@ -252,8 +268,10 @@ def main() -> None:
     verification = verify_bundle(
         portable, key_set_from_document(keys), expected_issuer="http://sandbox"
     )
-    assert verification.ok, verification.reason
-    assert verification.claims["tool"] == TOOL
+    if not verification.ok:
+        raise AssertionError(verification.reason)
+    if verification.claims["tool"] != TOOL:
+        raise AssertionError("verified receipt claims the wrong tool")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     (OUTPUT_DIR / "receipt-bundle.json").write_text(

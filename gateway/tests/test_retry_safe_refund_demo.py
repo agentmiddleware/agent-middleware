@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -12,8 +13,13 @@ EXAMPLE = ROOT / "examples" / "retry-safe-refund"
 
 
 def test_retry_safe_refund_example() -> None:
+    _check_demo(False)
+    _check_demo(True)
+
+
+def _check_demo(optimize: bool) -> None:
     demo = subprocess.run(
-        [sys.executable, str(EXAMPLE / "demo.py")],
+        [sys.executable, *(["-O"] if optimize else []), str(EXAMPLE / "demo.py")],
         cwd=ROOT / "gateway",
         capture_output=True,
         text=True,
@@ -28,6 +34,11 @@ def test_retry_safe_refund_example() -> None:
     assert "Provider dispatches: 1" in demo.stdout
     assert "Offline Ed25519 receipt verification: verified" in demo.stdout
 
+    env = os.environ.copy()
+    sdk_src = str(ROOT / "sdk" / "python" / "src")
+    env["PYTHONPATH"] = os.pathsep.join(
+        path for path in (sdk_src, env.get("PYTHONPATH")) if path
+    )
     verified = subprocess.run(
         [
             sys.executable,
@@ -41,6 +52,7 @@ def test_retry_safe_refund_example() -> None:
             "http://sandbox",
         ],
         cwd=ROOT / "gateway",
+        env=env,
         capture_output=True,
         text=True,
         timeout=30,

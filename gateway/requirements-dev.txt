@@ -3,5 +3,5 @@
 # versions via RUFF_VERSION and MYPY_VERSION in .github/workflows/ci.yml.
 # mypy is also pinned in requirements.txt. Bump all of them in one change.
 # See CONTRIBUTING.md.
-ruff==0.16.10
+ruff==0.17.1
 mypy==2.4.0

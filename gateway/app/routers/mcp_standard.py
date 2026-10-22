@@ -309,7 +309,7 @@ async def _mint_auto_permit(
     if not client_key:
         try:
             permit = await get_permit_service().create_permit(
-                permit_request, subject_key_id=auth.key_id
+                permit_request, subject_key_id=auth.key_id, auth=auth
             )
         except PermitError as exc:
             raise _permit_error(exc, tool_name=tool_name, record=record) from exc
@@ -344,7 +344,7 @@ async def _mint_auto_permit(
 
     try:
         permit = await get_permit_service().create_permit(
-            permit_request, subject_key_id=auth.key_id
+            permit_request, subject_key_id=auth.key_id, auth=auth
         )
     except PermitError as exc:
         await idem.abandon(

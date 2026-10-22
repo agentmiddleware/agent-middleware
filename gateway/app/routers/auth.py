@@ -10,18 +10,25 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
+from app.core.config import get_settings
 from app.core.jwt import JWTError, get_jwt_service
 from app.core.time import utc_now
 from app.db.database import get_session_factory
-from app.db.models import APIKeyModel, RefreshTokenModel
+from app.db.models import APIKeyModel, RefreshTokenModel, WalletModel
 from app.schemas.auth import (
     TokenExchangeRequest,
     TokenExchangeResponse,
     TokenRefreshRequest,
     TokenRefreshResponse,
     TokenRevokeRequest,
+)
+from app.services.demo_tenant_boundary import (
+    DEMO_KEY_ROUTE_FORBIDDEN,
+    DEMO_TENANT_DISABLED,
+    DEMO_TENANT_LABEL,
 )
 
 router = APIRouter(prefix="/v1/auth", tags=["Authentication"])
@@ -30,6 +37,31 @@ router = APIRouter(prefix="/v1/auth", tags=["Authentication"])
 def _exp_to_datetime(ts: int) -> datetime:
     """Convert JWT exp (int) to timezone-aware datetime."""
     return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+async def _is_demo_key(session: AsyncSession, key: APIKeyModel) -> bool:
+    if key.tenant == DEMO_TENANT_LABEL:
+        return True
+    wallet = await session.get(WalletModel, key.wallet_id)
+    return wallet is not None and wallet.tenant == DEMO_TENANT_LABEL
+
+
+def _demo_auth_error() -> HTTPException:
+    if not get_settings().ENABLE_DEMO_TENANT:
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": DEMO_TENANT_DISABLED,
+                "message": "The demo tenant is currently disabled.",
+            },
+        )
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": DEMO_KEY_ROUTE_FORBIDDEN,
+            "message": "This demo key may not call this route.",
+        },
+    )
 
 
 @router.post("/token", response_model=TokenExchangeResponse)
@@ -44,14 +76,34 @@ async def exchange_api_key_for_tokens(
     """
     from app.services.api_key_service import get_api_key_service
 
-    # Validate the API key
+    # Reject demo credentials before validation consumes a use or records
+    # first_used_at. Older keys may lack tenant even when their wallet is demo.
+    factory = get_session_factory()
     key_svc = get_api_key_service()
+    candidate = await key_svc.validate_key(request.api_key, consume=False)
+    if candidate is not None:
+        async with factory() as session:
+            if await _is_demo_key(session, candidate):
+                raise _demo_auth_error()
+
+    # Validate the API key
     db_key = await key_svc.validate_key(request.api_key)
     if not db_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error": "invalid_api_key", "message": "API key is not valid."},
         )
+
+    # Close a label-change race between the read-only check and consumption.
+    async with factory() as session:
+        current_key = await session.get(APIKeyModel, db_key.key_id)
+        if current_key is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": "invalid_api_key", "message": "API key is not valid."},
+            )
+        if await _is_demo_key(session, current_key):
+            raise _demo_auth_error()
 
     jwt_svc = get_jwt_service()
 
@@ -73,7 +125,6 @@ async def exchange_api_key_for_tokens(
 
     # Store refresh token JTI for revocation
     refresh_payload = jwt_svc.verify_refresh_token(refresh_token)
-    factory = get_session_factory()
     async with factory() as session:
         model = RefreshTokenModel(
             jti=refresh_payload.jti,
@@ -210,6 +261,11 @@ async def refresh_access_token(
                     ),
                 },
             )
+
+        if await _is_demo_key(session, origin_key):
+            # A chain issued before a wallet was labeled demo cannot renew.
+            await session.commit()
+            raise _demo_auth_error()
 
         # Issue new tokens (pure JWT operations, no I/O) and store the
         # successor in the same transaction, carrying the binding forward so

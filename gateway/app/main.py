@@ -50,6 +50,7 @@ from .core.rate_limiter import RateLimitMiddleware, rate_limit_discovery
 from .core.runtime_mode import get_simulation_modes
 from .middleware.head_method import HeadMethodMiddleware
 from .middleware.error_envelope import ErrorEnvelopeMiddleware, error_envelope
+from .middleware.demo_key_cors import DemoKeyCORSMiddleware
 from .middleware.request_body_limit import RequestBodyLimitMiddleware
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .core.trust_mode import (
@@ -60,6 +61,7 @@ from .core.trust_mode import (
 from .db.database import SchemaInitError, init_db, close_db
 from .services.mcp_dispatch_attempts import get_duplicate_guard_metrics
 from .services.mcp_phase9_tools import sync_proof_surface_mcp_registration
+from .services.demo_tenant_boundary import DemoRequestContextMiddleware
 from .services.signing_keys import (
     SigningKeyError,
     validate_signing_key_configuration,
@@ -99,6 +101,7 @@ from .routers import (
     kyc,
     api_keys,
     dev_keys,
+    demo_keys,
     keys,
     me,
     awi,
@@ -618,6 +621,8 @@ def add_cors_middleware(application: FastAPI, origins: list[str]) -> None:
 # in SECURITY_LIMITATIONS.md ("CORS posture").
 cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 add_cors_middleware(app, cors_origins)
+# The anonymous demo-key path has a separate, narrow browser allowlist.
+app.add_middleware(DemoKeyCORSMiddleware)
 if "*" in cors_origins:
     logger.info(
         "cors_wildcard_active: credential-less wildcard CORS is an explicit "
@@ -641,6 +646,7 @@ app.add_middleware(ErrorEnvelopeMiddleware)
 # layer below — routing included — sees a GET, and the response leaves with
 # the GET's status and headers but no body, per RFC 9110 §9.3.2.
 app.add_middleware(HeadMethodMiddleware)
+app.add_middleware(DemoRequestContextMiddleware)
 
 
 def _json_safe_numbers(value: Any) -> Any:
@@ -801,6 +807,8 @@ for router_module in CORE_TRUST_ROUTERS:
 app.include_router(
     dev_keys.router, include_in_schema=settings.ENABLE_DEV_KEY_SELF_PROVISION
 )
+app.include_router(demo_keys.router)
+app.include_router(demo_keys.admin_router)
 
 # Stripe webhooks answer only signed Stripe traffic; a deployment with no
 # Stripe key configured has nothing that could ever call them, so they are

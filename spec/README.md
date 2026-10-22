@@ -33,8 +33,11 @@ breaking changes will bump the version. Propose changes with a spec RFC issue
   checks the bytes it was given.
 - **`payload_hash`:** lowercase hex SHA-256 of the canonical JSON of the signed
   payload *without* the `payload_hash` member. It is itself part of the signed
-  bytes. A signature over a payload whose `payload_hash` does not match that
-  computation is a `mismatch`, not a valid receipt.
+  bytes, so the signature covers it: editing it without re-signing is
+  `invalid`. Verifiers treat it as advisory and never recompute it, because
+  signed payloads may carry JSON numbers (floats, exponents, integers above
+  2^53) whose rendering differs between languages, and re-serializing the
+  parsed payload would reject genuine receipts.
 - **`kid`:** the signing key id, inside the signed payload. Key selection uses
   the signed `kid`, never the unauthenticated envelope.
 

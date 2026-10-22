@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from app.core.auth import get_auth_context
@@ -158,7 +159,7 @@ async def test_jwt_signed_by_wrong_key_rejected(signing_key):
         other,
         algorithm="EdDSA",
     )
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         await get_auth_context(api_key=None, authorization=f"Bearer {token}")
 
 
@@ -356,7 +357,7 @@ async def test_expired_jwt_rejected(signing_key):
         private,
         algorithm="EdDSA",
     )
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         await get_auth_context(api_key=None, authorization=f"Bearer {token}")
 
 

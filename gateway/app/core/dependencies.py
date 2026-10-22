@@ -22,7 +22,7 @@ from ..services.telemetry_scope import TelemetryScope
 from ..services.oracle_broadcast import OracleBroadcastEngine
 
 
-@lru_cache()
+@lru_cache
 def get_iot_bridge() -> ProtocolBridge:
     """Singleton IoT Protocol Bridge with ACL engine and MQTT translator."""
     # Settings are read per call, not from a module-level singleton: tests and
@@ -37,7 +37,7 @@ def get_iot_bridge() -> ProtocolBridge:
     return bridge
 
 
-@lru_cache()
+@lru_cache
 def get_autonomous_pm() -> AutonomousPM:
     """Singleton Autonomous Product Manager with event store and anomaly detector."""
     settings = get_settings()
@@ -48,67 +48,67 @@ def get_autonomous_pm() -> AutonomousPM:
     )
 
 
-@lru_cache()
+@lru_cache
 def get_media_engine() -> MediaEngine:
     """Singleton Programmatic Media Engine with full pipeline."""
     return MediaEngine()
 
 
-@lru_cache()
+@lru_cache
 def get_agent_comms() -> AgentComms:
     """Singleton Agent Communications with registry and message router."""
     return AgentComms()
 
 
-@lru_cache()
+@lru_cache
 def get_content_factory() -> ContentFactory:
     """Singleton Content Factory with format adapters and algorithmic scheduler."""
     return ContentFactory()
 
 
-@lru_cache()
+@lru_cache
 def get_red_team_swarm() -> RedTeamSwarm:
     """Singleton Red Team Security Swarm with attack engine and scan store."""
     return RedTeamSwarm()
 
 
-@lru_cache()
+@lru_cache
 def get_agent_oracle() -> AgentOracle:
     """Singleton Agent Oracle with crawler, indexer, and registration engine."""
     return AgentOracle()
 
 
-@lru_cache()
+@lru_cache
 def get_agent_money() -> AgentMoney:
     """Singleton Agent Money engine with wallets, metering, and arbitrage."""
     return AgentMoney()
 
 
-@lru_cache()
+@lru_cache
 def get_protocol_engine() -> ProtocolEngine:
     """Singleton Protocol Generation Engine — code-to-discovery pipeline."""
     return ProtocolEngine()
 
 
-@lru_cache()
+@lru_cache
 def get_rtaas_engine() -> RTaaSEngine:
     """Singleton Red-Team-as-a-Service engine."""
     return RTaaSEngine()
 
 
-@lru_cache()
+@lru_cache
 def get_sandbox_engine() -> SandboxEngine:
     """Singleton Interactive Testing Sandbox engine."""
     return SandboxEngine()
 
 
-@lru_cache()
+@lru_cache
 def get_telemetry_scope() -> TelemetryScope:
     """Singleton Telemetry Scoping engine — multi-tenant autonomous PM."""
     return TelemetryScope()
 
 
-@lru_cache()
+@lru_cache
 def get_broadcast_engine() -> OracleBroadcastEngine:
     """Singleton Oracle Broadcast — pushes APIs into agent directories."""
     return OracleBroadcastEngine(oracle_service=get_agent_oracle())

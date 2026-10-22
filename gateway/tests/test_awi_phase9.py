@@ -476,7 +476,7 @@ class TestAWIPlaywrightBridge:
 
     def test_semantic_pattern_has_tags(self, bridge):
         """Test that semantic patterns have tags."""
-        for semantic_type, pattern in bridge.SEMANTIC_PATTERNS.items():
+        for _semantic_type, pattern in bridge.SEMANTIC_PATTERNS.items():
             assert "tags" in pattern
             assert len(pattern["tags"]) > 0
 
@@ -865,8 +865,8 @@ class TestAWIRAGEngine:
 
         chromadb_module = ModuleType("chromadb")
         chromadb_config_module = ModuleType("chromadb.config")
-        setattr(chromadb_module, "PersistentClient", fake_persistent_client)
-        setattr(chromadb_config_module, "Settings", lambda **_kwargs: object())
+        chromadb_module.PersistentClient = fake_persistent_client
+        chromadb_config_module.Settings = lambda **_kwargs: object()
         monkeypatch.setitem(sys.modules, "chromadb", chromadb_module)
         monkeypatch.setitem(sys.modules, "chromadb.config", chromadb_config_module)
 

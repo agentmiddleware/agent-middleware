@@ -122,7 +122,7 @@ class _FlushFault:
         self._error = error or _lock_error()
         self._real = AsyncSession.flush
 
-    def patch(self, monkeypatch: Any) -> "_FlushFault":
+    def patch(self, monkeypatch: Any) -> _FlushFault:
         fault = self
 
         async def flush(session: AsyncSession, *args: Any, **kwargs: Any) -> Any:

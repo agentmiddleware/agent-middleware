@@ -73,10 +73,24 @@ def test_images_install_sdk_and_put_it_on_pythonpath(name: str):
     assert requirements < install
 
 
-def test_release_dockerfile_still_requires_the_context_root_stamp():
+def test_release_dockerfile_validates_root_stamp_before_final_copy():
     text = _dockerfile("Dockerfile")
-    assert "COPY .build_commit_sha /app/.build_commit_sha" in text
-    assert "COPY .build_commit_sha" not in _dockerfile("Dockerfile.dev")
+    assert "COPY . /context/" in text
+    assert "STAGED_SHA_PATH=/context/.build_commit_sha" in text
+    assert "BUILD_SHA_PATH=/stamp/.build_commit_sha" in text
+    assert "python /context/gateway/scripts/write_build_commit_sha.py" in text
+    assert "COPY .build_commit_sha /app/.build_commit_sha" not in text
+    assert text.index("COPY gateway/ /app/") < text.index(
+        "COPY --from=build-metadata /stamp/.build_commit_sha /app/.build_commit_sha"
+    )
+
+
+def test_development_image_does_not_require_or_copy_a_stamp():
+    text = _dockerfile("Dockerfile.dev")
+    assert "RELEASE_COMMIT_SHA" not in text
+    assert "write_build_commit_sha.py" not in text
+    assert "COPY --from=build-metadata" not in text
+    assert "COPY .build_commit_sha" not in text
 
 
 def test_root_dockerignore_keeps_sdk_sources_and_the_stamp():
@@ -91,6 +105,20 @@ def test_root_dockerignore_keeps_sdk_sources_and_the_stamp():
     assert ".build_commit_sha" not in lines
     assert "gateway/tests" in lines
     assert ".env" in lines
+    assert "**/.env" in lines
+    assert "gateway/.build_commit_sha" in lines
+    assert "*.pem" in lines
+    assert "**/*.key" in lines
+    assert "gateway/data" in lines
+    assert "*.db-wal" in lines
+    assert "**/.agents" in lines
+    assert "**/.claude" in lines
+    assert "**/.envrc" in lines
+    assert "**/*.db-wal" in lines
+    assert "*.db-shm" in lines
+    assert "**/*.db-shm" in lines
+    assert "*.log" in lines
+    assert "**/*.log" in lines
 
 
 def _package_not_installed(_name: str):

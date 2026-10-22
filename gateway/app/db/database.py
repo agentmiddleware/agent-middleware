@@ -208,7 +208,7 @@ def _normalize_bind_parameters(parameters: Any) -> Any:
             to_naive_utc(value) if isinstance(value, datetime) else value
             for value in parameters
         ]
-        if all(a is b for a, b in zip(rewritten_seq, parameters)):
+        if all(a is b for a, b in zip(rewritten_seq, parameters, strict=True)):
             return parameters
         return tuple(rewritten_seq) if isinstance(parameters, tuple) else rewritten_seq
     return parameters
@@ -243,7 +243,7 @@ def _install_naive_utc_bind_guard(engine: AsyncEngine) -> None:
     ):
         if executemany and isinstance(parameters, (list, tuple)):
             normalized = [_normalize_bind_parameters(p) for p in parameters]
-            if all(a is b for a, b in zip(normalized, parameters)):
+            if all(a is b for a, b in zip(normalized, parameters, strict=True)):
                 return statement, parameters
             return statement, normalized
         return statement, _normalize_bind_parameters(parameters)

@@ -17,6 +17,7 @@ import json
 import os
 import sys
 from typing import Any, Literal
+from urllib.parse import urlencode
 
 import httpx
 
@@ -41,9 +42,9 @@ def generate_manifest(
     """
     url = f"{api_url}/mcp/tools.json"
     if category:
-        url = f"{url}?category={category}"
+        url = f"{url}?{urlencode({'category': category})}"
 
-    response = httpx.get(url, timeout=30.0)
+    response = httpx.get(url, timeout=30.0, follow_redirects=False)
     response.raise_for_status()
     manifest = response.json()
 
@@ -82,7 +83,8 @@ def list_tools(
     manifest = generate_manifest(api_url=api_url, category=category)
     tools = manifest.get("tools", [])
 
-    print(f"\\nAvailable MCP Tools ({len(tools)})")
+    print()
+    print(f"Available MCP Tools ({len(tools)})")
     print("=" * 60)
 
     for tool in tools:
@@ -92,12 +94,14 @@ def list_tools(
         unit = tool.get("annotations", {}).get("unitName", "call")
         cat = tool.get("annotations", {}).get("category", "custom")
 
-        print(f"\\n  {name}")
+        print()
+        print(f"  {name}")
         print(f"    Description: {desc[:60]}...")
         print(f"    Cost: {credits} credits/{unit}")
         print(f"    Category: {cat}")
 
-    print("\\n" + "=" * 60)
+    print()
+    print("=" * 60)
 
 
 async def serve_async(
@@ -116,7 +120,7 @@ async def serve_async(
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError:
-        print('Error: mcp package required. Install: pip install "b2a-sdk[mcp]"')
+        print('Error: mcp package required. Install: pip install "amw-sdk[mcp]"')
         return
 
     manifest = generate_manifest(api_url=api_url)
@@ -135,6 +139,7 @@ async def serve_async(
                     "mcp_context": {"wallet_id": wallet_id},
                 },
                 timeout=30.0,
+                follow_redirects=False,
             )
             response.raise_for_status()
             return response.json()
@@ -161,7 +166,8 @@ async def serve_async(
     print(f"Transport: {transport}", file=output)
     if transport == "sse":
         print(f"Port: {port}", file=output)
-    print("\\nConfigure with:", file=output)
+    print(file=output)
+    print("Configure with:", file=output)
     print("  export B2A_API_KEY=<your-key>", file=output)
     print("  export B2A_WALLET_ID=<your-wallet>", file=output)
     print(f"  export B2A_API_URL={api_url}", file=output)

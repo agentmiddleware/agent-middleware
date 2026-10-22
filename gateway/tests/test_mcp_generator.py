@@ -547,6 +547,15 @@ class TestMcpInvokeRoute:
         payload = response.json()
         assert payload["error"]["code"] == -32602
         assert payload["error"]["message"] == "Missing wallet_id in mcpContext"
+        assert payload["error"]["data"] == {
+            "code": "missing_wallet_id",
+            "message": (
+                "This call needs a wallet. Pass wallet_id from your demo key "
+                "response, or use a key with one wallet."
+            ),
+            "fix": "Pass wallet_id from your demo key response, or use a key with one wallet.",
+            "docs_url": "https://www.agentmiddleware.dev/docs/errors#missing_wallet_id",
+        }
 
     @pytest.mark.anyio
     async def test_messages_tools_call_maps_tool_not_found(self, clean_database):
@@ -942,6 +951,7 @@ class TestMcpInvokeRoute:
             assert response.status_code == 200
             payload = response.json()
             assert payload["isError"] is True
+            assert payload["code"] == "tool_execution_failed"
             assert "insufficient_funds" in payload["content"][0]["text"]
         finally:
             registry.unregister_local("http-value-error-echo")

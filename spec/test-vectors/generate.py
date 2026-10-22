@@ -21,6 +21,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -259,6 +261,23 @@ def _synthetic_cases(
 
     lied = dict(payload)
     lied["payload_hash"] = "0" * 64
+    # Numbers Python renders one way and other languages another (1.0, 0.0,
+    # 4e-05, integers above 2^53): the gateway signs such payloads inside
+    # constraints_evaluated.jev_risk_guard, so one vector carries them and
+    # must still verify without any re-serialization.
+    float_payload = _with_hash(
+        dict(
+            payload,
+            constraints_evaluated={
+                "jev_risk_guard": {
+                    "latency_ms": 0.0,
+                    "injected_instructions": 1.0,
+                    "tiny": 4e-05,
+                    "big": 9007199254740993,
+                }
+            },
+        )
+    )
     unsupported_alg = _with_hash(dict(payload, alg="RS256"))
     unsupported_canon = _with_hash(dict(payload, canonicalization="other/9"))
 
@@ -322,9 +341,17 @@ def _synthetic_cases(
             "expect": "mismatch",
         },
         {
+            # payload_hash is advisory: the signature covers the lying hash,
+            # so this still verifies. Editing the hash without re-signing is
+            # what fails, as invalid.
             "name": "synthetic.payload_hash_mismatch",
             "bundle": sign_bundle(key, lied),
-            "expect": "mismatch",
+            "expect": "verified",
+        },
+        {
+            "name": "synthetic.float_payload_verifies",
+            "bundle": sign_bundle(key, float_payload),
+            "expect": "verified",
         },
         {
             "name": "synthetic.jwk_only_key",
@@ -410,6 +437,47 @@ def _synthetic_cases(
     ]
 
 
+def _p256_cases(base_bundle: dict) -> list[dict]:
+    """Fixed, public test key for the dormant KMS receipt algorithm."""
+    key = ec.derive_private_key(1, ec.SECP256R1())
+    kid = "sk_p256_test"
+    algorithm = "ECDSA-P256-SHA256"
+    payload = _with_hash(dict(json.loads(base_bundle["signing_input"]), kid=kid, alg=algorithm))
+    signing_input = canonical_json(payload)
+    signature = key.sign(
+        signing_input.encode("utf-8"), ec.ECDSA(hashes.SHA256(), deterministic_signing=True)
+    )
+    bundle = {
+        "receipt_id": payload["receipt_id"],
+        "kid": kid,
+        "alg": algorithm,
+        "canonicalization": CANONICALIZATION,
+        "signing_input": signing_input,
+        "signature": b64(signature),
+    }
+    keys = {
+        "keys": [
+            {
+                "kid": kid,
+                "alg": algorithm,
+                "status": "active",
+                "public_key_b64": b64(
+                    key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+                ),
+            }
+        ]
+    }
+    return [
+        {"name": "p256.valid", "bundle": bundle, "keys": keys, "expect": "unsupported"},
+        {
+            "name": "p256.tampered_payload",
+            "bundle": dict(bundle, signing_input=tamper_outcome(signing_input)),
+            "keys": keys,
+            "expect": "invalid",
+        },
+    ]
+
+
 def build_cases(
     golden_dir: Path | None = None, key: Ed25519PrivateKey | None = None
 ) -> list[dict]:
@@ -430,6 +498,7 @@ def build_cases(
             f"{BASE_FIXTURE} fixture is required to build the synthetic cases"
         )
     cases.extend(_synthetic_cases(base_bundle, signing, _public_raw(signing)))
+    cases.extend(_p256_cases(base_bundle))
     cases.append(
         {
             "name": "malformed.no_signature",
@@ -447,8 +516,11 @@ def render_receipts(key: Ed25519PrivateKey | None = None) -> str:
             "Receipt verification vectors. Each case is checked against keys.json "
             "unless it carries its own 'keys'. 'expect' is the verifier status. "
             "Synthetic cases cover a revoked key, envelope fields that disagree "
-            "with the signed payload, a signed payload_hash that does not match, "
-            "an unsupported algorithm, and malformed bundles."
+            "with the signed payload, an advisory payload_hash that does not match "
+            "recomputation (still verified when signed), a float-bearing payload "
+            "that verifies without re-serialization, a genuine P-256 signature "
+            "that is unsupported by receipt v0.1, "
+            "and malformed bundles."
         ),
         "cases": build_cases(key=signing),
     }

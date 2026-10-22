@@ -6,8 +6,16 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
+
+from .receipt_verifier import (
+    VerificationError,
+    VerificationResult,
+    VerificationStatus,
+    key_set_from_document,
+    verify_bundle,
+)
 
 # Same bounds as gateway app/schemas/acp.py. A checkout the server would
 # reject must fail here, before the delegated payment token is sent.
@@ -180,6 +188,103 @@ class Receipt:
     signature: str
     signature_key_id: str
     raw: JsonObject = field(repr=False)
+    request_key: str | None = field(default=None, compare=False)
+    portable_bundle: JsonObject | None = field(default=None, repr=False, compare=False)
+    trust_keys_document: JsonObject | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def id(self) -> str:
+        """Return the receipt identifier."""
+        return self.receipt_id
+
+    def verify(
+        self,
+        *,
+        bundle: JsonObject | None = None,
+        keys: JsonObject | None = None,
+    ) -> VerificationResult:
+        """Check portable evidence with locally held public keys and return the result."""
+        portable = bundle if bundle is not None else self.portable_bundle
+        key_document = keys if keys is not None else self.trust_keys_document
+        if portable is None:
+            return VerificationResult(
+                VerificationStatus.MALFORMED, "portable receipt is unavailable"
+            )
+        if key_document is None:
+            return VerificationResult(VerificationStatus.UNKNOWN_KEY, "trust keys are unavailable")
+
+        try:
+            key_set = key_set_from_document(key_document)
+        except VerificationError:
+            return VerificationResult(
+                VerificationStatus.MALFORMED, "trust keys document is invalid"
+            )
+        result = verify_bundle(portable, key_set)
+        if not result.ok:
+            return result
+
+        def mismatch() -> VerificationResult:
+            return VerificationResult(
+                VerificationStatus.MISMATCH,
+                "portable receipt does not match this receipt",
+                receipt_id=result.receipt_id,
+                key_id=result.key_id,
+            )
+
+        if (
+            result.receipt_id != self.receipt_id
+            or portable.get("signature") != self.signature
+            or portable.get("kid") != self.signature_key_id
+            or self.raw.get("signature") != self.signature
+            or self.raw.get("signature_key_id") != self.signature_key_id
+        ):
+            return mismatch()
+
+        for name in ("permit_id", "wallet_id", "tool", "request_hash", "outcome"):
+            if result.claims.get(name) != getattr(self, name):
+                return mismatch()
+        for name in (
+            "idempotency_record_id",
+            "key_id",
+            "response_hash",
+            "ledger_entry_id",
+            "dispatch_attempt_id",
+            "audit_event_id",
+        ):
+            if name in result.claims and result.claims[name] != getattr(self, name):
+                return mismatch()
+        try:
+            amounts_match = (
+                Decimal(str(result.claims.get("credits_authorized"))) == self.credits_authorized
+                and Decimal(str(result.claims.get("credits_charged"))) == self.credits_charged
+            )
+            date_matches = (
+                _datetime(result.claims.get("created_at"), "created_at") == self.created_at
+            )
+        except (InvalidOperation, ValueError):
+            return mismatch()
+        if not amounts_match or not date_matches:
+            return mismatch()
+
+        for name, value in self.raw.items():
+            if name not in result.claims or name in {"signature", "signature_key_id"}:
+                continue
+            signed_value = result.claims[name]
+            if name in {"credits_authorized", "credits_charged"}:
+                try:
+                    if Decimal(str(value)) != Decimal(str(signed_value)):
+                        return mismatch()
+                except (InvalidOperation, ValueError):
+                    return mismatch()
+            elif name == "created_at":
+                try:
+                    if _datetime(value, name) != _datetime(signed_value, name):
+                        return mismatch()
+                except ValueError:
+                    return mismatch()
+            elif value != signed_value:
+                return mismatch()
+        return result
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Receipt:
@@ -260,6 +365,9 @@ class ACPLineItem:
         allowlist only. Catching these here keeps a delegated payment
         credential off the wire on a request that could only 422.
         """
+        self._validate()
+
+    def _validate(self) -> None:
         if type(self.quantity) is not int or not 0 < self.quantity <= 10_000:
             raise ValueError(f"quantity must be an integer in 1..10000, got {self.quantity!r}")
         if type(self.unit_amount) is not int or not 0 <= self.unit_amount <= 10_000_000:
@@ -275,6 +383,7 @@ class ACPLineItem:
             raise ValueError(f"currency must be 'usd', got {self.currency!r}")
 
     def to_payload(self) -> JsonObject:
+        self._validate()
         payload: JsonObject = {
             "name": self.name,
             "quantity": self.quantity,
@@ -306,12 +415,19 @@ class ACPCheckoutRequest:
 
         The error text names the field and does not include the token.
         """
+        self._validate()
+
+    def _validate(self) -> None:
         if (
             not isinstance(self.line_items, list)
             or not 1 <= len(self.line_items) <= 100
             or not all(isinstance(item, ACPLineItem) for item in self.line_items)
         ):
             raise ValueError("line_items must contain 1..100 line items")
+        total = 0
+        for item in self.line_items:
+            item._validate()
+            total += item.quantity * item.unit_amount
         if (
             not isinstance(self.intent_id, str)
             or _INTENT_ID_PATTERN.fullmatch(self.intent_id) is None
@@ -331,8 +447,11 @@ class ACPCheckoutRequest:
             )
         if type(self.client_total) is not int or self.client_total < 0:
             raise ValueError("client_total must be an integer >= 0")
+        if self.client_total != total:
+            raise ValueError("acp_total_mismatch")
 
     def to_payload(self) -> JsonObject:
+        self._validate()
         return {
             "intent_id": self.intent_id,
             "line_items": [item.to_payload() for item in self.line_items],

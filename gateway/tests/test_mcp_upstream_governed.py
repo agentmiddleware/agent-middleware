@@ -287,10 +287,10 @@ async def test_remote_quote_consume_loss_preserves_legacy_denial_without_leaks(
                 headers=provisioned["agent_headers"],
             )
             assert denied.status_code == 200
-            assert denied.json()["error"] == {
-                "code": -32003,
-                "message": "quote_already_consumed",
-            }
+            error = denied.json()["error"]
+            assert error["code"] == -32003
+            assert error["message"] == "quote_already_consumed"
+            assert error["data"]["code"] == "quote_already_consumed"
         else:
             body = _rest_call_body(
                 tool_name=tool_name,
@@ -305,7 +305,8 @@ async def test_remote_quote_consume_loss_preserves_legacy_denial_without_leaks(
                 headers=provisioned["agent_headers"],
             )
             assert denied.status_code == 403
-            assert denied.json() == {"detail": "quote_already_consumed"}
+            assert denied.json()["detail"] == "quote_already_consumed"
+            assert denied.json()["code"] == "quote_already_consumed"
         assert executor.calls == []
 
         factory = get_session_factory()
@@ -1153,10 +1154,10 @@ async def test_losing_dispatch_claim_does_not_compensate_or_send(
         )
 
         assert loser.status_code == 200
-        assert loser.json()["error"] == {
-            "code": -32005,
-            "message": "idempotency_in_progress",
-        }
+        error = loser.json()["error"]
+        assert error["code"] == -32005
+        assert error["message"] == "idempotency_in_progress"
+        assert error["data"]["code"] == "idempotency_in_progress"
         assert winner_claimed is True
         assert executor.dispatch_count == 0
         assert len(executor.calls) == 1
@@ -1274,10 +1275,10 @@ async def test_prepare_commit_uncertain_preserves_owner_state_and_public_contrac
                 headers=provisioned["agent_headers"],
             )
             assert uncertain.status_code == 200
-            assert uncertain.json()["error"] == {
-                "code": -32005,
-                "message": "idempotency_in_progress",
-            }
+            error = uncertain.json()["error"]
+            assert error["code"] == -32005
+            assert error["message"] == "idempotency_in_progress"
+            assert error["data"]["code"] == "idempotency_in_progress"
         else:
             uncertain = await client.post(
                 f"/mcp/tools/{tool_name}/invoke",
@@ -1804,7 +1805,7 @@ async def test_precanonical_alternate_transport_identity_fails_closed(
                 json=retry_body,
                 headers=provisioned["agent_headers"],
             )
-            assert response.status_code == 400
+            assert response.status_code == 409
             assert response.json()["detail"] == "idempotency_key_reused"
 
         assert executor.dispatch_count == 0
@@ -2111,10 +2112,10 @@ async def test_governed_upstream_replay_remains_bound_to_permit_api_key(
 
         assert first.status_code == 200
         assert denied_replay.status_code == 200
-        assert denied_replay.json()["error"] == {
-            "code": -32003,
-            "message": "permit_key_mismatch",
-        }
+        error = denied_replay.json()["error"]
+        assert error["code"] == -32003
+        assert error["message"] == "permit_key_mismatch"
+        assert error["data"]["code"] == "permit_key_mismatch"
         assert "result" not in denied_replay.json()
         assert executor.dispatch_count == 1
         assert len(executor.calls) == 1

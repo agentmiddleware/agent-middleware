@@ -13,7 +13,7 @@ permit reaches a terminal non-success state, new receipts also carry a nullable
 
 `reason_code` is part of the receipt's signed payload. It survives portable
 export and is available in the verified `claims` returned by
-`b2a_sdk.receipt_verifier`; the human-readable `b2a-verify-receipt` output
+`verify_bundle` from the Agent Middleware (AMW) `amw` package; the `amw verify` output
 prints it as `reason`. This makes the denial category independently verifiable
 without treating the richer diagnostic context as a signed claim.
 
@@ -209,7 +209,7 @@ After exporting the receipt, an operator can verify and display the signed
 reason without calling the gateway:
 
 ```text
-$ b2a-verify-receipt --bundle receipt.json --keys trust-keys.json
+$ amw verify --bundle receipt.json --keys trust-keys.json
 VERIFIED  rcpt-example
   signed by   key-example
   permit      permit-example

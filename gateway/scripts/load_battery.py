@@ -299,7 +299,7 @@ async def _run_battery(concurrency: int, total_requests: int) -> LoadResult:
         tasks = [asyncio.create_task(fire(i)) for i in range(total_requests)]
         outcomes = await asyncio.gather(*tasks)
 
-        for elapsed_ms, body, idem_key in outcomes:
+        for elapsed_ms, body, _idem_key in outcomes:
             result.latencies_ms.append(elapsed_ms)
             if body is None:
                 result.error_count += 1

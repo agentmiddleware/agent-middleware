@@ -79,3 +79,27 @@ def test_postgres_trust_regressions_run_in_proofs():
     )
     assert "RUN_POSTGRES_CONCURRENCY_TESTS" in workflow
     assert "proof-logs-accounting" in workflow
+
+
+def test_trust_release_gate_is_separate_from_required_ci_result():
+    """Keep the release gate visible without blocking unrelated changes.
+
+    The script's first step is ``make check-railway-iac``; an undefined target
+    aborts the gate before coverage and OpenAPI parity run.
+    """
+    workflow = CI_WORKFLOW.read_text()
+    assert "\n  trust_release_gate:\n" in workflow
+    assert "name: Trust release gate (non-required)" in workflow
+    assert "scripts/trust_release_gate.sh" in workflow
+    assert 'UV_PYTHON: "3.12"' in workflow
+    assert 'ACP_CHECKOUT_MEDIAN_BUDGET_S: "0.045"' in workflow
+    assert (
+        "tests/test_acp_bridge.py::test_acp_checkout_end_to_end_latency_budget"
+        in workflow
+    )
+    result_block = workflow.split("name: CI result", 1)[1].split("steps:", 1)[0]
+    assert "trust_release_gate" not in result_block
+    assert "gateway-image-smoke" in result_block
+
+    makefile = (ROOT / "gateway" / "Makefile").read_text()
+    assert "\ncheck-railway-iac:" in makefile

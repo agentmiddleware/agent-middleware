@@ -104,7 +104,7 @@ async def test_discover_and_health_stripe_truth_match(
     """Discover's KYC presence must match health's stripe.status truth."""
     import app.routers.discover as discover_mod
 
-    for stripe_key, expected_health_status, should_have_kyc in [
+    for stripe_key, _expected_health_status, _should_have_kyc in [
         ("", "not_configured", False),
         ("sk_test_fake", "not_configured", True),
     ]:

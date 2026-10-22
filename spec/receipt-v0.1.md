@@ -87,10 +87,15 @@ Full trigger table: [`../gateway/docs/failure-semantics.md`](../gateway/docs/fai
 |---|---|---|
 | `verified` | Signature holds over the signed bytes and the envelope agrees | yes |
 | `invalid` | Signature does not verify | reject (tampered) |
-| `mismatch` | Signature verified, but the bundle disagrees with the signed payload. Covers a different envelope `receipt_id`, `kid`, `alg`, or `canonicalization`, and a `payload_hash` that is not the SHA-256 of the canonical payload with that member removed | reject |
+| `mismatch` | Signature verified, but the bundle disagrees with the signed payload. Covers a different envelope `receipt_id`, `kid`, `alg`, or `canonicalization`. A `payload_hash` that does not match a recomputation is not a mismatch: verifiers never recompute it (see `payload_hash` in [`README.md`](README.md)) | reject |
 | `unknown_key` | Verifier does not hold the signed `kid`, including when that key is present but `disabled` | cannot judge; refresh keys |
-| `malformed` | Bundle cannot be parsed, or the signature is not 64 bytes of base64 | cannot judge |
-| `unsupported` | The signed payload's `alg` or `canonicalization` is not implemented, and the signature over `signing_input` checked out. The envelope alone must not produce this status | cannot judge |
+| `malformed` | Bundle cannot be parsed, or the signature or published key is malformed for its algorithm | cannot judge |
+| `unsupported` | The signature over `signing_input` checked out under the published key, but the signed payload's `alg` or `canonicalization` is not accepted by receipt v0.1. A genuine `ECDSA-P256-SHA256` receipt reaches this status; an envelope claim alone cannot produce it | cannot judge |
+
+The key document's per-key `alg` selects Ed25519 or P-256/SHA-256 signature
+verification. Receipt v0.1 accepts Ed25519 receipts only. P-256 verification
+exists to distinguish a genuine future-algorithm receipt from altered bytes;
+it does not enable the dormant KMS signing path.
 
 Reference verifiers: Python (`sdk/python`, CLI `b2a-verify-receipt`) and
 TypeScript (`sdk/typescript`). Both pass [`test-vectors/`](test-vectors/).

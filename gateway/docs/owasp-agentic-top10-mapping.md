@@ -158,9 +158,10 @@ manual reconciliation instead of fanning out retries.
 
 **Posture: contained.** A human never has to take the agent's (or the
 operator's) word for what happened: any third party can verify a receipt
-offline against the published keys (`/.well-known/trust-keys.json`,
-`b2a-verify-receipt` / `verify_bundle` in `b2a_sdk`). High-risk calls can be
-paused on an explicit human decision ([human-approval-gate.md](human-approval-gate.md)).
+offline against the published keys at `/.well-known/trust-keys.json` using
+`amw verify` or `verify_bundle` from the Agent Middleware (AMW) Python SDK.
+High-risk calls can be paused on an explicit human decision
+([human-approval-gate.md](human-approval-gate.md)).
 
 - Gap: a receipt proves what happened, never what did not; offline
   verification trusts the issuing origin for key distribution (no out-of-band

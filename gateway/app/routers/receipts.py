@@ -8,6 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.core.auth import AuthContext, get_auth_context
 from app.core.config import public_api_origin
 from app.core.wallet_resolution import resolve_wallet_id
+from app.schemas.resolutions import (
+    ResolutionListResponse,
+    ResolutionResponse,
+    resolution_to_response,
+)
 from app.schemas.trust import (
     PortableReceiptResponse,
     ReceiptEvidenceResponse,
@@ -27,9 +32,50 @@ from app.trust import (
     record_audit_event,
 )
 from app.trust.evidence import authorize_receipt_access, build_receipt_evidence
+from app.services.receipt_resolutions import (
+    ReceiptResolutionError,
+    get_resolution,
+    list_wallet_resolutions,
+)
 
 router = APIRouter(prefix="/v1/receipts", tags=["Trust Receipts"])
 logger = logging.getLogger(__name__)
+
+
+@router.get("/resolutions/wallet/{wallet_id}", response_model=ResolutionListResponse)
+async def get_wallet_resolution_chain(
+    wallet_id: str,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> ResolutionListResponse:
+    """Publish a wallet's resolution chain for credential-free offline checks."""
+    try:
+        models, total = await list_wallet_resolutions(
+            wallet_id, limit=limit, offset=offset
+        )
+    except ReceiptResolutionError as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    next_offset = offset + len(models) if offset + len(models) < total else None
+    return ResolutionListResponse(
+        records=[resolution_to_response(model) for model in models],
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=next_offset is not None,
+        next_offset=next_offset,
+    )
+
+
+@router.get("/{receipt_id}/resolution", response_model=ResolutionResponse)
+async def get_receipt_resolution(receipt_id: str) -> ResolutionResponse:
+    """Publish a final outcome without requiring the reader's credentials."""
+    try:
+        model = await get_resolution(receipt_id)
+    except ReceiptResolutionError as exc:
+        raise HTTPException(status_code=409, detail=exc.reason) from exc
+    if model is None:
+        raise HTTPException(status_code=404, detail="resolution_not_found")
+    return resolution_to_response(model)
 
 
 async def _authorize_receipt_list(

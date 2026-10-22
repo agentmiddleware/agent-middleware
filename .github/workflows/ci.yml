@@ -397,6 +397,7 @@ jobs:
               "amw_pg_concurrency",
               "amw_action_pgproofs",
               "amw_pg_pgloop",
+              "amw_pg_accounting",
               "amw_action_migration",
               "amw_action_dispatch",
               "amw_pg_stress",
@@ -428,7 +429,7 @@ jobs:
           EOF
       - name: Migrate proof databases
         run: |
-          for db in amw_pg_concurrency amw_action_pgproofs amw_pg_pgloop amw_pg_stress amw_action_multiprocess; do
+          for db in amw_pg_concurrency amw_action_pgproofs amw_pg_pgloop amw_pg_accounting amw_pg_stress amw_action_multiprocess; do
             DATABASE_URL="postgresql+asyncpg://sellers@127.0.0.1:55439/$db" \
               uv run --no-sync python -m alembic upgrade head
           done
@@ -466,6 +467,14 @@ jobs:
           uv run --no-sync pytest -q -rs --timeout 300 \
             tests/test_postgres_datetime_binding.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-driver.txt"
           test "${PIPESTATUS[0]}" -eq 0
+      - name: Run concurrent accounting proof
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_accounting
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-accounting.txt"
+          test "${PIPESTATUS[0]}" -eq 0
       - name: Run multiprocess crash proofs
         env:
           STATE_BACKEND: postgres
@@ -484,7 +493,7 @@ jobs:
         working-directory: .
         run: |
           python3 gateway/tests/support/proof_log_gate.py \
-            "$GITHUB_WORKSPACE"/proof-logs-{concurrency,action,migration,driver,stress,action-mp}.txt
+            "$GITHUB_WORKSPACE"/proof-logs-{concurrency,action,migration,driver,accounting,stress,action-mp}.txt
 
   gateway-image-smoke:
     name: Gateway image import smoke
@@ -538,11 +547,8 @@ jobs:
             corepack enable pnpm && echo "PM=pnpm" >> "$GITHUB_ENV" && pnpm install --frozen-lockfile
           elif [ -f yarn.lock ]; then
             corepack enable yarn && echo "PM=yarn" >> "$GITHUB_ENV" && yarn install --immutable
-          elif [ -f package-lock.json ]; then
-            echo "PM=npm" >> "$GITHUB_ENV" && npm ci
           else
-            echo "::warning::no lockfile in ${{ matrix.project }}; using npm install"
-            echo "PM=npm" >> "$GITHUB_ENV" && npm install --no-audit --no-fund
+            echo "PM=npm" >> "$GITHUB_ENV" && npm ci
           fi
       - name: Lint
         if: matrix.node-version == '22'

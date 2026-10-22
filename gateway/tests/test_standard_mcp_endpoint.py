@@ -298,6 +298,43 @@ async def test_tools_call_unknown_tool(client, standard_mcp_enabled, clean_datab
 
 
 @pytest.mark.anyio
+async def test_tools_call_dogfood_tool_works_without_prior_tools_list(
+    client, standard_mcp_enabled, clean_database, monkeypatch, tmp_path
+):
+    """A fresh gateway must resolve flag-gated tools on tools/call alone."""
+    from app.services import dogfood_tool
+
+    monkeypatch.setenv("ENABLE_DOGFOOD_TOOL", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(dogfood_tool, "DOGFOOD_NOTES_PATH", tmp_path / "notes.jsonl")
+    # Simulate a freshly started gateway: nothing has run tools/list yet.
+    dogfood_tool.unregister_dogfood_tool()
+    get_service_registry().unregister_local(dogfood_tool.DOGFOOD_TOOL_ID)
+
+    provisioned = await provision_agent_wallet(client)
+    try:
+        resp = await client.post(
+            "/mcp",
+            json=_rpc(
+                "tools/call",
+                params={
+                    "name": dogfood_tool.DOGFOOD_TOOL_ID,
+                    "arguments": {"text": "fresh"},
+                },
+            ),
+            headers={**provisioned["agent_headers"], **MCP_HEADERS},
+        )
+        body = resp.json()
+        assert "error" not in body, body
+        assert body["result"]["isError"] is False
+        assert body["result"]["receipt"]["wallet_id"] == provisioned["agent_wallet_id"]
+    finally:
+        dogfood_tool.unregister_dogfood_tool()
+        monkeypatch.setenv("ENABLE_DOGFOOD_TOOL", "false")
+        get_settings.cache_clear()
+
+
+@pytest.mark.anyio
 async def test_tools_call_auto_mints_bounded_permit_and_charges_once(
     client, standard_mcp_enabled, clean_database
 ):

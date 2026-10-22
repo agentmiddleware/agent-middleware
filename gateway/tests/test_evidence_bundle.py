@@ -280,12 +280,12 @@ async def test_evidence_bundle_denies_cross_wallet_access(client, clean_database
 # existence). See app/core/auth.get_auth_context.
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "headers,expected_status",
-    (
+    ("headers", "expected_status"),
+    [
         ({}, 401),
         ({"X-API-Key": "short"}, 401),
         ({"X-API-Key": "not-a-real-key"}, 403),
-    ),
+    ],
 )
 async def test_evidence_bundle_requires_authentication(
     client, clean_database, headers, expected_status

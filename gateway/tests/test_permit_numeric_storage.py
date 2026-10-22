@@ -41,7 +41,7 @@ STORABLE = ("0.00000001", "1.12345678", "100000000000.125", "999999999999")
 
 
 @pytest.mark.parametrize(
-    "schema,field",
+    ("schema", "field"),
     [
         (PermitCreateRequest, "max_credits"),
         (PermitCreateRequest, "aggregate_value_cap"),
@@ -89,7 +89,7 @@ def _body(wallet_id="synthetic", **changes):
 
 @pytest.mark.parametrize("amount", UNSTORABLE)
 @pytest.mark.parametrize(
-    "schema,field,extra",
+    ("schema", "field", "extra"),
     [
         (PermitCreateRequest, "max_credits", {}),
         (PermitCreateRequest, "aggregate_value_cap", {}),
@@ -114,7 +114,7 @@ def test_permit_schemas_reject_credit_terms_that_change_in_storage(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "endpoint,field,extra",
+    ("endpoint", "field", "extra"),
     [
         ("/v1/permits", "max_credits", {}),
         ("/v1/permits", "aggregate_value_cap", {}),

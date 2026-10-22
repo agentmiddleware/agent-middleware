@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
+from mcp.types import CallToolResult
 from sqlalchemy import select
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -26,7 +28,11 @@ from app.schemas.trust import ReceiptResponse
 from app.services.agent_money import AgentMoney, get_agent_money
 from app.services.audit_log import AuditEvent, record_audit_event
 from app.services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
-from app.services.idempotency import IdempotencyService, get_idempotency_service
+from app.services.idempotency import (
+    ACTION_MCP_IDEMPOTENCY_ENDPOINT,
+    IdempotencyService,
+    get_idempotency_service,
+)
 from app.services.ownership import CallerIdentity
 from app.services.mcp_dispatch_attempts import (
     DISPATCH_CLAIMED,
@@ -46,7 +52,9 @@ from app.services.permits import (
     permit_constraints_snapshot,
 )
 from app.services.receipts import ReceiptError, ReceiptService, get_receipt_service
+from app.services.service_registry import get_service_registry
 from app.services.signing_keys import canonical_json, sha256_hex
+from app.services.upstream_mcp import UpstreamMcpAdapter
 
 logger = logging.getLogger(__name__)
 _PERMIT_SNAPSHOT_KEYS = frozenset(
@@ -60,7 +68,9 @@ _PERMIT_SNAPSHOT_KEYS = frozenset(
 _LEGACY_UNSNAPSHOTTED_OUTCOMES = frozenset(
     {"success", "failed_refunded", "delivery_uncertain", "response_rejected"}
 )
-STATUS_NOT_DELIVERED_ERROR_CODE = "reconciled_not_delivered"
+# Per-attempt bound on a status lookup. A hang falls back to
+# delivery_uncertain, so one sweep waits at most limit * this value on lookups.
+STATUS_LOOKUP_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -68,14 +78,17 @@ class UpstreamDispatchStatusQuery:
     """Read-only identity of one stale claimed dispatch.
 
     ``invocation_id`` is the value the gateway forwarded upstream as
-    ``io.agentmiddleware/invocation_id``. ``idempotency_key`` is the client
-    key; a tool with a native idempotency field may have received that
-    instead.
+    ``io.agentmiddleware/invocation_id``. ``idempotency_key`` is the key stored
+    on the gateway's idempotency record. ``forwarded_idempotency_key`` is the
+    value actually sent as ``io.agentmiddleware/idempotency_key``. It is None
+    for action-permit calls: those forward a derived native key that the
+    attempt row does not record, so match on ``invocation_id`` instead.
     """
 
     attempt_id: str
     invocation_id: str
     idempotency_key: str
+    forwarded_idempotency_key: str | None
     upstream_origin: str
     upstream_tool_name: str
     request_hash: str
@@ -86,21 +99,46 @@ class UpstreamDispatchStatusQuery:
 class UpstreamDispatchStatus:
     """Authoritative upstream answer for one stale claimed dispatch.
 
-    ``delivered=True`` requires the upstream result payload and finalizes the
-    attempt as ``succeeded`` with the charge standing. ``delivered=False``
-    asserts the upstream never performed the call and finalizes it through the
-    existing refund path.
+    ``delivered`` must be a real ``bool``. ``delivered=True`` requires the raw
+    MCP ``CallToolResult`` payload, which goes through the live path's result
+    checks: a normal result finalizes as ``succeeded`` (the charge stands), and
+    an ``isError`` result finalizes as ``returned_error`` and is refunded,
+    exactly as on the live path. ``delivered=False`` is logged but does not
+    change the outcome: the attempt stays ``delivery_uncertain`` (see
+    ``_proven_outcome``).
     """
 
     delivered: bool
     result_payload: dict[str, Any] | None = None
 
 
-# A status lookup may only read upstream state. Returning None (or raising)
-# means "not proven either way" and leaves the attempt delivery_uncertain.
+# A status lookup may only read upstream state. Returning None, raising,
+# timing out, or returning a malformed answer means "not proven either way"
+# and leaves the attempt delivery_uncertain.
 UpstreamDispatchStatusLookup = Callable[
     [UpstreamDispatchStatusQuery], Awaitable[UpstreamDispatchStatus | None]
 ]
+
+# Process-wide lookups keyed by upstream origin. The gateway registers none,
+# so this is inert until a deployment calls register_upstream_status_lookup()
+# from its own startup code. There is deliberately no environment setting.
+_REGISTERED_STATUS_LOOKUPS: dict[str, UpstreamDispatchStatusLookup] = {}
+
+
+def register_upstream_status_lookup(
+    upstream_origin: str,
+    lookup: UpstreamDispatchStatusLookup,
+) -> None:
+    """Register the read-only status lookup for one upstream origin.
+
+    ``upstream_origin`` must equal the stored attempt origin exactly
+    (scheme://host[:port], no path). The reconciliation singleton reads this
+    registry on every sweep, so registering before or after it was created
+    both work. Registering an origin again replaces its lookup.
+    """
+    if not callable(lookup):
+        raise TypeError("status lookup must be callable")
+    _REGISTERED_STATUS_LOOKUPS[upstream_origin] = lookup
 
 
 @dataclass(frozen=True)
@@ -140,10 +178,15 @@ class McpDispatchReconciliationService:
         idempotency_service: IdempotencyService | None = None,
         max_result_bytes: int | None = None,
         status_lookups: Mapping[str, UpstreamDispatchStatusLookup] | None = None,
+        status_lookup_timeout_seconds: float = STATUS_LOOKUP_TIMEOUT_SECONDS,
     ) -> None:
-        # Optional, keyed by upstream_origin. An origin without a lookup keeps
-        # the conservative stale-claim -> delivery_uncertain behaviour.
-        self._status_lookups = dict(status_lookups or {})
+        # Optional, keyed by upstream_origin. None means "use the process-wide
+        # registry". An origin without a lookup keeps the conservative
+        # stale-claim -> delivery_uncertain behaviour.
+        self._status_lookups = (
+            dict(status_lookups) if status_lookups is not None else None
+        )
+        self._status_lookup_timeout = status_lookup_timeout_seconds
         self._dispatch = dispatch_service or get_mcp_dispatch_attempt_service()
         self._money = money or get_agent_money()
         self._permits = permit_service or get_permit_service()
@@ -440,44 +483,99 @@ class McpDispatchReconciliationService:
         become delivery_uncertain.
         """
         attempt = context.attempt
-        lookup = self._status_lookups.get(attempt.upstream_origin)
+        lookups = (
+            self._status_lookups
+            if self._status_lookups is not None
+            else _REGISTERED_STATUS_LOOKUPS
+        )
+        lookup = lookups.get(attempt.upstream_origin)
         if lookup is None or attempt.state != DISPATCH_CLAIMED:
             return None
+        # Non-action calls forward the stored key unchanged. Action calls
+        # forward a derived native key that is not persisted on the attempt.
+        forwarded_key = (
+            None
+            if context.endpoint == ACTION_MCP_IDEMPOTENCY_ENDPOINT
+            else context.idempotency_key
+        )
         query = UpstreamDispatchStatusQuery(
             attempt_id=attempt.attempt_id,
             invocation_id=attempt.idempotency_record_id,
             idempotency_key=context.idempotency_key,
+            forwarded_idempotency_key=forwarded_key,
             upstream_origin=attempt.upstream_origin,
             upstream_tool_name=attempt.upstream_tool_name,
             request_hash=attempt.request_hash,
             dispatched_at=attempt.dispatched_at,
         )
         try:
-            status = await lookup(query)
+            status = await asyncio.wait_for(
+                lookup(query), timeout=self._status_lookup_timeout
+            )
+            return self._proven_outcome(attempt, status)
         except Exception as exc:
+            # Includes TimeoutError and any malformed answer: not proof.
             logger.warning(
                 "mcp_dispatch_status_lookup_failed attempt_id=%s error=%s",
                 attempt.attempt_id,
                 type(exc).__name__,
             )
             return None
+
+    @staticmethod
+    def _proven_outcome(
+        attempt: McpDispatchAttemptModel,
+        status: object,
+    ) -> dict[str, Any] | None:
+        """Map a lookup answer to ``complete()`` kwargs, or None for uncertain.
+
+        Raises on a malformed answer; the caller treats that as not proven.
+        """
         if status is None:
             return None
-        if status.delivered:
-            if not isinstance(status.result_payload, dict):
-                return None
+        if not isinstance(status, UpstreamDispatchStatus):
+            raise DispatchAttemptError("dispatch_status_lookup_answer_invalid")
+        if type(status.delivered) is not bool:
+            raise DispatchAttemptError("dispatch_status_lookup_answer_invalid")
+        if not status.delivered:
+            # Not proof of non-delivery. The claim is a one-shot hash with no
+            # lease or fence, so a paused worker that already holds it can
+            # still resume and call call_tool() after the provider answered.
+            # The guarded complete() would protect the row, not the send.
+            # Refunding here could pay back a call that then executes, so the
+            # attempt stays delivery_uncertain for manual reconciliation.
+            logger.warning(
+                "mcp_dispatch_status_lookup_not_delivered_unfenced attempt_id=%s",
+                attempt.attempt_id,
+            )
+            return None
+        if not isinstance(status.result_payload, dict):
+            raise DispatchAttemptError("dispatch_status_lookup_result_missing")
+        # Reuse the live path's own result gate (shape, isError, reflected
+        # bearer token, size bound) through the executor for this exact
+        # binding. Without it the answer cannot be checked, so stay uncertain.
+        executor = get_service_registry().get_executor(attempt.public_tool_id)
+        if (
+            not isinstance(executor, UpstreamMcpAdapter)
+            or executor.configuration.origin != attempt.upstream_origin
+            or executor.configuration.tool_name != attempt.upstream_tool_name
+        ):
+            raise DispatchAttemptError("dispatch_status_lookup_executor_unavailable")
+        result = executor._canonicalize_result(
+            CallToolResult.model_validate(status.result_payload)
+        )
+        if result.is_error:
+            # Same terminal shape as the live UpstreamMcpReturnedError path,
+            # which _finalize_terminal refunds through compensation.
             return {
-                "state": "succeeded",
-                "result_payload": status.result_payload,
-                "error_code": None,
+                "state": "returned_error",
+                "result_payload": result.payload,
+                "error_code": "upstream_returned_error",
             }
         return {
-            "state": "returned_error",
-            "result_payload": {
-                "error": "failed_refunded",
-                "error_code": STATUS_NOT_DELIVERED_ERROR_CODE,
-            },
-            "error_code": STATUS_NOT_DELIVERED_ERROR_CODE,
+            "state": "succeeded",
+            "result_payload": result.payload,
+            "error_code": None,
         }
 
     async def _complete_prepared_failure(
@@ -1064,10 +1162,7 @@ class McpDispatchReconciliationService:
             return attempt.error_code
         if attempt.error_code == "upstream_returned_error":
             return "upstream_returned_error"
-        if attempt.error_code in {
-            "reconciled_stale_prepared",
-            STATUS_NOT_DELIVERED_ERROR_CODE,
-        }:
+        if attempt.error_code == "reconciled_stale_prepared":
             return "failed_refunded"
         return "upstream_pre_dispatch_failed"
 

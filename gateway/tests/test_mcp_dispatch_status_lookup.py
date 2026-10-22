@@ -1,35 +1,46 @@
 """SEL-351: optional per-upstream status lookup for stale claimed dispatches.
 
-The hook may only move a stale ``dispatch_claimed`` attempt to confirmed
-success or confirmed not-delivered. It never re-sends, it decides the outcome
-before the single receipt is signed, and any doubt leaves the attempt
-``delivery_uncertain``.
+The hook may only move a stale ``dispatch_claimed`` attempt to a
+provider-confirmed delivered result. That result goes through the live path's
+result gate, so an ``isError`` result is refunded just like on the live path.
+The hook never re-sends, it decides the outcome before the single receipt is
+signed, and any doubt leaves the attempt ``delivery_uncertain``, including a
+provider claim of non-delivery: a paused worker may still hold the claim.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
+from pydantic import SecretStr
 from sqlalchemy import func, select
 
 from app.db.database import get_session_factory
 from app.db.models import McpDispatchAttemptModel, ReceiptModel
+from app.services import mcp_dispatch_reconciliation as reconciliation_module
 from app.services.agent_money import get_agent_money
+from app.services.idempotency import ACTION_MCP_IDEMPOTENCY_ENDPOINT
 from app.services.mcp_dispatch_attempts import (
     DISPATCH_CLAIMED,
     DISPATCH_LEGACY_DISPATCHED,
+    DispatchAttemptConflictError,
     get_mcp_dispatch_attempt_service,
 )
 from app.services.mcp_dispatch_reconciliation import (
     McpDispatchReconciliationService,
     UpstreamDispatchStatus,
     UpstreamDispatchStatusQuery,
+    get_mcp_dispatch_reconciliation_service,
+    register_upstream_status_lookup,
 )
 from app.services.permits import get_permit_service
 from app.services.receipts import get_receipt_service
+from app.services.service_registry import get_service_registry
+from app.services.upstream_mcp import UpstreamMcpAdapter, UpstreamMcpConfiguration
 from tests.test_mcp_dispatch_reconciliation import (
     CREDITS,
     SeededAttempt,
@@ -41,37 +52,70 @@ from tests.test_mcp_dispatch_reconciliation import (
 )
 
 ORIGIN = "https://partner.example"
+UPSTREAM_TOKEN = "partner-bearer-token-sel-351"
 UPSTREAM_RESULT = {
     "content": [{"type": "text", "text": "partner confirms done"}],
     "structuredContent": {"order_id": "ord-1"},
     "isError": False,
 }
+ERROR_RESULT = {
+    "content": [{"type": "text", "text": "partner rejected the order"}],
+    "isError": True,
+}
 
 
 class RecordingLookup:
-    def __init__(self, answer: UpstreamDispatchStatus | None | Exception) -> None:
+    def __init__(self, answer: object) -> None:
         self.answer = answer
         self.queries: list[UpstreamDispatchStatusQuery] = []
 
-    async def __call__(
-        self, query: UpstreamDispatchStatusQuery
-    ) -> UpstreamDispatchStatus | None:
+    async def __call__(self, query: UpstreamDispatchStatusQuery) -> object:
         self.queries.append(query)
         if isinstance(self.answer, Exception):
             raise self.answer
         return self.answer
 
 
-def _reconciler(lookup) -> McpDispatchReconciliationService:
+@pytest.fixture(autouse=True)
+def restore_executor_registry():
+    executors = get_service_registry()._executor_registry
+    saved = dict(executors)
+    yield
+    executors.clear()
+    executors.update(saved)
+
+
+def _reconciler(lookup, **kwargs) -> McpDispatchReconciliationService:
     return McpDispatchReconciliationService(
         max_result_bytes=4096,
         status_lookups={ORIGIN: lookup},
+        **kwargs,
+    )
+
+
+def _register_executor(tool_name: str) -> None:
+    # The live result gate needs the binding's adapter (bearer token, size
+    # bound); no network is used.
+    get_service_registry()._executor_registry[tool_name] = UpstreamMcpAdapter(
+        UpstreamMcpConfiguration(
+            url=f"{ORIGIN}/mcp",
+            origin=ORIGIN,
+            tool_name="partner_lookup",
+            public_tool_id=tool_name,
+            bearer_token=SecretStr(UPSTREAM_TOKEN),
+            credits_per_call=CREDITS,
+            connect_timeout_seconds=5.0,
+            call_timeout_seconds=5.0,
+            max_response_bytes=4096,
+            environment="test",
+        )
     )
 
 
 async def _seed_claimed(client: AsyncClient, suffix: str) -> SeededAttempt:
     seed = await _seed_attempt(client, suffix=suffix, state="dispatched")
     assert (await _attempt(seed.attempt_id)).state == DISPATCH_CLAIMED
+    _register_executor(seed.tool_name)
     return seed
 
 
@@ -93,7 +137,10 @@ async def _assert_stays_uncertain(seed: SeededAttempt) -> None:
     attempt = await _attempt(seed.attempt_id)
     assert attempt.state == "delivery_uncertain"
     assert attempt.debit_refunded_at is None
+    assert attempt.budget_released_at is None
     assert await _ledger_counts(seed.wallet_id) == (1, 0)
+    permit = await get_permit_service().get_permit(seed.permit_id)
+    assert permit is not None and permit.spent_credits == CREDITS
     receipt = await get_receipt_service().get_receipt_by_idempotency_record_id(
         attempt.idempotency_record_id
     )
@@ -125,6 +172,7 @@ async def test_provider_done_resolves_to_success_once_and_keeps_charge(
     assert query.attempt_id == seed.attempt_id
     assert query.invocation_id == attempt.idempotency_record_id
     assert query.idempotency_key == seed.idempotency_key
+    assert query.forwarded_idempotency_key == seed.idempotency_key
     assert query.upstream_origin == ORIGIN
     assert query.upstream_tool_name == "partner_lookup"
     assert query.request_hash == attempt.request_hash
@@ -154,12 +202,14 @@ async def test_provider_done_resolves_to_success_once_and_keeps_charge(
 
 
 @pytest.mark.anyio
-async def test_provider_not_done_refunds_through_existing_compensation(
+async def test_provider_done_with_is_error_is_refunded_like_the_live_path(
     client: AsyncClient,
     clean_database,
 ) -> None:
-    seed = await _seed_claimed(client, "lookup-not-done")
-    lookup = RecordingLookup(UpstreamDispatchStatus(delivered=False))
+    seed = await _seed_claimed(client, "lookup-is-error")
+    lookup = RecordingLookup(
+        UpstreamDispatchStatus(delivered=True, result_payload=ERROR_RESULT)
+    )
 
     result = await _reconciler(lookup).reconcile(idle_seconds=300)
 
@@ -167,7 +217,7 @@ async def test_provider_not_done_refunds_through_existing_compensation(
     assert result.failed_attempt_ids == ()
     attempt = await _attempt(seed.attempt_id)
     assert attempt.state == "returned_error"
-    assert attempt.error_code == "reconciled_not_delivered"
+    assert attempt.error_code == "upstream_returned_error"
     assert attempt.debit_refunded_at is not None
     assert attempt.budget_released_at is not None
     assert await _ledger_counts(seed.wallet_id) == (1, 1)
@@ -181,15 +231,105 @@ async def test_provider_not_done_refunds_through_existing_compensation(
     assert receipt is not None
     assert receipt.outcome == "failed_refunded"
     assert receipt.credits_charged == Decimal("0")
-    assert receipt.reason_code == "failed_refunded"
+    assert receipt.reason_code == "upstream_returned_error"
     assert await _receipt_count(attempt.idempotency_record_id) == 1
     replay, status = await _replay(seed)
     assert status == 502
-    assert replay["error"] == "failed_refunded"
+    assert replay["error"] == "upstream_returned_error"
+    assert replay["upstream_result"]["isError"] is True
 
     again = await _reconciler(lookup).reconcile(idle_seconds=0)
     assert again.repaired == 0
     assert await _ledger_counts(seed.wallet_id) == (1, 1)
+
+
+@pytest.mark.anyio
+async def test_provider_not_delivered_stays_uncertain_without_refund(
+    client: AsyncClient,
+    clean_database,
+) -> None:
+    seed = await _seed_claimed(client, "lookup-not-done")
+    lookup = RecordingLookup(UpstreamDispatchStatus(delivered=False))
+
+    result = await _reconciler(lookup).reconcile(idle_seconds=300)
+
+    assert len(lookup.queries) == 1
+    assert result.status_resolved == 0
+    assert result.dispatched_uncertain == 1
+    assert result.failed_attempt_ids == ()
+    await _assert_stays_uncertain(seed)
+
+
+@pytest.mark.anyio
+async def test_paused_live_worker_cannot_be_refunded_by_not_delivered(
+    client: AsyncClient,
+    clean_database,
+) -> None:
+    seed = await _seed_claimed(client, "lookup-paused-worker")
+    resume = asyncio.Event()
+    sends = 0
+
+    async def paused_worker() -> None:
+        # Holds the durable claim (seeded) and is paused just before
+        # call_tool(). Nothing about the row stops it from sending later.
+        nonlocal sends
+        await resume.wait()
+        sends += 1
+        with pytest.raises(
+            DispatchAttemptConflictError, match="dispatch_terminal_conflict"
+        ):
+            await get_mcp_dispatch_attempt_service().complete(
+                attempt_id=seed.attempt_id,
+                state="succeeded",
+                result_payload=UPSTREAM_RESULT,
+                error_code=None,
+                max_result_bytes=4096,
+            )
+
+    worker = asyncio.create_task(paused_worker())
+    lookup = RecordingLookup(UpstreamDispatchStatus(delivered=False))
+
+    result = await _reconciler(lookup).reconcile(idle_seconds=300)
+
+    assert len(lookup.queries) == 1
+    assert result.status_resolved == 0
+    assert result.dispatched_uncertain == 1
+    # Nothing was paid back while the claim holder could still send.
+    attempt = await _attempt(seed.attempt_id)
+    assert attempt.debit_refunded_at is None
+    assert attempt.budget_released_at is None
+    assert await _ledger_counts(seed.wallet_id) == (1, 0)
+
+    resume.set()
+    await asyncio.wait_for(worker, timeout=5)
+
+    assert sends == 1
+    # The call really ran and the charge still stands: no refund to undo.
+    await _assert_stays_uncertain(seed)
+
+
+@pytest.mark.anyio
+async def test_hanging_lookup_times_out_to_delivery_uncertain(
+    client: AsyncClient,
+    clean_database,
+) -> None:
+    seed = await _seed_claimed(client, "lookup-hangs")
+    started = asyncio.Event()
+
+    async def hangs(query: UpstreamDispatchStatusQuery) -> UpstreamDispatchStatus:
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    reconciler = _reconciler(hangs, status_lookup_timeout_seconds=0.05)
+
+    result = await asyncio.wait_for(reconciler.reconcile(idle_seconds=300), 10)
+
+    assert started.is_set()
+    assert result.dispatched_uncertain == 1
+    assert result.status_resolved == 0
+    assert result.failed_attempt_ids == ()
+    await _assert_stays_uncertain(seed)
 
 
 @pytest.mark.anyio
@@ -200,9 +340,39 @@ async def test_provider_not_done_refunds_through_existing_compensation(
         RuntimeError("partner 500"),
         None,
         UpstreamDispatchStatus(delivered=True, result_payload=None),
-        UpstreamDispatchStatus(delivered=True, result_payload={"blob": "x" * 8192}),
+        UpstreamDispatchStatus(
+            delivered=True,
+            result_payload={
+                "content": [{"type": "text", "text": "x" * 8192}],
+                "isError": False,
+            },
+        ),
+        UpstreamDispatchStatus(delivered="yes", result_payload=UPSTREAM_RESULT),  # type: ignore[arg-type]
+        UpstreamDispatchStatus(delivered=1, result_payload=UPSTREAM_RESULT),  # type: ignore[arg-type]
+        {"delivered": True, "result_payload": UPSTREAM_RESULT},
+        UpstreamDispatchStatus(
+            delivered=True, result_payload={"content": "nope", "isError": False}
+        ),
+        UpstreamDispatchStatus(
+            delivered=True,
+            result_payload={
+                "content": [{"type": "text", "text": f"echo {UPSTREAM_TOKEN}"}],
+                "isError": False,
+            },
+        ),
     ],
-    ids=["unreachable", "raises", "unknown", "done-without-result", "too-large"],
+    ids=[
+        "unreachable",
+        "raises",
+        "unknown",
+        "done-without-result",
+        "too-large",
+        "delivered-not-bool-str",
+        "delivered-not-bool-int",
+        "not-a-status-object",
+        "malformed-mcp-result",
+        "reflects-bearer-token",
+    ],
 )
 async def test_unproven_lookup_leaves_attempt_delivery_uncertain(
     client: AsyncClient,
@@ -222,12 +392,98 @@ async def test_unproven_lookup_leaves_attempt_delivery_uncertain(
 
 
 @pytest.mark.anyio
+async def test_done_without_a_live_executor_to_validate_stays_uncertain(
+    client: AsyncClient,
+    clean_database,
+) -> None:
+    seed = await _seed_claimed(client, "lookup-no-executor")
+    get_service_registry()._executor_registry.pop(seed.tool_name)
+    lookup = RecordingLookup(
+        UpstreamDispatchStatus(delivered=True, result_payload=UPSTREAM_RESULT)
+    )
+
+    result = await _reconciler(lookup).reconcile(idle_seconds=300)
+
+    assert len(lookup.queries) == 1
+    assert result.status_resolved == 0
+    assert result.dispatched_uncertain == 1
+    await _assert_stays_uncertain(seed)
+
+
+@pytest.mark.anyio
+async def test_action_call_does_not_claim_a_forwarded_key(
+    client: AsyncClient,
+    clean_database,
+) -> None:
+    seed = await _seed_claimed(client, "lookup-forwarded-key")
+    context = await get_mcp_dispatch_attempt_service().get_context(seed.attempt_id)
+    assert context is not None
+    lookup = RecordingLookup(None)
+    reconciler = _reconciler(lookup)
+
+    assert await reconciler._lookup_status(context) is None
+    assert lookup.queries[-1].forwarded_idempotency_key == seed.idempotency_key
+
+    action_context = dataclasses.replace(
+        context, endpoint=ACTION_MCP_IDEMPOTENCY_ENDPOINT
+    )
+    assert await reconciler._lookup_status(action_context) is None
+    query = lookup.queries[-1]
+    assert query.forwarded_idempotency_key is None
+    assert query.invocation_id == context.attempt.idempotency_record_id
+
+
+@pytest.mark.anyio
+async def test_registered_lookup_is_used_by_production_singleton(
+    client: AsyncClient,
+    clean_database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reconciliation_module, "_REGISTERED_STATUS_LOOKUPS", {})
+    monkeypatch.setattr(reconciliation_module, "_service", None)
+    seed = await _seed_claimed(client, "lookup-registered")
+    lookup = RecordingLookup(
+        UpstreamDispatchStatus(delivered=True, result_payload=UPSTREAM_RESULT)
+    )
+    # Built before registration, exactly like the lifespan cleanup singleton.
+    singleton = get_mcp_dispatch_reconciliation_service()
+    with pytest.raises(TypeError, match="callable"):
+        register_upstream_status_lookup(ORIGIN, None)  # type: ignore[arg-type]
+    register_upstream_status_lookup(ORIGIN, lookup)
+
+    result = await singleton.reconcile(idle_seconds=300)
+
+    assert len(lookup.queries) == 1
+    assert result.status_resolved == 1
+    assert (await _attempt(seed.attempt_id)).state == "succeeded"
+
+
+@pytest.mark.anyio
+async def test_nothing_registered_keeps_singleton_conservative(
+    client: AsyncClient,
+    clean_database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reconciliation_module, "_REGISTERED_STATUS_LOOKUPS", {})
+    monkeypatch.setattr(reconciliation_module, "_service", None)
+    seed = await _seed_claimed(client, "lookup-unregistered")
+
+    result = await get_mcp_dispatch_reconciliation_service().reconcile(idle_seconds=300)
+
+    assert result.status_resolved == 0
+    assert result.dispatched_uncertain == 1
+    await _assert_stays_uncertain(seed)
+
+
+@pytest.mark.anyio
 async def test_lookup_for_another_origin_keeps_default_behaviour(
     client: AsyncClient,
     clean_database,
 ) -> None:
     seed = await _seed_claimed(client, "lookup-other-origin")
-    lookup = RecordingLookup(UpstreamDispatchStatus(delivered=False))
+    lookup = RecordingLookup(
+        UpstreamDispatchStatus(delivered=True, result_payload=UPSTREAM_RESULT)
+    )
     reconciler = McpDispatchReconciliationService(
         max_result_bytes=4096,
         status_lookups={"https://someone-else.example": lookup},
@@ -246,16 +502,17 @@ async def test_already_uncertain_receipt_is_never_rewritten(
     clean_database,
 ) -> None:
     seed = await _seed_claimed(client, "lookup-after-receipt")
-    await McpDispatchReconciliationService(max_result_bytes=4096).reconcile(
-        idle_seconds=300
-    )
+    plain = McpDispatchReconciliationService(max_result_bytes=4096, status_lookups={})
+    await plain.reconcile(idle_seconds=300)
     attempt = await _attempt(seed.attempt_id)
     original = await get_receipt_service().get_receipt_by_idempotency_record_id(
         attempt.idempotency_record_id
     )
     assert original is not None and original.outcome == "delivery_uncertain"
 
-    lookup = RecordingLookup(UpstreamDispatchStatus(delivered=False))
+    lookup = RecordingLookup(
+        UpstreamDispatchStatus(delivered=True, result_payload=UPSTREAM_RESULT)
+    )
     result = await _reconciler(lookup).reconcile(idle_seconds=0)
 
     assert lookup.queries == []
@@ -282,7 +539,9 @@ async def test_legacy_dispatched_row_is_not_offered_to_the_lookup(
             row.state = DISPATCH_LEGACY_DISPATCHED
             row.dispatch_claim_hash = None
             session.add(row)
-    lookup = RecordingLookup(UpstreamDispatchStatus(delivered=False))
+    lookup = RecordingLookup(
+        UpstreamDispatchStatus(delivered=True, result_payload=UPSTREAM_RESULT)
+    )
 
     result = await _reconciler(lookup).reconcile(idle_seconds=0)
 
@@ -309,7 +568,7 @@ async def test_live_claim_owner_finishing_during_lookup_wins(
             error_code=None,
             max_result_bytes=4096,
         )
-        return UpstreamDispatchStatus(delivered=False)
+        return UpstreamDispatchStatus(delivered=True, result_payload=ERROR_RESULT)
 
     result = await _reconciler(owner_finishes_first).reconcile(idle_seconds=300)
 
@@ -328,51 +587,73 @@ async def test_live_claim_owner_finishing_during_lookup_wins(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("winner_payload", "loser_payload", "state", "outcome", "ledger"),
+    [
+        (UPSTREAM_RESULT, ERROR_RESULT, "succeeded", "success", (1, 0)),
+        (ERROR_RESULT, UPSTREAM_RESULT, "returned_error", "failed_refunded", (1, 1)),
+    ],
+)
 async def test_concurrent_conflicting_resolutions_settle_exactly_once(
     client: AsyncClient,
     clean_database,
+    winner_payload: dict,
+    loser_payload: dict,
+    state: str,
+    outcome: str,
+    ledger: tuple[int, int],
 ) -> None:
     seed = await _seed_claimed(client, "lookup-race-sweeps")
     arrived = 0
     both_in_flight = asyncio.Event()
+    winner_finished = asyncio.Event()
 
-    def barrier_lookup(answer: UpstreamDispatchStatus):
-        async def lookup(query: UpstreamDispatchStatusQuery) -> UpstreamDispatchStatus:
-            nonlocal arrived
-            arrived += 1
-            if arrived == 2:
-                both_in_flight.set()
-            await asyncio.wait_for(both_in_flight.wait(), timeout=5)
-            return answer
+    async def arrive() -> None:
+        nonlocal arrived
+        arrived += 1
+        if arrived == 2:
+            both_in_flight.set()
+        await asyncio.wait_for(both_in_flight.wait(), timeout=5)
 
-        return lookup
+    async def winner_lookup(
+        query: UpstreamDispatchStatusQuery,
+    ) -> UpstreamDispatchStatus:
+        await arrive()
+        return UpstreamDispatchStatus(delivered=True, result_payload=winner_payload)
 
-    done = _reconciler(
-        barrier_lookup(
-            UpstreamDispatchStatus(delivered=True, result_payload=UPSTREAM_RESULT)
-        )
-    )
-    not_done = _reconciler(barrier_lookup(UpstreamDispatchStatus(delivered=False)))
+    async def loser_lookup(
+        query: UpstreamDispatchStatusQuery,
+    ) -> UpstreamDispatchStatus:
+        await arrive()
+        # Both sweeps hold a stale claim and a conflicting proof. Releasing
+        # the loser only after the winner settled fixes who wins; letting the
+        # event loop pick also raced two finalizers through refund_charge,
+        # which fails the loser sweep on SQLite write contention.
+        await asyncio.wait_for(winner_finished.wait(), timeout=5)
+        return UpstreamDispatchStatus(delivered=True, result_payload=loser_payload)
 
-    results = await asyncio.gather(
-        done.reconcile(idle_seconds=300),
-        not_done.reconcile(idle_seconds=300),
+    async def run_winner():
+        try:
+            return await _reconciler(winner_lookup).reconcile(idle_seconds=300)
+        finally:
+            winner_finished.set()
+
+    won, lost = await asyncio.gather(
+        run_winner(),
+        _reconciler(loser_lookup).reconcile(idle_seconds=300),
     )
 
     assert arrived == 2
-    assert all(r.failed_attempt_ids == () for r in results)
-    assert sum(r.status_resolved for r in results) == 1
-    assert sum(r.terminal_recovered for r in results) == 1
+    assert won.failed_attempt_ids == ()
+    assert lost.failed_attempt_ids == ()
+    assert (won.status_resolved, won.terminal_recovered) == (1, 0)
+    assert (lost.status_resolved, lost.terminal_recovered) == (0, 1)
     attempt = await _attempt(seed.attempt_id)
-    assert attempt.state in {"succeeded", "returned_error"}
+    assert attempt.state == state
     assert await _receipt_count(attempt.idempotency_record_id) == 1
     receipt = await get_receipt_service().get_receipt_by_idempotency_record_id(
         attempt.idempotency_record_id
     )
     assert receipt is not None
-    if attempt.state == "succeeded":
-        assert receipt.outcome == "success"
-        assert await _ledger_counts(seed.wallet_id) == (1, 0)
-    else:
-        assert receipt.outcome == "failed_refunded"
-        assert await _ledger_counts(seed.wallet_id) == (1, 1)
+    assert receipt.outcome == outcome
+    assert await _ledger_counts(seed.wallet_id) == ledger

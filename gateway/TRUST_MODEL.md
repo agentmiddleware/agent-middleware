@@ -98,24 +98,62 @@ maximum 3,600-second call phases, and cleanup margin; it does not shrink when a
 new worker is deployed with smaller local settings.
 
 By default, reconciling a `delivery_uncertain` attempt is an operator task. A
-deployment can optionally inject a per-upstream-origin status lookup
-(`status_lookups` on `McpDispatchReconciliationService`). For a stale
-`dispatch_claimed` attempt, the reconciler asks that lookup before it writes the
-terminal state. The lookup gets an immutable query (attempt id, forwarded
-invocation id, idempotency key, origin, tool, request hash). It does not get
-the executor, so it cannot redispatch. There are only two outcomes it can force:
-provider-confirmed success, which finalizes as `succeeded` and keeps the charge,
-or provider-confirmed non-delivery, which finalizes as `returned_error` and is
-refunded through the existing compensation path. Any other answer leaves the
-attempt `delivery_uncertain`: an exception, `None`, a success with no result, or
-a result that cannot be stored. The resolution goes through the same guarded
-terminal transition as the live finalizer. If a live owner or another sweep
-lands first, this sweep adopts that terminal state, so the attempt resolves
-exactly once. Because the outcome is decided before the first receipt is
-signed, no receipt is ever rewritten. Attempts that already hold a signed
-`delivery_uncertain` receipt, and historical `dispatched` rows, are never
-offered to the lookup. The lookup's correctness is only as good as the
-provider's status answer.
+deployment can optionally register a per-upstream-origin status lookup. The
+gateway ships with none registered, so the feature is inert until a deployment
+wires one. There is no environment setting. A deployment calls
+`register_upstream_status_lookup(origin, lookup)` from
+`app.services.mcp_dispatch_reconciliation` in its own startup code. The
+production cleanup singleton reads that registry on every sweep, so
+registering before or after the singleton exists both work. Tests and custom
+callers can pass `status_lookups` to the constructor instead.
+
+For a stale `dispatch_claimed` attempt, the reconciler asks the lookup before it
+writes the terminal state. The lookup gets an immutable query: attempt id,
+forwarded invocation id, stored idempotency key, forwarded idempotency key,
+origin, tool, and request hash. It does not get the executor, so it cannot
+redispatch. Each lookup is bounded by a 5-second timeout
+(`STATUS_LOOKUP_TIMEOUT_SECONDS`). A hang counts as no answer, and sweeps are
+serial, so one sweep spends at most `limit` × 5 seconds on lookups.
+
+The only outcome a lookup can force is provider-confirmed delivery.
+`delivered` must be a real `bool` (`True`, not `1` or `"yes"`). It must also
+come with the raw MCP `CallToolResult` payload. That payload goes through the
+live path's own result gate, reached through the registered upstream executor
+for the same origin and tool. That gate checks the shape, rejects a reflected
+bearer token, enforces the size bound, and reads `isError`. A normal result
+finalizes as `succeeded` and keeps the charge. An `isError` result finalizes as
+`returned_error` with `upstream_returned_error` and is refunded, exactly as on
+the live path. Any other answer leaves the attempt `delivery_uncertain`:
+
+- an exception, a timeout, or `None`
+- a malformed answer or a non-`bool` `delivered`
+- a delivered answer with no result, or a result that fails the gate
+- no matching executor
+- a result that cannot be stored
+
+**Provider-confirmed non-delivery does not refund.** The dispatch claim is a
+one-shot hash with no lease and no fence. A worker that already holds the claim
+can pause (GC stop, VM freeze, SIGSTOP), outlive the stale window, resume, and
+still call the upstream. The guarded terminal transition protects the attempt
+row, not the network send. A refund issued on the provider's "not delivered"
+could therefore pay back a call that then executes. A safe refund needs a
+claim lease or fence that the sender re-checks before sending. That requires a
+schema change, so until one exists, `delivered=False` is logged
+(`mcp_dispatch_status_lookup_not_delivered_unfenced`) and the attempt stays
+`delivery_uncertain` for manual reconciliation.
+
+The resolution goes through the same guarded terminal transition as the live
+finalizer. If a live owner or another sweep lands first, this sweep adopts that
+terminal state, so the attempt resolves exactly once. Because the outcome is
+decided before the first receipt is signed, no receipt is ever rewritten.
+Attempts that already hold a signed `delivery_uncertain` receipt, and
+historical `dispatched` rows, are never offered to the lookup.
+
+Known limitation: action-permit calls forward a derived native idempotency key
+that the attempt row does not record. For those calls,
+`forwarded_idempotency_key` is `None`, and a lookup must match on
+`invocation_id` (`io.agentmiddleware/invocation_id`). A lookup is only as
+correct as the provider's status answer.
 Local (non-upstream) governed tools have no dispatch state machine; a crash
 there fails closed into manual review instead. See
 [`docs/failure-semantics.md`](docs/failure-semantics.md).

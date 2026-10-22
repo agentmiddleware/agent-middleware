@@ -142,6 +142,14 @@ def test_agent_manifest_provider_uses_the_same_complete_contact_gate() -> None:
             {
                 "PUBLIC_CONTACT_NAME": "Operator",
                 "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
+                "PUBLIC_CONTACT_URL": "https://www.agentmiddleware.dev/",
+            },
+            "must point to a booking service",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
                 "PUBLIC_CONTACT_URL": "https://www.thisisatest.tech/",
             },
             "must point to a booking service",

@@ -11,7 +11,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
+from app.core.config import DuplicateGuardMode, get_settings
 from app.core.time import utc_now
+from app.services.ownership import CallerIdentity
 from app.db.database import get_session_factory
 from app.db.models import (
     ControlPlaneAuditEventModel,
@@ -23,6 +25,7 @@ from app.db.models import (
 )
 from app.main import app
 from app.schemas.billing import ServiceCategory
+from app.schemas.trust import ReceiptResponse
 from app.services.agent_money import get_agent_money
 from app.services.audit_chain import verify_audit_chain
 from app.services.audit_log import record_audit_event
@@ -33,6 +36,7 @@ from app.services.idempotency import (
 from app.services.mcp_dispatch_attempts import (
     DISPATCH_CLAIMED,
     DispatchClaimUnavailableError,
+    DispatchAttemptError,
     DispatchAttemptContext,
     McpDispatchAttemptService,
     get_mcp_dispatch_attempt_service,
@@ -42,8 +46,12 @@ from app.services.mcp_dispatch_reconciliation import (
     get_mcp_dispatch_reconciliation_service,
 )
 from app.services.permits import PermitError, get_permit_service
-from app.services.receipts import get_receipt_service
-from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
+from app.services.receipts import ReceiptError, ReceiptService, get_receipt_service
+from tests.test_trust_helpers import (
+    BOOTSTRAP_HEADERS,
+    create_tool_permit,
+    provision_agent_wallet,
+)
 
 CREDITS = Decimal("1.5")
 ENDPOINT = "/mcp/messages"
@@ -82,17 +90,39 @@ async def _seed_attempt(
     requires_human_approval: bool = False,
     create_charge: bool = True,
     claim_dispatch: bool = True,
+    max_calls_per_tool: int | None = None,
 ) -> SeededAttempt:
     provisioned = await provision_agent_wallet(client)
     tool_name = f"reconcile-{suffix}"
-    permit = await create_tool_permit(
-        client,
-        wallet_id=provisioned["agent_wallet_id"],
-        key_id=provisioned["key_id"],
-        tool_name=tool_name,
-        idem_key=f"reconcile-permit-{suffix}",
-        requires_human_approval=requires_human_approval,
-    )
+    if max_calls_per_tool is None:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+            idem_key=f"reconcile-permit-{suffix}",
+            requires_human_approval=requires_human_approval,
+        )
+    else:
+        permit_response = await client.post(
+            "/v1/permits",
+            json={
+                "issuer_wallet_id": provisioned["agent_wallet_id"],
+                "subject_wallet_id": provisioned["agent_wallet_id"],
+                "subject_key_id": provisioned["key_id"],
+                "allowed_tools": [tool_name],
+                "scopes": [f"tool:{tool_name}:invoke", "billing:charge"],
+                "max_credits": 50,
+                "max_calls_per_tool": {tool_name: max_calls_per_tool},
+                "expires_at": (utc_now() + timedelta(minutes=30)).isoformat(),
+            },
+            headers={
+                **BOOTSTRAP_HEADERS,
+                "Idempotency-Key": f"reconcile-permit-{suffix}",
+            },
+        )
+        assert permit_response.status_code == 201
+        permit = permit_response.json()
     if not requires_human_approval:
         validation = await get_permit_service().authorize_and_reserve(
             permit_id=permit["permit_id"],
@@ -164,6 +194,7 @@ async def _seed_attempt(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=begun.record_id,
+            caller=CallerIdentity.admin(),
         )
         assert hasattr(charge, "entry_id")
         ledger_entry_id = charge.entry_id
@@ -248,6 +279,64 @@ async def _replay(seed: SeededAttempt) -> tuple[dict[str, Any], int]:
     assert record is not None
     assert record.response_json is not None
     return json.loads(record.response_json), record.status_code
+
+
+async def _seed_receipt_for_adoption(
+    client: AsyncClient,
+    *,
+    suffix: str,
+) -> tuple[
+    McpDispatchAttemptModel,
+    dict[str, Any],
+    str,
+    ReceiptResponse,
+    dict[str, Any],
+]:
+    result_payload = {"error": "wallet_expired"}
+    seed = await _seed_attempt(
+        client,
+        suffix=suffix,
+        state="returned_error",
+        result_payload=result_payload,
+        error_code="wallet_expired",
+        idempotency_endpoint=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
+        create_charge=False,
+        claim_dispatch=False,
+    )
+    attempt = await _attempt(seed.attempt_id)
+    audit = await record_audit_event(
+        event="mcp.invoke",
+        wallet_id=seed.wallet_id,
+        tool=seed.tool_name,
+        endpoint=ENDPOINT,
+        auth_source="governed_dispatch",
+        key_id=seed.key_id,
+        request_id=attempt.attempt_id,
+        ok=False,
+        error="wallet_expired",
+        metadata={"jev_risk_guard": {"tier": "high", "signal": {"safe": True}}},
+    )
+    constraints = {"policy": {"quota": 1, "flags": ["a", "b"]}}
+    receipt = await get_receipt_service().create_receipt(
+        idempotency_record_id=attempt.idempotency_record_id,
+        dispatch_attempt_id=attempt.attempt_id,
+        response_hash_override=attempt.response_hash,
+        permit_id=attempt.permit_id,
+        wallet_id=attempt.wallet_id,
+        key_id=attempt.key_id,
+        tool=attempt.public_tool_id,
+        request_payload=None,
+        request_hash=attempt.request_hash,
+        response_payload=result_payload,
+        ledger_entry_id=attempt.ledger_entry_id,
+        credits_authorized=attempt.credits_authorized,
+        credits_charged=Decimal("0"),
+        outcome="failed_refunded",
+        audit_event_id=audit.event_id,
+        reason_code="wallet_expired",
+        constraints_evaluated=constraints,
+    )
+    return attempt, result_payload, audit.event_id, receipt, constraints
 
 
 @pytest.mark.anyio
@@ -900,8 +989,12 @@ async def test_existing_receipt_missing_idempotency_completion_replays_full_resu
         state="succeeded",
         result_payload=upstream_result,
         idempotency_endpoint=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
+        max_calls_per_tool=5,
     )
     attempt = await _attempt(seed.attempt_id)
+    assert await McpDispatchReconciliationService()._permit_constraints_snapshot(
+        seed.permit_id
+    ) == {"max_calls_per_tool": {seed.tool_name: 5}}
     audit = await record_audit_event(
         event="mcp.invoke",
         wallet_id=seed.wallet_id,
@@ -938,6 +1031,7 @@ async def test_existing_receipt_missing_idempotency_completion_replays_full_resu
         outcome="success",
         audit_event_id=audit.event_id,
     )
+    assert receipt.constraints_evaluated == {}
     await get_idempotency_service().mark_charged(
         wallet_id=seed.wallet_id,
         endpoint=seed.idempotency_endpoint,
@@ -983,6 +1077,288 @@ async def test_existing_receipt_missing_idempotency_completion_replays_full_resu
         )
     assert int(receipt_count or 0) == 1
     assert int(audit_count or 0) == 1
+
+
+@pytest.mark.anyio
+async def test_existing_success_receipt_rejects_conflicting_signed_permit_snapshot(
+    client: AsyncClient,
+    clean_database,
+) -> None:
+    upstream_result = {"content": [{"type": "text", "text": "confirmed"}]}
+    seed = await _seed_attempt(
+        client,
+        suffix="success-conflicting-snapshot",
+        state="succeeded",
+        result_payload=upstream_result,
+        max_calls_per_tool=5,
+    )
+    attempt = await _attempt(seed.attempt_id)
+    audit = await record_audit_event(
+        event="mcp.invoke",
+        wallet_id=seed.wallet_id,
+        tool=seed.tool_name,
+        endpoint=ENDPOINT,
+        auth_source="db",
+        key_id=seed.key_id,
+        ok=True,
+        metadata={"dispatch_attempt_id": seed.attempt_id},
+    )
+    receipt = await get_receipt_service().create_receipt(
+        idempotency_record_id=attempt.idempotency_record_id,
+        dispatch_attempt_id=attempt.attempt_id,
+        response_hash_override=attempt.response_hash,
+        permit_id=attempt.permit_id,
+        wallet_id=attempt.wallet_id,
+        key_id=attempt.key_id,
+        tool=attempt.public_tool_id,
+        request_payload=None,
+        request_hash=attempt.request_hash,
+        response_payload=upstream_result,
+        ledger_entry_id=attempt.ledger_entry_id,
+        credits_authorized=attempt.credits_authorized,
+        credits_charged=attempt.credits_charged,
+        outcome="success",
+        audit_event_id=audit.event_id,
+        constraints_evaluated={"max_calls_per_tool": {seed.tool_name: 4}},
+    )
+    valid, reason, _ = await get_receipt_service().verify_receipt(receipt.receipt_id)
+    assert (valid, reason) == (True, None)
+
+    with pytest.raises(
+        DispatchAttemptError, match="^dispatch_receipt_linkage_conflict$"
+    ):
+        await McpDispatchReconciliationService()._get_or_create_receipt(
+            attempt=attempt,
+            result_payload=upstream_result,
+            outcome="success",
+            audit_event_id=audit.event_id,
+            constraints_evaluated={"max_calls_per_tool": {seed.tool_name: 5}},
+        )
+
+
+@pytest.mark.anyio
+async def test_existing_receipt_adoption_matches_effective_jev_constraints(
+    client: AsyncClient,
+    clean_database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "JEV_RISK_GUARD", DuplicateGuardMode.LOG)
+    (
+        attempt,
+        result_payload,
+        audit_event_id,
+        receipt,
+        constraints,
+    ) = await _seed_receipt_for_adoption(client, suffix="adopt-jev-constraints")
+    reconciler = McpDispatchReconciliationService()
+    assert receipt.constraints_evaluated == {
+        **constraints,
+        "jev_risk_guard": {"tier": "high", "signal": {"safe": True}},
+    }
+
+    # Key order is irrelevant, and the signed audit evidence replaces a
+    # caller-supplied JEV value on both creation and replay.
+    matching = {
+        "jev_risk_guard": {"tier": "forged"},
+        "policy": {"flags": ["a", "b"], "quota": 1},
+    }
+    adopted = await reconciler._get_or_create_receipt(
+        attempt=attempt,
+        result_payload=result_payload,
+        outcome="failed_refunded",
+        audit_event_id=audit_event_id,
+        constraints_evaluated=matching,
+    )
+    assert adopted.receipt_id == receipt.receipt_id
+
+    for changed in (
+        {"policy": {"quota": 2, "flags": ["a", "b"]}},
+        {"policy": {"quota": True, "flags": ["a", "b"]}},
+    ):
+        with pytest.raises(
+            DispatchAttemptError, match="^dispatch_receipt_linkage_conflict$"
+        ):
+            await reconciler._get_or_create_receipt(
+                attempt=attempt,
+                result_payload=result_payload,
+                outcome="failed_refunded",
+                audit_event_id=audit_event_id,
+                constraints_evaluated=changed,
+            )
+    async with get_session_factory()() as session:
+        assert await session.scalar(select(func.count()).select_from(ReceiptModel)) == 1
+    valid, reason, _ = await get_receipt_service().verify_receipt(receipt.receipt_id)
+    assert (valid, reason) == (True, None)
+
+
+@pytest.mark.anyio
+async def test_existing_jev_receipt_adopts_after_guard_is_disabled(
+    client: AsyncClient,
+    clean_database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "JEV_RISK_GUARD", DuplicateGuardMode.LOG)
+    (
+        attempt,
+        result_payload,
+        audit_event_id,
+        receipt,
+        constraints,
+    ) = await _seed_receipt_for_adoption(client, suffix="adopt-jev-after-off")
+    assert receipt.constraints_evaluated["jev_risk_guard"] == {
+        "tier": "high",
+        "signal": {"safe": True},
+    }
+    valid, reason, _ = await get_receipt_service().verify_receipt(receipt.receipt_id)
+    assert (valid, reason) == (True, None)
+
+    monkeypatch.setattr(get_settings(), "JEV_RISK_GUARD", DuplicateGuardMode.OFF)
+    adopted = await McpDispatchReconciliationService()._get_or_create_receipt(
+        attempt=attempt,
+        result_payload=result_payload,
+        outcome="failed_refunded",
+        audit_event_id=audit_event_id,
+        constraints_evaluated=constraints,
+    )
+
+    assert adopted.receipt_id == receipt.receipt_id
+    assert adopted.constraints_evaluated == receipt.constraints_evaluated
+    async with get_session_factory()() as session:
+        assert await session.scalar(select(func.count()).select_from(ReceiptModel)) == 1
+
+
+@pytest.mark.anyio
+async def test_receipt_race_adoption_rejects_invalid_signature(
+    client: AsyncClient,
+    clean_database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "JEV_RISK_GUARD", DuplicateGuardMode.LOG)
+    (
+        attempt,
+        result_payload,
+        audit_event_id,
+        receipt,
+        constraints,
+    ) = await _seed_receipt_for_adoption(client, suffix="race-invalid-signature")
+    async with get_session_factory()() as session:
+        async with session.begin():
+            row = await session.get(ReceiptModel, receipt.receipt_id)
+            assert row is not None
+            row.signature = "invalid-signature"
+    receipt_service = ReceiptService()
+    original_get = receipt_service.get_receipt_by_idempotency_record_id
+    reads = 0
+    creates = 0
+
+    async def read_after_race(record_id: str) -> ReceiptResponse | None:
+        nonlocal reads
+        reads += 1
+        return None if reads == 1 else await original_get(record_id)
+
+    async def lose_create_race(**kwargs: Any) -> ReceiptResponse:
+        nonlocal creates
+        creates += 1
+        raise ReceiptError("receipt_idempotency_conflict")
+
+    monkeypatch.setattr(
+        receipt_service, "get_receipt_by_idempotency_record_id", read_after_race
+    )
+    monkeypatch.setattr(receipt_service, "create_receipt", lose_create_race)
+    reconciler = McpDispatchReconciliationService(receipt_service=receipt_service)
+    with pytest.raises(
+        DispatchAttemptError, match="^dispatch_receipt_signature_invalid$"
+    ):
+        await reconciler._get_or_create_receipt(
+            attempt=attempt,
+            result_payload=result_payload,
+            outcome="failed_refunded",
+            audit_event_id=audit_event_id,
+            constraints_evaluated=constraints,
+        )
+    assert (reads, creates) == (2, 1)
+
+
+@pytest.mark.anyio
+async def test_v2_dispatch_receipt_without_constraints_recovers_idempotency(
+    client: AsyncClient,
+    clean_database,
+) -> None:
+    result_payload = {"error": "wallet_expired"}
+    seed = await _seed_attempt(
+        client,
+        suffix="v2-direct-receipt-before-idem-complete",
+        state="returned_error",
+        result_payload=result_payload,
+        error_code="wallet_expired",
+        idempotency_endpoint=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
+        create_charge=False,
+        claim_dispatch=False,
+        max_calls_per_tool=5,
+    )
+    attempt = await _attempt(seed.attempt_id)
+    reconciler = McpDispatchReconciliationService()
+    assert await reconciler._permit_constraints_snapshot(seed.permit_id) == {
+        "max_calls_per_tool": {seed.tool_name: 5}
+    }
+    audit = await record_audit_event(
+        event="mcp.invoke",
+        wallet_id=seed.wallet_id,
+        tool=seed.tool_name,
+        endpoint=ENDPOINT,
+        auth_source="governed_dispatch",
+        key_id=seed.key_id,
+        request_id=attempt.attempt_id,
+        ok=False,
+        error="wallet_expired",
+        metadata={
+            "transport": "jsonrpc",
+            "permit_id": seed.permit_id,
+            "request_hash": attempt.request_hash,
+            "ledger_entry_id": None,
+            "dispatch_attempt_id": attempt.attempt_id,
+            "dispatch_state": attempt.state,
+            "dispatch_response_hash": attempt.response_hash,
+            "upstream_tool_name": attempt.upstream_tool_name,
+            "upstream_origin": attempt.upstream_origin,
+        },
+    )
+    # The previous direct denial finalizer signed this linked receipt without
+    # the v2 snapshot. A crash before idempotency completion must still adopt
+    # the valid receipt instead of leaving the key permanently in progress.
+    receipt = await get_receipt_service().create_receipt(
+        idempotency_record_id=attempt.idempotency_record_id,
+        dispatch_attempt_id=attempt.attempt_id,
+        response_hash_override=attempt.response_hash,
+        permit_id=attempt.permit_id,
+        wallet_id=attempt.wallet_id,
+        key_id=attempt.key_id,
+        tool=attempt.public_tool_id,
+        request_payload=None,
+        request_hash=attempt.request_hash,
+        response_payload=result_payload,
+        ledger_entry_id=None,
+        credits_authorized=attempt.credits_authorized,
+        credits_charged=Decimal("0"),
+        outcome="failed_refunded",
+        audit_event_id=audit.event_id,
+        reason_code="wallet_expired",
+    )
+    assert receipt.constraints_evaluated == {}
+    valid, reason, _ = await get_receipt_service().verify_receipt(receipt.receipt_id)
+    assert (valid, reason) == (True, None)
+    record = await get_idempotency_service().get_record(
+        wallet_id=seed.wallet_id,
+        endpoint=seed.idempotency_endpoint,
+        idempotency_key=seed.idempotency_key,
+    )
+    assert record is not None and record.response_json is None
+
+    await reconciler.reconcile_attempt(seed.attempt_id)
+
+    replay, status = await _replay(seed)
+    assert status == 403
+    assert replay["receipt"]["receipt_id"] == receipt.receipt_id
 
 
 @pytest.mark.anyio
@@ -1105,15 +1481,20 @@ async def test_crash_after_budget_release_does_not_release_unrelated_reservation
     await get_agent_money().refund_charge(
         wallet_id=seed.wallet_id,
         charge_entry_id=seed.ledger_entry_id or "",
+        caller=CallerIdentity.admin(),
     )
     await dispatch.mark_debit_refunded(
         attempt_id=seed.attempt_id,
         ledger_entry_id=seed.ledger_entry_id or "",
     )
-    released = await get_permit_service().release_dispatch_budget_once(seed.attempt_id)
+    released = await get_permit_service().release_dispatch_budget_once(
+        seed.attempt_id, caller=CallerIdentity.admin()
+    )
     assert released is True
     # A later reservation on the same permit must survive reconciliation.
-    await get_permit_service().reserve_budget(seed.permit_id, Decimal("2"))
+    await get_permit_service().reserve_budget(
+        seed.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
     await _make_stale(seed.attempt_id)
 
     result = await get_mcp_dispatch_reconciliation_service().reconcile(idle_seconds=300)
@@ -1374,8 +1755,12 @@ async def test_concurrent_budget_release_decrements_exactly_once(
     spent_before = before.spent_credits
 
     results = await asyncio.gather(
-        permits.release_dispatch_budget_once(seed.attempt_id),
-        permits.release_dispatch_budget_once(seed.attempt_id),
+        permits.release_dispatch_budget_once(
+            seed.attempt_id, caller=CallerIdentity.admin()
+        ),
+        permits.release_dispatch_budget_once(
+            seed.attempt_id, caller=CallerIdentity.admin()
+        ),
         return_exceptions=True,
     )
     ok = [r for r in results if r is True]
@@ -1389,7 +1774,12 @@ async def test_concurrent_budget_release_decrements_exactly_once(
     assert after.spent_credits == spent_before - CREDITS
 
     # A third call is still a no-op.
-    assert await permits.release_dispatch_budget_once(seed.attempt_id) is False
+    assert (
+        await permits.release_dispatch_budget_once(
+            seed.attempt_id, caller=CallerIdentity.admin()
+        )
+        is False
+    )
     final = await permits.get_permit(seed.permit_id)
     assert final is not None and final.spent_credits == after.spent_credits
 
@@ -1448,7 +1838,7 @@ async def test_dispatch_budget_release_is_once_only_under_a_stale_read(
                     permits_module, "get_session_factory", lambda: real_factory
                 )
                 state["second_result"] = await permits.release_dispatch_budget_once(
-                    seed.attempt_id
+                    seed.attempt_id, caller=CallerIdentity.admin()
                 )
             return await self._inner.execute(*args, **kwargs)
 
@@ -1468,7 +1858,9 @@ async def test_dispatch_budget_release_is_once_only_under_a_stale_read(
         lambda: lambda: _StaleReadFactory(real_factory()),
     )
 
-    first_result = await permits.release_dispatch_budget_once(seed.attempt_id)
+    first_result = await permits.release_dispatch_budget_once(
+        seed.attempt_id, caller=CallerIdentity.admin()
+    )
 
     assert state["fired"], "the interleave never ran — the test proved nothing"
     # Exactly one caller may claim the release.
@@ -1486,7 +1878,9 @@ async def test_release_dispatch_budget_rejects_a_missing_attempt(
 ) -> None:
     """An unknown attempt id must not move budget."""
     with pytest.raises(PermitError) as excinfo:
-        await get_permit_service().release_dispatch_budget_once("att-does-not-exist")
+        await get_permit_service().release_dispatch_budget_once(
+            "att-does-not-exist", caller=CallerIdentity.admin()
+        )
     assert excinfo.value.reason == "dispatch_attempt_not_found"
 
 
@@ -1512,7 +1906,9 @@ async def test_release_dispatch_budget_rejects_a_non_terminal_attempt(
     assert before is not None
 
     with pytest.raises(PermitError) as excinfo:
-        await permits.release_dispatch_budget_once(seed.attempt_id)
+        await permits.release_dispatch_budget_once(
+            seed.attempt_id, caller=CallerIdentity.admin()
+        )
     assert excinfo.value.reason == "dispatch_budget_release_state_invalid"
 
     # And no budget moved on the way to the refusal.

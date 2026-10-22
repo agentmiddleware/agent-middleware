@@ -193,12 +193,15 @@ rate limiting.
 | Command | Enforces |
 |---|---|
 | `make trust-coverage-gate` | 43 focused trust test files at an **80% coverage floor** across 38 named trust-plane control modules |
-| `make trust-release-gate` | The offline Railway IaC contract first (lock-pinned package install with lifecycle scripts disabled, then fail-closed API-only graph validation), followed by the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates |
+| `make trust-release-gate` | The in-repo Railway deploy contract first (`Dockerfile`, `requirements.txt`, and an executable `scripts/docker_entrypoint.sh`; the hosted `.railway/railway.ts` graph is not in this repository), followed by the 20-file trust suite including the focused claim/migration/debit, schema-boot, Standard MCP, and `tests/test_adversarial_five_claims.py` regressions, coverage, demo, discovery-drift, committed-OpenAPI, and simulation-inventory gates |
 
-CI runs `scripts/trust_release_gate.sh` as a dedicated required check
-(`trust_release_gate`) so `main` cannot advance past an unproven claim; the
-exact branch-protection settings are in
-`trust-release-gate-branch-protection.md`.
+From `gateway/`, run `make trust-release-gate` for the full local release gate.
+CI runs `scripts/trust_release_gate.sh` in a separate, non-required
+`trust_release_gate` job. It is outside `CI result` until trust coverage and
+committed OpenAPI parity pass in CI and the required-check decision is made
+explicitly. The [active main ruleset](https://github.com/agentmiddleware/agent-middleware/rules/24444399)
+requires `CI result` and `gitleaks` with strict status checks, linear history,
+and resolved review threads.
 The [stranger test](stranger-test.md) is the human milestone that checks the
 same five claims are reachable and checkable from the published docs alone.
 
@@ -258,9 +261,9 @@ Being explicit about the boundary is what makes the proofs worth anything.
   is still first-party.** A receipt exported via
   `GET /v1/receipts/{receipt_id}/portable` can be checked by anyone against the
   unauthenticated `/.well-known/trust-keys.json`, using
-  `b2a_sdk.receipt_verifier`, which imports none of this application and needs
-  no network. That closes the "no independent offline verifier" gap for
-  signatures. Three limits remain, and they are not small:
+  the Agent Middleware (AMW) `amw` verifier, which imports none of this
+  application and needs no network. That closes the "no independent offline
+  verifier" gap for signatures. Three limits remain, and they are not small:
   - **Key distribution is first-party.** Keys are fetched over TLS from the
     issuing origin, so an attacker controlling that origin can serve a key set
     that validates forged receipts. Out-of-band key pinning is not
@@ -301,7 +304,7 @@ Being explicit about the boundary is what makes the proofs worth anything.
 These would strengthen claims. They are not a build queue under Narrow.
 
 1. **A receipt-style permit envelope, and a portable audit-chain verifier.**
-   Receipts are done — `b2a_sdk.receipt_verifier` verifies an exported receipt
+   Receipts are done. The `amw` verifier checks an exported receipt
    against the published key document with no running server, and
    `make prove-trust-plane` asserts it. Permits are already independently
    verifiable: `GET /v1/permits/{id}` returns every signed field plus

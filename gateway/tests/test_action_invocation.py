@@ -296,7 +296,10 @@ async def test_action_transport_refusals_do_not_claim_authority(
                 },
             )
             assert response.status_code == (422 if surface == "rest" else 400)
-    assert response.headers["access-control-allow-origin"] == "*"
+    # Import-time middleware uses CORS_ORIGINS. Clean CI leaves it empty, so
+    # no CORS headers. A local .env may still opt into "*". Never reflect Origin.
+    allowed_origin = response.headers.get("access-control-allow-origin")
+    assert allowed_origin in (None, "*")
     assert "access-control-allow-credentials" not in response.headers
     assert await action_rows() == []
     await assert_action_accounting(action_runtime, expected=0)

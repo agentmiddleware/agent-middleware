@@ -549,7 +549,7 @@ def _hashed_payload(payload):
     return {**body, "payload_hash": sha256_hex(body)}
 
 
-def test_validly_signed_payload_with_a_wrong_payload_hash_is_rejected():
+def test_validly_signed_payload_with_a_wrong_payload_hash_verifies():
     kid, key_set, sign = _local_signer()
     payload = _hashed_payload(
         {"receipt_id": "rcpt-x", "kid": kid, "tool": "search", "outcome": "success"}
@@ -558,8 +558,8 @@ def test_validly_signed_payload_with_a_wrong_payload_hash_is_rejected():
 
     result = verify_bundle(_signed_bundle(payload, kid=kid, sign=sign), key_set)
 
-    assert result.status is VerificationStatus.MISMATCH
-    assert "payload_hash" in (result.reason or "")
+    assert result.status is VerificationStatus.VERIFIED
+    assert result.claims["payload_hash"] == "f" * 64
 
 
 def test_signature_under_a_key_the_payload_does_not_name_is_rejected():

@@ -135,7 +135,7 @@ class _StubFunctionTool:
         name: str | None = None,
         async_fn: Any = None,
         **_: Any,
-    ) -> "_StubFunctionTool":
+    ) -> _StubFunctionTool:
         return cls(fn, async_fn, name)
 
     async def acall(self, **kwargs: Any) -> Any:

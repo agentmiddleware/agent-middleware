@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from tests.support import db_gate
 from tests.support.action_database_guard import (
     require_action_database_url,
     require_action_test_environment,
@@ -26,6 +27,7 @@ FIELDS = (
     "action_upstream_binding_hash",
 )
 ACTION_REVISION = "042_permit_action_binding"
+HEAD_REVISION = "043_demo_key_fields"
 SCRUB_REVISION = "041_scrub_content_owner_keys"
 CONTENT_TABLES = ("content_pipelines", "content_campaigns")
 AUTHORITIES = [
@@ -112,7 +114,7 @@ def test_action_migration_retains_legacy_and_blocks_authority_loss(
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            ACTION_REVISION,
+            HEAD_REVISION,
         )
         assert db.execute("SELECT * FROM permits").fetchone() == (
             *before,
@@ -164,8 +166,8 @@ def test_action_migration_retains_legacy_and_blocks_authority_loss(
             ]
 
 
-@pytest.mark.skipif(
-    not os.environ.get("ACTION_MIGRATION_DATABASE_URL"),
+@db_gate.collection_mark(
+    url_env="ACTION_MIGRATION_DATABASE_URL",
     reason="requires fresh disposable local action migration DB",
 )
 def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
@@ -211,7 +213,7 @@ def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
     result = migrate(url, "head")
     assert result.returncode == 0, result.stderr
     assert sql("SELECT version_num FROM alembic_version") == [
-        {"version_num": ACTION_REVISION}
+        {"version_num": HEAD_REVISION}
     ]
     for table, old in before.items():
         assert sql(f"SELECT * FROM {table}")[0] == {**old, **dict.fromkeys(FIELDS)}
@@ -246,7 +248,7 @@ def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
         result = migrate(url, SCRUB_REVISION, "downgrade")
         assert result.returncode != 0 and "action_authority_retained" in result.stderr
         assert sql("SELECT version_num FROM alembic_version") == [
-            {"version_num": ACTION_REVISION}
+            {"version_num": HEAD_REVISION}
         ]
         for table, rows in retained.items():
             assert sql(f"SELECT * FROM {table}") == rows

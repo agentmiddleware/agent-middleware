@@ -10,6 +10,7 @@ from sqlalchemy import event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from tests.support import db_gate
 from tests.support.action_database_guard import (
     require_action_database_url,
     require_action_test_environment,
@@ -25,7 +26,10 @@ REVISION = "038_dispatch_call_slot_dup_idx"
 INDEX = "ix_mcp_dispatch_attempts_duplicate_detection"
 
 
-@pytest.mark.skipif(not TARGET, reason="requires fresh disposable migration PostgreSQL")
+@db_gate.collection_mark(
+    url_env="DISPATCH_MIGRATION_DATABASE_URL",
+    reason="requires fresh disposable migration PostgreSQL",
+)
 def test_dispatch_call_slot_upgrade_recovers_after_concurrent_index_failure(
     monkeypatch,
 ):
@@ -103,6 +107,4 @@ def test_dispatch_call_slot_upgrade_recovers_after_concurrent_index_failure(
         command.upgrade(config, REVISION)
 
     command.upgrade(config, "head")
-    assert sql("SELECT version_num FROM alembic_version") == [
-        ("042_permit_action_binding",)
-    ]
+    assert sql("SELECT version_num FROM alembic_version") == [("043_demo_key_fields",)]

@@ -561,7 +561,7 @@ class AnomalyDetector:
         )
 
         if baseline_rate > 0 and recent_rate > baseline_rate * 3:
-            sources = set(se.event.source for se in recent_errors)
+            sources = {se.event.source for se in recent_errors}
             return AnomalyCandidate(
                 category="error_spike",
                 severity=Severity.HIGH,

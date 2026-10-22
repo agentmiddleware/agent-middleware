@@ -367,11 +367,11 @@ def test_partner_api_key_bootstrap_json_output():
     """Bootstrap script produces JSON-parseable output and never prints the key."""
     import json
 
-    BOOTSTRAP = ROOT / "scripts" / "partner_api_key_bootstrap.py"
+    bootstrap_script = ROOT / "scripts" / "partner_api_key_bootstrap.py"
 
     # Run with --json flag
     result = subprocess.run(
-        [sys.executable, str(BOOTSTRAP), "--json"],
+        [sys.executable, str(bootstrap_script), "--json"],
         input=json.dumps(
             {
                 "api_url": "http://127.0.0.1:8000",
@@ -775,7 +775,7 @@ def test_malformed_tool_args_are_a_configuration_error(monkeypatch):
     """Exit 2, not 1: a bad payload means misconfiguration, not a broken plane."""
     module = _load_loop()
     resolve = module["_resolve_tool_args"]
-    ConfigurationError = module["ConfigurationError"]
+    ConfigurationError = module["ConfigurationError"]  # noqa: N806
 
     with pytest.raises(ConfigurationError, match="not valid JSON"):
         resolve("{not json")

@@ -1,8 +1,8 @@
 # CI for AMW (Agent Middleware).
-# Projects are discovered at runtime (.github/scripts/detect_projects.py), so jobs only run for
-# Python/TypeScript packages that actually exist under spec/, verifier/, sdk/python, sdk/typescript,
-# integrations/, examples/ and gateway/. No `paths:` filters on purpose: the "CI result" job must
-# always report, because branch protection requires it.
+# Projects are discovered at runtime (.github/scripts/detect_projects.py). Pull requests test
+# changed projects and their transitive dependents (.github/scripts/project_dependents.py).
+# Shared paths restore the full matrix. Main pushes, merge groups, and manual runs test every
+# discovered project. Keep the workflow unfiltered so "CI result" always reports.
 name: CI
 
 on:
@@ -21,7 +21,10 @@ concurrency:
 env:
   FORCE_COLOR: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  RUFF_VERSION: "0.16.10"
+  # Blessed ruff and mypy. Must match gateway/requirements-dev.txt.
+  # mypy must also match the exact pin in gateway/requirements.txt.
+  RUFF_VERSION: "0.17.1"
+  MYPY_VERSION: "2.4.0"
   PYTEST_VERSION: "9.1.1"
 
 jobs:
@@ -43,10 +46,103 @@ jobs:
       - id: d
         run: python3 .github/scripts/detect_projects.py
 
+  changes:
+    name: Changed projects
+    needs: detect
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      projects: ${{ steps.filter.outputs.projects }}
+      python: ${{ steps.filter.outputs.python }}
+      typescript: ${{ steps.filter.outputs.typescript }}
+      has_python: ${{ steps.filter.outputs.has_python }}
+      has_typescript: ${{ steps.filter.outputs.has_typescript }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+      shared: ${{ steps.filter.outputs.shared }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pull request checkout is the merge commit; its first parent is the base.
+          fetch-depth: 2
+          persist-credentials: false
+      - id: filter
+        env:
+          PYTHON_PROJECTS: ${{ needs.detect.outputs.python }}
+          TYPESCRIPT_PROJECTS: ${{ needs.detect.outputs.typescript }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path(".github/scripts").resolve()))
+          from project_dependents import is_shared, limit_matrix
+
+          changed = [
+              path.decode("utf-8", "surrogateescape")
+              for path in subprocess.check_output(
+                  ["git", "diff", "--no-renames", "--name-only", "-z", "HEAD^1", "HEAD"]
+              ).split(b"\0")
+              if path
+          ]
+
+          def touched(project):
+              scope = (
+                  "/".join(project.split("/")[:2])
+                  if project.startswith(("integrations/", "examples/")) else project
+              )
+              return any(path == scope or path.startswith(scope + "/") for path in changed)
+
+          sdk_python = touched("sdk/python")
+          projects = set()
+          for path in changed:
+              for project in ("gateway", "sdk/python", "sdk/typescript", "spec", "verifier"):
+                  if path == project or path.startswith(project + "/"):
+                      projects.add(project)
+              for root in ("integrations", "examples"):
+                  if path.startswith(root + "/"):
+                      projects.add("/".join(path.split("/")[:2]))
+          if sdk_python:
+              projects.add("gateway")
+              projects.update(
+                  f"integrations/{entry.name}" for entry in os.scandir("integrations")
+                  if entry.is_dir()
+              )
+
+          discovered_python = json.loads(os.environ["PYTHON_PROJECTS"])
+          discovered_typescript = json.loads(os.environ["TYPESCRIPT_PROJECTS"])
+          discovered = list(dict.fromkeys([*discovered_python, *discovered_typescript]))
+          python, typescript, gateway = limit_matrix(
+              Path(".").resolve(), discovered_python, discovered_typescript,
+              changed, event="pull_request", force_full=False,
+          )
+          shared = any(is_shared(path, discovered) for path in changed)
+          outputs = {
+              "projects": json.dumps(sorted(projects)),
+              "python": json.dumps(python),
+              "typescript": json.dumps(typescript),
+              "has_python": str(bool(python)).lower(),
+              "has_typescript": str(bool(typescript)).lower(),
+              "gateway": str(gateway).lower(),
+              "shared": str(shared).lower(),
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              for key, value in outputs.items():
+                  print(f"{key}={value}", file=output)
+          PY
+
   python:
     name: Python ${{ matrix.python-version }} / ${{ matrix.project }}
-    needs: detect
-    if: needs.detect.outputs.has_python == 'true'
+    needs: [detect, changes]
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_python == 'true' &&
+          (github.event_name != 'pull_request' ||
+           (needs.changes.result == 'success' && needs.changes.outputs.has_python == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -54,7 +150,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: ${{ fromJSON(needs.detect.outputs.python) }}
+        # An empty fromJSON fails before `if` can skip the job; use an unused placeholder.
+        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.has_python == 'true' && needs.changes.outputs.python || github.event_name != 'pull_request' && needs.detect.outputs.has_python == 'true' && needs.detect.outputs.python || '["skip"]') }}
         python-version: ["3.11", "3.12", "3.13", "3.14"]
         exclude:
           # crewai pulls chromadb, whose pydantic.v1 settings fail to import on 3.14.
@@ -67,7 +164,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: false
@@ -94,15 +191,57 @@ jobs:
         if: matrix.python-version == '3.12'
         run: |
           if grep -q '^\[tool\.mypy\]' pyproject.toml 2>/dev/null || [ -f mypy.ini ]; then
-            uv pip install mypy && uv run --no-sync mypy .
+            if [ "${{ matrix.project }}" = "sdk/python" ]; then
+              uv pip install -e ".[mcp]"
+            fi
+            uv pip install "mypy==${MYPY_VERSION}" && uv run --no-sync mypy .
           else
             echo "mypy not configured; skipping"
           fi
+      - name: Pre-commit mypy (gateway)
+        if: matrix.project == 'gateway' && matrix.python-version == '3.12'
+        working-directory: .
+        env:
+          UV_PYTHON: "3.12"
+        run: |
+          hook=(uv tool run --from pre-commit==4.6.0 pre-commit run mypy)
+          "${hook[@]}" --all-files
+
+          probe_stem="$(mktemp gateway/typecheck/_mypy_hook_probe_XXXXXXXX)"
+          trap 'rm -f "$probe_stem" "$probe_stem.py"' EXIT
+          probe="$probe_stem.py"
+          mv "$probe_stem" "$probe"
+          cat > "$probe" <<'PY'
+          def probe() -> int:
+              return "the hook must reject this return type"
+          PY
+
+          if probe_output="$("${hook[@]}" --files "$probe" 2>&1)"; then
+            printf '%s\n' "$probe_output"
+            echo "mypy hook unexpectedly accepted the type error" >&2
+            exit 1
+          else
+            probe_status=$?
+          fi
+          printf '%s\n' "$probe_output"
+          expected="typecheck/$(basename "$probe"):2: error: Incompatible return value type (got \"str\", expected \"int\")  [return-value]"
+          if [ "$probe_status" -ne 1 ] ||
+             ! grep -Fqx "$expected" <<< "$probe_output" ||
+             ! grep -Eq '^Found 1 error in 1 file \(checked [0-9]+ source files\)$' <<< "$probe_output"; then
+            echo "mypy hook failed for a reason other than the single probe error" >&2
+            exit 1
+          fi
+
+          rm "$probe"
+          trap - EXIT
+          "${hook[@]}" --all-files
       - name: Test (pytest)
         run: |
           set +e
           if [ "${{ matrix.project }}" = "gateway" ]; then
-            uv run --no-sync pytest -q -m "not production_trust" -n auto --timeout 300 &&
+            # Shared-runner scheduling can add a few ms to the ACP wall-clock
+            # median. The separate trust gate still checks its strict 45 ms bound.
+            ACP_CHECKOUT_MEDIAN_BUDGET_S=0.055 uv run --no-sync pytest -q -m "not production_trust" -n auto --timeout 300 &&
             TRUST_MODE_ENABLED=true ALLOW_LEGACY_UNPERMITTED_MCP=false ENABLE_PROOF_SURFACES=false \
               uv run --no-sync pytest -q -m production_trust --timeout 300
           else
@@ -112,11 +251,266 @@ jobs:
           # exit code 5 = no tests collected; don't fail packages that have none yet
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
           exit $rc
+      - name: Offline verifier vectors
+        if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
+        run: uv run --no-sync python ../../verifier/check_vectors.py
+      - name: Collect SDK source distribution tests
+        if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
+        run: |
+          uv build --sdist --out-dir "$RUNNER_TEMP/amw-sdist"
+          tar -xzf "$RUNNER_TEMP"/amw-sdist/amw_sdk-*.tar.gz -C "$RUNNER_TEMP/amw-sdist"
+          test ! -e "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests/test_receipt_vectors.py
+          uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests
+
+  postgres-concurrency:
+    # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:
+    # SQLite treats SELECT ... FOR UPDATE as a silent no-op, so these tests
+    # skip unless pointed at a disposable PostgreSQL database (test tier 2,
+    # see gateway/docs/TESTING_TIERS.md). The database is created fresh in
+    # this job and nothing outside the job can reach it.
+    name: Postgres concurrency / gateway
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      AMW_TEST_DB_DISPOSABLE: "1"
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sellers
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U sellers"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -r requirements.txt -e "../sdk/python[verify]" pytest-xdist pytest-timeout
+          uv pip install "ruff==${RUFF_VERSION}" "pytest==${PYTEST_VERSION}"
+      - name: Create disposable database
+        run: |
+          uv run --no-sync python - <<'EOF'
+          import asyncio
+          import asyncpg
+
+          async def main():
+              conn = await asyncpg.connect(
+                  user="sellers", host="127.0.0.1", port=55439, database="postgres"
+              )
+              try:
+                  await conn.execute("CREATE DATABASE amw_action_ci")
+              finally:
+                  await conn.close()
+
+          asyncio.run(main())
+          EOF
+      - name: Migrate disposable database
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_ci
+        run: uv run --no-sync alembic upgrade head
+      - name: Postgres concurrency tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_ci
+          ENVIRONMENT: test
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+        run: |
+          uv run --no-sync pytest -q tests/test_action_postgres.py tests/test_permit_postgres_concurrency.py tests/test_duplicate_guard_postgres_concurrency.py tests/test_action_database_guard.py --timeout 300
+
+  postgres-proofs:
+    # Runs the gateway tests that only prove their claim against a live
+    # database (row-lock concurrency, the real asyncpg driver, Alembic round
+    # trips). These skip on a normal run; this job provisions throwaway
+    # databases, sets every opt-in flag, and fails loudly on any skip via
+    # CI_STRICT=1 (see gateway/tests/support/db_gate.py).
+    name: Postgres proofs / gateway
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sellers
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          # 55439 is the fixed disposable-test profile the action-proof guard
+          # requires (user sellers, no password, amw_action_* database).
+          - 5432:5432
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U sellers -d sellers"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: gateway
+    env:
+      AMW_TEST_DB_DISPOSABLE: "1"
+      CI_STRICT: "1"
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Install
+        run: |
+          uv venv
+          uv pip install -r requirements.txt -e "../sdk/python[verify]" pytest-xdist pytest-timeout
+          uv pip install "ruff==${RUFF_VERSION}" "pytest==${PYTEST_VERSION}"
+      - name: Wait for Postgres and create proof databases
+        run: |
+          uv run --no-sync python - <<'EOF'
+          import asyncio
+
+          import asyncpg
+
+          DATABASES = (
+              "amw_pg_concurrency",
+              "amw_action_pgproofs",
+              "amw_pg_pgloop",
+              "amw_action_migration",
+              "amw_action_dispatch",
+              "amw_pg_stress",
+              "amw_action_multiprocess",
+          )
+
+
+          async def main():
+              for attempt in range(30):
+                  try:
+                      conn = await asyncpg.connect(
+                          user="sellers", host="127.0.0.1", port=55439,
+                          database="postgres",
+                      )
+                      break
+                  except (OSError, asyncpg.PostgresError):
+                      await asyncio.sleep(2)
+              else:
+                  raise SystemExit("postgres service never became reachable")
+              try:
+                  for name in DATABASES:
+                      await conn.execute(f'DROP DATABASE IF EXISTS "{name}"')
+                      await conn.execute(f'CREATE DATABASE "{name}"')
+              finally:
+                  await conn.close()
+
+
+          asyncio.run(main())
+          EOF
+      - name: Migrate proof databases
+        run: |
+          for db in amw_pg_concurrency amw_action_pgproofs amw_pg_pgloop amw_pg_stress amw_action_multiprocess; do
+            DATABASE_URL="postgresql+asyncpg://sellers@127.0.0.1:55439/$db" \
+              uv run --no-sync python -m alembic upgrade head
+          done
+      - name: Run row-lock concurrency proofs
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_concurrency
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_permit_postgres_concurrency.py \
+            tests/test_duplicate_guard_postgres_concurrency.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-concurrency.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Run action accounting proofs
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_pgproofs
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_action_postgres.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-action.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Run migration round-trip proofs
+        env:
+          ACTION_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_migration
+          DISPATCH_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_dispatch
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            "tests/test_action_migrations.py::test_postgres_legacy_roundtrip_and_fail_closed_downgrade" \
+            tests/test_dispatch_call_slot_migration.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-migration.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Run asyncpg driver proofs
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_pgloop
+          TEST_POSTGRES_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_pgloop
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_postgres_datetime_binding.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-driver.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Run multiprocess crash proofs
+        env:
+          STATE_BACKEND: postgres
+          MCP_STRESS_DB_ISOLATED: "1"
+          RUN_MCP_MULTIPROCESS_TESTS: "1"
+        run: |
+          DATABASE_URL=postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_stress \
+            uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_mcp_postgres_multiprocess.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-stress.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+          DATABASE_URL=postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_multiprocess \
+            uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_action_multiprocess.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-action-mp.txt"
+          test "${PIPESTATUS[0]}" -eq 0
+      - name: Prove gated tests actually ran
+        working-directory: .
+        run: |
+          python3 gateway/tests/support/proof_log_gate.py \
+            "$GITHUB_WORKSPACE"/proof-logs-{concurrency,action,migration,driver,stress,action-mp}.txt
+
+  gateway-image-smoke:
+    name: Gateway image import smoke
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' &&
+           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and import release and development images
+        run: bash .github/scripts/smoke_gateway_image.sh
 
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
-    needs: detect
-    if: needs.detect.outputs.has_typescript == 'true'
+    needs: [detect, changes]
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_typescript == 'true' &&
+          (github.event_name != 'pull_request' ||
+           (needs.changes.result == 'success' && needs.changes.outputs.has_typescript == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -124,7 +518,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: ${{ fromJSON(needs.detect.outputs.typescript) }}
+        # Same empty-matrix guard as the Python job. Node versions stay 22 and 24.
+        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.has_typescript == 'true' && needs.changes.outputs.typescript || github.event_name != 'pull_request' && needs.detect.outputs.has_typescript == 'true' && needs.detect.outputs.typescript || '["skip"]') }}
         node-version: ["22", "24"]  # tests run .ts directly (Node 22.18+ type stripping)
     defaults:
       run:
@@ -133,7 +528,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
@@ -164,10 +559,49 @@ jobs:
       - name: Test
         run: $PM run --if-present test
 
+  trust_release_gate:
+    # Non-required while trust coverage and committed OpenAPI parity fail.
+    # Keep it out of CI result until both checks are green in CI and the
+    # required-check decision is made explicitly.
+    name: Trust release gate (non-required)
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' &&
+           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Trust release gate
+        # `uv run` in the gate scripts has no interpreter flag. Pin the same
+        # 3.12 the other gateway jobs use so the gate does not float to uv's
+        # default.
+        env:
+          UV_PYTHON: "3.12"
+        run: scripts/trust_release_gate.sh
+      - name: Strict ACP checkout latency (45 ms)
+        if: always()
+        env:
+          UV_PYTHON: "3.12"
+          ACP_CHECKOUT_MEDIAN_BUDGET_S: "0.045"
+        run: uv run --with-requirements requirements.txt python -m pytest -q tests/test_acp_bridge.py::test_acp_checkout_end_to_end_latency_budget
+
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript]
+    needs: [detect, changes, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -178,6 +612,21 @@ jobs:
           RESULTS: ${{ toJSON(needs.*.result) }}
         run: |
           echo "$RESULTS"
-          if echo "$RESULTS" | grep -Eq '"(failure|cancelled)"'; then
-            echo "::error::one or more CI jobs failed or were cancelled"; exit 1
-          fi
+          # Skipped jobs (path-filtered matrix or Postgres proofs) are success for
+          # this required check. failure and cancelled still fail the aggregate.
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          results = json.loads(os.environ["RESULTS"])
+          if isinstance(results, dict):
+              results = list(results.values())
+          elif isinstance(results, str):
+              results = [results]
+          allowed = {"success", "skipped"}
+          bad = [result for result in results if result not in allowed]
+          if not results or bad:
+              print("::error::one or more CI jobs failed or were cancelled", file=sys.stderr)
+              sys.exit(1)
+          PY

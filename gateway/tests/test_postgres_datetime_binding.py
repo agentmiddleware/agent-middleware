@@ -26,6 +26,7 @@ import pytest
 
 from app.core.time import to_naive_utc, utc_now
 from app.db.database import _normalize_bind_parameters
+from tests.support import db_gate
 
 
 class TestToNaiveUtc:
@@ -77,8 +78,8 @@ class TestNormalizeBindParameters:
 POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL", "").strip()
 
 
-@pytest.mark.skipif(
-    not POSTGRES_URL,
+@db_gate.collection_mark(
+    url_env="TEST_POSTGRES_URL",
     reason="TEST_POSTGRES_URL not set; Postgres-dialect coverage skipped",
 )
 class TestPostgresTrustLoop:

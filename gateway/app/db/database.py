@@ -44,12 +44,21 @@ logger = logging.getLogger(__name__)
 # refuse a healthy service. Before enabling RUN_MIGRATIONS_ON_START, operators
 # must compare physical schema and data-migration history and review recovery
 # under docs/schema-042-rollout.md; table presence does not prove parity.
+# The set covers the full loop, not just issuance: permits and receipts plus
+# the audit hash chain (control_plane_audit_events with its audit_chain_heads
+# pointers), the signing-key registry receipts and audit events point at, the
+# human-approval gate on governed invokes, and the idempotency and dispatch
+# records that make retries safe.
 REQUIRED_TRUST_TABLES = frozenset(
     {
         "permits",
         "receipts",
         "idempotency_records",
         "mcp_dispatch_attempts",
+        "control_plane_audit_events",
+        "audit_chain_heads",
+        "signing_keys",
+        "human_approvals",
     }
 )
 REQUIRED_TRUST_COLUMNS = {
@@ -199,7 +208,7 @@ def _normalize_bind_parameters(parameters: Any) -> Any:
             to_naive_utc(value) if isinstance(value, datetime) else value
             for value in parameters
         ]
-        if all(a is b for a, b in zip(rewritten_seq, parameters)):
+        if all(a is b for a, b in zip(rewritten_seq, parameters, strict=True)):
             return parameters
         return tuple(rewritten_seq) if isinstance(parameters, tuple) else rewritten_seq
     return parameters
@@ -234,7 +243,7 @@ def _install_naive_utc_bind_guard(engine: AsyncEngine) -> None:
     ):
         if executemany and isinstance(parameters, (list, tuple)):
             normalized = [_normalize_bind_parameters(p) for p in parameters]
-            if all(a is b for a, b in zip(normalized, parameters)):
+            if all(a is b for a, b in zip(normalized, parameters, strict=True)):
                 return statement, parameters
             return statement, normalized
         return statement, _normalize_bind_parameters(parameters)

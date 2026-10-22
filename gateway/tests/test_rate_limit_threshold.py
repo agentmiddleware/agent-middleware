@@ -609,3 +609,89 @@ async def test_bucket_key_is_canonicalized_like_auth() -> None:
     assert first.status_code == 200
     assert second.status_code == 200
     assert third.status_code == 429
+
+
+async def _status_for(app, path: str, *, api_key: str | None = None) -> int:
+    """Drive one raw ASGI request with an already decoded routing path."""
+    seen: list[int] = []
+    headers = [(b"host", b"test")]
+    if api_key is not None:
+        headers.append((b"x-api-key", api_key.encode("ascii")))
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.replace("?", "%3F").replace("#", "%23").encode("ascii"),
+        "query_string": b"",
+        "headers": headers,
+        "client": ("127.0.0.1", 5000),
+        "server": ("test", 80),
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            seen.append(message["status"])
+
+    await app(scope, receive, send)
+    return seen[0]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/health?other",
+        "/health#other",
+        "/docs?other",
+        "/docs#other",
+        "/docs/concepts/request-keys?other",
+    ],
+)
+async def test_encoded_delimiter_in_path_does_not_skip_limit(path: str) -> None:
+    """The decoded router path is different from the exempt route."""
+
+    async def ok(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    limited = RateLimitMiddleware(ok, requests_per_minute=1)
+    # Stay on the in-memory counter. This probe must not open a Redis client.
+    limited._redis_url = ""
+
+    assert await _status_for(limited, path) == 200
+    assert await _status_for(limited, path) == 429
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path", ["/health", "/docs", "/docs/concepts/request-keys"])
+async def test_actual_health_and_docs_paths_stay_exempt(path: str) -> None:
+    async def ok(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    exempt = RateLimitMiddleware(ok, requests_per_minute=1)
+    exempt._redis_url = ""
+    assert await _status_for(exempt, path) == 200
+    assert await _status_for(exempt, path) == 200
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("path", ["/mcp/public?other", "/mcp/public#other"])
+async def test_encoded_delimiter_does_not_use_public_mcp_bucket(path: str) -> None:
+    async def ok(scope, receive, send):
+        await PlainTextResponse("ok")(scope, receive, send)
+
+    limited = RateLimitMiddleware(ok, requests_per_minute=1)
+    limited._redis_url = ""
+    assert await _status_for(limited, path, api_key="first-key") == 200
+    assert await _status_for(limited, path, api_key="second-key") == 200
+    assert not any("route:mcp-public" in key for key in limited._requests)
+
+    public = RateLimitMiddleware(ok, requests_per_minute=1)
+    public._redis_url = ""
+    assert await _status_for(public, "/mcp/public", api_key="first-key") == 200
+    assert await _status_for(public, "/mcp/public", api_key="second-key") == 429

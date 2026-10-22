@@ -61,11 +61,14 @@ additionally needs `cryptography`, kept behind the `verify` extra.
 ### Migrating from b2a-sdk
 
 `b2a-sdk` was never published to PyPI. If you installed it locally or from the
-0.4.0 wheel, remove it before installing `amw-sdk`:
+0.4.0 wheel, remove it before installing `amw-sdk`. Until `amw-sdk` is on PyPI, install it
+from a checkout instead:
 
 ```bash
 pip uninstall b2a-sdk
-pip install amw-sdk
+pip install amw-sdk  # once published to PyPI
+# before publication, from a repository checkout:
+pip install ./sdk/python
 ```
 
 Your `b2a_sdk` imports remain unchanged.

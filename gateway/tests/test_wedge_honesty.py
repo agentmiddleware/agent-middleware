@@ -200,7 +200,7 @@ async def test_agent_json_sdk_integrations_are_honest(client):
     assert source_version is not None, "sdk/python/pyproject.toml has no version"
     assert python_sdk["version"] == source_version.group(1)
     assert python_sdk["install"] == "pip install -e ./sdk/python"
-    assert "pip install b2a-sdk" not in json.dumps(python_sdk)
+    assert "pip install amw-sdk" not in json.dumps(python_sdk)
     assert "not published" in python_sdk["note"].lower()
     # No release has been cut from this repository yet.
     assert python_sdk["latest_release_tag"] is None
@@ -222,7 +222,7 @@ async def test_llm_txt_does_not_advertise_unpublished_sdk_installs(client):
     resp = await client.get("/llm.txt")
     assert resp.status_code == 200
     text = resp.text
-    assert "pip install b2a-sdk" not in text
+    assert "pip install amw-sdk" not in text
     assert "npm install @b2a/sdk" not in text
     assert "pip install -e ./sdk/python" in text
     assert "transaction-integrity boundary" in text

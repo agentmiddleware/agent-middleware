@@ -141,7 +141,7 @@ exactly-once side effects.
 
     # Install the Agent Middleware (AMW) Python SDK from this checkout
     # or a built SDK wheel:
-    pip install "../sdk/python[verify]"  # or: pip install "./b2a_sdk-<version>-py3-none-any.whl[verify]"
+    pip install "../sdk/python[verify]"  # or: pip install "./amw_sdk-<version>-py3-none-any.whl[verify]"
     amw verify --bundle receipt-bundle.json --keys trust-keys.json
     ```
 

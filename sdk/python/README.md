@@ -4,14 +4,23 @@ Typed async client for the governed MCP trust loop:
 
 `discover → authenticate → authorize → invoke → meter → receipt → audit → govern`
 
-CI builds version `0.5.0` as wheel and source artifacts. Pushing the
-`python-sdk-v0.5.0` tag attaches them to a GitHub release. The package is not
-published to PyPI.
+The `amw-sdk` distribution is at version `0.5.0`. Tags matching `python-v*`
+trigger the PyPI release workflow. Until publication, install from this checkout.
 
 ## Installation
 
 For the supported evaluation, integration, security, and pilot paths, start
 with the repository [documentation guide](../../gateway/docs/README.md).
+
+### From PyPI after publication
+
+Choose the base package or an extra when `amw-sdk` is available on PyPI:
+
+```bash
+pip install amw-sdk
+pip install "amw-sdk[verify]"
+pip install "amw-sdk[mcp]"
+```
 
 ### From a checkout (recommended)
 
@@ -35,23 +44,34 @@ The extra pins `mcp` below 2.x, which renamed the class the server imports:
 python -m pip install -e './sdk/python[mcp]'
 ```
 
-### Released artifact
+### Historical release
 
-The source in this checkout is `0.5.0`; an earlier release is
-[`python-sdk-v0.4.0`](https://github.com/PetrefiedThunder/agent-middleware/releases/tag/python-sdk-v0.4.0).
-Download
+Version `0.4.0` was released under
+[`python-sdk-v0.4.0`](https://github.com/PetrefiedThunder/agent-middleware/releases/tag/python-sdk-v0.4.0)
+with the
 [`b2a_sdk-0.4.0-py3-none-any.whl`](https://github.com/PetrefiedThunder/agent-middleware/releases/download/python-sdk-v0.4.0/b2a_sdk-0.4.0-py3-none-any.whl)
-and install that downloaded file:
-
-```bash
-python -m pip install ./b2a_sdk-0.4.0-py3-none-any.whl
-```
+wheel.
 
 The linked 0.4.0 wheel predates the `amw` import and CLI. Install this checkout
 to run the examples below.
 
 `httpx` is the only runtime dependency. Offline receipt verification
 additionally needs `cryptography`, kept behind the `verify` extra.
+
+### Migrating from b2a-sdk
+
+`b2a-sdk` was never published to PyPI. If you installed it locally or from the
+0.4.0 wheel, remove it before installing `amw-sdk`. Until `amw-sdk` is on PyPI, install it
+from a checkout instead:
+
+```bash
+pip uninstall b2a-sdk
+pip install amw-sdk  # once published to PyPI
+# before publication, from a repository checkout:
+pip install ./sdk/python
+```
+
+Your `b2a_sdk` imports remain unchanged.
 
 ## Short tool call
 

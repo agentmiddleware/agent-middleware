@@ -86,7 +86,7 @@ async def test_default_base_url_is_localhost_never_a_hosted_server() -> None:
 async def test_discover_tools_returns_typed_definitions() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/mcp/tools.json"
-        assert request.headers["user-agent"] == "b2a-sdk/0.5.0"
+        assert request.headers["user-agent"] == "amw-sdk/0.5.0"
         return httpx.Response(
             200,
             json={

@@ -10,7 +10,13 @@ everything here is additive, with one bounded exception: `settle_402()` now
 prefers `amount_usd` over the legacy `amount` alias when a requirement carries
 both with different values (see below). `parse_402_response()` always sets the
 two equal, so the normal path is unchanged. The tag is not cut by this
-change — `python-sdk-v0.5.0` is still a release decision.
+change. `python-v0.5.0` is still a release decision.
+
+### Distribution name
+
+The Python distribution is now `amw-sdk`. After publication, install it with
+`pip install amw-sdk`.
+Both `amw` and `b2a_sdk` remain available as import packages.
 
 ### Receipt verifier
 

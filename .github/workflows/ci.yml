@@ -257,10 +257,10 @@ jobs:
       - name: Collect SDK source distribution tests
         if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
         run: |
-          uv build --sdist --out-dir "$RUNNER_TEMP/b2a-sdist"
-          tar -xzf "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*.tar.gz -C "$RUNNER_TEMP/b2a-sdist"
-          test ! -e "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*/tests/test_receipt_vectors.py
-          uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*/tests
+          uv build --sdist --out-dir "$RUNNER_TEMP/amw-sdist"
+          tar -xzf "$RUNNER_TEMP"/amw-sdist/amw_sdk-*.tar.gz -C "$RUNNER_TEMP/amw-sdist"
+          test ! -e "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests/test_receipt_vectors.py
+          uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests
 
   postgres-concurrency:
     # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:

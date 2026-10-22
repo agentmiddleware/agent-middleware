@@ -1,4 +1,4 @@
-# Agent Middleware Python SDK
+# Agent Middleware (AMW) Python SDK
 
 Typed async client for the governed MCP trust loop:
 
@@ -27,7 +27,8 @@ Add offline receipt verification when you need it:
 python -m pip install -e './sdk/python[verify]'
 ```
 
-Add the MCP server dependency (`python -m b2a_sdk.mcp serve`) when you need it.
+The legacy MCP server uses `python -m b2a_sdk.mcp serve`. Add its dependency
+when you need that command.
 The extra pins `mcp` below 2.x, which renamed the class the server imports:
 
 ```bash
@@ -36,7 +37,7 @@ python -m pip install -e './sdk/python[mcp]'
 
 ### Released artifact
 
-The source in this checkout is `0.5.0`; the currently released artifact is
+The source in this checkout is `0.5.0`; an earlier release is
 [`python-sdk-v0.4.0`](https://github.com/PetrefiedThunder/agent-middleware/releases/tag/python-sdk-v0.4.0).
 Download
 [`b2a_sdk-0.4.0-py3-none-any.whl`](https://github.com/PetrefiedThunder/agent-middleware/releases/download/python-sdk-v0.4.0/b2a_sdk-0.4.0-py3-none-any.whl)
@@ -45,6 +46,9 @@ and install that downloaded file:
 ```bash
 python -m pip install ./b2a_sdk-0.4.0-py3-none-any.whl
 ```
+
+The linked 0.4.0 wheel predates the `amw` import and CLI. Install this checkout
+to run the examples below.
 
 `httpx` is the only runtime dependency. Offline receipt verification
 additionally needs `cryptography`, kept behind the `verify` extra.
@@ -57,7 +61,7 @@ wallet and an existing permit. Supply their IDs in `call()` or when creating
 `Client`. An API key alone does not provide either ID.
 
 ```python
-from b2a_sdk import Client
+from amw import Client
 
 with Client(
     "YOUR_DEMO_KEY",
@@ -95,7 +99,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from b2a_sdk import AgentMiddlewareClient, PermitRequest
+from amw import AgentMiddlewareClient, PermitRequest
 
 
 async def main() -> None:
@@ -157,7 +161,7 @@ discover, permit, invoke, receipt, and evidence calls with no event loop
 of their own:
 
 ```python
-from b2a_sdk import PermitRequest, SyncAgentMiddlewareClient
+from amw import PermitRequest, SyncAgentMiddlewareClient
 
 with SyncAgentMiddlewareClient(
     api_key="agt-your-api-key",
@@ -202,8 +206,7 @@ python -m pip install './sdk/python[verify]'
 ```python
 from decimal import Decimal
 
-from b2a_sdk import AgentMiddlewareClient
-from b2a_sdk.edge_client import GovernedEdgeSession
+from amw import AgentMiddlewareClient, GovernedEdgeSession
 
 async with AgentMiddlewareClient(api_key="...") as client:
     session = await GovernedEdgeSession.open(
@@ -227,13 +230,13 @@ and `GovernedEdgeSession` surface.
 
 ## Verifying a receipt offline
 
-`b2a_sdk.receipt_verifier` checks a receipt with no server, no database, and
-no credential — it imports nothing from the middleware application. Use it to
-audit a receipt handed to you by another agent, or to re-check your own long
+`amw.verify_bundle` checks a receipt with no server, no database, and
+no credential. It imports nothing from the middleware application. Use it to
+audit a receipt handed to you by another agent, or to check your own long
 after the call.
 
 ```python
-from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
+from amw import key_set_from_document, verify_bundle
 
 # bundle:   GET /v1/receipts/{receipt_id}/portable   (authorized)
 # keys:     GET /.well-known/trust-keys.json         (unauthenticated)
@@ -249,13 +252,13 @@ else:
 
 That three-way split is deliberate. `is_tampered` is a verdict on the receipt;
 `UNKNOWN_KEY`, `MALFORMED`, and `UNSUPPORTED` say only that this verifier could
-not decide — usually a stale key set. Treating them alike turns an outage into
-a fraud alarm.
+not decide, usually because the key set is stale. Treating them alike turns an
+outage into a fraud alarm.
 
 The same check from a shell:
 
 ```bash
-b2a-verify-receipt --bundle receipt.json --keys trust-keys.json
+amw verify --bundle receipt.json --keys trust-keys.json
 # exit 0 verified, 1 forged, 2 undetermined
 ```
 
@@ -264,6 +267,9 @@ supplying it, and `--expect-issuer` to require the bundle to name the origin
 you meant to audit.
 
 ## Compatibility
+
+`b2a_sdk` and `b2a-verify-receipt` still work as deprecated aliases for
+`amw` and `amw verify`.
 
 `B2AClient` remains available for existing integrations and emits a
 `DeprecationWarning`. Legacy wallet, telemetry, dry-run, decorator, and edge

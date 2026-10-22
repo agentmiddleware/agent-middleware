@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 # Dependency-minimal surface, imported eagerly: errors, models, and the offline
@@ -136,3 +137,5 @@ __all__ = [
     "request_key",
     "verify_bundle",
 ]
+
+warnings.warn("b2a_sdk is deprecated; import amw instead", DeprecationWarning, stacklevel=1)

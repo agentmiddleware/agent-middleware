@@ -13,13 +13,14 @@ action before deciding what to do next.
 |---|---|---|
 | Available | Coming | Coming |
 
-The Python helper derives a key from the tool, selected arguments, an optional
-business ID, and an optional scope. The output starts with `amwk1_` and is 58
-characters long. Install the SDK from this checkout as shown in the
+The Agent Middleware (AMW) Python helper derives a key from the tool, selected
+arguments, an optional business ID, and an optional scope. The output starts
+with `amwk1_` and is 58 characters long. Install the SDK from this checkout as
+shown in the
 [Python SDK guide](https://github.com/agentmiddleware/agent-middleware/blob/main/sdk/python/README.md).
 
 ```python
-from b2a_sdk import request_key
+from amw import request_key
 
 args = {"order_id": "A1", "amount": "12.00"}
 key = request_key("partner.refund", args, business_id="A1")
@@ -191,5 +192,8 @@ sent and does not trim or normalize it. Keep it and the full request stable
 across retries.
 
 The Python SDK and the [specification](https://github.com/agentmiddleware/agent-middleware/tree/main/spec/request-key-v1)
-use the Apache 2.0 license. The gateway and this guide use the Fair Source
-License 1.1. See [licensing](https://github.com/agentmiddleware/agent-middleware/blob/main/LICENSING.md).
+are covered by:
+
+Apache 2.0 (gateway is Fair Source, FSL-1.1)
+
+See [licensing](https://github.com/agentmiddleware/agent-middleware/blob/main/LICENSING.md).

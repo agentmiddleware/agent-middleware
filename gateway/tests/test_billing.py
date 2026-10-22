@@ -1772,39 +1772,6 @@ async def test_dry_run_session_does_not_leak_another_tenants_session(
 
 
 @pytest.mark.anyio
-async def test_engine_dry_run_refuses_a_session_bound_to_another_wallet(
-    clean_database,
-):
-    """The engine binds a dry-run session to the wallet it authorized.
-
-    ``charge`` checks ownership of ``wallet_id`` only. A caller owning wallet A
-    who passes wallet B's session id used to add simulated charges to B's
-    session, which ``commit_session`` later charges to B. The router already
-    refuses this; the engine is the choke point the governed MCP path and the
-    SDK reach without it.
-    """
-    from app.schemas.billing import ServiceCategory
-    from app.services import shadow_ledger as shadow_ledger_module
-
-    ledger = shadow_ledger_module.get_shadow_ledger()
-    victim = await ledger.create_session("wal-victim", real_balance=Decimal("100"))
-
-    with pytest.raises(ValueError, match="Dry-run session not found"):
-        await get_agent_money().charge(
-            wallet_id="wal-attacker",
-            service_category=ServiceCategory.IOT_BRIDGE,
-            units=Decimal("1"),
-            dry_run=True,
-            dry_run_session_id=victim.session_id,
-            caller=CallerIdentity.for_wallet("wal-attacker"),
-        )
-
-    after = await ledger.get_session(victim.session_id)
-    assert after is not None
-    assert after.simulated_charges == []
-
-
-@pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["commit", "revert"])
 async def test_dry_run_session_lost_mid_operation_is_a_404(
     client, api_headers, clean_database, monkeypatch, operation

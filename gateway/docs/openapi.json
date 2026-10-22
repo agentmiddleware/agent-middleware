@@ -5234,6 +5234,28 @@
         }
       }
     },
+    "/docs/concepts/request-keys": {
+      "get": {
+        "tags": [
+          "Static"
+        ],
+        "summary": "Request keys",
+        "description": "Python helper for stable request keys.",
+        "operationId": "get_request_keys_md_docs_concepts_request_keys_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dashboard": {
       "get": {
         "tags": [

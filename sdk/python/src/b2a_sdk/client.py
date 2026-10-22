@@ -12,7 +12,7 @@ import logging
 import re
 import warnings
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, overload
 from urllib.parse import urlsplit
 
 import httpx
@@ -38,6 +38,7 @@ from .models import (
     ReceiptVerification,
     ToolDefinition,
 )
+from .request_key import request_key
 
 logger = logging.getLogger("b2a_sdk")
 
@@ -457,6 +458,7 @@ class AgentMiddlewareClient:
             raise AuthorizationError(reason, status_code=403, payload=envelope)
         raise APIError(reason, payload=envelope)
 
+    @overload
     async def invoke_tool(
         self,
         name: str,
@@ -465,12 +467,49 @@ class AgentMiddlewareClient:
         wallet_id: str,
         permit_id: str,
         idempotency_key: str,
+    ) -> InvocationResult: ...
+
+    @overload
+    async def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
+    ) -> InvocationResult: ...
+
+    async def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
     ) -> InvocationResult:
         """Invoke one MCP tool through the governed permit and receipt loop."""
         for label, value in (("tool", name), ("wallet_id", wallet_id), ("permit_id", permit_id)):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{label} must not be blank")
-        key = self._validate_idempotency_key(idempotency_key)
+        key = self._validate_idempotency_key(
+            request_key(
+                name,
+                arguments,
+                business_id=business_id,
+                include=include,
+                exclude=exclude,
+            )
+            if idempotency_key == "auto"
+            else idempotency_key
+        )
         request_payload = {
             "jsonrpc": "2.0",
             "id": key,

@@ -83,3 +83,15 @@ b832ed901f992cd225b41d74916db202c82a81c4:gateway/tests/test_x402.py:generic-api-
 923cc826add7856cb81a632d23ba99d85c067559:spec/test-vectors/generate.py:generic-api-key:378
 e1abe47d7987cc9a4e9521faeebd6becc9d59504:spec/test-vectors/generate.py:generic-api-key:350
 e1abe47d7987cc9a4e9521faeebd6becc9d59504:spec/test-vectors/generate.py:generic-api-key:379
+# Reviewed request key test vector outputs from a superseded commit.
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:26
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:49
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:82
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:130
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:161
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:205
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:234
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:257
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:277
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:301
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:315

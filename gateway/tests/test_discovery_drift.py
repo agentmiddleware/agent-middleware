@@ -185,6 +185,12 @@ async def test_openapi_contains_core_control_plane_routes(client):
     )
     # include_in_schema follows ENABLE_STANDARD_MCP_ENDPOINT, which defaults on.
     assert "/mcp" in paths
+    standard_mcp_body = paths["/mcp"]["post"]["requestBody"]
+    assert standard_mcp_body["required"] is True
+    standard_mcp_schema = standard_mcp_body["content"]["application/json"]["schema"]
+    assert standard_mcp_schema["type"] == "object"
+    assert set(standard_mcp_schema["required"]) == {"jsonrpc", "method"}
+    assert standard_mcp_schema["properties"]["jsonrpc"]["const"] == "2.0"
     legacy_mcp_description = paths["/mcp/messages"]["post"]["description"]
     assert "does not implement the standard MCP initialization lifecycle" in (
         legacy_mcp_description

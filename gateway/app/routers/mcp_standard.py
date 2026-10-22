@@ -847,6 +847,25 @@ class _SdkTransportResponse(Response):
         "Standard MCP endpoint (official MCP SDK, stateless Streamable HTTP, "
         "JSON responses)"
     ),
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["jsonrpc", "method"],
+                        "properties": {
+                            "jsonrpc": {"type": "string", "const": "2.0"},
+                            "method": {"type": "string"},
+                            "params": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+                            "id": {"anyOf": [{"type": "integer"}, {"type": "string"}]},
+                        },
+                    }
+                }
+            },
+        }
+    },
 )
 async def handle_standard_mcp(
     request: Request,

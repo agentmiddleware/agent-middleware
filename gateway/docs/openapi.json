@@ -3505,6 +3505,49 @@
               }
             }
           }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "jsonrpc",
+                  "method"
+                ],
+                "properties": {
+                  "jsonrpc": {
+                    "type": "string",
+                    "const": "2.0"
+                  },
+                  "method": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "anyOf": [
+                      {
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "id": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

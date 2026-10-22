@@ -134,6 +134,10 @@ async def test_endpoint_returns_404_when_disabled(client, monkeypatch):
     monkeypatch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", "false")
     get_settings.cache_clear()
     try:
+        unauthenticated = await client.post(
+            "/mcp", json=_initialize(), headers=MCP_HEADERS
+        )
+        assert unauthenticated.status_code == 401
         resp = await client.post(
             "/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS
         )

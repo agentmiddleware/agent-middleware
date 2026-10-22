@@ -53,6 +53,10 @@ use them as product onboarding or a public capability list:
 - `server.json` at the repository root is the official MCP registry
   manifest. It advertises the standard MCP endpoint
   (`https://api.thisisatest.tech/mcp`). `ENABLE_STANDARD_MCP_ENDPOINT`
-  defaults to on; a host that sets it false answers 404. Publishing requires
-  owner approval: confirm an unauthenticated `POST /mcp` on that host
-  returns 401, not 404, before running `mcp-publisher publish`.
+  defaults to on; a host that sets it false answers 404 after authentication.
+  Before requesting owner approval to publish, send an authenticated MCP
+  `initialize` request to that exact host with a valid wallet-scoped API key.
+  Require HTTP 200 and a JSON-RPC `result` containing `protocolVersion` and
+  `serverInfo`. An unauthenticated 401 does not prove the endpoint is enabled:
+  authentication runs before the enable check, so a disabled host also returns
+  401. Run `mcp-publisher publish` only after owner approval.

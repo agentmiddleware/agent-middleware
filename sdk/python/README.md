@@ -58,6 +58,18 @@ to run the examples below.
 `httpx` is the only runtime dependency. Offline receipt verification
 additionally needs `cryptography`, kept behind the `verify` extra.
 
+### Migrating from b2a-sdk
+
+`b2a-sdk` was never published to PyPI. If you installed it locally or from the
+0.4.0 wheel, remove it before installing `amw-sdk`:
+
+```bash
+pip uninstall b2a-sdk
+pip install amw-sdk
+```
+
+Your `b2a_sdk` imports remain unchanged.
+
 ## Short tool call
 
 `Client.call(tool, args, key=None, permit_id=None, wallet_id=None)` is a

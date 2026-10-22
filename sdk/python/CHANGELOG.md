@@ -18,6 +18,12 @@ The Python distribution is now `amw-sdk`. After publication, install it with
 `pip install amw-sdk`.
 Both `amw` and `b2a_sdk` remain available as import packages.
 
+### Migrating from b2a-sdk
+
+`b2a-sdk` was never published to PyPI. For a local install or the 0.4.0 wheel,
+run `pip uninstall b2a-sdk` before `pip install amw-sdk`. Existing imports
+remain unchanged.
+
 ### Receipt verifier
 
 - An edited `alg` or `canonicalization` inside `signing_input` is `invalid`

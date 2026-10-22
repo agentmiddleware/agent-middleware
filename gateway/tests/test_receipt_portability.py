@@ -700,7 +700,7 @@ def test_cli_emits_machine_readable_output(tmp_path, capsys):
 
 
 @pytest.mark.parametrize(
-    "overrides,label",
+    ("overrides", "label"),
     [
         ({"alg": "RS256"}, "algorithm"),
         ({"canonicalization": "awi-canonical-json/2"}, "canonicalization"),

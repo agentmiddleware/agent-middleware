@@ -47,7 +47,7 @@ async def test_health_dependencies_reports_runtime_degradation():
 
 
 @pytest.mark.anyio
-async def test_health_endpoint_includes_runtime_degradation_field(client=None):
+async def test_health_endpoint_includes_runtime_degradation_field():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         resp = await http.get("/health/dependencies")

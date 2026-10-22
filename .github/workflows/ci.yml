@@ -547,11 +547,8 @@ jobs:
             corepack enable pnpm && echo "PM=pnpm" >> "$GITHUB_ENV" && pnpm install --frozen-lockfile
           elif [ -f yarn.lock ]; then
             corepack enable yarn && echo "PM=yarn" >> "$GITHUB_ENV" && yarn install --immutable
-          elif [ -f package-lock.json ]; then
-            echo "PM=npm" >> "$GITHUB_ENV" && npm ci
           else
-            echo "::warning::no lockfile in ${{ matrix.project }}; using npm install"
-            echo "PM=npm" >> "$GITHUB_ENV" && npm install --no-audit --no-fund
+            echo "PM=npm" >> "$GITHUB_ENV" && npm ci
           fi
       - name: Lint
         if: matrix.node-version == '22'

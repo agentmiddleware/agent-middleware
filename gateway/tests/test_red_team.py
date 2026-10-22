@@ -7,6 +7,11 @@ and the quick-scan CI/CD gate.
 import pytest
 from httpx import AsyncClient, ASGITransport
 from app.main import app
+from tests.support.quality import (
+    assert_counts_agree,
+    assert_exact_status,
+    assert_exact_total,
+)
 from tests.test_trust_helpers import provision_agent_wallet
 
 
@@ -141,12 +146,18 @@ async def test_get_vulnerabilities(client, api_headers):
         f"/v1/security/scans/{scan_id}/vulnerabilities",
         headers=api_headers,
     )
-    assert resp.status_code == 200
+    assert_exact_status(resp, 200)
     data = resp.json()
-    # After patching all findings, zero vulns = fortress mode
-    assert data["total"] >= 0
-    assert "critical_count" in data
-    assert "high_count" in data
+    # An empty-body scan defaults to every service and category, and the
+    # simulated plane currently passes every vector: zero vulns is the
+    # fortress-mode tripwire. An exact zero (not `>= 0`) fails the day a
+    # vector starts failing, and the consistency check fails if the report
+    # ever disagrees with its own list.
+    assert_exact_total(data, 0)
+    assert_counts_agree(
+        data,
+        count_keys=("critical_count", "high_count"),
+    )
 
 
 @pytest.mark.anyio

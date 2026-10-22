@@ -54,7 +54,7 @@ def test_non_local_postgres_requires_explicit_disposable_flag(monkeypatch, flag)
 
 
 @pytest.mark.parametrize(
-    "url, postgres_flag",
+    ("url", "postgres_flag"),
     [(PROOF_URL, False), (CI_PROOF_URL, True)],
 )
 def test_explicit_disposable_flag_allows_postgres_proofs(
@@ -103,7 +103,7 @@ def test_explicit_local_postgres_profile_is_allowed(monkeypatch, flag):
 
 
 @pytest.mark.parametrize(
-    "url, environment",
+    ("url", "environment"),
     [
         (ACTION_URL, "production"),
         (ACTION_URL + "?host=db.example.invalid", "test"),

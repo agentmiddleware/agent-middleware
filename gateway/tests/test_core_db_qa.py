@@ -310,48 +310,74 @@ def test_public_contact_valid_triple():
 
 
 @pytest.mark.parametrize(
-    "contact",
+    ("contact", "match"),
     [
-        _Contact(name="x", email="ops@acme-corp.com", url="https://acme-corp.com/c"),
-        _Contact(
-            name="Test API Team",
-            email="ops@acme-corp.com",
-            url="https://acme-corp.com/c",
+        (
+            _Contact(
+                name="x", email="ops@acme-corp.com", url="https://acme-corp.com/c"
+            ),
+            "^placeholder public contact metadata is forbidden$",
         ),
-        _Contact(
-            name="Acme Operations",
-            email="ops@example.com",
-            url="https://acme-corp.com/c",
+        (
+            _Contact(
+                name="Test API Team",
+                email="ops@acme-corp.com",
+                url="https://acme-corp.com/c",
+            ),
+            "^placeholder public contact metadata is forbidden$",
         ),
-        _Contact(
-            name="Acme Operations",
-            email="ops@b.test",
-            url="https://acme-corp.com/c",
+        (
+            _Contact(
+                name="Acme Operations",
+                email="ops@example.com",
+                url="https://acme-corp.com/c",
+            ),
+            "^placeholder public contact metadata is forbidden$",
         ),
-        _Contact(
-            name="Acme Operations",
-            email="not-an-email",
-            url="https://acme-corp.com/c",
+        (
+            _Contact(
+                name="Acme Operations",
+                email="ops@b.test",
+                url="https://acme-corp.com/c",
+            ),
+            "^PUBLIC_CONTACT_EMAIL must use a routable public domain$",
         ),
-        _Contact(
-            name="Acme Operations",
-            email="ops@acme-corp.com",
-            url="http://acme-corp.com/c",
+        (
+            _Contact(
+                name="Acme Operations",
+                email="not-an-email",
+                url="https://acme-corp.com/c",
+            ),
+            "^PUBLIC_CONTACT_EMAIL must be a valid monitored address$",
         ),
-        _Contact(
-            name="Acme Operations",
-            email="ops@acme-corp.com",
-            url="https://api.thisisatest.tech/book",
+        (
+            _Contact(
+                name="Acme Operations",
+                email="ops@acme-corp.com",
+                url="http://acme-corp.com/c",
+            ),
+            "^PUBLIC_CONTACT_URL must be an absolute HTTPS URL$",
         ),
-        _Contact(
-            name="Agent Middleware API",
-            email="ops@acme-corp.com",
-            url="https://acme-corp.com/c",
+        (
+            _Contact(
+                name="Acme Operations",
+                email="ops@acme-corp.com",
+                url="https://api.thisisatest.tech/book",
+            ),
+            "^PUBLIC_CONTACT_URL must point to a booking service$",
+        ),
+        (
+            _Contact(
+                name="Agent Middleware API",
+                email="ops@acme-corp.com",
+                url="https://acme-corp.com/c",
+            ),
+            "^placeholder public contact metadata is forbidden$",
         ),
     ],
 )
-def test_public_contact_rejects_placeholders(contact):
-    with pytest.raises(ValueError):
+def test_public_contact_rejects_placeholders(contact, match):
+    with pytest.raises(ValueError, match=match):
         validated_public_contact(contact)
 
 
@@ -424,9 +450,9 @@ def test_unimplemented_backends_fail_loudly_not_local(monkeypatch, caplog):
             with caplog.at_level(logging.WARNING):
                 backend = get_blob_backend()
             assert isinstance(backend, _UnimplementedBlob)
-            with pytest.raises(NotImplementedError):
-                import anyio
+            import anyio
 
+            with pytest.raises(NotImplementedError):
                 anyio.run(backend.put, "k", b"v")
         assert "falling back to local" not in caplog.text
         assert "fail loudly" in caplog.text
@@ -1208,7 +1234,7 @@ def test_wallet_converter_lenient_metadata_and_kyc_but_strict_type():
     assert out.metadata == {}
     # Display-only leniency: enforcement reads the model row, not this schema.
     assert out.kyc_status.value == "not_required"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"^'bogus' is not a valid WalletType$"):
         wallet_model_to_response(WalletModel(wallet_id="w1", wallet_type="bogus"))
 
 
@@ -1223,7 +1249,7 @@ def test_ledger_converter_preserves_eight_places():
     out = ledger_entry_model_to_schema(row)
     assert out.amount_exact == "1.12345678"
     assert out.balance_after_exact == "11.12345678"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"^'bogus' is not a valid LedgerAction$"):
         ledger_entry_model_to_schema(
             LedgerEntryModel(
                 entry_id="e2",
@@ -1301,7 +1327,7 @@ async def test_retry_succeeds_after_failures_then_exhausts():
 
 
 def test_retry_guards_reject_zero_attempts():
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"^max_attempts must be at least 1$"):
         retry_with_backoff(max_attempts=0)
 
 
@@ -1359,7 +1385,7 @@ async def test_write_conflict_guard_rejects_zero_attempts():
     async def op():
         return 1
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"^max_attempts must be at least 1$"):
         await run_with_write_conflict_retry(
             op, on_exhausted=lambda e: e, max_attempts=0
         )
@@ -1380,9 +1406,9 @@ def test_circuit_breaker_opens_and_recovers():
     breaker.record_failure()
     assert breaker.state == "open"
     assert breaker.is_allowed() is False
-    with pytest.raises(CircuitBreakerOpen):
-        import anyio
+    import anyio
 
+    with pytest.raises(CircuitBreakerOpen):
         anyio.run(breaker.call, _sync_boom)
 
     recovering = CircuitBreaker(

@@ -308,12 +308,9 @@ async def test_garbage_api_keys_never_500(client, clean_database):
     from fastapi import HTTPException as _HTTPException
 
     for bad in ("b2a_caf\xe9key", "clé secrète"):
-        try:
+        with pytest.raises(_HTTPException) as exc_info:
             await get_auth_context(api_key=bad)
-        except _HTTPException as exc:
-            assert exc.status_code in (401, 403)
-        else:
-            raise AssertionError(bad)
+        assert exc_info.value.status_code in (401, 403), bad
 
 
 @pytest.mark.anyio

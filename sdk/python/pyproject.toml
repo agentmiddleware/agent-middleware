@@ -95,6 +95,7 @@ include = [
 exclude = [
     # Repository-only test: its vectors live outside this source distribution.
     "tests/test_receipt_vectors.py",
+    "tests/test_request_key.py",
 ]
 
 [tool.pytest.ini_options]

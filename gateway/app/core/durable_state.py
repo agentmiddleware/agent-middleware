@@ -33,6 +33,7 @@ import redis.asyncio as redis
 from .config import get_settings
 from .db_urls import (
     as_asyncpg_url,
+    is_in_memory_sqlite_url,
     is_postgres_url,
     is_sqlite_url,
     sqlite_path_from_url,
@@ -167,7 +168,19 @@ class DurableStateStore:
             # which aiosqlite would treat as a literal filename without
             # uri=True) maps to plain ":memory:". The store holds a single
             # connection, so all reads and writes see the same database.
-            self._sqlite_url = sqlite_path_from_url(raw_sqlite_url) or ":memory:"
+            # Only a recognized in-memory spelling maps to ":memory:"; a
+            # SQLite URL that cannot be parsed fails loudly rather than
+            # silently discarding state the operator expects on disk.
+            sqlite_path = sqlite_path_from_url(raw_sqlite_url)
+            if sqlite_path:
+                self._sqlite_url = sqlite_path
+            elif is_in_memory_sqlite_url(raw_sqlite_url):
+                self._sqlite_url = ":memory:"
+            else:
+                raise DurableStateConfigError(
+                    "SQLITE_URL is a SQLite URL that could not be parsed; use "
+                    "sqlite[+driver]:///path/to/state.db or a plain file path"
+                )
         else:
             # Documented raw-path form (or the ":memory:" shorthand).
             self._sqlite_url = raw_sqlite_url

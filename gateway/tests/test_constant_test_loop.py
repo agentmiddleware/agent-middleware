@@ -7,6 +7,7 @@ behaviors unique to constant_test_loop that aren't covered by demo_trust_plane.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import socket
@@ -162,13 +163,8 @@ def test_constant_test_loop_allows_http_loopback():
     )
 
 
-def test_constant_test_loop_validates_malformed_key():
-    """Validate that malformed key check exists in the code.
-
-    The actual validation happens during API fetch, so we can't easily test
-    it end-to-end without a running server. This test verifies the validation
-    logic exists by importing the module and checking the key derivation path.
-    """
+def _load_loop_module():
+    """Import the loop script as a module without running it."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -177,62 +173,132 @@ def test_constant_test_loop_validates_malformed_key():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-
-    # The validation is in run_constant_test when deriving key_prefix
-    # Verify the code path exists by checking the function signature
-    import inspect
-
-    source = inspect.getsource(module.run_constant_test)
-    assert "malformed API key" in source
-    assert "expected format <prefix>_<suffix>" in source
-
-    # Verify the key is not logged anywhere in the source
-    full_source = CONSTANT_TEST_LOOP.read_text()
-    # The key variable should never be printed or logged directly
-    assert "print(agent_key)" not in full_source
-    assert 'print(f"{agent_key}' not in full_source
+    return module
 
 
-def test_constant_test_loop_never_logs_keys():
-    """Smoke: keys are never printed to stdout/stderr."""
-    # This is a negative test: we can't prove a key is never logged by running
-    # a successful loop (that would require a real server). Instead, we verify
-    # that the script imports cleanly and the key-reading functions don't print.
-    import importlib.util
+def test_constant_test_loop_validates_malformed_key(monkeypatch):
+    """A malformed key is refused by run_constant_test before any matching.
 
-    spec = importlib.util.spec_from_file_location(
-        "constant_test_loop", CONSTANT_TEST_LOOP
+    Source-grep asserts ("malformed API key" in source) passed when the
+    message existed anywhere, even on a dead path. This drives the real
+    function with stubbed API answers and asserts it raises.
+    """
+    module = _load_loop_module()
+
+    def fake_get_json(client, path, expected_status=200):
+        if path == "/v1/billing/wallets":
+            return {"wallets": [{"wallet_id": "w1"}]}
+        return {"keys": [{"key_prefix": "deadbeef", "key_id": "k1"}]}
+
+    monkeypatch.setattr(module, "_get_json", fake_get_json)
+    with pytest.raises(module.ConfigurationError, match="malformed API key"):
+        module.run_constant_test("http://127.0.0.1:9", "short", "", "")
+
+
+def test_constant_test_loop_never_logs_keys(monkeypatch, capsys):
+    """The full keyed loop must not print its credential."""
+    module = _load_loop_module()
+    canary_key = "amw_test_canary_key_must_not_appear_in_logs"
+    monkeypatch.setenv("CI_SMOKE_AGENT_KEY", canary_key)
+    monkeypatch.delenv("CI_SMOKE_WALLET_ID", raising=False)
+    monkeypatch.delenv("CI_SMOKE_KEY_ID", raising=False)
+    agent_key, wallet_id, key_id = module._get_agent_key()
+    assert (agent_key, wallet_id, key_id) == (canary_key, "", "")
+
+    paths = []
+    mcp_calls = []
+
+    def respond(request):
+        assert request.headers["X-API-Key"] == canary_key
+        path = request.url.path
+        paths.append(path)
+        if path == "/v1/billing/wallets":
+            return httpx.Response(200, json={"wallets": [{"wallet_id": "w1"}]})
+        if path == "/v1/billing/wallets/w1/keys":
+            return httpx.Response(
+                200, json={"keys": [{"key_prefix": canary_key[:8], "key_id": "k1"}]}
+            )
+        if path == "/mcp/tools.json":
+            return httpx.Response(
+                200,
+                json={
+                    "tools": [{"name": "partner.echo"}, {"name": "partner.notes.write"}]
+                },
+            )
+        if path == "/v1/permits" and request.method == "POST":
+            return httpx.Response(201, json={"permit_id": "p1", "spent_credits": "0"})
+        if path == "/mcp/messages":
+            mcp_calls.append(json.loads(request.content))
+            if len(mcp_calls) == 3:
+                return httpx.Response(
+                    200,
+                    json={
+                        "error": {
+                            "message": "permit_tool_not_allowed",
+                            "data": {
+                                "receipt": {
+                                    "receipt_id": "denied1",
+                                    "outcome": "denied",
+                                    "permit_id": "p1",
+                                    "credits_charged": "0",
+                                }
+                            },
+                        }
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "isError": False,
+                        "receipt": {
+                            "receipt_id": "success1",
+                            "outcome": "success",
+                            "ledger_entry_id": "entry1",
+                            "permit_id": "p1",
+                            "credits_charged": "1",
+                        },
+                    }
+                },
+            )
+        if path == "/v1/receipts/verify":
+            return httpx.Response(200, json={"valid": True})
+        if path == "/v1/permits/p1":
+            return httpx.Response(200, json={"spent_credits": "1"})
+        if path == "/v1/billing/ledger/w1":
+            return httpx.Response(
+                200,
+                json={
+                    "entries": [
+                        {
+                            "entry_id": "entry1",
+                            "amount": "-1",
+                            "description": "partner.echo",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(respond)
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        module.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
     )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
+    module.run_constant_test("http://127.0.0.1:9", agent_key, wallet_id, key_id)
 
-    # Set a canary key
-    canary_key = "canary_key_must_not_appear_in_logs"
-    test_env = {
-        **os.environ,
-        "CI_SMOKE_AGENT_KEY": canary_key,
-        "CI_SMOKE_WALLET_ID": "wallet_id",
-        "CI_SMOKE_KEY_ID": "key_id",
-    }
-
-    # Temporarily override os.environ
-    original_environ = os.environ.copy()
-    os.environ.update(test_env)
-
-    try:
-        spec.loader.exec_module(module)
-        agent_key, wallet_id, key_id = module._get_agent_key()
-        assert agent_key == canary_key
-        assert wallet_id == "wallet_id"
-        assert key_id == "key_id"
-
-        # The _get_agent_key function should not print the key
-        # (We can't fully test this without capturing stdout, but the function
-        # is designed to never print/log the key - code review confirms this.)
-
-    finally:
-        os.environ.clear()
-        os.environ.update(original_environ)
+    assert [call["params"]["name"] for call in mcp_calls] == [
+        "partner.echo",
+        "partner.echo",
+        "partner.notes.write",
+    ]
+    assert "/v1/permits/p1" in paths
+    assert paths.count("/v1/billing/ledger/w1") == 2
+    captured = capsys.readouterr()
+    assert "ALL INVARIANTS HELD" in captured.err
+    assert canary_key not in captured.out + captured.err
 
 
 def test_constant_test_loop_self_provision_signal():

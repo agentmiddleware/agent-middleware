@@ -125,7 +125,7 @@ exactly-once side effects.
      -H "Content-Type: application/json" \
      -d "{\"receipt_id\": \"$RECEIPT_ID\"}"
    ```
-6. Verify that a retry with the same key returns the original receipt instead of dispatching again.
+6. Verify that a retry with the same key returns the original receipt instead of dispatching again. Confirm that the ledger shows exactly one debit for that request key after the retry.
 7. Call the out-of-scope tool under the same permit → deny (`permit_tool_not_allowed`).
 8. Call `YOUR_TOOL_ID` with no permit → deny (`permit_required`).
 9. Force a post-dispatch timeout → signed `delivery_uncertain`, charge retained,

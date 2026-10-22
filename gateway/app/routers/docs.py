@@ -61,6 +61,13 @@ _TRUST_PLANE_SECTIONS = [
         ),
     },
     {
+        "id": "request_keys",
+        "title": "Request keys",
+        "path": "/docs/concepts/request-keys",
+        "content_type": "text/markdown",
+        "summary": "Python helper for stable request keys.",
+    },
+    {
         "id": "overview",
         "title": "API Overview (llms.txt)",
         "path": "/llms.txt",

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.auth import AuthContext, get_auth_context
 from app.core.config import public_api_origin
+from app.core.wallet_resolution import resolve_wallet_id
 from app.schemas.trust import (
     PortableReceiptResponse,
     ReceiptEvidenceResponse,
@@ -67,6 +68,8 @@ async def list_receipts(
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
 ) -> ReceiptListResponse:
+    if permit_id is None:
+        wallet_id = resolve_wallet_id(wallet_id, auth)
     await _authorize_receipt_list(auth=auth, wallet_id=wallet_id, permit_id=permit_id)
     receipts, total = await get_receipt_service().list_receipts(
         permit_id=permit_id,

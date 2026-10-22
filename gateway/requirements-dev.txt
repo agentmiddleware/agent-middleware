@@ -1,0 +1,7 @@
+# Dev-tool lock for local lint and type-check.
+# These exact versions are the blessed local tools. CI installs the same
+# versions via RUFF_VERSION and MYPY_VERSION in .github/workflows/ci.yml.
+# mypy is also pinned in requirements.txt. Bump all of them in one change.
+# See CONTRIBUTING.md.
+ruff==0.17.1
+mypy==2.4.0

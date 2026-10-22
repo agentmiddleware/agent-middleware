@@ -12,12 +12,15 @@ from httpx import AsyncClient, ASGITransport
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from b2a_sdk import request_key
 from app.main import app
+from app.services.ownership import CallerIdentity
 from app.core.config import Settings, get_settings
 from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, WalletModel
 from app.services.agent_money import get_agent_money
 from app.services.audit_log import list_audit_events
+from tests.test_request_key_vectors import VECTORS
 
 
 @pytest.fixture
@@ -377,11 +380,13 @@ async def test_refund_charge_reverses_debit(client, api_headers, clean_database)
         wallet_id=agent_wallet_id,
         charge_entry_id=charge["entry_id"],
         description="Refund failed MCP tool",
+        caller=CallerIdentity.admin(),
     )
     duplicate_refund = await get_agent_money().refund_charge(
         wallet_id=agent_wallet_id,
         charge_entry_id=charge["entry_id"],
         description="Refund failed MCP tool",
+        caller=CallerIdentity.admin(),
     )
     assert refund.action.value == "refund"
     assert refund.entry_id == f"refund-{charge['entry_id']}"
@@ -479,6 +484,7 @@ async def test_late_refund_does_not_reduce_new_period_spend(
         wallet_id=agent_wallet_id,
         charge_entry_id=charge["entry_id"],
         description="Late refund failed MCP tool",
+        caller=CallerIdentity.admin(),
     )
     assert refund.entry_id == f"refund-{charge['entry_id']}"
 
@@ -1002,16 +1008,25 @@ async def test_charge_reused_idempotency_key_with_different_payload_conflicts(
     )
     agent_wallet_id = agent_resp.json()["wallet_id"]
 
-    headers = {**api_headers, "Idempotency-Key": "retry-key-2"}
-    await client.post(
+    args = {"service": "iot_bridge", "units": 10}
+    key = request_key("billing.charge", args)
+    vector = next(
+        case for case in VECTORS["vectors"] if case["name"] == "billing_charge"
+    )
+    assert key == vector["expected"]
+    assert request_key("billing.charge", {**args, "units": 20}) != key
+    headers = {**api_headers, "Idempotency-Key": key}
+    first = await client.post(
         f"/v1/billing/charge?wallet_id={agent_wallet_id}&service=iot_bridge&units=10",
         headers=headers,
     )
+    assert first.status_code == 200, first.text
     conflict = await client.post(
         f"/v1/billing/charge?wallet_id={agent_wallet_id}&service=iot_bridge&units=20",
         headers=headers,
     )
     assert conflict.status_code == 409
+    assert conflict.json()["detail"]["error"] == "idempotency_key_reused"
 
 
 @pytest.mark.anyio
@@ -1246,7 +1261,6 @@ async def test_rejected_charge_does_not_inflate_velocity_counters(
     """A charge rejected for insufficient funds must not leave the wallet's
     hourly/daily spend counters inflated (which would trip false daily-limit
     rejections and velocity auto-freeze despite zero real spend)."""
-    from decimal import Decimal as _D
     from app.db.database import get_session_factory
     from app.db.models import WalletModel
 
@@ -1278,8 +1292,8 @@ async def test_rejected_charge_does_not_inflate_velocity_counters(
     async with factory() as session:
         wallet = await session.get(WalletModel, wallet_id)
         # All three rejected charges were reversed out of the counters.
-        assert wallet.daily_spent == _D("0")
-        assert wallet.hourly_spent == _D("0")
+        assert wallet.daily_spent == Decimal("0")
+        assert wallet.hourly_spent == Decimal("0")
 
 
 @pytest.mark.anyio
@@ -1375,6 +1389,7 @@ async def test_billing_engine_refuses_non_positive_units(units):
             service_category=ServiceCategory.IOT_BRIDGE,
             units=units,
             request_path="/non-positive",
+            caller=CallerIdentity.admin(),
         )
 
 
@@ -1398,6 +1413,7 @@ async def test_billing_engine_refuses_non_finite_units(units):
             service_category=ServiceCategory.IOT_BRIDGE,
             units=units,
             request_path="/non-finite",
+            caller=CallerIdentity.admin(),
         )
 
 
@@ -2429,6 +2445,7 @@ async def test_losing_an_operation_key_race_does_not_leave_velocity_overcounted(
         service_category=ServiceCategory.AGENT_COMMS,
         units=Decimal("2"),
         operation_key=operation_key,
+        caller=CallerIdentity.admin(),
     )
 
     # The winner: an ordinary charge under the same operation key.
@@ -2554,6 +2571,12 @@ async def test_agent_wallet_provisioning_replays_on_idempotency_key(
     )
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["error"] == "idempotency_key_reused"
+    assert conflict.json()["code"] == "idempotency_key_reused"
+    assert conflict.json()["message"] == (
+        "This request key was already used with different arguments."
+    )
+    assert conflict.json()["fix"] == "Use a new request key for a new action."
+    assert conflict.json()["docs_url"].endswith("#idempotency_key_reused")
 
 
 @pytest.mark.anyio

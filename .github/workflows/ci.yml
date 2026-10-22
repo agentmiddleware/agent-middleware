@@ -1,8 +1,8 @@
 # CI for AMW (Agent Middleware).
-# Projects are discovered at runtime (.github/scripts/detect_projects.py), so jobs only run for
-# Python/TypeScript packages that actually exist under spec/, verifier/, sdk/python, sdk/typescript,
-# integrations/, examples/ and gateway/. No `paths:` filters on purpose: the "CI result" job must
-# always report, because branch protection requires it.
+# Projects are discovered at runtime (.github/scripts/detect_projects.py). Pull requests test
+# changed projects and their transitive dependents (.github/scripts/project_dependents.py).
+# Shared paths restore the full matrix. Main pushes, merge groups, and manual runs test every
+# discovered project. Keep the workflow unfiltered so "CI result" always reports.
 name: CI
 
 on:
@@ -23,7 +23,7 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   # Blessed ruff and mypy. Must match gateway/requirements-dev.txt.
   # mypy must also match the exact pin in gateway/requirements.txt.
-  RUFF_VERSION: "0.16.10"
+  RUFF_VERSION: "0.17.1"
   MYPY_VERSION: "2.4.0"
   PYTEST_VERSION: "9.1.1"
 
@@ -46,10 +46,103 @@ jobs:
       - id: d
         run: python3 .github/scripts/detect_projects.py
 
+  changes:
+    name: Changed projects
+    needs: detect
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      projects: ${{ steps.filter.outputs.projects }}
+      python: ${{ steps.filter.outputs.python }}
+      typescript: ${{ steps.filter.outputs.typescript }}
+      has_python: ${{ steps.filter.outputs.has_python }}
+      has_typescript: ${{ steps.filter.outputs.has_typescript }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+      shared: ${{ steps.filter.outputs.shared }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Pull request checkout is the merge commit; its first parent is the base.
+          fetch-depth: 2
+          persist-credentials: false
+      - id: filter
+        env:
+          PYTHON_PROJECTS: ${{ needs.detect.outputs.python }}
+          TYPESCRIPT_PROJECTS: ${{ needs.detect.outputs.typescript }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path(".github/scripts").resolve()))
+          from project_dependents import is_shared, limit_matrix
+
+          changed = [
+              path.decode("utf-8", "surrogateescape")
+              for path in subprocess.check_output(
+                  ["git", "diff", "--no-renames", "--name-only", "-z", "HEAD^1", "HEAD"]
+              ).split(b"\0")
+              if path
+          ]
+
+          def touched(project):
+              scope = (
+                  "/".join(project.split("/")[:2])
+                  if project.startswith(("integrations/", "examples/")) else project
+              )
+              return any(path == scope or path.startswith(scope + "/") for path in changed)
+
+          sdk_python = touched("sdk/python")
+          projects = set()
+          for path in changed:
+              for project in ("gateway", "sdk/python", "sdk/typescript", "spec", "verifier"):
+                  if path == project or path.startswith(project + "/"):
+                      projects.add(project)
+              for root in ("integrations", "examples"):
+                  if path.startswith(root + "/"):
+                      projects.add("/".join(path.split("/")[:2]))
+          if sdk_python:
+              projects.add("gateway")
+              projects.update(
+                  f"integrations/{entry.name}" for entry in os.scandir("integrations")
+                  if entry.is_dir()
+              )
+
+          discovered_python = json.loads(os.environ["PYTHON_PROJECTS"])
+          discovered_typescript = json.loads(os.environ["TYPESCRIPT_PROJECTS"])
+          discovered = list(dict.fromkeys([*discovered_python, *discovered_typescript]))
+          python, typescript, gateway = limit_matrix(
+              Path(".").resolve(), discovered_python, discovered_typescript,
+              changed, event="pull_request", force_full=False,
+          )
+          shared = any(is_shared(path, discovered) for path in changed)
+          outputs = {
+              "projects": json.dumps(sorted(projects)),
+              "python": json.dumps(python),
+              "typescript": json.dumps(typescript),
+              "has_python": str(bool(python)).lower(),
+              "has_typescript": str(bool(typescript)).lower(),
+              "gateway": str(gateway).lower(),
+              "shared": str(shared).lower(),
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              for key, value in outputs.items():
+                  print(f"{key}={value}", file=output)
+          PY
+
   python:
     name: Python ${{ matrix.python-version }} / ${{ matrix.project }}
-    needs: detect
-    if: needs.detect.outputs.has_python == 'true'
+    needs: [detect, changes]
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_python == 'true' &&
+          (github.event_name != 'pull_request' ||
+           (needs.changes.result == 'success' && needs.changes.outputs.has_python == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -57,7 +150,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: ${{ fromJSON(needs.detect.outputs.python) }}
+        # An empty fromJSON fails before `if` can skip the job; use an unused placeholder.
+        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.has_python == 'true' && needs.changes.outputs.python || github.event_name != 'pull_request' && needs.detect.outputs.has_python == 'true' && needs.detect.outputs.python || '["skip"]') }}
         python-version: ["3.11", "3.12", "3.13", "3.14"]
         exclude:
           # crewai pulls chromadb, whose pydantic.v1 settings fail to import on 3.14.
@@ -157,13 +251,16 @@ jobs:
           # exit code 5 = no tests collected; don't fail packages that have none yet
           if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
           exit $rc
+      - name: Offline verifier vectors
+        if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
+        run: uv run --no-sync python ../../verifier/check_vectors.py
       - name: Collect SDK source distribution tests
         if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'
         run: |
-          uv build --sdist --out-dir "$RUNNER_TEMP/b2a-sdist"
-          tar -xzf "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*.tar.gz -C "$RUNNER_TEMP/b2a-sdist"
-          test ! -e "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*/tests/test_receipt_vectors.py
-          uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/b2a-sdist/b2a_sdk-*/tests
+          uv build --sdist --out-dir "$RUNNER_TEMP/amw-sdist"
+          tar -xzf "$RUNNER_TEMP"/amw-sdist/amw_sdk-*.tar.gz -C "$RUNNER_TEMP/amw-sdist"
+          test ! -e "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests/test_receipt_vectors.py
+          uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests
 
   postgres-concurrency:
     # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:
@@ -172,6 +269,10 @@ jobs:
     # see gateway/docs/TESTING_TIERS.md). The database is created fresh in
     # this job and nothing outside the job can reach it.
     name: Postgres concurrency / gateway
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -196,7 +297,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.12"
           enable-cache: false
@@ -241,6 +342,10 @@ jobs:
     # databases, sets every opt-in flag, and fails loudly on any skip via
     # CI_STRICT=1 (see gateway/tests/support/db_gate.py).
     name: Postgres proofs / gateway
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -272,7 +377,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.12"
           enable-cache: false
@@ -383,6 +488,11 @@ jobs:
 
   gateway-image-smoke:
     name: Gateway image import smoke
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' &&
+           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -396,8 +506,11 @@ jobs:
 
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
-    needs: detect
-    if: needs.detect.outputs.has_typescript == 'true'
+    needs: [detect, changes]
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_typescript == 'true' &&
+          (github.event_name != 'pull_request' ||
+           (needs.changes.result == 'success' && needs.changes.outputs.has_typescript == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -405,7 +518,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        project: ${{ fromJSON(needs.detect.outputs.typescript) }}
+        # Same empty-matrix guard as the Python job. Node versions stay 22 and 24.
+        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.has_typescript == 'true' && needs.changes.outputs.typescript || github.event_name != 'pull_request' && needs.detect.outputs.has_typescript == 'true' && needs.detect.outputs.typescript || '["skip"]') }}
         node-version: ["22", "24"]  # tests run .ts directly (Node 22.18+ type stripping)
     defaults:
       run:
@@ -450,6 +564,11 @@ jobs:
     # Keep it out of CI result until both checks are green in CI and the
     # required-check decision is made explicitly.
     name: Trust release gate (non-required)
+    needs: changes
+    if: >-
+      ${{ always() && (github.event_name != 'pull_request' ||
+          (needs.changes.result == 'success' &&
+           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -482,7 +601,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [detect, changes, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -493,6 +612,21 @@ jobs:
           RESULTS: ${{ toJSON(needs.*.result) }}
         run: |
           echo "$RESULTS"
-          if echo "$RESULTS" | grep -Eq '"(failure|cancelled)"'; then
-            echo "::error::one or more CI jobs failed or were cancelled"; exit 1
-          fi
+          # Skipped jobs (path-filtered matrix or Postgres proofs) are success for
+          # this required check. failure and cancelled still fail the aggregate.
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          results = json.loads(os.environ["RESULTS"])
+          if isinstance(results, dict):
+              results = list(results.values())
+          elif isinstance(results, str):
+              results = [results]
+          allowed = {"success", "skipped"}
+          bad = [result for result in results if result not in allowed]
+          if not results or bad:
+              print("::error::one or more CI jobs failed or were cancelled", file=sys.stderr)
+              sys.exit(1)
+          PY

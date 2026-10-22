@@ -281,6 +281,8 @@ async def test_tools_call_requires_wallet_scoped_key(client, standard_mcp_enable
     error = resp.json()["error"]
     assert error["code"] == -32003
     assert "wallet_scoped_key_required" in error["message"]
+    assert error["data"]["code"] == "wallet_scoped_key_required"
+    assert error["data"]["docs_url"].endswith("#wallet_scoped_key_required")
 
 
 @pytest.mark.anyio
@@ -415,10 +417,10 @@ async def test_tools_call_reports_auto_permit_contention_as_retryable(
         registry.unregister_local(tool_name)
 
     assert response.status_code == 200
-    assert response.json()["error"] == {
-        "code": -32005,
-        "message": "idempotency_in_progress",
-    }
+    error = response.json()["error"]
+    assert error["code"] == -32005
+    assert error["message"] == "idempotency_in_progress"
+    assert error["data"]["code"] == "idempotency_in_progress"
     assert calls == 0
 
 
@@ -460,10 +462,10 @@ async def test_tools_call_reports_governed_invoke_contention_with_existing_code(
         registry.unregister_local(tool_name)
 
     assert response.status_code == 200
-    assert response.json()["error"] == {
-        "code": -32005,
-        "message": "idempotency_in_progress",
-    }
+    error = response.json()["error"]
+    assert error["code"] == -32005
+    assert error["message"] == "idempotency_in_progress"
+    assert error["data"]["code"] == "idempotency_in_progress"
 
 
 # ── Bodies the reply could not carry are refused before dispatch ─────────────

@@ -11,10 +11,9 @@ client, you will:
 6. verify the receipt **offline**, then forge one and watch the verifier
    reject it.
 
-Every command below is exercised by CI against a freshly booted server
-(`tests/test_quickstart_path.py`), so if this page and the code ever
-disagree, the build breaks. If a step still surprises you, that is a
-finding — please open an issue; that is exactly what
+CI exercises the governed path and receipt verification outcomes against a
+freshly booted server (`tests/test_quickstart_path.py`). If a step still
+surprises you, please open an issue. That is exactly what
 [docs/stranger-test.md](stranger-test.md) exists to catch.
 
 ## 0. Prerequisites (~2 minutes)
@@ -305,8 +304,8 @@ curl -s "$API_URL/v1/receipts/$RECEIPT_ID/portable" \
   -H "X-API-Key: $AGENT_API_KEY" -o data/quickstart/receipt-bundle.json
 curl -s "$API_URL/.well-known/trust-keys.json" -o data/quickstart/trust-keys.json
 
-PYTHONPATH=../sdk/python/src uv run --with-requirements requirements.txt \
-  python -m b2a_sdk.verify_cli \
+uv run --with-requirements requirements.txt --with "../sdk/python[verify]" \
+  amw verify \
   --bundle data/quickstart/receipt-bundle.json \
   --keys data/quickstart/trust-keys.json
 ```
@@ -319,9 +318,9 @@ VERIFIED  rcpt-...
   credits     2 charged of 2 authorized
 ```
 
-The verifier is part of the published SDK and never imports the server —
-that independence is the point. Now forge a receipt: take the bundle and
-change one signed fact — claim the call was free:
+The Agent Middleware (AMW) verifier is part of the Python SDK and never imports
+the server. Now forge a receipt by changing one signed fact to claim the call
+was free:
 
 ```bash
 python3 - <<'EOF'
@@ -335,8 +334,8 @@ bundle["signing_input"] = forged
 json.dump(bundle, open("data/quickstart/forged-receipt.json", "w"))
 EOF
 
-PYTHONPATH=../sdk/python/src uv run --with-requirements requirements.txt \
-  python -m b2a_sdk.verify_cli \
+uv run --with-requirements requirements.txt --with "../sdk/python[verify]" \
+  amw verify \
   --bundle data/quickstart/forged-receipt.json \
   --keys data/quickstart/trust-keys.json
 echo "exit code: $?"
@@ -408,6 +407,40 @@ that is present but unusable is refused before anything is minted or charged,
 and a call with no key at all is a new charged operation every time.
 `tests/test_minimal_path_e2e.py` drives exactly this with the official
 Python SDK client.
+
+## 11. Call the demo tenant with curl (optional)
+
+This path needs a gateway with `ENABLE_DEMO_TENANT=true`,
+`DEMO_ALLOWED_TOOLS=partner.echo`, and `partner.echo` registered. The local
+quickstart server above does not enable the demo tenant by default. Set
+`API_URL` to the configured gateway's base URL. No SDK or existing permit
+is needed.
+
+```bash
+curl -sS -X POST "$API_URL/v1/demo/keys" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+The response shows `api_key` once and includes `wallet_id`. Set
+`AMW_DEMO_KEY` to `api_key` in your shell, and replace
+`YOUR_DEMO_WALLET_ID` below with `wallet_id`:
+
+```bash
+curl -sS -X POST "$API_URL/mcp/messages" \
+  -H 'Content-Type: application/json' \
+  -H "X-API-Key: $AMW_DEMO_KEY" \
+  -H 'Idempotency-Key: demo-echo-1' \
+  -d '{"jsonrpc":"2.0","id":"demo-echo-1","method":"tools/call","params":{"name":"partner.echo","arguments":{"message":"hello"},"mcpContext":{"wallet_id":"YOUR_DEMO_WALLET_ID"}}}'
+```
+
+The `result` includes `permit_id` and a signed `receipt` with the same
+`permit_id`. The permit allows only `partner.echo`. Its credit and lifetime
+limits are bounded by `DEMO_AUTO_PERMIT_MAX_CREDITS` and
+`DEMO_AUTO_PERMIT_TTL_SECONDS`. Configured `DEMO_MAX_PERMIT_CREDITS` and
+`DEMO_MAX_PERMIT_TTL_MINUTES` can lower those bounds. Send the same request
+again with the same `Idempotency-Key`:
+a retry with the same key returns the original receipt instead of dispatching again.
 
 ## Starting over
 

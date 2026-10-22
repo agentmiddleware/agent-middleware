@@ -261,9 +261,9 @@ Being explicit about the boundary is what makes the proofs worth anything.
   is still first-party.** A receipt exported via
   `GET /v1/receipts/{receipt_id}/portable` can be checked by anyone against the
   unauthenticated `/.well-known/trust-keys.json`, using
-  `b2a_sdk.receipt_verifier`, which imports none of this application and needs
-  no network. That closes the "no independent offline verifier" gap for
-  signatures. Three limits remain, and they are not small:
+  the Agent Middleware (AMW) `amw` verifier, which imports none of this
+  application and needs no network. That closes the "no independent offline
+  verifier" gap for signatures. Three limits remain, and they are not small:
   - **Key distribution is first-party.** Keys are fetched over TLS from the
     issuing origin, so an attacker controlling that origin can serve a key set
     that validates forged receipts. Out-of-band key pinning is not
@@ -304,7 +304,7 @@ Being explicit about the boundary is what makes the proofs worth anything.
 These would strengthen claims. They are not a build queue under Narrow.
 
 1. **A receipt-style permit envelope, and a portable audit-chain verifier.**
-   Receipts are done — `b2a_sdk.receipt_verifier` verifies an exported receipt
+   Receipts are done. The `amw` verifier checks an exported receipt
    against the published key document with no running server, and
    `make prove-trust-plane` asserts it. Permits are already independently
    verifiable: `GET /v1/permits/{id}` returns every signed field plus

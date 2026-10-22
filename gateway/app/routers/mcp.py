@@ -52,6 +52,7 @@ from ..core.oidc_iga import (
 from ..trust import (
     AuditChainContendedError,
     AuditEventConflictError,
+    GovernedRequest,
     RefundReconciliationContendedError,
 )
 from ..services.billing_engine import (
@@ -110,6 +111,7 @@ from ..trust import (
     decode_idempotency_key_header,
     McpGovernedAdapter,
     PermitWriteContendedError,
+    PermitError,
     PolicyDecision,
     ReceiptWriteContendedError,
     evaluate_tool_invocation,
@@ -130,6 +132,7 @@ from ..trust import (
     sha256_hex,
     tool_price,
     validate_tools_call_params,
+    wallet_human_approval_required,
 )
 
 logger = logging.getLogger(__name__)
@@ -419,7 +422,7 @@ def _jsonrpc_error_response(
 class McpContext(BaseModel):
     """MCP execution context passed in tool calls."""
 
-    wallet_id: str = Field(..., description="Wallet to charge for this call")
+    wallet_id: str | None = Field(None, description="Wallet to charge for this call")
     request_path: str | None = Field(
         None, description="Optional request path for tracking"
     )
@@ -446,9 +449,11 @@ class ToolCallResponse(BaseModel):
     """MCP tool call response."""
 
     content: list[dict[str, Any]]
-    isError: bool = False
-    structuredContent: dict[str, Any] | None = None
+    # MCP tool-result field names are camelCase on the wire.
+    isError: bool = False  # noqa: N815
+    structuredContent: dict[str, Any] | None = None  # noqa: N815
     receipt: dict[str, Any] | None = None
+    permit_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 @router.get(
@@ -1235,6 +1240,22 @@ async def _execute_registered_tool_inner(
             error=tenant_decision.reason,
         )
         raise ToolPermissionDenied(tenant_decision.reason)
+
+    # Refuse bounded credentials before permit lookup, idempotency, or dispatch.
+    if auth.allowed_tools is not None and tool_name not in auth.allowed_tools:
+        raise ToolPermissionDenied("key_tool_not_allowed")
+    demo_tools = settings.demo_allowed_tools_list
+    if demo_tools:
+        from app.db.models import WalletModel
+
+        async with get_session_factory()() as session:
+            wallet = await session.get(WalletModel, wallet_id)
+        if (
+            wallet is not None
+            and getattr(wallet, "tenant", None) == "demo"
+            and tool_name not in demo_tools
+        ):
+            raise ToolPermissionDenied("demo_tool_not_allowed")
 
     governed_call = bool(permit_id) or (
         settings.TRUST_MODE_ENABLED and not settings.ALLOW_LEGACY_UNPERMITTED_MCP
@@ -4483,6 +4504,62 @@ async def _audit_mcp_invocation(
         raise TerminalRecordContendedError(AUDIT_CHAIN_CONTENDED_AFTER_EFFECTS) from exc
 
 
+async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
+    """Use the standard MCP mint for a demo call without a permit."""
+    if request.auth.tenant != "demo" or request.permit_id is not None:
+        return None
+    if not request.auth.wallet_id or request.wallet_id != request.auth.wallet_id:
+        raise ToolPermissionDenied("wallet_access_denied")
+    demo_tools = get_settings().demo_allowed_tools_list
+    if (
+        request.tool_name != "partner.echo"
+        or request.tool_name not in demo_tools
+        or (
+            request.auth.allowed_tools is not None
+            and request.tool_name not in request.auth.allowed_tools
+        )
+    ):
+        raise ToolPermissionDenied("demo_tool_not_allowed")
+    _ensure_local_mcp_tools_registered()
+    registry = get_service_registry()
+    record = registry.get_local(request.tool_name)
+    if record is None:
+        raise ValueError(f"Tool not found: {request.tool_name}")
+    if registry.get_action_binding(record) is not None:
+        raise ToolPermissionDenied("action_permit_required")
+
+    from .mcp_standard import _mint_auto_permit, _permit_error
+
+    try:
+        permit_id = await _mint_auto_permit(
+            auth=request.auth,
+            tool_name=request.tool_name,
+            record=record,
+            client_key=request.idempotency_key,
+            requires_human_approval=await wallet_human_approval_required(
+                request.auth.wallet_id
+            ),
+            map_mcp_errors=False,
+        )
+    except PermitWriteContendedError:
+        raise
+    except PermitError as exc:
+        mapped = _permit_error(exc, tool_name=request.tool_name, record=record)
+        if mapped.error.code == -32004:
+            raise GovernedToolError(
+                exc.reason,
+                extra_data=mapped.error.data,
+                status_code=402,
+                jsonrpc_code=mapped.error.code,
+            ) from exc
+        raise ToolPermissionDenied(exc.reason) from exc
+    except IdempotencyConflictError as exc:
+        raise ValueError("idempotency_key_reused") from exc
+    request.permit_id = permit_id
+    request.idempotency_key = request.idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
+    return permit_id
+
+
 async def _handle_tools_call(
     params: dict,
     *,
@@ -4504,8 +4581,13 @@ async def _handle_tools_call(
         idempotency_key=idempotency_key,
         request_payload=request_payload,
     )
+    governed_request.wallet_id = governed_request.wallet_id or auth.wallet_id
+    auto_permit_id = await _maybe_mint_demo_permit(governed_request)
     result = await _mcp_adapter.invoke(governed_request)
-    return await _mcp_adapter.normalize_response(result)
+    response = await _mcp_adapter.normalize_response(result)
+    if auto_permit_id:
+        response["permit_id"] = auto_permit_id
+    return response
 
 
 @router.post(
@@ -4542,7 +4624,7 @@ async def invoke_tool(
         # here; McpContext would otherwise raise a pydantic ValidationError
         # inside the handler, which is a 500, not the 400 it should be.
         argument_wallet = request.arguments.get("wallet_id", "")
-        if not isinstance(argument_wallet, str):
+        if argument_wallet is not None and not isinstance(argument_wallet, str):
             raise HTTPException(status_code=400, detail="Missing wallet_id")
         mcp_context = McpContext(
             wallet_id=argument_wallet,
@@ -4552,7 +4634,8 @@ async def invoke_tool(
             idempotency_key=None,
         )
 
-    if not mcp_context.wallet_id:
+    wallet_id = mcp_context.wallet_id or auth.wallet_id
+    if not wallet_id:
         raise HTTPException(status_code=400, detail="Missing wallet_id")
 
     # Same rule as the JSON-RPC transports: a present-but-unusable key in the
@@ -4579,7 +4662,7 @@ async def invoke_tool(
         "name": service_id,
         "arguments": request.arguments,
         "mcpContext": {
-            "wallet_id": mcp_context.wallet_id,
+            "wallet_id": wallet_id,
             "permit_id": mcp_context.permit_id,
             "quote_id": mcp_context.quote_id,
             "idempotency_key": mcp_context.idempotency_key,
@@ -4596,8 +4679,12 @@ async def invoke_tool(
             idempotency_key=client_idempotency_key,
             request_payload=request.model_dump(mode="json"),
         )
+        auto_permit_id = await _maybe_mint_demo_permit(governed_request)
         result = await _mcp_adapter.invoke(governed_request)
-        return ToolCallResponse(**await _mcp_adapter.normalize_response(result))
+        response = await _mcp_adapter.normalize_response(result)
+        if auto_permit_id:
+            response["permit_id"] = auto_permit_id
+        return ToolCallResponse(**response)
     except HumanApprovalPendingSignal as exc:
         detail: dict[str, Any] = {"error": str(exc)}
         if exc.data:
@@ -4678,6 +4765,8 @@ async def invoke_tool(
             )
         if message == "insufficient_funds":
             raise HTTPException(status_code=402, detail=message)
+        if message == "idempotency_key_reused":
+            raise HTTPException(status_code=409, detail=message)
         if message in {"wallet_frozen", "wallet_expired"}:
             raise HTTPException(status_code=403, detail={"error": message})
         if message.startswith("Tool not found"):

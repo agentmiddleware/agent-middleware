@@ -1156,9 +1156,16 @@
           {
             "name": "wallet_id",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "Wallet Id"
             }
           },
@@ -3106,12 +3113,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PreflightRequest",
-                "default": {
-                  "base_url": "",
-                  "stripe_secret_key": "",
-                  "campaign_source_url": ""
-                }
+                "$ref": "#/components/schemas/PreflightRequest"
               }
             }
           }
@@ -5232,6 +5234,28 @@
         }
       }
     },
+    "/docs/concepts/request-keys": {
+      "get": {
+        "tags": [
+          "Static"
+        ],
+        "summary": "Request keys",
+        "description": "Python helper for stable request keys.",
+        "operationId": "get_request_keys_md_docs_concepts_request_keys_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dashboard": {
       "get": {
         "tags": [
@@ -5271,6 +5295,166 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/demo/keys": {
+      "get": {
+        "tags": [
+          "Demo"
+        ],
+        "summary": "How to request a demo API key",
+        "operationId": "demo_key_help_v1_demo_keys_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Demo Key Help V1 Demo Keys Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Demo"
+        ],
+        "summary": "Mint a self-serve demo key (anonymous)",
+        "operationId": "issue_demo_key_v1_demo_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DemoKeyIssueRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoKeyIssueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/demo-keys/funnel": {
+      "get": {
+        "tags": [
+          "Demo"
+        ],
+        "summary": "Admin: demo keys issued vs. used by source (bootstrap only)",
+        "operationId": "admin_demo_key_funnel_v1_admin_demo_keys_funnel_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoKeyFunnelResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
               }
             }
           }
@@ -6311,9 +6495,16 @@
       "CreateAPIKeyRequest": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id",
-            "description": "Wallet ID to create key for."
+            "description": "Wallet ID to create key for. Defaults to the key's wallet."
           },
           "key_name": {
             "type": "string",
@@ -6350,9 +6541,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "wallet_id"
-        ],
         "title": "CreateAPIKeyRequest",
         "description": "Request to create a new API key for a wallet."
       },
@@ -6482,6 +6670,283 @@
         "title": "CreateSponsorWalletRequest",
         "description": "Create a human sponsor (liability sink) root account."
       },
+      "DemoKeyFunnelResponse": {
+        "properties": {
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/DemoKeyFunnelRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "DemoKeyFunnelResponse"
+      },
+      "DemoKeyFunnelRow": {
+        "properties": {
+          "utm_source": {
+            "type": "string",
+            "title": "Utm Source"
+          },
+          "utm_medium": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Medium"
+          },
+          "utm_campaign": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Campaign"
+          },
+          "referrer_host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referrer Host"
+          },
+          "keys_issued": {
+            "type": "integer",
+            "title": "Keys Issued"
+          },
+          "keys_used": {
+            "type": "integer",
+            "title": "Keys Used"
+          },
+          "first_issued_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Issued At"
+          },
+          "last_issued_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Issued At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "utm_source",
+          "keys_issued",
+          "keys_used",
+          "first_issued_at",
+          "last_issued_at"
+        ],
+        "title": "DemoKeyFunnelRow"
+      },
+      "DemoKeyIssueRequest": {
+        "properties": {
+          "utm_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Source"
+          },
+          "utm_medium": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Medium"
+          },
+          "utm_campaign": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Campaign"
+          },
+          "utm_content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Content"
+          },
+          "utm_term": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Term"
+          },
+          "referrer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referrer",
+            "description": "document.referrer of the page that requested the key."
+          }
+        },
+        "type": "object",
+        "title": "DemoKeyIssueRequest",
+        "description": "Optional acquisition attribution; all fields may be omitted."
+      },
+      "DemoKeyIssueResponse": {
+        "properties": {
+          "api_key": {
+            "type": "string",
+            "title": "Api Key",
+            "description": "Demo API key (shown once; store it now)."
+          },
+          "key_id": {
+            "type": "string",
+            "title": "Key Id"
+          },
+          "key_prefix": {
+            "type": "string",
+            "title": "Key Prefix"
+          },
+          "wallet_id": {
+            "type": "string",
+            "title": "Wallet Id",
+            "description": "Demo agent wallet backing this key."
+          },
+          "sponsor_wallet_id": {
+            "type": "string",
+            "title": "Sponsor Wallet Id"
+          },
+          "tenant": {
+            "type": "string",
+            "title": "Tenant",
+            "default": "demo"
+          },
+          "allowed_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Tools",
+            "description": "Tool allowlist, or null for unrestricted."
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "max_uses": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Uses"
+          },
+          "budget_credits": {
+            "type": "string",
+            "title": "Budget Credits"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url",
+            "description": "API base URL hint for SDK callers."
+          },
+          "note": {
+            "type": "string",
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "api_key",
+          "key_id",
+          "key_prefix",
+          "wallet_id",
+          "sponsor_wallet_id",
+          "budget_credits",
+          "base_url",
+          "note"
+        ],
+        "title": "DemoKeyIssueResponse",
+        "description": "A freshly minted demo credential. The secret is shown once."
+      },
       "DispatchEvidenceResponse": {
         "properties": {
           "attempt_id": {
@@ -6597,9 +7062,16 @@
       "EmergencyKeyRevocationRequest": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id",
-            "description": "Wallet ID to revoke keys for."
+            "description": "Wallet ID to revoke keys for. Defaults to the key's wallet."
           },
           "reason": {
             "type": "string",
@@ -6616,9 +7088,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "wallet_id"
-        ],
         "title": "EmergencyKeyRevocationRequest",
         "description": "Request to immediately revoke all keys for a wallet."
       },
@@ -7114,7 +7583,14 @@
       "McpContext": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id",
             "description": "Wallet to charge for this call"
           },
@@ -7168,9 +7644,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "wallet_id"
-        ],
         "title": "McpContext",
         "description": "MCP execution context passed in tool calls."
       },
@@ -8640,7 +9113,14 @@
       "QuoteCreateRequest": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id"
           },
           "tool": {
@@ -8650,7 +9130,6 @@
         },
         "type": "object",
         "required": [
-          "wallet_id",
           "tool"
         ],
         "title": "QuoteCreateRequest",
@@ -9366,9 +9845,16 @@
       "RotateAPIKeyRequest": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id",
-            "description": "Wallet ID owning the key."
+            "description": "Wallet ID owning the key. Defaults to the key's wallet."
           },
           "key_id": {
             "anyOf": [
@@ -9397,9 +9883,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "wallet_id"
-        ],
         "title": "RotateAPIKeyRequest",
         "description": "Request to rotate an API key."
       },
@@ -9707,6 +10190,17 @@
               }
             ],
             "title": "Receipt"
+          },
+          "permit_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Id"
           }
         },
         "type": "object",

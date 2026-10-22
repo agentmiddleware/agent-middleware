@@ -95,7 +95,7 @@ You reused an `Idempotency-Key` with different payload. Use a fresh UUID for eac
 - `idempotency_key_reused` (`-32603`; REST `400`): the `idempotency_key` in `mcpContext` was already used for a different payload. Use a fresh key per distinct invocation (not the same as the permit's idempotency key).
 - `idempotency_key_required` (`-32003`; REST `400`): governed calls need an `idempotency_key` in `mcpContext`.
 - `Tool not found: <name>` (`-32001`; REST `404`): confirm the tool name exists in `/mcp/tools.json`.
-- `Missing wallet_id in mcpContext` (`-32602`): `wallet_id` must sit inside `params.mcpContext`.
+- `Missing wallet_id in mcpContext` (`-32602`): A wallet bound key may omit `wallet_id`; a key without a bound wallet must supply it in `params.mcpContext`.
 - REST `422 Unprocessable Entity`: the body failed schema validation (for example `name` is missing). The REST body spells the context `mcp_context`, not `mcpContext`.
 
 ### `delivery_uncertain` receipt

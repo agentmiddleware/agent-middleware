@@ -169,7 +169,7 @@ class PermitResponse(ActionPermitFields):
 class QuoteCreateRequest(BaseModel):
     """Ask what one call of a tool will cost this wallet."""
 
-    wallet_id: str
+    wallet_id: str | None = None
     tool: str
 
 

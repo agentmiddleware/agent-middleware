@@ -1,6 +1,8 @@
-# @agent-middleware/verify (TypeScript)
+# Agent Middleware (AMW) TypeScript receipt verifier
 
-License: Apache-2.0. Status: not published to npm.
+Apache 2.0 (gateway is Fair Source, FSL-1.1)
+
+Package: `@agent-middleware/verify`. Status: not published to npm.
 
 Offline verification of Agent Middleware receipt bundles, using Node's built-in
 Ed25519 support. No runtime dependencies and no network access.
@@ -29,3 +31,9 @@ npm run typecheck # optional
 ```
 
 A TypeScript client for the gateway API is not written yet.
+
+For shell verification, install the Python SDK with its `verify` extra and run:
+
+```bash
+amw verify --bundle receipt.json --keys trust-keys.json
+```

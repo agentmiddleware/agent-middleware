@@ -116,7 +116,9 @@ async def test_every_mcp_transport_method_requires_the_bearer_token(
 
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
-    assert response.json() == {"detail": "unauthorized"}
+    assert response.json()["detail"] == "unauthorized"
+    assert response.json()["code"] == "unauthorized"
+    assert response.json()["docs_url"].endswith("#unauthorized")
 
 
 @pytest.mark.anyio
@@ -133,7 +135,30 @@ async def test_mcp_rejects_an_unconfigured_host_after_valid_auth(
             response = await client.post("/mcp", json={})
 
     assert response.status_code == 421
-    assert response.text == "Invalid Host header"
+    assert response.json()["code"] == "host_not_allowed"
+
+
+@pytest.mark.anyio
+async def test_partner_jsonrpc_error_has_envelope(partner_module: ModuleType) -> None:
+    transport = httpx.ASGITransport(app=partner_module.app)
+    async with partner_module.app.router.lifespan_context(partner_module.app):
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url=f"http://{_HOST}",
+            headers={
+                "Authorization": f"Bearer {_TOKEN}",
+                "Accept": "application/json, text/event-stream",
+            },
+        ) as client:
+            response = await client.post(
+                "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "unknown"}
+            )
+
+    assert response.status_code == 200
+    error = response.json()["error"]
+    assert error["code"] == -32602
+    assert error["data"]["code"] == "invalid_params"
+    assert error["data"]["docs_url"].endswith("#invalid_params")
 
 
 @pytest.mark.anyio

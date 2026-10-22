@@ -141,6 +141,56 @@ def test_auto_backend_does_not_select_in_memory_sqlite(monkeypatch):
     reset_runtime_degradation()
 
 
+@pytest.mark.parametrize(
+    "sqlite_url",
+    [
+        "sqlite:///:memory:",
+        "sqlite+aiosqlite:///:memory:",
+        "sqlite+aiosqlite://",
+        "sqlite+aiosqlite:///file::memory:?cache=shared",
+    ],
+)
+def test_in_memory_sqlite_url_never_writes_the_database_url_file(
+    monkeypatch, tmp_path, sqlite_url
+):
+    """An explicit in-memory SQLITE_URL must stay in memory.
+
+    Regression: the in-memory URL normalized to "" and the store then fell
+    through to the SQLite DATABASE_URL, so state the operator asked to keep
+    in memory was written to that file on disk.
+    """
+    reset_runtime_degradation()
+    reset_durable_state_for_tests()
+    db_file = tmp_path / "database_url.db"
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("STATE_BACKEND", "auto")
+    monkeypatch.setenv("SQLITE_URL", sqlite_url)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
+    monkeypatch.setenv("REDIS_URL", "")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    store = DurableStateStore()
+
+    async def exercise():
+        try:
+            assert await store.save_json("k", {"v": 1}) is True
+            # One held connection, so a second read sees the same database.
+            assert await store.load_json("k") == {"v": 1}
+            assert store.backend == "sqlite"
+        finally:
+            await store.close()
+
+    try:
+        asyncio.run(exercise())
+        assert not db_file.exists(), "in-memory state was written to DATABASE_URL"
+        assert store._sqlite_url == ":memory:"
+    finally:
+        get_settings.cache_clear()
+        reset_durable_state_for_tests()
+        reset_runtime_degradation()
+
+
 def test_auto_backend_uses_sqlite_for_a_sqlite_database_url(monkeypatch):
     """A SQLite DATABASE_URL must not route auto-resolution to asyncpg.
 

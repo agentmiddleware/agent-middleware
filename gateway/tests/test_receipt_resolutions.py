@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -24,7 +25,11 @@ from app.services.signing_keys import get_signing_key_service
 from b2a_sdk.receipt_verifier import VerificationStatus, key_set_from_document
 from b2a_sdk.resolution_verifier import verify_resolution, verify_resolution_chain
 from tests.support.db_gate import collection_mark, require_live_postgres
-from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
+from tests.test_trust_helpers import (
+    BOOTSTRAP_HEADERS,
+    create_tool_permit,
+    provision_agent_wallet,
+)
 
 POSTGRES_REASON = "requires an opted-in disposable PostgreSQL test database"
 
@@ -65,6 +70,30 @@ async def _setup(client):
         idem_key="resolution-test-permit",
     )
     return provisioned, permit
+
+
+async def _counterparty_receipt(client, attempt):
+    owner = await provision_agent_wallet(client)
+    counterparty = await provision_agent_wallet(client)
+    permit_response = await client.post(
+        "/v1/permits",
+        json={
+            "issuer_wallet_id": counterparty["agent_wallet_id"],
+            "subject_wallet_id": owner["agent_wallet_id"],
+            "subject_key_id": owner["key_id"],
+            "allowed_tools": ["resolution-test-tool"],
+            "scopes": ["tool:resolution-test-tool:invoke", "billing:charge"],
+            "max_credits": 50,
+            "expires_at": (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).isoformat(),
+        },
+        headers={**BOOTSTRAP_HEADERS, "Idempotency-Key": f"resolution-{attempt}"},
+    )
+    assert permit_response.status_code == 201, permit_response.text
+    receipt = await _uncertain_receipt(owner, permit_response.json(), attempt)
+    await append_resolution(receipt.receipt_id, "confirmed_success")
+    return owner, counterparty, receipt
 
 
 async def _portable_receipt(client, receipt_id, provisioned):
@@ -160,7 +189,7 @@ async def test_postgres_parallel_wallet_appends_preserve_one_chain(
     assert ordered[0].prev_hash is None
     assert all(
         current.prev_hash == previous.resolution_hash
-        for previous, current in zip(ordered, ordered[1:], strict=False)
+        for previous, current in zip(ordered[:-1], ordered[1:], strict=True)
     )
 
     async with get_session_factory()() as session:
@@ -214,6 +243,17 @@ async def test_disabled_tail_key_does_not_block_next_append(
     assert second.sequence == 2
     assert second.prev_hash == first.resolution_hash
     assert second.signature_key_id == rotated.key_id
+
+    single_read = await client.get(
+        f"/v1/receipts/{first_receipt.receipt_id}/resolution",
+        headers=provisioned["agent_headers"],
+    )
+    assert single_read.status_code == 409
+    chain_read = await client.get(
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}",
+        headers=provisioned["agent_headers"],
+    )
+    assert chain_read.status_code == 409
 
 
 @pytest.mark.anyio
@@ -313,10 +353,8 @@ async def test_authorized_resolution_and_wallet_chain_verify_offline(
 
 @pytest.mark.anyio
 async def test_resolution_get_requires_receipt_access(client, clean_database):
-    owner, permit = await _setup(client)
+    _, counterparty, receipt = await _counterparty_receipt(client, "access-check")
     stranger = await provision_agent_wallet(client)
-    receipt = await _uncertain_receipt(owner, permit, "access-check")
-    await append_resolution(receipt.receipt_id, "confirmed_success")
     path = f"/v1/receipts/{receipt.receipt_id}/resolution"
 
     unauthenticated = await client.get(path)
@@ -326,13 +364,26 @@ async def test_resolution_get_requires_receipt_access(client, clean_database):
     assert other_wallet.status_code == 403
     assert other_wallet.json()["detail"]["error"] == "wallet_access_denied"
 
+    missing = await client.get(
+        "/v1/receipts/rct_nonexistent/resolution",
+        headers=stranger["agent_headers"],
+    )
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "receipt_not_found"
+
+    counterparty_read = await client.get(path, headers=counterparty["agent_headers"])
+    assert counterparty_read.status_code == 200
+    assert counterparty_read.json()["receipt_id"] == receipt.receipt_id
+
+    admin_read = await client.get(path, headers=BOOTSTRAP_HEADERS)
+    assert admin_read.status_code == 200
+    assert admin_read.json()["receipt_id"] == receipt.receipt_id
+
 
 @pytest.mark.anyio
 async def test_wallet_resolution_chain_requires_receipt_access(client, clean_database):
-    owner, permit = await _setup(client)
+    owner, counterparty, _ = await _counterparty_receipt(client, "chain-access-check")
     stranger = await provision_agent_wallet(client)
-    receipt = await _uncertain_receipt(owner, permit, "chain-access-check")
-    await append_resolution(receipt.receipt_id, "confirmed_success")
     path = f"/v1/receipts/resolutions/wallet/{owner['agent_wallet_id']}"
 
     unauthenticated = await client.get(path)
@@ -341,6 +392,21 @@ async def test_wallet_resolution_chain_requires_receipt_access(client, clean_dat
     other_wallet = await client.get(path, headers=stranger["agent_headers"])
     assert other_wallet.status_code == 403
     assert other_wallet.json()["detail"]["error"] == "wallet_access_denied"
+
+    missing = await client.get(
+        "/v1/receipts/resolutions/wallet/wal_nonexistent",
+        headers=stranger["agent_headers"],
+    )
+    assert missing.status_code == 403
+    assert missing.json()["detail"]["error"] == "wallet_access_denied"
+
+    counterparty_read = await client.get(path, headers=counterparty["agent_headers"])
+    assert counterparty_read.status_code == 403
+    assert counterparty_read.json()["detail"]["error"] == "wallet_access_denied"
+
+    admin_read = await client.get(path, headers=BOOTSTRAP_HEADERS)
+    assert admin_read.status_code == 200
+    assert admin_read.json()["total"] == 1
 
 
 @pytest.mark.anyio

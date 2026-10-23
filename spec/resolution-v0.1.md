@@ -61,6 +61,9 @@ outside the signature; the signed bytes remain the source of truth.
   returns a page ordered by `sequence` with `records`, `total`, `limit`,
   `offset`, `has_more`, and `next_offset`. Reading it requires access to that
   wallet's receipts.
+- Records signed by a `disabled` key return 409 on read. `disabled` means the
+  key is compromised, so the gateway refuses to serve those records as valid
+  evidence.
 - `GET /.well-known/trust-keys.json` publishes the verification keys. An
   offline verifier must receive this document through a channel it trusts;
   the record's unauthenticated `kid` mirror or key URL cannot establish the

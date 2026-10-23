@@ -440,6 +440,7 @@ jobs:
         run: |
           uv run --no-sync pytest -q -rs --timeout 300 \
             tests/test_permit_postgres_concurrency.py \
+            tests/test_receipt_resolutions.py::test_postgres_parallel_wallet_appends_preserve_one_chain \
             tests/test_duplicate_guard_postgres_concurrency.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-concurrency.txt"
           test "${PIPESTATUS[0]}" -eq 0
       - name: Run action accounting proofs

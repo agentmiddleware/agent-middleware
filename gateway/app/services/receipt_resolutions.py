@@ -121,7 +121,7 @@ async def _assert_valid_resolution(
 
 
 async def get_resolution(receipt_id: str) -> ReceiptResolutionModel | None:
-    """Read one publicly portable record, refusing damaged stored evidence."""
+    """Read after caller receipt-access checks, refusing damaged evidence."""
     factory = get_session_factory()
     async with factory() as session:
         model = (

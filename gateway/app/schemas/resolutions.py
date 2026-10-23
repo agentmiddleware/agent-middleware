@@ -7,12 +7,14 @@ from typing import Literal, cast
 
 from pydantic import BaseModel
 
+from app.core.config import public_api_origin
 from app.db.models import ReceiptResolutionModel
 from app.services.signing_keys import RECEIPT_CANONICALIZATION
 
 
 class ResolutionResponse(BaseModel):
     version: Literal["resolution-v0.1"]
+    issuer: str
     resolution_id: str
     receipt_id: str
     wallet_id: str
@@ -44,6 +46,7 @@ def resolution_to_response(model: ReceiptResolutionModel) -> ResolutionResponse:
     signed = json.loads(model.signing_input)
     return ResolutionResponse(
         version=signed["version"],
+        issuer=public_api_origin(),
         resolution_id=model.resolution_id,
         receipt_id=model.receipt_id,
         wallet_id=model.wallet_id,

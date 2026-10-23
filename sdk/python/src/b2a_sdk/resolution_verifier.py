@@ -205,6 +205,8 @@ def _verified_receipt(
     receipt_result = verify_bundle(bundle, key_set)
     if not receipt_result.ok:
         return _fail(receipt_result.status, f"receipt: {receipt_result.reason}")
+    if receipt_result.claims.get("outcome") != "delivery_uncertain":
+        return _fail(VerificationStatus.MISMATCH, "receipt outcome is not delivery_uncertain")
     signing_input = bundle["signing_input"]
     return receipt_result.claims, hashlib.sha256(signing_input.encode("utf-8")).hexdigest()
 

@@ -56,7 +56,6 @@ def upgrade() -> None:
     for column in (
         "receipt_id",
         "wallet_id",
-        "sequence",
         "receipt_hash",
         "resolution_hash",
         "signature_key_id",

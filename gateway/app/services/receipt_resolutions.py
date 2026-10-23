@@ -253,7 +253,6 @@ async def _assert_head_matches(
         or count != head.last_sequence
     ):
         await reject_or_retry()
-    await _assert_valid_resolution(session, latest)
     if latest.sequence == 1:
         if latest.prev_hash is not None:
             await reject_or_retry()
@@ -295,12 +294,12 @@ async def append_resolution(receipt_id: str, outcome: str) -> ReceiptResolutionM
         await _receipt_input(session, receipt_id)
 
     signing_keys = get_signing_key_service()
-    key = await signing_keys.ensure_active_key()
     factory = get_session_factory()
     integrity_failures = 0
     for attempt in range(32):
         session = factory()
         try:
+            key = await signing_keys.ensure_active_key()
             async with session.begin():
                 receipt, receipt_input = await _receipt_input(session, receipt_id)
                 existing = (

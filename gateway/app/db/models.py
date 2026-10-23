@@ -948,7 +948,7 @@ class ReceiptResolutionModel(SQLModel, table=True):
         max_length=64, foreign_key="receipts.receipt_id", index=True, unique=True
     )
     wallet_id: str = Field(max_length=50, foreign_key="wallets.wallet_id", index=True)
-    sequence: int = Field(index=True)
+    sequence: int
     prev_hash: Optional[str] = Field(default=None, max_length=64)
     receipt_hash: str = Field(max_length=64, index=True)
     outcome: str = Field(max_length=32)

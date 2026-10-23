@@ -46,10 +46,16 @@ def _hash(signing_input: str) -> str:
     return hashlib.sha256(signing_input.encode("utf-8")).hexdigest()
 
 
-def _receipt(signer, *, receipt_id="rcpt-1", wallet_id="wallet-1"):
+def _receipt(signer, *, receipt_id="rcpt-1", wallet_id="wallet-1", outcome="delivery_uncertain"):
     kid, _, sign = signer
     signing_input = canonical_json(
-        {"alg": "Ed25519", "kid": kid, "receipt_id": receipt_id, "wallet_id": wallet_id}
+        {
+            "alg": "Ed25519",
+            "kid": kid,
+            "receipt_id": receipt_id,
+            "wallet_id": wallet_id,
+            "outcome": outcome,
+        }
     )
     return {
         "receipt_id": receipt_id,
@@ -180,6 +186,17 @@ def test_wrong_wallet_or_receipt_is_rejected(signer):
     )
 
 
+@pytest.mark.parametrize("outcome", ["success", "denied"])
+def test_resolution_requires_uncertain_receipt_outcome(signer, outcome):
+    receipt = _receipt(signer, outcome=outcome)
+    record = _resolution(signer, receipt)
+
+    result = verify_resolution(record, receipt, signer[1])
+
+    assert result.status is VerificationStatus.MISMATCH
+    assert result.reason == "receipt outcome is not delivery_uncertain"
+
+
 def test_valid_two_record_chain_and_target_receipt(signer):
     first_receipt = _receipt(signer)
     second_receipt = _receipt(signer, receipt_id="rcpt-2")
@@ -199,6 +216,17 @@ def test_valid_two_record_chain_and_target_receipt(signer):
     assert result.records_verified == 2
     assert result.claims["receipt_id"] == "rcpt-2"
     assert result.resolution_hash == second["resolution_hash"]
+
+
+@pytest.mark.parametrize("outcome", ["success", "denied"])
+def test_chain_requires_uncertain_target_receipt_outcome(signer, outcome):
+    receipt = _receipt(signer, outcome=outcome)
+    record = _resolution(signer, receipt)
+
+    result = verify_resolution_chain([record], receipt, signer[1])
+
+    assert result.status is VerificationStatus.MISMATCH
+    assert result.reason == "receipt outcome is not delivery_uncertain"
 
 
 def test_reordered_and_forked_chains_are_rejected(signer):

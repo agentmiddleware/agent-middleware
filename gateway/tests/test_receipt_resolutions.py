@@ -7,17 +7,26 @@ import hashlib
 from decimal import Decimal
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select, text
 
 from app.db.database import get_session_factory
-from app.db.models import ReceiptResolutionModel, ResolutionChainHeadModel
+from app.db.models import (
+    ReceiptResolutionModel,
+    ResolutionChainHeadModel,
+    SigningKeyModel,
+)
 from app.main import app
 from app.services.receipt_resolutions import ReceiptResolutionError, append_resolution
 from app.services.receipts import get_receipt_service
+from app.services.signing_keys import get_signing_key_service
 from b2a_sdk.receipt_verifier import VerificationStatus, key_set_from_document
 from b2a_sdk.resolution_verifier import verify_resolution, verify_resolution_chain
+from tests.support.db_gate import collection_mark, require_live_postgres
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
+
+POSTGRES_REASON = "requires an opted-in disposable PostgreSQL test database"
 
 
 @pytest.fixture
@@ -26,21 +35,6 @@ async def client():
         transport=ASGITransport(app=app), base_url="http://test"
     ) as test_client:
         yield test_client
-
-
-@pytest.fixture
-async def resolution_database(clean_database):
-    """Delete the new FK children before a later test's shared cleanup runs.
-
-    The SEL-352 file allowlist excludes tests/conftest.py, whose cleanup list
-    predates these tables. Keep this test module isolated until that list can
-    be updated in a separate change.
-    """
-    yield
-    async with get_session_factory()() as session:
-        await session.execute(text("DELETE FROM receipt_resolutions"))
-        await session.execute(text("DELETE FROM resolution_chain_heads"))
-        await session.commit()
 
 
 async def _uncertain_receipt(
@@ -83,7 +77,7 @@ async def _portable_receipt(client, receipt_id, provisioned):
 
 
 @pytest.mark.anyio
-async def test_append_resolution_replays_one_signed_record(client, resolution_database):
+async def test_append_resolution_replays_one_signed_record(client, clean_database):
     provisioned, permit = await _setup(client)
     receipt = await _uncertain_receipt(provisioned, permit, "replay")
 
@@ -112,7 +106,7 @@ async def test_append_resolution_replays_one_signed_record(client, resolution_da
 
 
 @pytest.mark.anyio
-async def test_append_rejects_non_uncertain_receipt(client, resolution_database):
+async def test_append_rejects_non_uncertain_receipt(client, clean_database):
     provisioned, permit = await _setup(client)
     receipt = await _uncertain_receipt(
         provisioned, permit, "already-final", outcome="success"
@@ -123,9 +117,7 @@ async def test_append_rejects_non_uncertain_receipt(client, resolution_database)
 
 
 @pytest.mark.anyio
-async def test_concurrent_wallet_appends_preserve_one_chain(
-    client, resolution_database
-):
+async def test_concurrent_wallet_appends_preserve_one_chain(client, clean_database):
     provisioned, permit = await _setup(client)
     receipts = [
         await _uncertain_receipt(provisioned, permit, "race-a"),
@@ -146,7 +138,86 @@ async def test_concurrent_wallet_appends_preserve_one_chain(
 
 
 @pytest.mark.anyio
-async def test_corrupt_wallet_head_refuses_next_append(client, resolution_database):
+@collection_mark(flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=POSTGRES_REASON)
+async def test_postgres_parallel_wallet_appends_preserve_one_chain(
+    client, clean_database
+):
+    require_live_postgres(flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=POSTGRES_REASON)
+    provisioned, permit = await _setup(client)
+    receipts = [
+        await _uncertain_receipt(provisioned, permit, f"postgres-{index}")
+        for index in range(10)
+    ]
+
+    records = await asyncio.gather(
+        *(
+            append_resolution(receipt.receipt_id, "confirmed_success")
+            for receipt in receipts
+        )
+    )
+    ordered = sorted(records, key=lambda record: record.sequence)
+    assert [record.sequence for record in ordered] == list(range(1, 11))
+    assert ordered[0].prev_hash is None
+    assert all(
+        current.prev_hash == previous.resolution_hash
+        for previous, current in zip(ordered, ordered[1:], strict=False)
+    )
+
+    async with get_session_factory()() as session:
+        stored = (
+            (
+                await session.execute(
+                    select(ReceiptResolutionModel)
+                    .where(
+                        ReceiptResolutionModel.wallet_id
+                        == provisioned["agent_wallet_id"]
+                    )
+                    .order_by(ReceiptResolutionModel.sequence)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        head = await session.get(
+            ResolutionChainHeadModel, provisioned["agent_wallet_id"]
+        )
+    assert [record.resolution_id for record in stored] == [
+        record.resolution_id for record in ordered
+    ]
+    assert {record.receipt_id for record in stored} == {
+        receipt.receipt_id for receipt in receipts
+    }
+    assert head is not None
+    assert head.last_sequence == 10
+    assert head.last_hash == ordered[-1].resolution_hash
+
+
+@pytest.mark.anyio
+async def test_disabled_tail_key_does_not_block_next_append(
+    client, clean_database, monkeypatch
+):
+    provisioned, permit = await _setup(client)
+    first_receipt = await _uncertain_receipt(provisioned, permit, "disabled-tail-a")
+    first = await append_resolution(first_receipt.receipt_id, "confirmed_success")
+    signing_keys = get_signing_key_service()
+    monkeypatch.setattr(signing_keys, "_private_key", Ed25519PrivateKey.generate())
+    monkeypatch.setattr(signing_keys, "_key_id", "test-resolution-tail-rotation")
+    rotated = await signing_keys.ensure_active_key()
+    second_receipt = await _uncertain_receipt(provisioned, permit, "disabled-tail-b")
+    async with get_session_factory()() as session:
+        old_key = await session.get(SigningKeyModel, first.signature_key_id)
+        assert old_key is not None
+        old_key.status = "disabled"
+        await session.commit()
+
+    second = await append_resolution(second_receipt.receipt_id, "confirmed_success")
+    assert second.sequence == 2
+    assert second.prev_hash == first.resolution_hash
+    assert second.signature_key_id == rotated.key_id
+
+
+@pytest.mark.anyio
+async def test_corrupt_wallet_head_refuses_next_append(client, clean_database):
     provisioned, permit = await _setup(client)
     first_receipt = await _uncertain_receipt(provisioned, permit, "head-a")
     second_receipt = await _uncertain_receipt(provisioned, permit, "head-b")
@@ -172,7 +243,7 @@ async def test_corrupt_wallet_head_refuses_next_append(client, resolution_databa
 
 @pytest.mark.anyio
 async def test_public_resolution_and_wallet_chain_verify_without_credentials(
-    client, resolution_database
+    client, clean_database
 ):
     provisioned, permit = await _setup(client)
     first_receipt = await _uncertain_receipt(provisioned, permit, "first")
@@ -218,6 +289,7 @@ async def test_public_resolution_and_wallet_chain_verify_without_credentials(
     receipt_bundle = await _portable_receipt(
         client, first_receipt.receipt_id, provisioned
     )
+    assert record["issuer"] == receipt_bundle["issuer"]
     expected_hash = hashlib.sha256(
         receipt_bundle["signing_input"].encode("utf-8")
     ).hexdigest()
@@ -236,8 +308,98 @@ async def test_public_resolution_and_wallet_chain_verify_without_credentials(
 
 
 @pytest.mark.anyio
+async def test_resolution_get_returns_404_when_absent(client, clean_database):
+    provisioned, permit = await _setup(client)
+    receipt = await _uncertain_receipt(provisioned, permit, "unresolved")
+
+    response = await client.get(f"/v1/receipts/{receipt.receipt_id}/resolution")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "resolution_not_found"
+
+
+@pytest.mark.anyio
+async def test_wallet_chain_rejects_tampered_middle_record(client, clean_database):
+    provisioned, permit = await _setup(client)
+    receipts = [
+        await _uncertain_receipt(provisioned, permit, f"middle-{index}")
+        for index in range(3)
+    ]
+    records = [
+        await append_resolution(receipt.receipt_id, "confirmed_success")
+        for receipt in receipts
+    ]
+    async with get_session_factory()() as session:
+        middle = await session.get(ReceiptResolutionModel, records[1].resolution_id)
+        assert middle is not None
+        middle.signature = "tampered"
+        await session.commit()
+
+    response = await client.get(
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}"
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "resolution_integrity_invalid"
+
+
+@pytest.mark.anyio
+async def test_wallet_chain_verifies_across_key_rotation(
+    client, clean_database, monkeypatch
+):
+    provisioned, permit = await _setup(client)
+    first_receipt = await _uncertain_receipt(provisioned, permit, "key-a")
+    first = await append_resolution(first_receipt.receipt_id, "confirmed_success")
+    signing_keys = get_signing_key_service()
+    retired = await signing_keys.retire_key_metadata(first.signature_key_id)
+    monkeypatch.setattr(signing_keys, "_private_key", Ed25519PrivateKey.generate())
+    monkeypatch.setattr(signing_keys, "_key_id", "test-resolution-chain-rotation")
+    rotated = await signing_keys.ensure_active_key()
+    assert rotated.public_key_b64 != retired.public_key_b64
+    second_receipt = await _uncertain_receipt(provisioned, permit, "key-b")
+    second = await append_resolution(
+        second_receipt.receipt_id, "confirmed_not_delivered"
+    )
+    assert first.signature_key_id != second.signature_key_id
+    assert second.signature_key_id == rotated.key_id
+
+    chain_response = await client.get(
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}"
+    )
+    assert chain_response.status_code == 200, chain_response.text
+    keys_response = await client.get("/.well-known/trust-keys.json")
+    assert keys_response.status_code == 200, keys_response.text
+    first_bundle = await _portable_receipt(
+        client, first_receipt.receipt_id, provisioned
+    )
+    verdict = verify_resolution_chain(
+        chain_response.json()["records"],
+        first_bundle,
+        key_set_from_document(keys_response.json()),
+    )
+    assert verdict.ok, verdict.reason
+    assert verdict.records_verified == 2
+
+
+@pytest.mark.anyio
+async def test_wallet_chain_offset_past_end_returns_empty_page(client, clean_database):
+    provisioned, permit = await _setup(client)
+    receipt = await _uncertain_receipt(provisioned, permit, "past-end")
+    await append_resolution(receipt.receipt_id, "confirmed_success")
+
+    response = await client.get(
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}?offset=5"
+    )
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert page["records"] == []
+    assert page["total"] == 1
+    assert page["offset"] == 5
+    assert page["has_more"] is False
+    assert page["next_offset"] is None
+
+
+@pytest.mark.anyio
 async def test_resolution_for_a_different_valid_receipt_is_rejected(
-    client, resolution_database
+    client, clean_database
 ):
     provisioned, permit = await _setup(client)
     first_receipt = await _uncertain_receipt(provisioned, permit, "bound")
@@ -261,9 +423,7 @@ async def test_resolution_for_a_different_valid_receipt_is_rejected(
 
 
 @pytest.mark.anyio
-async def test_tampered_resolution_signing_input_is_rejected(
-    client, resolution_database
-):
+async def test_tampered_resolution_signing_input_is_rejected(client, clean_database):
     provisioned, permit = await _setup(client)
     receipt = await _uncertain_receipt(provisioned, permit, "tamper")
     await append_resolution(receipt.receipt_id, "confirmed_success")

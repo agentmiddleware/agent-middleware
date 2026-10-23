@@ -19,7 +19,7 @@ The gateway signs this payload with the existing Ed25519 signing key service:
 | `prev_hash` | JSON `null` at sequence 1; otherwise the preceding record's `resolution_hash` |
 | `receipt_hash` | Lowercase hex SHA-256 of the original receipt bundle's exact `signing_input` UTF-8 bytes |
 | `outcome` | `confirmed_success` or `confirmed_not_delivered` |
-| `created_at` | UTC ISO-8601 timestamp |
+| `created_at` | UTC timestamp formatted `YYYY-MM-DDTHH:MM:SS[.ffffff]+00:00` (never `Z`); fractional seconds appear when nonzero |
 | `alg` | Literal `Ed25519` |
 | `kid` | Identifier of the published signing key |
 | `payload_hash` | The signing service's SHA-256 of the canonical payload including `alg` and `kid`, before adding `payload_hash` |
@@ -48,10 +48,12 @@ commit path.
 Each record response contains `signing_input`, base64 `signature`,
 `canonicalization: "awi-canonical-json/1"`, and `resolution_hash`. It also
 mirrors the signed fields above at the top level for display and includes
-`keys_url: "/.well-known/trust-keys.json"`.
-Every mirror must equal the corresponding field parsed from the verified
-`signing_input`. The mirrors and `resolution_hash` are outside the signature;
-the signed bytes remain the source of truth.
+`keys_url: "/.well-known/trust-keys.json"` and `issuer`, the issuing plane's
+public origin (empty when `PUBLIC_URL` is unset). `issuer` is outside the
+signature, as on the portable receipt bundle.
+Every signed-field mirror must equal the corresponding field parsed from the
+verified `signing_input`. The mirrors, `issuer`, and `resolution_hash` are
+outside the signature; the signed bytes remain the source of truth.
 
 - `GET /v1/receipts/{receipt_id}/resolution` returns one record by original
   receipt, or 404 when no resolution exists.
@@ -79,6 +81,7 @@ complete, ordered wallet sequence starting at 1. For the chain call, collect
 **every** wallet page from offset 0, in order. The verifier rejects gaps,
 reordering, a supplied fork, repeated receipts or resolution IDs, broken
 `prev_hash` links, a wrong original receipt, and altered signed bytes.
+There is no TypeScript resolution verifier yet.
 
 The chain verifier checks every supplied record signature and hash. It checks
 the original receipt hash for the supplied target receipt. Checking every

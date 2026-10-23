@@ -42,6 +42,11 @@ from .receipt_verifier import (
     verify_bundle,
 )
 from .request_key import RequestKeyExplanation, request_key
+from .resolution_verifier import (
+    ResolutionVerificationResult,
+    verify_resolution,
+    verify_resolution_chain,
+)
 
 __version__ = "0.5.0"
 
@@ -121,6 +126,7 @@ __all__ = [
     "PermitRequest",
     "Receipt",
     "ReceiptVerification",
+    "ResolutionVerificationResult",
     "RequestKeyExplanation",
     "SyncAgentMiddlewareClient",
     "ToolDefinition",
@@ -136,6 +142,8 @@ __all__ = [
     "parse_402_response",
     "request_key",
     "verify_bundle",
+    "verify_resolution",
+    "verify_resolution_chain",
 ]
 
 warnings.warn("b2a_sdk is deprecated; import amw instead", DeprecationWarning, stacklevel=1)

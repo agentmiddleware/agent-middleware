@@ -59,10 +59,28 @@ REQUIRED_TRUST_TABLES = frozenset(
         "audit_chain_heads",
         "signing_keys",
         "human_approvals",
+        "receipt_resolutions",
+        "resolution_chain_heads",
     }
 )
 REQUIRED_TRUST_COLUMNS = {
     "mcp_dispatch_attempts": frozenset({"dispatch_claim_hash"}),
+    "resolution_chain_heads": frozenset({"last_sequence", "last_hash"}),
+    "receipt_resolutions": frozenset(
+        {
+            "receipt_id",
+            "wallet_id",
+            "sequence",
+            "prev_hash",
+            "receipt_hash",
+            "outcome",
+            "signing_input",
+            "signature",
+            "signature_key_id",
+            "payload_hash",
+            "resolution_hash",
+        }
+    ),
     "permits": frozenset(
         {
             "repeat_window_seconds",

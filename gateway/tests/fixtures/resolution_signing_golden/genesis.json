@@ -1,0 +1,5 @@
+{
+  "payload_hash": "fc1a7ce5b0b4ac7705b48ba06faafac1f94d30f7f61df0c28ef19f72e869d7f1",
+  "resolution_hash": "b1a3e201ca26d6a7098af5ab12a1d7778c61880957897e652b8fb8c4954cc2c7",
+  "signing_input": "{\"alg\":\"Ed25519\",\"created_at\":\"2026-10-22T12:34:56+00:00\",\"kid\":\"sk_golden_0001\",\"outcome\":\"confirmed_success\",\"payload_hash\":\"fc1a7ce5b0b4ac7705b48ba06faafac1f94d30f7f61df0c28ef19f72e869d7f1\",\"prev_hash\":null,\"receipt_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"receipt_id\":\"rcpt_golden_0001\",\"resolution_id\":\"rsl_golden_0001\",\"sequence\":1,\"version\":\"resolution-v0.1\",\"wallet_id\":\"agt-golden-0001\"}"
+}

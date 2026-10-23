@@ -145,7 +145,7 @@ def _require_async_lookup(lookup: object) -> None:
     Accepts ``async def`` functions, bound async methods, objects with an
     ``async def __call__``, and ``functools.partial`` wrappers of these.
     Checks the real code object's ``CO_COROUTINE`` flag instead of
-    ``inspect.iscoroutinefunction``, which trusts ``markcoroutinefunction``
+    ``inspect.iscoroutinefunction``, which trusts inspect.markcoroutinefunction
     and so would accept a marked synchronous function.
     """
     target = lookup

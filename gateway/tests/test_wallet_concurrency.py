@@ -277,7 +277,7 @@ async def test_delegation_refuses_a_parent_frozen_under_it(
         lambda: _commit_freeze(parent.wallet_id),
     )
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match="(?i)frozen") as excinfo:
         await money.create_child_wallet(
             parent_wallet_id=parent.wallet_id,
             child_agent_id=f"child-{uuid.uuid4().hex[:8]}",
@@ -389,7 +389,7 @@ async def test_zero_lifetime_cap_is_a_cap_not_an_absent_one(
     )
     await _set_child_cap(parent.wallet_id, Decimal("0"))
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match="(?i)cap exceeded") as excinfo:
         await money.create_child_wallet(
             parent_wallet_id=parent.wallet_id,
             child_agent_id=f"child-{uuid.uuid4().hex[:8]}",
@@ -422,7 +422,7 @@ async def test_zero_lifetime_cap_refuses_a_transfer_as_a_cap(
     )
     await _set_child_cap(source.wallet_id, Decimal("0"))
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match="(?i)cap exceeded") as excinfo:
         await money.transfer(
             from_wallet_id=source.wallet_id,
             to_wallet_id=dest.wallet_id,

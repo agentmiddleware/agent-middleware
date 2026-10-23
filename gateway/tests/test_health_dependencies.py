@@ -128,7 +128,7 @@ async def test_report_default_shape():
         "sentinel",
     }
     # Every check carries an error slot (None when healthy) and latency_ms.
-    for _name, res in report["dependencies"].items():
+    for res in report["dependencies"].values():
         assert "status" in res
         assert "latency_ms" in res
         assert "error" in res

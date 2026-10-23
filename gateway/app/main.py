@@ -60,6 +60,7 @@ from .core.trust_mode import (
 )
 from .db.database import SchemaInitError, init_db, close_db
 from .services.mcp_dispatch_attempts import get_duplicate_guard_metrics
+from .services.dogfood_tool import sync_dogfood_tool_registration
 from .services.mcp_phase9_tools import sync_proof_surface_mcp_registration
 from .services.demo_tenant_boundary import DemoRequestContextMiddleware
 from .services.signing_keys import (
@@ -445,6 +446,7 @@ async def lifespan(app: FastAPI):
 
     startup_time = time.monotonic()
     sync_proof_surface_mcp_registration()
+    sync_dogfood_tool_registration()
     logger.info(
         "app_startup",
         phase="mcp_proof_surface_registration_synced",

@@ -43,7 +43,6 @@ _SIGNED_FIELDS = {
     "version",
     "wallet_id",
 }
-_MIRRORED_FIELDS = _SIGNED_FIELDS - {"version"}
 
 
 @dataclass(frozen=True)
@@ -179,13 +178,11 @@ def _verify_record(
         return _fail(VerificationStatus.MISMATCH, "resolution canonicalization disagrees")
     if envelope.get("resolution_hash") != resolution_hash:
         return _fail(VerificationStatus.MISMATCH, "resolution_hash disagrees with signing_input")
-    for name in _MIRRORED_FIELDS:
+    for name in _SIGNED_FIELDS:
         if name not in envelope:
             return _fail(VerificationStatus.MALFORMED, f"resolution envelope has no {name}")
         if type(envelope[name]) is not type(claims[name]) or envelope[name] != claims[name]:
             return _fail(VerificationStatus.MISMATCH, f"resolution envelope {name} disagrees")
-    if "version" in envelope and envelope["version"] != claims["version"]:
-        return _fail(VerificationStatus.MISMATCH, "resolution envelope version disagrees")
 
     return ResolutionVerificationResult(
         status=VerificationStatus.VERIFIED,

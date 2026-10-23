@@ -141,6 +141,30 @@ def test_tampered_envelope_mirror_is_rejected(signer):
     assert result.is_rejected
 
 
+def test_missing_version_mirror_is_rejected(signer):
+    receipt = _receipt(signer)
+    record = _resolution(signer, receipt)
+    del record["version"]
+
+    result = verify_resolution(record, receipt, signer[1])
+
+    assert result.status is VerificationStatus.MALFORMED
+    assert result.reason == "resolution envelope has no version"
+    assert not result.ok
+
+
+def test_mismatched_version_mirror_is_rejected(signer):
+    receipt = _receipt(signer)
+    record = _resolution(signer, receipt)
+    record["version"] = "resolution-v9.9"
+
+    result = verify_resolution(record, receipt, signer[1])
+
+    assert result.status is VerificationStatus.MISMATCH
+    assert result.reason == "resolution envelope version disagrees"
+    assert result.is_rejected
+
+
 def test_signed_wrong_receipt_hash_is_rejected(signer):
     receipt = _receipt(signer)
     record = _resolution(signer, receipt, receipt_hash="f" * 64)

@@ -1,8 +1,8 @@
 # CI for AMW (Agent Middleware).
 # Projects are discovered at runtime (.github/scripts/detect_projects.py). Pull requests test
 # changed projects and their transitive dependents (.github/scripts/project_dependents.py).
-# Shared paths restore the full matrix; docs-only pull requests (markdown, docs/ trees, images)
-# skip every heavy job. A path equal to spec or under spec/ is never docs-only. Main pushes,
+# Shared paths restore the full matrix; docs-only pull requests (doc suffixes only)
+# skip every heavy job. spec/, a nested README, and any deletion are never docs-only. Main pushes,
 # merge groups, and manual runs test every discovered project. Keep the workflow unfiltered
 # at the on: level so "CI result" always reports.
 name: CI
@@ -87,20 +87,33 @@ jobs:
           ]
 
           # Docs-only pull requests cannot break code, tests, or packaging, so
-          # every heavy job skips and "CI result" reports success. Suffixes
-          # only; requirements*.txt, other manifests, and spec/ are never docs.
+          # every heavy job skips and "CI result" reports success. Doc suffixes
+          # only: a docs/ directory does not count. Nested README files,
+          # deletions, manifests, and spec/ are never docs.
           DOC_SUFFIXES = (
               ".md", ".markdown", ".mdown", ".mdx", ".rst", ".adoc",
               ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
           )
+          deleted = {
+              path.decode("utf-8", "surrogateescape")
+              for path in subprocess.check_output(
+                  [
+                      "git", "diff", "--no-renames", "--name-only", "-z",
+                      "--diff-filter=D", "HEAD^1", "HEAD",
+                  ]
+              ).split(b"\0")
+              if path
+          }
 
           def is_docs_path(path):
               if path == "spec" or path.startswith("spec/"):
                   return False
-              lower = path.lower()
-              if lower.endswith(DOC_SUFFIXES):
-                  return True
-              return "docs" in lower.split("/")[:-1]
+              if path in deleted:
+                  return False
+              name = path.rsplit("/", 1)[-1]
+              if "/" in path and name.lower().startswith("readme"):
+                  return False
+              return path.lower().endswith(DOC_SUFFIXES)
 
           if changed and all(is_docs_path(path) for path in changed):
               print(f"docs-only change ({len(changed)} files); heavy jobs skip")

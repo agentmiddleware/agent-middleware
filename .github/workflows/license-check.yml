@@ -69,7 +69,7 @@ jobs:
 
           manifest = re.compile(
               r"(^|/)(uv\.lock|poetry\.lock|requirements[^/]*\.txt|package-lock\.json|"
-              r"pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|package\.json|go\.sum|"
+              r"npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|package\.json|go\.sum|"
               r"Cargo\.lock)$"
           )
           # Basename only, any case. LICENSES/ is a directory component at any depth.

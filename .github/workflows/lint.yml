@@ -1,3 +1,6 @@
+# Ruff lint for every discovered Python project. Runs as ONE job instead of a
+# per-project matrix: each project takes seconds, and per-job minute rounding
+# costs more than the lint itself.
 name: Lint
 
 on:
@@ -8,33 +11,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   RUFF_VERSION: "0.17.1"
 
 jobs:
-  detect:
-    name: Detect Python projects
-    runs-on: ubuntu-latest
-    outputs:
-      python: ${{ steps.projects.outputs.python }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - id: projects
-        run: python3 .github/scripts/detect_projects.py
-
   lint:
-    name: lint / ${{ matrix.project }}
-    needs: detect
+    name: lint
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        project: ${{ fromJSON(needs.detect.outputs.python) }}
-    defaults:
-      run:
-        working-directory: ${{ matrix.project }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,7 +31,17 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: false
-      - name: Check and format
+      - name: Check and format every Python project
         run: |
-          uv run --no-project --with "ruff==${RUFF_VERSION}" ruff check .
-          uv run --no-project --with "ruff==${RUFF_VERSION}" ruff format --check .
+          mapfile -t projects < <(
+            python3 .github/scripts/detect_projects.py \
+              | sed -n 's/^python=//p' \
+              | python3 -c 'import json, sys; [print(p) for p in json.load(sys.stdin)]'
+          )
+          for project in "${projects[@]}"; do
+            echo "::group::lint $project"
+            (cd "$project" \
+              && uv run --no-project --with "ruff==${RUFF_VERSION}" ruff check . \
+              && uv run --no-project --with "ruff==${RUFF_VERSION}" ruff format --check .)
+            echo "::endgroup::"
+          done

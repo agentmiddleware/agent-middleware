@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 from decimal import Decimal
 
 import pytest
@@ -40,7 +41,11 @@ from app.services.mcp_dispatch_reconciliation import (
 from app.services.permits import get_permit_service
 from app.services.receipts import get_receipt_service
 from app.services.service_registry import get_service_registry
-from app.services.upstream_mcp import UpstreamMcpAdapter, UpstreamMcpConfiguration
+from app.services.upstream_mcp import (
+    DiscoveredUpstreamTool,
+    UpstreamMcpAdapter,
+    UpstreamMcpConfiguration,
+)
 from tests.test_mcp_dispatch_reconciliation import (
     CREDITS,
     SeededAttempt,
@@ -61,6 +66,11 @@ UPSTREAM_RESULT = {
 ERROR_RESULT = {
     "content": [{"type": "text", "text": "partner rejected the order"}],
     "isError": True,
+}
+OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {"order_id": {"type": "string"}},
+    "required": ["order_id"],
 }
 
 
@@ -93,10 +103,10 @@ def _reconciler(lookup, **kwargs) -> McpDispatchReconciliationService:
     )
 
 
-def _register_executor(tool_name: str) -> None:
+def _register_executor(tool_name: str, *, discovered: bool = True) -> None:
     # The live result gate needs the binding's adapter (bearer token, size
-    # bound); no network is used.
-    get_service_registry()._executor_registry[tool_name] = UpstreamMcpAdapter(
+    # bound, discovered output schema); no network is used.
+    adapter = UpstreamMcpAdapter(
         UpstreamMcpConfiguration(
             url=f"{ORIGIN}/mcp",
             origin=ORIGIN,
@@ -110,6 +120,14 @@ def _register_executor(tool_name: str) -> None:
             environment="test",
         )
     )
+    if discovered:
+        adapter._discovered_tool = DiscoveredUpstreamTool(
+            name="partner_lookup",
+            description="partner lookup",
+            input_schema={"type": "object"},
+            output_schema=OUTPUT_SCHEMA,
+        )
+    get_service_registry()._executor_registry[tool_name] = adapter
 
 
 async def _seed_claimed(client: AsyncClient, suffix: str) -> SeededAttempt:
@@ -344,6 +362,8 @@ async def test_hanging_lookup_times_out_to_delivery_uncertain(
             delivered=True,
             result_payload={
                 "content": [{"type": "text", "text": "x" * 8192}],
+                # Schema-valid, so the size bound is what rejects it.
+                "structuredContent": {"order_id": "ord-1"},
                 "isError": False,
             },
         ),
@@ -357,6 +377,25 @@ async def test_hanging_lookup_times_out_to_delivery_uncertain(
             delivered=True,
             result_payload={
                 "content": [{"type": "text", "text": f"echo {UPSTREAM_TOKEN}"}],
+                # Schema-valid, so the token check is what rejects it.
+                "structuredContent": {"order_id": "ord-1"},
+                "isError": False,
+            },
+        ),
+        # The live SDK validator rejects these inside call_tool(), which the
+        # live path turns into delivery_uncertain, never a signed success.
+        UpstreamDispatchStatus(
+            delivered=True,
+            result_payload={
+                "content": [{"type": "text", "text": "done"}],
+                "structuredContent": {"order_id": 7},
+                "isError": False,
+            },
+        ),
+        UpstreamDispatchStatus(
+            delivered=True,
+            result_payload={
+                "content": [{"type": "text", "text": "done"}],
                 "isError": False,
             },
         ),
@@ -372,6 +411,8 @@ async def test_hanging_lookup_times_out_to_delivery_uncertain(
         "not-a-status-object",
         "malformed-mcp-result",
         "reflects-bearer-token",
+        "structured-content-violates-output-schema",
+        "structured-content-missing-under-output-schema",
     ],
 )
 async def test_unproven_lookup_leaves_attempt_delivery_uncertain(
@@ -392,12 +433,18 @@ async def test_unproven_lookup_leaves_attempt_delivery_uncertain(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("executor", ["missing", "undiscovered"])
 async def test_done_without_a_live_executor_to_validate_stays_uncertain(
     client: AsyncClient,
     clean_database,
+    executor: str,
 ) -> None:
     seed = await _seed_claimed(client, "lookup-no-executor")
-    get_service_registry()._executor_registry.pop(seed.tool_name)
+    if executor == "missing":
+        get_service_registry()._executor_registry.pop(seed.tool_name)
+    else:
+        # No discovered tool means no output schema to validate against.
+        _register_executor(seed.tool_name, discovered=False)
     lookup = RecordingLookup(
         UpstreamDispatchStatus(delivered=True, result_payload=UPSTREAM_RESULT)
     )
@@ -447,7 +494,7 @@ async def test_registered_lookup_is_used_by_production_singleton(
     )
     # Built before registration, exactly like the lifespan cleanup singleton.
     singleton = get_mcp_dispatch_reconciliation_service()
-    with pytest.raises(TypeError, match="callable"):
+    with pytest.raises(TypeError, match="async callable"):
         register_upstream_status_lookup(ORIGIN, None)  # type: ignore[arg-type]
     register_upstream_status_lookup(ORIGIN, lookup)
 
@@ -657,3 +704,144 @@ async def test_concurrent_conflicting_resolutions_settle_exactly_once(
     assert receipt is not None
     assert receipt.outcome == outcome
     assert await _ledger_counts(seed.wallet_id) == ledger
+
+
+@pytest.mark.anyio
+async def test_timed_out_sweep_settles_uncertain_before_late_confirmation(
+    client: AsyncClient,
+    clean_database,
+) -> None:
+    seed = await _seed_claimed(client, "lookup-race-timeout")
+    arrived = 0
+    both_in_flight = asyncio.Event()
+    timed_out_finished = asyncio.Event()
+
+    async def arrive() -> None:
+        nonlocal arrived
+        arrived += 1
+        if arrived == 2:
+            both_in_flight.set()
+        await asyncio.wait_for(both_in_flight.wait(), timeout=5)
+
+    async def times_out(
+        query: UpstreamDispatchStatusQuery,
+    ) -> UpstreamDispatchStatus:
+        await arrive()
+        # The exact exception asyncio.wait_for raises on expiry. Raising it
+        # once both sweeps hold the stale snapshot fixes the order without a
+        # wall-clock race; the real wait_for expiry is covered by
+        # test_hanging_lookup_times_out_to_delivery_uncertain.
+        raise TimeoutError
+
+    async def confirms_late(
+        query: UpstreamDispatchStatusQuery,
+    ) -> UpstreamDispatchStatus:
+        await arrive()
+        await asyncio.wait_for(timed_out_finished.wait(), timeout=5)
+        return UpstreamDispatchStatus(delivered=True, result_payload=UPSTREAM_RESULT)
+
+    async def run_timed_out():
+        try:
+            return await _reconciler(times_out).reconcile(idle_seconds=300)
+        finally:
+            timed_out_finished.set()
+
+    # A generous bound so the late lookup really answers instead of timing
+    # out itself while the first sweep finalizes.
+    late_reconciler = _reconciler(confirms_late, status_lookup_timeout_seconds=30)
+    timed_out, late = await asyncio.gather(
+        run_timed_out(),
+        late_reconciler.reconcile(idle_seconds=300),
+    )
+
+    assert arrived == 2
+    assert timed_out.failed_attempt_ids == ()
+    assert late.failed_attempt_ids == ()
+    assert (timed_out.dispatched_uncertain, timed_out.status_resolved) == (1, 0)
+    # The late confirmation hits the guarded complete(), loses, and adopts
+    # the already-signed uncertain outcome instead of signing a success.
+    assert (late.status_resolved, late.terminal_recovered) == (0, 1)
+    attempt = await _attempt(seed.attempt_id)
+    assert await _receipt_count(attempt.idempotency_record_id) == 1
+    await _assert_stays_uncertain(seed)
+
+
+def _sync_lookup(query: UpstreamDispatchStatusQuery) -> None:
+    return None
+
+
+async def _async_lookup(query: UpstreamDispatchStatusQuery, extra: int = 0) -> None:
+    return None
+
+
+class _SyncCallLookup:
+    def __call__(self, query: UpstreamDispatchStatusQuery) -> None:
+        return None
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        _sync_lookup,
+        lambda query: None,
+        _SyncCallLookup(),
+        functools.partial(_sync_lookup),
+        # A sync function that returns a coroutine still runs its own body
+        # before wait_for can bound anything.
+        lambda query: _async_lookup(query),
+        "not-callable",
+        None,
+    ],
+    ids=[
+        "sync-def",
+        "sync-lambda",
+        "sync-call-object",
+        "partial-of-sync",
+        "sync-returning-coroutine",
+        "string",
+        "none",
+    ],
+)
+def test_sync_or_non_callable_lookups_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    lookup: object,
+) -> None:
+    monkeypatch.setattr(reconciliation_module, "_REGISTERED_STATUS_LOOKUPS", {})
+    with pytest.raises(TypeError, match="async callable"):
+        register_upstream_status_lookup(ORIGIN, lookup)  # type: ignore[arg-type]
+    assert reconciliation_module._REGISTERED_STATUS_LOOKUPS == {}
+    with pytest.raises(TypeError, match="async callable"):
+        McpDispatchReconciliationService(
+            max_result_bytes=4096,
+            status_lookups={ORIGIN: lookup},  # type: ignore[dict-item]
+        )
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        _async_lookup,
+        RecordingLookup(None),
+        functools.partial(_async_lookup, extra=1),
+        functools.partial(RecordingLookup(None)),
+        functools.partial(functools.partial(_async_lookup), extra=1),
+    ],
+    ids=[
+        "async-def",
+        "async-call-object",
+        "partial-of-async",
+        "partial-of-async-call-object",
+        "nested-partial",
+    ],
+)
+def test_async_lookups_are_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    lookup: object,
+) -> None:
+    monkeypatch.setattr(reconciliation_module, "_REGISTERED_STATUS_LOOKUPS", {})
+    register_upstream_status_lookup(ORIGIN, lookup)  # type: ignore[arg-type]
+    assert reconciliation_module._REGISTERED_STATUS_LOOKUPS == {ORIGIN: lookup}
+    McpDispatchReconciliationService(
+        max_result_bytes=4096,
+        status_lookups={ORIGIN: lookup},  # type: ignore[dict-item]
+    )

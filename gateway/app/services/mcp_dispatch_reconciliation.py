@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, cast
 
+from mcp.client.session import ClientSession
 from mcp.types import CallToolResult
 from sqlalchemy import select
 from sqlalchemy.sql.elements import ColumnElement
@@ -68,8 +73,10 @@ _PERMIT_SNAPSHOT_KEYS = frozenset(
 _LEGACY_UNSNAPSHOTTED_OUTCOMES = frozenset(
     {"success", "failed_refunded", "delivery_uncertain", "response_rejected"}
 )
-# Per-attempt bound on a status lookup. A hang falls back to
-# delivery_uncertain, so one sweep waits at most limit * this value on lookups.
+# Per-lookup bound on awaiting a status lookup. A hang falls back to
+# delivery_uncertain. Lookups run one after another, so a sweep can spend up
+# to limit * this value awaiting them. The bound cannot interrupt synchronous
+# work, which is why only coroutine functions are accepted as lookups.
 STATUS_LOOKUP_TIMEOUT_SECONDS = 5.0
 
 
@@ -106,6 +113,11 @@ class UpstreamDispatchStatus:
     exactly as on the live path. ``delivered=False`` is logged but does not
     change the outcome: the attempt stays ``delivery_uncertain`` (see
     ``_proven_outcome``).
+
+    The reflected-credential check compares against the binding's current
+    bearer token only. The attempt does not record which token was used at
+    dispatch, so a payload echoing an older, rotated token is not caught here.
+    A lookup must not return provider data that can contain credentials.
     """
 
     delivered: bool
@@ -125,6 +137,24 @@ UpstreamDispatchStatusLookup = Callable[
 _REGISTERED_STATUS_LOOKUPS: dict[str, UpstreamDispatchStatusLookup] = {}
 
 
+def _require_async_lookup(lookup: object) -> None:
+    """Reject lookups whose body would run synchronously on the event loop.
+
+    ``asyncio.wait_for`` can only bound awaiting. A plain function runs to
+    completion before the timeout starts, so a blocking one stalls the loop.
+    Accepts ``async def`` functions, objects with an ``async def __call__``,
+    and ``functools.partial`` wrappers of either.
+    """
+    target = lookup
+    while isinstance(target, functools.partial):
+        target = target.func
+    if not (
+        inspect.iscoroutinefunction(target)
+        or (callable(target) and inspect.iscoroutinefunction(type(target).__call__))
+    ):
+        raise TypeError("status lookup must be an async callable")
+
+
 def register_upstream_status_lookup(
     upstream_origin: str,
     lookup: UpstreamDispatchStatusLookup,
@@ -136,8 +166,7 @@ def register_upstream_status_lookup(
     registry on every sweep, so registering before or after it was created
     both work. Registering an origin again replaces its lookup.
     """
-    if not callable(lookup):
-        raise TypeError("status lookup must be callable")
+    _require_async_lookup(lookup)
     _REGISTERED_STATUS_LOOKUPS[upstream_origin] = lookup
 
 
@@ -183,6 +212,8 @@ class McpDispatchReconciliationService:
         # Optional, keyed by upstream_origin. None means "use the process-wide
         # registry". An origin without a lookup keeps the conservative
         # stale-claim -> delivery_uncertain behaviour.
+        for lookup in (status_lookups or {}).values():
+            _require_async_lookup(lookup)
         self._status_lookups = (
             dict(status_lookups) if status_lookups is not None else None
         )
@@ -477,9 +508,10 @@ class McpDispatchReconciliationService:
         """Ask the optional per-upstream hook how a stale claim ended.
 
         Returns ``complete()`` keyword arguments for a proven outcome, or None
-        when the attempt must stay delivery_uncertain. The hook receives only
-        an immutable query, never the executor, so it has no way to resend.
-        Legacy ``dispatched`` rows are skipped: ``complete()`` only lets them
+        when the attempt must stay delivery_uncertain. The gateway never
+        resends here and hands the hook only an immutable query, not the
+        executor. The hook itself is operator code, so what it calls is the
+        operator's responsibility. Legacy ``dispatched`` rows are skipped: ``complete()`` only lets them
         become delivery_uncertain.
         """
         attempt = context.attempt
@@ -512,7 +544,7 @@ class McpDispatchReconciliationService:
             status = await asyncio.wait_for(
                 lookup(query), timeout=self._status_lookup_timeout
             )
-            return self._proven_outcome(attempt, status)
+            return await self._proven_outcome(attempt, status)
         except Exception as exc:
             # Includes TimeoutError and any malformed answer: not proof.
             logger.warning(
@@ -523,7 +555,7 @@ class McpDispatchReconciliationService:
             return None
 
     @staticmethod
-    def _proven_outcome(
+    async def _proven_outcome(
         attempt: McpDispatchAttemptModel,
         status: object,
     ) -> dict[str, Any] | None:
@@ -561,9 +593,28 @@ class McpDispatchReconciliationService:
             or executor.configuration.tool_name != attempt.upstream_tool_name
         ):
             raise DispatchAttemptError("dispatch_status_lookup_executor_unavailable")
-        result = executor._canonicalize_result(
-            CallToolResult.model_validate(status.result_payload)
-        )
+        # The live path refuses to call an undiscovered tool, so there is no
+        # output schema to check against: not proof.
+        discovered = executor.discovered_tool
+        if discovered is None:
+            raise DispatchAttemptError("dispatch_status_lookup_executor_unavailable")
+        call_result = CallToolResult.model_validate(status.result_payload)
+        if not call_result.isError:
+            # The live path seeds ClientSession._tool_output_schemas with the
+            # discovered schema and lets the SDK validate structuredContent
+            # inside call_tool(); a failure there ends delivery_uncertain.
+            # Run that same SDK validator on the same seed. The name is
+            # present, so it never lists tools; a None schema skips the
+            # check exactly as it does live.
+            seeded = SimpleNamespace(
+                _tool_output_schemas={
+                    attempt.upstream_tool_name: deepcopy(discovered.output_schema)
+                }
+            )
+            await ClientSession._validate_tool_result(
+                cast(ClientSession, seeded), attempt.upstream_tool_name, call_result
+            )
+        result = executor._canonicalize_result(call_result)
         if result.is_error:
             # Same terminal shape as the live UpstreamMcpReturnedError path,
             # which _finalize_terminal refunds through compensation.

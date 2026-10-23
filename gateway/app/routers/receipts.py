@@ -47,8 +47,10 @@ async def get_wallet_resolution_chain(
     wallet_id: str,
     limit: int = Query(100, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> ResolutionListResponse:
-    """Publish a wallet's resolution chain for credential-free offline checks."""
+    """List a wallet's resolution chain for readers with receipt access."""
+    await _authorize_receipt_list(auth=auth, wallet_id=wallet_id, permit_id=None)
     try:
         models, total = await list_wallet_resolutions(
             wallet_id, limit=limit, offset=offset
@@ -67,8 +69,15 @@ async def get_wallet_resolution_chain(
 
 
 @router.get("/{receipt_id}/resolution", response_model=ResolutionResponse)
-async def get_receipt_resolution(receipt_id: str) -> ResolutionResponse:
-    """Publish a final outcome without requiring the reader's credentials."""
+async def get_receipt_resolution(
+    receipt_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+) -> ResolutionResponse:
+    """Return a receipt's resolution to a reader with receipt access."""
+    receipt = await get_receipt_service().get_receipt(receipt_id)
+    if not receipt:
+        raise HTTPException(status_code=404, detail="receipt_not_found")
+    await authorize_receipt_access(auth=auth, receipt=receipt)
     try:
         model = await get_resolution(receipt_id)
     except ReceiptResolutionError as exc:
@@ -321,10 +330,9 @@ async def get_portable_receipt(
 ) -> PortableReceiptResponse:
     """Export a receipt as evidence that survives leaving this plane.
 
-    Reading a receipt is authorized like any other tenant data. What the
-    caller gets back is not: the bundle can be handed to a downstream agent,
-    an auditor, or an operator who holds no credential here, and they can
-    still check the signature against the published keys.
+    Reading a receipt requires receipt access. After export, a downstream
+    agent, auditor, or operator can verify the bundle offline using only
+    trusted public keys.
     """
     receipt = await get_receipt_service().get_receipt(receipt_id)
     if not receipt:

@@ -43,7 +43,7 @@ outcome, by itself, states that a debit or refund occurred. SEL-352 provides
 the append operation but does not call it from SEL-351's provider-outcome
 commit path.
 
-## Portable response and public reads
+## Portable response and authorized reads
 
 Each record response contains `signing_input`, base64 `signature`,
 `canonicalization: "awi-canonical-json/1"`, and `resolution_hash`. It also
@@ -56,11 +56,11 @@ verified `signing_input`. The mirrors, `issuer`, and `resolution_hash` are
 outside the signature; the signed bytes remain the source of truth.
 
 - `GET /v1/receipts/{receipt_id}/resolution` returns one record by original
-  receipt, or 404 when no resolution exists.
+  receipt, or 404 when no resolution exists. Reading it requires receipt access.
 - `GET /v1/receipts/resolutions/wallet/{wallet_id}?limit=...&offset=...`
   returns a page ordered by `sequence` with `records`, `total`, `limit`,
-  `offset`, `has_more`, and `next_offset`. These resolution reads require no
-  credential.
+  `offset`, `has_more`, and `next_offset`. Reading it requires access to that
+  wallet's receipts.
 - `GET /.well-known/trust-keys.json` publishes the verification keys. An
   offline verifier must receive this document through a channel it trusts;
   the record's unauthenticated `kid` mirror or key URL cannot establish the
@@ -73,6 +73,9 @@ resolution's signed `receipt_hash`. The receipt's signed `receipt_id` and
 `wallet_id` must also match the resolution.
 
 ## Offline verification
+
+With a resolution record and portable receipt bundle already in hand, offline
+verification needs trusted public keys and no gateway credential.
 
 Python callers can parse a previously obtained key document with
 `key_set_from_document`, then call `verify_resolution(record, receipt_bundle,

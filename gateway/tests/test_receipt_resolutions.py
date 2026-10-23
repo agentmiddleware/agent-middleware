@@ -242,7 +242,7 @@ async def test_corrupt_wallet_head_refuses_next_append(client, clean_database):
 
 
 @pytest.mark.anyio
-async def test_public_resolution_and_wallet_chain_verify_without_credentials(
+async def test_authorized_resolution_and_wallet_chain_verify_offline(
     client, clean_database
 ):
     provisioned, permit = await _setup(client)
@@ -256,26 +256,30 @@ async def test_public_resolution_and_wallet_chain_verify_without_credentials(
     assert second.prev_hash == first.resolution_hash
 
     record_response = await client.get(
-        f"/v1/receipts/{first_receipt.receipt_id}/resolution"
+        f"/v1/receipts/{first_receipt.receipt_id}/resolution",
+        headers=provisioned["agent_headers"],
     )
     assert record_response.status_code == 200, record_response.text
     record = record_response.json()
     assert record["resolution_id"] == first.resolution_id
 
     chain_response = await client.get(
-        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}"
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}",
+        headers=provisioned["agent_headers"],
     )
     assert chain_response.status_code == 200, chain_response.text
     chain = chain_response.json()
     assert chain["total"] == 2
     assert [item["sequence"] for item in chain["records"]] == [1, 2]
     first_page = await client.get(
-        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}?limit=1"
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}?limit=1",
+        headers=provisioned["agent_headers"],
     )
     assert first_page.status_code == 200, first_page.text
     assert first_page.json()["next_offset"] == 1
     second_page = await client.get(
-        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}?limit=1&offset=1"
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}?limit=1&offset=1",
+        headers=provisioned["agent_headers"],
     )
     assert second_page.status_code == 200, second_page.text
     assert second_page.json()["next_offset"] is None
@@ -308,11 +312,46 @@ async def test_public_resolution_and_wallet_chain_verify_without_credentials(
 
 
 @pytest.mark.anyio
+async def test_resolution_get_requires_receipt_access(client, clean_database):
+    owner, permit = await _setup(client)
+    stranger = await provision_agent_wallet(client)
+    receipt = await _uncertain_receipt(owner, permit, "access-check")
+    await append_resolution(receipt.receipt_id, "confirmed_success")
+    path = f"/v1/receipts/{receipt.receipt_id}/resolution"
+
+    unauthenticated = await client.get(path)
+    assert unauthenticated.status_code == 401
+
+    other_wallet = await client.get(path, headers=stranger["agent_headers"])
+    assert other_wallet.status_code == 403
+    assert other_wallet.json()["detail"]["error"] == "wallet_access_denied"
+
+
+@pytest.mark.anyio
+async def test_wallet_resolution_chain_requires_receipt_access(client, clean_database):
+    owner, permit = await _setup(client)
+    stranger = await provision_agent_wallet(client)
+    receipt = await _uncertain_receipt(owner, permit, "chain-access-check")
+    await append_resolution(receipt.receipt_id, "confirmed_success")
+    path = f"/v1/receipts/resolutions/wallet/{owner['agent_wallet_id']}"
+
+    unauthenticated = await client.get(path)
+    assert unauthenticated.status_code == 401
+
+    other_wallet = await client.get(path, headers=stranger["agent_headers"])
+    assert other_wallet.status_code == 403
+    assert other_wallet.json()["detail"]["error"] == "wallet_access_denied"
+
+
+@pytest.mark.anyio
 async def test_resolution_get_returns_404_when_absent(client, clean_database):
     provisioned, permit = await _setup(client)
     receipt = await _uncertain_receipt(provisioned, permit, "unresolved")
 
-    response = await client.get(f"/v1/receipts/{receipt.receipt_id}/resolution")
+    response = await client.get(
+        f"/v1/receipts/{receipt.receipt_id}/resolution",
+        headers=provisioned["agent_headers"],
+    )
     assert response.status_code == 404
     assert response.json()["detail"] == "resolution_not_found"
 
@@ -335,7 +374,8 @@ async def test_wallet_chain_rejects_tampered_middle_record(client, clean_databas
         await session.commit()
 
     response = await client.get(
-        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}"
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}",
+        headers=provisioned["agent_headers"],
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "resolution_integrity_invalid"
@@ -362,7 +402,8 @@ async def test_wallet_chain_verifies_across_key_rotation(
     assert second.signature_key_id == rotated.key_id
 
     chain_response = await client.get(
-        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}"
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}",
+        headers=provisioned["agent_headers"],
     )
     assert chain_response.status_code == 200, chain_response.text
     keys_response = await client.get("/.well-known/trust-keys.json")
@@ -386,7 +427,8 @@ async def test_wallet_chain_offset_past_end_returns_empty_page(client, clean_dat
     await append_resolution(receipt.receipt_id, "confirmed_success")
 
     response = await client.get(
-        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}?offset=5"
+        f"/v1/receipts/resolutions/wallet/{provisioned['agent_wallet_id']}?offset=5",
+        headers=provisioned["agent_headers"],
     )
     assert response.status_code == 200, response.text
     page = response.json()
@@ -407,7 +449,8 @@ async def test_resolution_for_a_different_valid_receipt_is_rejected(
     await append_resolution(first_receipt.receipt_id, "confirmed_success")
 
     record_response = await client.get(
-        f"/v1/receipts/{first_receipt.receipt_id}/resolution"
+        f"/v1/receipts/{first_receipt.receipt_id}/resolution",
+        headers=provisioned["agent_headers"],
     )
     assert record_response.status_code == 200, record_response.text
     keys_response = await client.get("/.well-known/trust-keys.json")
@@ -428,7 +471,10 @@ async def test_tampered_resolution_signing_input_is_rejected(client, clean_datab
     receipt = await _uncertain_receipt(provisioned, permit, "tamper")
     await append_resolution(receipt.receipt_id, "confirmed_success")
 
-    record_response = await client.get(f"/v1/receipts/{receipt.receipt_id}/resolution")
+    record_response = await client.get(
+        f"/v1/receipts/{receipt.receipt_id}/resolution",
+        headers=provisioned["agent_headers"],
+    )
     assert record_response.status_code == 200, record_response.text
     keys_response = await client.get("/.well-known/trust-keys.json")
     assert keys_response.status_code == 200, keys_response.text

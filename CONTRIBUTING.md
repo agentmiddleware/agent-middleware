@@ -42,7 +42,7 @@ Local lint and type-check must use the blessed versions in
 `gateway/requirements-dev.txt`. CI installs those same versions
 (`.github/workflows/ci.yml`):
 
-- ruff `0.17.1` (`RUFF_VERSION`)
+- ruff `0.17.1` (`RUFF_VERSION` in `.github/workflows/ci.yml` and `.github/workflows/lint.yml`)
 - mypy `2.4.0` (`MYPY_VERSION`)
 
 `gateway/requirements.txt` pins mypy to `2.4.0` as well, so an application

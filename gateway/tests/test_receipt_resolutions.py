@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select, text
 
+from app.db import database as database_module
 from app.db.database import get_session_factory
 from app.db.models import (
     ReceiptResolutionModel,
@@ -166,59 +167,70 @@ async def test_concurrent_wallet_appends_preserve_one_chain(client, clean_databa
     assert second.prev_hash == first.resolution_hash
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio(loop_scope="session")
 @collection_mark(flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=POSTGRES_REASON)
-async def test_postgres_parallel_wallet_appends_preserve_one_chain(
-    client, clean_database
-):
-    require_live_postgres(flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=POSTGRES_REASON)
-    provisioned, permit = await _setup(client)
-    receipts = [
-        await _uncertain_receipt(provisioned, permit, f"postgres-{index}")
-        for index in range(10)
-    ]
-
-    records = await asyncio.gather(
-        *(
-            append_resolution(receipt.receipt_id, "confirmed_success")
-            for receipt in receipts
-        )
-    )
-    ordered = sorted(records, key=lambda record: record.sequence)
-    assert [record.sequence for record in ordered] == list(range(1, 11))
-    assert ordered[0].prev_hash is None
-    assert all(
-        current.prev_hash == previous.resolution_hash
-        for previous, current in zip(ordered[:-1], ordered[1:], strict=True)
-    )
-
-    async with get_session_factory()() as session:
-        stored = (
-            (
-                await session.execute(
-                    select(ReceiptResolutionModel)
-                    .where(
-                        ReceiptResolutionModel.wallet_id
-                        == provisioned["agent_wallet_id"]
-                    )
-                    .order_by(ReceiptResolutionModel.sequence)
-                )
+async def test_postgres_parallel_wallet_appends_preserve_one_chain(monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(database_module, "_engine", None)
+        patch.setattr(database_module, "_session_factory", None)
+        engine = database_module.get_engine()
+        try:
+            require_live_postgres(
+                flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=POSTGRES_REASON
             )
-            .scalars()
-            .all()
-        )
-        head = await session.get(
-            ResolutionChainHeadModel, provisioned["agent_wallet_id"]
-        )
-    assert [record.resolution_id for record in stored] == [
-        record.resolution_id for record in ordered
-    ]
-    assert {record.receipt_id for record in stored} == {
-        receipt.receipt_id for receipt in receipts
-    }
-    assert head is not None
-    assert head.last_sequence == 10
-    assert head.last_hash == ordered[-1].resolution_hash
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                provisioned, permit = await _setup(client)
+                receipts = [
+                    await _uncertain_receipt(provisioned, permit, f"postgres-{index}")
+                    for index in range(10)
+                ]
+
+                records = await asyncio.gather(
+                    *(
+                        append_resolution(receipt.receipt_id, "confirmed_success")
+                        for receipt in receipts
+                    )
+                )
+                ordered = sorted(records, key=lambda record: record.sequence)
+                assert [record.sequence for record in ordered] == list(range(1, 11))
+                assert ordered[0].prev_hash is None
+                assert all(
+                    current.prev_hash == previous.resolution_hash
+                    for previous, current in zip(ordered[:-1], ordered[1:], strict=True)
+                )
+
+                async with get_session_factory()() as session:
+                    stored = (
+                        (
+                            await session.execute(
+                                select(ReceiptResolutionModel)
+                                .where(
+                                    ReceiptResolutionModel.wallet_id
+                                    == provisioned["agent_wallet_id"]
+                                )
+                                .order_by(ReceiptResolutionModel.sequence)
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    head = await session.get(
+                        ResolutionChainHeadModel, provisioned["agent_wallet_id"]
+                    )
+            assert [record.resolution_id for record in stored] == [
+                record.resolution_id for record in ordered
+            ]
+            assert {record.receipt_id for record in stored} == {
+                receipt.receipt_id for receipt in receipts
+            }
+            assert head is not None
+            assert head.last_sequence == 10
+            assert head.last_hash == ordered[-1].resolution_hash
+        finally:
+            if engine is not None:
+                await engine.dispose()
 
 
 @pytest.mark.anyio

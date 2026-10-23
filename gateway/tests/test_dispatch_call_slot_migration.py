@@ -6,6 +6,7 @@ import os
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -23,6 +24,7 @@ if TARGET:
 
 PREVIOUS = "037_mcp_dispatch_claim_hash"
 REVISION = "038_dispatch_call_slot_dup_idx"
+HEAD_REVISION = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
 INDEX = "ix_mcp_dispatch_attempts_duplicate_detection"
 
 
@@ -107,4 +109,4 @@ def test_dispatch_call_slot_upgrade_recovers_after_concurrent_index_failure(
         command.upgrade(config, REVISION)
 
     command.upgrade(config, "head")
-    assert sql("SELECT version_num FROM alembic_version") == [("043_demo_key_fields",)]
+    assert sql("SELECT version_num FROM alembic_version") == [(HEAD_REVISION,)]

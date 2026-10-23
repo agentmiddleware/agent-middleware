@@ -6,6 +6,8 @@ import subprocess
 import sys
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from tests.support import db_gate
 from tests.support.action_database_guard import (
@@ -27,7 +29,7 @@ FIELDS = (
     "action_upstream_binding_hash",
 )
 ACTION_REVISION = "042_permit_action_binding"
-HEAD_REVISION = "043_demo_key_fields"
+HEAD_REVISION = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
 SCRUB_REVISION = "041_scrub_content_owner_keys"
 CONTENT_TABLES = ("content_pipelines", "content_campaigns")
 AUTHORITIES = [

@@ -146,7 +146,8 @@ the live path. Any other answer leaves the attempt `delivery_uncertain`:
 - an exception, a timeout, or `None`
 - a malformed answer or a non-`bool` `delivered`
 - a delivered answer with no result, or a result that fails the gate
-- `structuredContent` that is missing or does not match the `outputSchema`
+- a non-error (`isError` false) result whose `structuredContent` is missing or
+  does not match the `outputSchema` (`isError` results skip this check)
 - no matching executor, or one whose tool was never discovered
 - a result that cannot be stored
 

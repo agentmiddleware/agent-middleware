@@ -165,6 +165,11 @@ def register_upstream_status_lookup(
     (scheme://host[:port], no path). The reconciliation singleton reads this
     registry on every sweep, so registering before or after it was created
     both work. Registering an origin again replaces its lookup.
+
+    Token rotation: result redaction only compares against the bearer token
+    current at reconciliation time. A recorded result that echoes a token
+    from before a rotation is not caught, so rotate tokens only after any
+    attempts dispatched with the old token have been reconciled.
     """
     _require_async_lookup(lookup)
     _REGISTERED_STATUS_LOOKUPS[upstream_origin] = lookup
@@ -540,9 +545,19 @@ class McpDispatchReconciliationService:
             request_hash=attempt.request_hash,
             dispatched_at=attempt.dispatched_at,
         )
+
+        async def _call_lookup() -> object:
+            # The call itself runs inside wait_for, so a sync function that
+            # only claims to be async (markcoroutinefunction) cannot run
+            # before the timeout scope or return a bare value as an answer.
+            pending = lookup(query)
+            if not inspect.isawaitable(pending):
+                raise DispatchAttemptError("dispatch_status_lookup_not_awaitable")
+            return await pending
+
         try:
             status = await asyncio.wait_for(
-                lookup(query), timeout=self._status_lookup_timeout
+                _call_lookup(), timeout=self._status_lookup_timeout
             )
             return await self._proven_outcome(attempt, status)
         except Exception as exc:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
+import inspect
 from decimal import Decimal
 
 import pytest
@@ -815,6 +816,40 @@ def test_sync_or_non_callable_lookups_are_rejected(
             max_result_bytes=4096,
             status_lookups={ORIGIN: lookup},  # type: ignore[dict-item]
         )
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(
+    not hasattr(inspect, "markcoroutinefunction"),
+    reason="inspect.markcoroutinefunction needs Python 3.12+",
+)
+@pytest.mark.parametrize(
+    "wrap", [False, True], ids=["marked-sync", "partial-of-marked-sync"]
+)
+async def test_marked_sync_lookup_returning_non_awaitable_stays_uncertain(
+    client: AsyncClient,
+    clean_database,
+    wrap: bool,
+) -> None:
+    # markcoroutinefunction makes a sync function pass registration. Its bare
+    # return value, even a well-formed delivered answer, is not proof.
+    seed = await _seed_claimed(client, "lookup-marked-sync")
+    calls: list[UpstreamDispatchStatusQuery] = []
+
+    def marked(query: UpstreamDispatchStatusQuery) -> UpstreamDispatchStatus:
+        calls.append(query)
+        return UpstreamDispatchStatus(delivered=True, result_payload=UPSTREAM_RESULT)
+
+    inspect.markcoroutinefunction(marked)
+    lookup = functools.partial(marked) if wrap else marked
+
+    result = await _reconciler(lookup).reconcile(idle_seconds=300)
+
+    assert len(calls) == 1
+    assert result.dispatched_uncertain == 1
+    assert result.status_resolved == 0
+    assert result.failed_attempt_ids == ()
+    await _assert_stays_uncertain(seed)
 
 
 @pytest.mark.parametrize(

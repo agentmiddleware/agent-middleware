@@ -1103,7 +1103,10 @@ def test_durable_sqlite_url_accepts_url_and_path_forms(monkeypatch, tmp_path):
     raw = str(tmp_path / "r.db")
     assert _durable(monkeypatch, SQLITE_URL=raw)._sqlite_url == raw
     assert _durable(monkeypatch, SQLITE_URL=":memory:")._sqlite_url == ":memory:"
-    assert _durable(monkeypatch, SQLITE_URL="sqlite:///:memory:")._sqlite_url == ""
+    # URL form must match the raw shorthand; "" fell through to DATABASE_URL.
+    assert (
+        _durable(monkeypatch, SQLITE_URL="sqlite:///:memory:")._sqlite_url == ":memory:"
+    )
 
 
 @pytest.mark.anyio

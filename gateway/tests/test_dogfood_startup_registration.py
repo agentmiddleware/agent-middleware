@@ -27,7 +27,10 @@ def test_lifespan_registers_dogfood_tool_without_discovery(
     saved_entries = (
         (registry._local_registry, registry._local_registry.get(tool_id, missing)),
         (registry._func_registry, registry._func_registry.get(tool_id, missing)),
-        (registry._executor_registry, registry._executor_registry.get(tool_id, missing)),
+        (
+            registry._executor_registry,
+            registry._executor_registry.get(tool_id, missing),
+        ),
     )
     saved_registered = dogfood_tool._registered
     saved_note_count = dogfood_tool._note_count

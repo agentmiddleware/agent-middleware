@@ -268,8 +268,8 @@ def _local_try_it_manifest() -> dict[str, Any]:
     """Credential-free proof path for the logical-action transaction loop."""
     return {
         "mode": "local_self_hosted",
-        "repository": "https://github.com/PetrefiedThunder/agent-middleware",
-        "repository_access": "private",
+        "repository": "https://github.com/agentmiddleware/agent-middleware",
+        "repository_access": "public",
         "command": "make prove-trust-plane",
         "live_access": "operator_issued",
         "requires_live_credentials": False,

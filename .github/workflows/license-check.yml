@@ -2,9 +2,10 @@
 # Fails if any RUNTIME dependency of an Apache-licensed package is GPL/AGPL-only.
 # gateway/ (FSL-1.1-ALv2, own LICENSE.md) is excluded automatically by detect_projects.py.
 # LGPL and dual-licensed "X OR GPL" deps pass. Reviewed exceptions: .github/license-allowlist.txt
-# On pull requests the scan jobs run only when a dependency manifest or lockfile (or this
-# gate's own config/scripts) changed; the triggers stay unfiltered so "License result"
-# always reports.
+# On pull requests the scan jobs run only when a dependency manifest, a lockfile, a governing
+# license file, or this gate's own config/scripts changed. Governing license files have a
+# basename of LICENSE, LICENCE, or COPYING with an optional extension (any case), or sit under
+# a LICENSES/ directory. Triggers stay unfiltered so "License result" always reports.
 name: License check
 
 on:
@@ -48,8 +49,9 @@ jobs:
       - id: d
         run: python3 .github/scripts/detect_projects.py
       - id: deps
-        # Scan a pull request only when a dependency manifest, a lockfile, or
-        # this gate's own configuration changed. Every other event scans.
+        # Scan a pull request only when a dependency manifest, a lockfile, a
+        # governing license file, or this gate's own configuration changed.
+        # Every other event scans.
         if: github.event_name == 'pull_request'
         run: |
           python3 - <<'PY'
@@ -70,13 +72,25 @@ jobs:
               r"pnpm-lock\.yaml|yarn\.lock|pyproject\.toml|package\.json|go\.sum|"
               r"Cargo\.lock)$"
           )
+          # Basename only, any case. LICENSES/ is a directory component at any depth.
+          license_base = re.compile(
+              r"^(LICENSE|LICENCE|COPYING)(\.[^/]*)?$",
+              re.IGNORECASE,
+          )
           gate_paths = {
               ".github/license-allowlist.txt",
               ".github/scripts/check_licenses.py",
               ".github/scripts/detect_projects.py",
               ".github/workflows/license-check.yml",
           }
-          hits = [p for p in changed if manifest.search(p) or p in gate_paths]
+
+          def is_license_input(path):
+              name = path.rsplit("/", 1)[-1]
+              if license_base.fullmatch(name):
+                  return True
+              return "LICENSES" in path.split("/")[:-1]
+
+          hits = [p for p in changed if manifest.search(p) or is_license_input(p) or p in gate_paths]
           print("dependency-relevant changes:", hits or "none")
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               print(f"changed={str(bool(hits)).lower()}", file=out)

@@ -30,6 +30,11 @@ env:
   PYTEST_VERSION: "9.1.1"
 
 jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    permissions:
+      contents: read
+
   detect:
     # One job for both discovery and PR scoping: each is a few seconds, and
     # merging them avoids paying a separate job-minute for each.
@@ -629,7 +634,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [lint, detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

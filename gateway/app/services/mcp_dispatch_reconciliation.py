@@ -12,7 +12,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from types import SimpleNamespace
+from types import FunctionType, SimpleNamespace
 from typing import Any, cast
 
 from mcp.client.session import ClientSession
@@ -142,15 +142,28 @@ def _require_async_lookup(lookup: object) -> None:
 
     ``asyncio.wait_for`` can only bound awaiting. A plain function runs to
     completion before the timeout starts, so a blocking one stalls the loop.
-    Accepts ``async def`` functions, objects with an ``async def __call__``,
-    and ``functools.partial`` wrappers of either.
+    Accepts ``async def`` functions, bound async methods, objects with an
+    ``async def __call__``, and ``functools.partial`` wrappers of these.
+    Checks the real code object's ``CO_COROUTINE`` flag instead of
+    ``inspect.iscoroutinefunction``, which trusts ``markcoroutinefunction``
+    and so would accept a marked synchronous function.
     """
     target = lookup
-    while isinstance(target, functools.partial):
-        target = target.func
+    # Bounded: builtins' type(x).__call__ chains never reach a FunctionType.
+    for _ in range(16):
+        if isinstance(target, functools.partial):
+            target = target.func
+        elif inspect.ismethod(target):
+            target = target.__func__
+        elif isinstance(target, FunctionType) or isinstance(target, type):
+            break
+        elif callable(target):
+            target = type(target).__call__
+        else:
+            break
     if not (
-        inspect.iscoroutinefunction(target)
-        or (callable(target) and inspect.iscoroutinefunction(type(target).__call__))
+        isinstance(target, FunctionType)
+        and target.__code__.co_flags & inspect.CO_COROUTINE
     ):
         raise TypeError("status lookup must be an async callable")
 

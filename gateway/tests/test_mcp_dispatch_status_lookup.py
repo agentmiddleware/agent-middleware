@@ -14,6 +14,7 @@ import asyncio
 import dataclasses
 import functools
 import inspect
+import time
 from decimal import Decimal
 
 import pytest
@@ -831,8 +832,9 @@ async def test_marked_sync_lookup_returning_non_awaitable_stays_uncertain(
     clean_database,
     wrap: bool,
 ) -> None:
-    # markcoroutinefunction makes a sync function pass registration. Its bare
-    # return value, even a well-formed delivered answer, is not proof.
+    # Registration rejects marked sync functions; this injects one past that
+    # check to prove the runtime awaitable check still holds: its bare return
+    # value, even a well-formed delivered answer, is not proof.
     seed = await _seed_claimed(client, "lookup-marked-sync")
     calls: list[UpstreamDispatchStatusQuery] = []
 
@@ -842,14 +844,76 @@ async def test_marked_sync_lookup_returning_non_awaitable_stays_uncertain(
 
     inspect.markcoroutinefunction(marked)
     lookup = functools.partial(marked) if wrap else marked
+    service = _reconciler(_async_lookup)
+    service._status_lookups = {ORIGIN: lookup}
 
-    result = await _reconciler(lookup).reconcile(idle_seconds=300)
+    result = await service.reconcile(idle_seconds=300)
 
     assert len(calls) == 1
     assert result.dispatched_uncertain == 1
     assert result.status_resolved == 0
     assert result.failed_attempt_ids == ()
     await _assert_stays_uncertain(seed)
+
+
+@pytest.mark.skipif(
+    not hasattr(inspect, "markcoroutinefunction"),
+    reason="inspect.markcoroutinefunction needs Python 3.12+",
+)
+@pytest.mark.parametrize(
+    "shape",
+    ["function", "partial", "nested-partial", "bound-method", "call-object"],
+)
+def test_marked_blocking_sync_lookup_is_rejected_without_being_called(
+    monkeypatch: pytest.MonkeyPatch,
+    shape: str,
+) -> None:
+    # The marker fools inspect.iscoroutinefunction; the code object does not.
+    invoked: list[bool] = []
+
+    def blocking(*args: object) -> None:
+        invoked.append(True)
+        time.sleep(5)
+
+    class Holder:
+        def method(self, query: UpstreamDispatchStatusQuery) -> None:
+            blocking(query)
+
+        inspect.markcoroutinefunction(method)
+
+    class CallObject:
+        def __call__(self, query: UpstreamDispatchStatusQuery) -> None:
+            blocking(query)
+
+        inspect.markcoroutinefunction(__call__)
+
+    inspect.markcoroutinefunction(blocking)
+    lookup = {
+        "function": blocking,
+        "partial": functools.partial(blocking),
+        "nested-partial": functools.partial(functools.partial(blocking)),
+        "bound-method": Holder().method,
+        "call-object": CallObject(),
+    }[shape]
+    assert inspect.iscoroutinefunction(
+        lookup if shape != "call-object" else type(lookup).__call__
+    )
+
+    monkeypatch.setattr(reconciliation_module, "_REGISTERED_STATUS_LOOKUPS", {})
+    with pytest.raises(TypeError, match="status lookup must be an async callable"):
+        register_upstream_status_lookup(ORIGIN, lookup)  # type: ignore[arg-type]
+    assert reconciliation_module._REGISTERED_STATUS_LOOKUPS == {}
+    with pytest.raises(TypeError, match="status lookup must be an async callable"):
+        McpDispatchReconciliationService(
+            max_result_bytes=4096,
+            status_lookups={ORIGIN: lookup},  # type: ignore[dict-item]
+        )
+    assert invoked == []
+
+
+class _AsyncMethodHolder:
+    async def lookup(self, query: UpstreamDispatchStatusQuery) -> None:
+        return None
 
 
 @pytest.mark.parametrize(
@@ -860,6 +924,8 @@ async def test_marked_sync_lookup_returning_non_awaitable_stays_uncertain(
         functools.partial(_async_lookup, extra=1),
         functools.partial(RecordingLookup(None)),
         functools.partial(functools.partial(_async_lookup), extra=1),
+        _AsyncMethodHolder().lookup,
+        functools.partial(_AsyncMethodHolder().lookup),
     ],
     ids=[
         "async-def",
@@ -867,6 +933,8 @@ async def test_marked_sync_lookup_returning_non_awaitable_stays_uncertain(
         "partial-of-async",
         "partial-of-async-call-object",
         "nested-partial",
+        "bound-async-method",
+        "partial-of-bound-async-method",
     ],
 )
 def test_async_lookups_are_accepted(

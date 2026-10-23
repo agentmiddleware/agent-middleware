@@ -100,7 +100,9 @@ async def test_sponsor_rejects_non_finite_before_writes(
     if caller_owned:
         async with get_session_factory()() as session:
             async with session.begin():
-                with pytest.raises(ValueError) as error:
+                with pytest.raises(
+                    ValueError, match=r"^initial_credits must be finite$"
+                ) as error:
                     await money.create_sponsor_wallet(
                         sponsor_name="Invalid",
                         email="invalid@example.com",
@@ -112,7 +114,9 @@ async def test_sponsor_rejects_non_finite_before_writes(
                 assert session.in_transaction()
                 assert await _state(session) == before
     else:
-        with pytest.raises(ValueError) as error:
+        with pytest.raises(
+            ValueError, match=r"^initial_credits must be finite$"
+        ) as error:
             await money.create_sponsor_wallet(
                 sponsor_name="Invalid",
                 email="invalid@example.com",
@@ -126,7 +130,9 @@ async def test_sponsor_rejects_non_finite_before_writes(
 @pytest.mark.parametrize("raw", NEGATIVE)
 async def test_sponsor_keeps_negative_refusal(clean_database, raw):
     before = await _committed_state()
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(
+        ValueError, match=r"^initial_credits cannot be negative$"
+    ) as error:
         await _sponsor(raw)
     assert str(error.value) == "initial_credits cannot be negative"
     assert await _committed_state() == before
@@ -152,7 +158,9 @@ async def test_agent_rejects_non_finite_without_debit(
     if caller_owned:
         async with get_session_factory()() as session:
             async with session.begin():
-                with pytest.raises(ValueError) as error:
+                with pytest.raises(
+                    ValueError, match=r"^budget_credits must be finite$"
+                ) as error:
                     await money.create_agent_wallet(
                         sponsor_wallet_id=sponsor.wallet_id,
                         agent_id="invalid",
@@ -164,7 +172,9 @@ async def test_agent_rejects_non_finite_without_debit(
                 assert session.in_transaction()
                 assert await _state(session) == before
     else:
-        with pytest.raises(ValueError) as error:
+        with pytest.raises(
+            ValueError, match=r"^budget_credits must be finite$"
+        ) as error:
             await money.create_agent_wallet(
                 sponsor_wallet_id=sponsor.wallet_id,
                 agent_id="invalid",
@@ -179,7 +189,9 @@ async def test_agent_rejects_non_finite_without_debit(
 async def test_agent_keeps_negative_refusal(clean_database, raw):
     sponsor = await _sponsor()
     before = await _committed_state()
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(
+        ValueError, match=r"^budget_credits cannot be negative$"
+    ) as error:
         await get_agent_money().create_agent_wallet(
             sponsor_wallet_id=sponsor.wallet_id,
             agent_id="invalid",
@@ -210,7 +222,7 @@ async def test_agent_keeps_zero_and_finite_budget(clean_database, budget):
 async def test_child_rejects_non_finite_budget_without_debit(clean_database, raw):
     _, parent = await _agent()
     before = await _committed_state()
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(ValueError, match=r"^budget_credits must be finite$") as error:
         await get_agent_money().create_child_wallet(
             parent_wallet_id=parent.wallet_id,
             child_agent_id="invalid",
@@ -226,7 +238,9 @@ async def test_child_rejects_non_finite_budget_without_debit(clean_database, raw
 async def test_child_keeps_negative_budget_refusal(clean_database, raw):
     _, parent = await _agent()
     before = await _committed_state()
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(
+        ValueError, match=r"^budget_credits cannot be negative$"
+    ) as error:
         await get_agent_money().create_child_wallet(
             parent_wallet_id=parent.wallet_id,
             child_agent_id="invalid",
@@ -259,7 +273,9 @@ async def test_child_keeps_zero_and_finite_budget(clean_database, budget):
 async def test_child_rejects_invalid_spend_cap_without_debit(clean_database, raw):
     _, parent = await _agent()
     before = await _committed_state()
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(
+        ValueError, match=r"^max_spend must be a finite number greater than zero$"
+    ) as error:
         await get_agent_money().create_child_wallet(
             parent_wallet_id=parent.wallet_id,
             child_agent_id="invalid",

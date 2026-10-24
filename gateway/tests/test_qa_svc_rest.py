@@ -386,6 +386,33 @@ class TestLLMFailureHandling:
         assert calls == 1
         assert "retry_attempt" not in caplog.text
 
+    async def test_malformed_provider_json_retries(self, monkeypatch):
+        service = LLMService()
+        service.settings = _openai_settings()
+        calls = 0
+        delays = []
+        valid_response = _chat_success_response("ok")
+
+        def respond(request):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(200, content="{")
+            return valid_response(request)
+
+        async def record_sleep(delay):
+            delays.append(delay)
+
+        monkeypatch.setattr("app.core.resilience.asyncio.sleep", record_sleep)
+        service._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        try:
+            response = await service.chat([{"role": "user", "content": "hi"}])
+            assert response.content == "ok"
+            assert calls == 2
+            assert delays == [1.0]
+        finally:
+            await service.close()
+
     async def test_mock_response_when_no_key_no_network(self):
         service = LLMService()
         service.settings = _openai_settings(LLM_API_KEY="")

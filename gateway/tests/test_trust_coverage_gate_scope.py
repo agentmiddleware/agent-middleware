@@ -147,6 +147,21 @@ def test_gate_keeps_its_floor_over_the_listed_modules() -> None:
     assert floors and min(floors) >= 80, "trust coverage floor dropped below 80%"
 
 
+def test_gate_preloads_sqlalchemy_through_pytest() -> None:
+    """The gate must import SQLAlchemy in the pytest process before coverage.
+
+    Coverage resolves each ``--cov`` target at startup and then evicts that
+    temporary import. The eviction orphans the compiled SQLAlchemy cache-key
+    module's traversal symbols, so cache-key generation fails with
+    ``TypeError: 'InternalTraversal' object is not callable``. ``-p
+    sqlalchemy`` loads it before coverage starts, so the eviction never
+    touches it. This must run through PYTEST_CMD so a PYTEST override is
+    honored.
+    """
+    text = GATE_SCRIPT.read_text()
+    assert '"${PYTEST_CMD[@]}" -p sqlalchemy' in text
+
+
 def test_scope_check_flags_an_unlisted_unexempted_module() -> None:
     """The check itself must catch a module that is neither listed nor exempt."""
 

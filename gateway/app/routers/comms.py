@@ -156,10 +156,12 @@ async def require_agent_owner(
     Applied to every endpoint that acts on behalf of an agent (send, ack,
     handoff, inbox, here and on ``/v1/agent-comms``) so an authenticated
     caller cannot impersonate an agent they do not own. Fails closed: an
-    unregistered id is 404 and an owner-less record is 403, because neither
-    has a tenant the caller could prove it belongs to. Bootstrap admins
-    (operator keys, outside every tenant) may still address those two, but
-    not an agent another caller registered.
+    unregistered id and an owned-by-someone-else id are both 404, so a
+    caller cannot tell whether another tenant's agent id exists. An
+    owner-less record is 403, because it has no tenant the caller could
+    prove it belongs to. Bootstrap admins (operator keys, outside every
+    tenant) may still address an unregistered id or an owner-less record,
+    but not an agent another caller registered.
     """
     agent = await comms.registry.get(agent_id)
     if agent is None:
@@ -176,6 +178,14 @@ async def require_agent_owner(
         return
     if not agent.owner_key and auth.is_bootstrap_admin:
         return
+    if agent.owner_key and not auth.is_bootstrap_admin:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "agent_not_found",
+                "message": f"Agent '{agent_id}' is not registered.",
+            },
+        )
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail={

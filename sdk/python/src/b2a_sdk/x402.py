@@ -83,13 +83,15 @@ class X402Client:
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://api.thisisatest.tech",
+        base_url: str = "http://localhost:8000",
         timeout: float = 10.0,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         # Held only in the transport's default headers (see ``api_key``), not
         # duplicated as instance state, so ``vars(client)`` dumps omit it.
+        # Same control-character rule as AgentMiddlewareClient: do not strip.
+        AgentMiddlewareClient._reject_header_controls(api_key, "api_key")
         self.base_url = base_url.rstrip("/")
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -99,7 +101,7 @@ class X402Client:
                 # Source of truth for the User-Agent string is
                 # AgentMiddlewareClient.__init__ in client.py (it exposes no
                 # importable constant); keep the two in lockstep.
-                "User-Agent": "b2a-sdk/0.5.0",
+                "User-Agent": "amw-sdk/0.5.0",
             },
             timeout=timeout,
             transport=transport,

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from b2a_sdk.errors import TransportError
+from b2a_sdk.errors import APIError, TransportError
 
 from openai_b2a import (
     B2AClient,
@@ -106,6 +106,8 @@ class FakeTrustPlane:
                         "content": [{"type": "text", "text": "ok"}],
                         "structuredContent": {"ok": True},
                         "isError": False,
+                        # Echo the invoked tool: the SDK refuses a receipt that
+                        # names a different call than the one just made.
                         "receipt": _receipt_payload(key, receipt_id, body["params"]["name"]),
                     },
                 },
@@ -876,7 +878,7 @@ async def test_receipt_for_a_different_action_is_not_stored(tmp_path, field, val
         key_store=JsonFileOperationKeyStore(store_path),
     )
     runner.register_tool(TOOL, description="Append a note")
-    with pytest.raises(ValueError, match="receipt"):
+    with pytest.raises(APIError, match="mcp_receipt_does_not_match_request"):
         await runner.run(_chat_tool_call("call_1"))
     saved = json.loads(store_path.read_text())
     assert saved["operations"]["call_1"]["receipt_id"] is None

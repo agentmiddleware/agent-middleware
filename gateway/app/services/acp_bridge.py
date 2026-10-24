@@ -46,6 +46,7 @@ from app.services.idempotency import (
     IdempotencyInProgressError,
     get_idempotency_service,
 )
+from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from app.services.receipts import get_receipt_service
 from app.services.signing_keys import sha256_hex
@@ -493,7 +494,11 @@ class ACPCommerceAdapter:
         # short-TTL permit; a wedged intent record has no such expiry).
         async def _rollback() -> None:
             try:
-                await get_permit_service().release_budget(permit.permit_id, credits)
+                await get_permit_service().release_budget(
+                    permit.permit_id,
+                    credits,
+                    caller=CallerIdentity.for_wallet(agent_wallet_id),
+                )
             except Exception:
                 logger.exception(
                     "ACP rollback failed to release %s credits on permit %s "

@@ -317,8 +317,8 @@ That is the endpoint working as designed and it is also the reason the plan
 requires an independent verifier: to check the artifact in your hand, verify
 its `signing_input` bytes offline, with
 [`failure_lab/verifier.py`](../failure_lab/verifier.py) or
-[`b2a_sdk.receipt_verifier`](../../sdk/python/README.md). Neither imports the
-application.
+the [Agent Middleware (AMW) `amw` verifier](../../sdk/python/README.md).
+Neither imports the application.
 
 **An exported bundle does not carry enough to find the key.** `keys_url` is a
 relative path and `issuer` is whatever `PUBLIC_URL` was set to, which in a

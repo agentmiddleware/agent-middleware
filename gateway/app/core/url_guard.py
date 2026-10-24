@@ -112,6 +112,7 @@ def is_ambiguous_ipv4_literal(host: str) -> bool:
         return True
     return False
 
+
 # Host shapes that some resolver or fetcher parses as an IP literal even
 # though strict parsing rejects them: bare integers, dotted digit groups with
 # leading zeros (octal on glibc, decimal elsewhere), and 0x hex forms. The

@@ -11,8 +11,13 @@ from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import AuditChainHeadModel, ControlPlaneAuditEventModel
 from app.main import app
-from app.services.audit_chain import AuditEventConflictError, verify_audit_chain
+from app.services.audit_chain import (
+    AuditEventConflictError,
+    audit_payload,
+    verify_audit_chain,
+)
 from app.services.audit_log import record_audit_event
+from app.services.signing_keys import get_signing_key_service, sha256_hex
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
 
@@ -187,6 +192,165 @@ async def test_audit_chain_verifies_and_detects_tampering(client, clean_database
     assert tampered_resp.status_code == 200
     assert tampered_resp.json()["valid"] is False
     assert tampered_resp.json()["reason"] == "audit_payload_hash_mismatch"
+
+
+def _payload_without_seq(event: ControlPlaneAuditEventModel) -> dict:
+    """Historical signed body: every audited field except the sequence number."""
+    return audit_payload(
+        event_id=event.event_id,
+        created_at=event.created_at,
+        event=event.event,
+        wallet_id=event.wallet_id,
+        tool=event.tool,
+        endpoint=event.endpoint,
+        auth_source=event.auth_source,
+        key_id=event.key_id,
+        policy_decision_id=event.policy_decision_id,
+        request_id=event.request_id,
+        ok=event.ok,
+        error=event.error,
+        metadata_json=event.metadata_json,
+        previous_hash=event.previous_hash,
+    )
+
+
+@pytest.mark.anyio
+async def test_rewritten_sequence_is_rejected_when_chain_order_stays_the_same(
+    clean_database,
+):
+    """A new signature must cover ``seq``.
+
+    The hash chain already links each event to its predecessor, so swapping
+    two sequence numbers breaks ``previous_hash``. Renumbering a prefix while
+    leaving that order, and the chain head, untouched used to verify: the
+    sequence column sat outside the signed payload.
+    """
+    wallet_id = "wlt-seq-signed"
+    await record_audit_event(event="trust.seq", wallet_id=wallet_id, metadata={"n": 1})
+    await record_audit_event(event="trust.seq", wallet_id=wallet_id, metadata={"n": 2})
+    assert (await verify_audit_chain(wallet_id=wallet_id)).valid is True
+
+    factory = get_session_factory()
+    async with factory() as session:
+        first = (
+            (
+                await session.execute(
+                    select(ControlPlaneAuditEventModel)
+                    .where(ControlPlaneAuditEventModel.wallet_id == wallet_id)
+                    .order_by(ControlPlaneAuditEventModel.seq)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert first is not None
+        # 0 still sorts before the untouched successor, so the walk order and
+        # the head pointer stay exactly as they were.
+        first.seq = 0
+        broken_event_id = first.event_id
+        await session.commit()
+
+    result = await verify_audit_chain(wallet_id=wallet_id)
+    assert result.valid is False
+    assert result.reason == "audit_payload_hash_mismatch"
+    assert result.broken_event_id == broken_event_id
+
+
+@pytest.mark.anyio
+async def test_legacy_payload_hash_cannot_cover_a_signature_that_includes_sequence(
+    clean_database,
+):
+    """Rewriting a new row into the pre-sequence hash shape must not verify.
+
+    Verification still accepts rows whose stored hash omits ``seq``. An edit
+    that plants that older hash, repairs the chain hash, and moves the head
+    has to fail on the signature, which was taken over the sequence number.
+    """
+    wallet_id = "wlt-seq-downgrade"
+    await record_audit_event(event="trust.seq", wallet_id=wallet_id, metadata={"n": 1})
+    assert (await verify_audit_chain(wallet_id=wallet_id)).valid is True
+
+    factory = get_session_factory()
+    async with factory() as session:
+        event = (
+            await session.execute(
+                select(ControlPlaneAuditEventModel).where(
+                    ControlPlaneAuditEventModel.wallet_id == wallet_id
+                )
+            )
+        ).scalar_one()
+        legacy_hash = sha256_hex(_payload_without_seq(event))
+        assert event.payload_hash != legacy_hash
+        event.seq = 7
+        event.payload_hash = legacy_hash
+        event.chain_hash = sha256_hex(
+            {
+                "previous_hash": event.previous_hash,
+                "payload_hash": event.payload_hash,
+                "signature": event.signature,
+            }
+        )
+        head = await session.get(AuditChainHeadModel, wallet_id)
+        assert head is not None
+        head.last_seq = event.seq
+        head.last_chain_hash = event.chain_hash
+        await session.commit()
+
+    result = await verify_audit_chain(wallet_id=wallet_id)
+    assert result.valid is False
+    assert result.reason == "audit_signature_invalid"
+    assert result.broken_event_id is not None
+
+
+@pytest.mark.anyio
+async def test_pre_sequence_audit_signature_still_verifies(clean_database):
+    """Rows signed before ``seq`` joined the payload still form a valid chain."""
+    wallet_id = "wlt-seq-legacy"
+    key = await get_signing_key_service().ensure_active_key()
+    model = ControlPlaneAuditEventModel(
+        event_id="audit-legacy-seq-unsigned",
+        created_at=utc_now(),
+        seq=4,
+        event="trust.legacy",
+        wallet_id=wallet_id,
+        ok=True,
+        metadata_json="{}",
+    )
+    payload = _payload_without_seq(model)
+    payload_hash = sha256_hex(payload)
+    payload["payload_hash"] = payload_hash
+    signature, signature_key_id, _ = get_signing_key_service().sign_payload_with_key_id(
+        payload, key.key_id
+    )
+    model.payload_hash = payload_hash
+    model.previous_hash = None
+    model.signature = signature
+    model.signature_key_id = signature_key_id
+    model.chain_hash = sha256_hex(
+        {
+            "previous_hash": None,
+            "payload_hash": payload_hash,
+            "signature": signature,
+        }
+    )
+
+    factory = get_session_factory()
+    async with factory() as session:
+        session.add(model)
+        session.add(
+            AuditChainHeadModel(
+                wallet_key=wallet_id,
+                last_seq=model.seq,
+                last_chain_hash=model.chain_hash,
+                updated_at=utc_now(),
+            )
+        )
+        await session.commit()
+
+    result = await verify_audit_chain(wallet_id=wallet_id)
+    assert result.valid is True
+    assert result.checked_events == 1
+    assert result.last_event_id == model.event_id
 
 
 @pytest.mark.anyio

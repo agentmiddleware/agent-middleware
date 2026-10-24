@@ -49,6 +49,10 @@ produces a `denied` receipt and no debit.
 
 The Python SDK can rebuild and verify a permit's signing payload offline:
 `b2a_sdk.edge_client` (`permit_signing_payload`, `verify_permit`).
+Offline signature verification does not see revocation: a revoked permit
+still carries a valid signature, so an exported permit must be rechecked
+against live gateway status (for example `POST /v1/permits/verify`) before it
+is treated as authority to act.
 
 ## Example (signed bytes from a test fixture)
 

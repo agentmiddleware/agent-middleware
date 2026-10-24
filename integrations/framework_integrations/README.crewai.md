@@ -26,7 +26,7 @@ No PyPI package is published. The SDK distribution will be published as
 repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -e ./sdk/python
 python -m pip install -e integrations/crewai-agent-middleware

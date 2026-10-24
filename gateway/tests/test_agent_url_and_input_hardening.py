@@ -18,14 +18,19 @@ page.evaluate only runs fixed server-defined scripts.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 from app.core import url_guard
 from app.core.config import get_settings
 from app.core.url_guard import check_outbound_url
+from app.services import awi_playwright_bridge
 from app.services.awi_playwright_bridge import (
     AWIPlaywrightBridge,
     BridgeSession,
@@ -102,6 +107,13 @@ class TestOutboundUrlGuard:
         # These resolve to loopback/metadata despite not being dotted-quad
         # literals; the guard must still reject them.
         assert await check_outbound_url(url) == "private_address_blocked"
+
+    @pytest.mark.anyio
+    async def test_oversized_numeric_host_fails_closed(self):
+        assert (
+            await check_outbound_url(f"http://{'9' * 5000}/")
+            == "private_address_blocked"
+        )
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
@@ -209,6 +221,45 @@ class TestOutboundUrlGuard:
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
+        "url",
+        [
+            "http://2130706433/",  # decimal 127.0.0.1
+            "http://0x7f000001/",  # hex 127.0.0.1
+            "http://0x7f.0.0.1/",  # dotted hex 127.0.0.1
+            "http://0177.0.0.1/",  # octal 127.0.0.1
+            "http://017700000001/",  # single octal word 127.0.0.1
+            "http://127.1/",  # short form 127.0.0.1
+            "http://0/",  # 0.0.0.0
+        ],
+    )
+    async def test_legacy_ipv4_stays_blocked_when_dns_says_public(
+        self, monkeypatch, url
+    ):
+        """Browsers parse these as addresses and never ask DNS.
+
+        A resolver that answers every unknown name with a public address
+        (common captive-portal and filter DNS) must not make the guard allow
+        a host the browser will open as loopback or metadata.
+        """
+
+        async def resolve(_host):
+            return [(None, None, None, None, ("8.8.8.8", 0))]
+
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        assert await check_outbound_url(url) == "private_address_blocked"
+
+    @pytest.mark.anyio
+    async def test_public_legacy_ipv4_ignores_hostile_dns(self, monkeypatch):
+        """134744072 is 8.8.8.8. The browser connects there without DNS."""
+
+        async def resolve(_host):
+            return [(None, None, None, None, ("127.0.0.1", 0))]
+
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        assert await check_outbound_url("http://134744072/") is None
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
         "error",
         [
             socket.gaierror(socket.EAI_NONAME, "Name or service not known"),
@@ -248,6 +299,368 @@ class TestOutboundUrlGuard:
         monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", True)
         assert await check_outbound_url("http://127.0.0.1:8000/") is None
         assert await check_outbound_url("file:///etc/passwd") == "scheme_not_allowed"
+
+
+class TestBrowserNavigationGuard:
+    """The real browser must not fetch a target the URL guard rejected."""
+
+    @pytest.mark.anyio
+    async def test_goto_command_refuses_data_document(self, bridge):
+        class Page:
+            url = "about:blank"
+
+            async def goto(self, url, **kwargs):
+                pytest.fail("blocked data URL reached page.goto")
+
+        session = BridgeSession(session_id="goto-data")
+        session._page = Page()
+        bridge._sessions[session.session_id] = session
+
+        result = await bridge.execute_commands(
+            session.session_id,
+            [
+                PlaywrightCommand(
+                    command_type=CommandType.GOTO, target="data:text/html,hi"
+                )
+            ],
+        )
+
+        assert result.success is False
+        assert "scheme_not_allowed" in (result.error or "")
+
+    @pytest.mark.anyio
+    async def test_goto_reports_the_url_the_page_landed_on(self, bridge):
+        class Page:
+            url = "https://93.184.216.34/landed"
+
+            async def goto(self, url, **kwargs):
+                self.url = "https://93.184.216.34/landed"
+
+            async def title(self):
+                return "Landed"
+
+        session = BridgeSession(
+            session_id="goto-url", current_url="https://93.184.216.34/start"
+        )
+        session._page = Page()
+        bridge._sessions[session.session_id] = session
+
+        result = await bridge.execute_commands(
+            session.session_id,
+            [
+                PlaywrightCommand(
+                    command_type=CommandType.GOTO,
+                    target="https://93.184.216.34/start",
+                )
+            ],
+        )
+
+        assert result.success is True
+        assert result.new_url == "https://93.184.216.34/landed"
+        assert session.current_url == "https://93.184.216.34/landed"
+
+    @pytest.mark.anyio
+    async def test_goto_command_refuses_a_private_target(self, bridge):
+        class Page:
+            def __init__(self):
+                self.urls = []
+                self.url = "https://example.com/"
+
+            async def goto(self, url, **kwargs):
+                self.urls.append(url)
+                self.url = url
+
+            async def title(self):
+                return "x"
+
+        session = BridgeSession(
+            session_id="goto-block", current_url="https://example.com/"
+        )
+        page = Page()
+        session._page = page
+        bridge._sessions[session.session_id] = session
+
+        result = await bridge.execute_commands(
+            session.session_id,
+            [
+                PlaywrightCommand(
+                    command_type=CommandType.GOTO,
+                    target="http://169.254.169.254/latest/meta-data/",
+                )
+            ],
+        )
+
+        assert result.success is False
+        assert page.urls == []
+        assert "private_address_blocked" in (result.error or "")
+
+    @pytest.mark.anyio
+    async def test_browser_context_blocks_a_private_redirect(self, bridge):
+        class Context:
+            def __init__(self):
+                self.routes = []
+
+            async def route(self, pattern, handler):
+                self.routes.append((pattern, handler))
+
+            async def new_page(self):
+                return object()
+
+        class Browser:
+            def __init__(self):
+                self.context = Context()
+
+            async def new_context(self, **kwargs):
+                return self.context
+
+        class Route:
+            def __init__(self, url):
+                self.request = type("Req", (), {"url": url})()
+                self.aborted = False
+                self.continued = False
+
+            async def abort(self, error_code="failed"):
+                self.aborted = True
+
+            async def continue_(self):
+                self.continued = True
+
+        browser = Browser()
+        bridge._browser = browser
+        session = BridgeSession(session_id="redir")
+        await bridge._create_browser_context(session, None, None)
+
+        assert browser.context.routes, "every browser request must be screened"
+        _pattern, handler = browser.context.routes[0]
+        blocked = Route("http://169.254.169.254/latest/meta-data/")
+        await handler(blocked)
+        assert blocked.aborted is True
+        assert blocked.continued is False
+
+        local = Route("about:blank")
+        await handler(local)
+        assert local.aborted is False
+        assert local.continued is True
+
+    @pytest.mark.anyio
+    async def test_browser_route_guard_failure_aborts(self, bridge, monkeypatch):
+        class Route:
+            request = type("Req", (), {"url": "https://example.com/"})()
+
+            def __init__(self):
+                self.aborted = False
+                self.continued = False
+
+            async def abort(self, error_code="failed"):
+                self.aborted = True
+
+            async def continue_(self):
+                self.continued = True
+
+        async def fail_guard(_url):
+            raise RuntimeError("guard failure")
+
+        monkeypatch.setattr(
+            awi_playwright_bridge, "browser_request_block_reason", fail_guard
+        )
+        failed = Route()
+        await bridge._guard_browser_route(failed)
+        assert failed.aborted is True
+        assert failed.continued is False
+
+    @pytest.mark.anyio
+    async def test_chromium_refuses_redirect_to_blocked_host(self, bridge, monkeypatch):
+        playwright_api = pytest.importorskip("playwright.async_api")
+        requested_paths = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requested_paths.append(self.path)
+                if self.path in {"/entry", "/entry-chain", "/allowed-hop"}:
+                    self.send_response(302)
+                    self.send_header(
+                        "Location",
+                        (
+                            "/allowed-hop"
+                            if self.path == "/entry-chain"
+                            else f"http://127.0.0.1:{self.server.server_port}/blocked"
+                        ),
+                    )
+                else:
+                    self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        entry_url = f"http://localhost:{server.server_port}/entry"
+        chain_url = f"http://localhost:{server.server_port}/entry-chain"
+        hop_url = f"http://localhost:{server.server_port}/allowed-hop"
+        plain_url = f"http://localhost:{server.server_port}/plain"
+        original_guard = awi_playwright_bridge.browser_request_block_reason
+
+        async def allow_test_entry(url):
+            if url in {entry_url, chain_url, hop_url, plain_url}:
+                return None
+            return await original_guard(url)
+
+        monkeypatch.setattr(
+            awi_playwright_bridge, "browser_request_block_reason", allow_test_entry
+        )
+        try:
+            async with playwright_api.async_playwright() as playwright:
+                if not Path(playwright.chromium.executable_path).exists():
+                    pytest.skip("Chromium is not installed")
+                browser = await playwright.chromium.launch(headless=True)
+                try:
+                    bridge._browser = browser
+                    bridge._playwright_initialized = True
+                    session = BridgeSession(session_id="real-redirect")
+                    await bridge._create_browser_context(session, None, None)
+                    response = await session._page.goto(plain_url, timeout=5000)
+                    assert response.status == 200
+                    with pytest.raises(playwright_api.Error):
+                        await session._page.goto(entry_url, timeout=5000)
+                    with pytest.raises(playwright_api.Error):
+                        await session._page.goto(chain_url, timeout=5000)
+                    assert requested_paths == [
+                        "/plain",
+                        "/entry",
+                        "/entry-chain",
+                        "/allowed-hop",
+                    ]
+                finally:
+                    await browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    @pytest.mark.anyio
+    async def test_chromium_follows_allowed_redirects(self, bridge, monkeypatch):
+        playwright_api = pytest.importorskip("playwright.async_api")
+        requested_paths = []
+
+        class FirstHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requested_paths.append(("first", self.path))
+                if self.path == "/entry":
+                    self.send_response(302)
+                    self.send_header("Location", second_url)
+                else:
+                    self.send_response(200)
+                self.end_headers()
+                if self.path == "/landed":
+                    self.wfile.write(b"allowed destination")
+
+            def log_message(self, *_args):
+                pass
+
+        class SecondHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requested_paths.append(("second", self.path))
+                self.send_response(302)
+                self.send_header("Location", landing_url)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        first = ThreadingHTTPServer(("127.0.0.1", 0), FirstHandler)
+        second = ThreadingHTTPServer(("127.0.0.1", 0), SecondHandler)
+        threads = [
+            threading.Thread(target=server.serve_forever, daemon=True)
+            for server in (first, second)
+        ]
+        for thread in threads:
+            thread.start()
+        entry_url = f"http://localhost:{first.server_port}/entry"
+        second_url = f"http://localhost:{second.server_port}/hop"
+        landing_url = f"http://localhost:{first.server_port}/landed"
+        original_guard = awi_playwright_bridge.browser_request_block_reason
+
+        async def allow_test_urls(url):
+            if url in {entry_url, second_url, landing_url}:
+                return None
+            return await original_guard(url)
+
+        monkeypatch.setattr(
+            awi_playwright_bridge, "browser_request_block_reason", allow_test_urls
+        )
+        try:
+            async with playwright_api.async_playwright() as playwright:
+                if not Path(playwright.chromium.executable_path).exists():
+                    pytest.skip("Chromium is not installed")
+                browser = await playwright.chromium.launch(headless=True)
+                try:
+                    bridge._browser = browser
+                    bridge._playwright_initialized = True
+                    session = BridgeSession(session_id="allowed-redirect")
+                    await bridge._create_browser_context(session, None, None)
+                    response = await session._page.goto(entry_url, timeout=5000)
+                    assert response.status == 200
+                    assert session._page.url == landing_url
+                    assert await session._page.locator("body").inner_text() == (
+                        "allowed destination"
+                    )
+                    assert requested_paths == [
+                        ("first", "/entry"),
+                        ("second", "/hop"),
+                        ("first", "/landed"),
+                    ]
+                finally:
+                    await browser.close()
+        finally:
+            for server in (first, second):
+                server.shutdown()
+                server.server_close()
+            for thread in threads:
+                thread.join(timeout=2)
+
+    @pytest.mark.anyio
+    async def test_chromium_refuses_websocket_connection(self, bridge):
+        playwright_api = pytest.importorskip("playwright.async_api")
+        connections = []
+
+        async def connected(reader, writer):
+            connections.append(True)
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_server(connected, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            async with playwright_api.async_playwright() as playwright:
+                if not Path(playwright.chromium.executable_path).exists():
+                    pytest.skip("Chromium is not installed")
+                browser = await playwright.chromium.launch(headless=True)
+                try:
+                    bridge._browser = browser
+                    bridge._playwright_initialized = True
+                    session = BridgeSession(session_id="real-websocket")
+                    await bridge._create_browser_context(session, None, None)
+                    result = await asyncio.wait_for(
+                        session._page.evaluate(
+                            "url => new Promise(resolve => {"
+                            "const socket = new WebSocket(url);"
+                            "socket.onopen = () => resolve('open');"
+                            "socket.onerror = () => resolve('error');"
+                            "socket.onclose = () => resolve('closed');"
+                            "})",
+                            f"ws://127.0.0.1:{port}/socket",
+                        ),
+                        timeout=5,
+                    )
+                    assert result in {"error", "closed"}
+                    assert connections == []
+                finally:
+                    await browser.close()
+        finally:
+            server.close()
+            await server.wait_closed()
 
 
 class TestAWIScrollInjection:

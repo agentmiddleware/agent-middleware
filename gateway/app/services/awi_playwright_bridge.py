@@ -31,10 +31,11 @@ from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
+from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
 from app.core.time import utc_now
-from app.core.url_guard import check_outbound_url
+from app.core.url_guard import browser_request_block_reason, check_outbound_url
 
 if TYPE_CHECKING:
     from playwright.async_api import Page, BrowserContext
@@ -727,9 +728,6 @@ class AWIPlaywrightBridge:
             try:
                 await self._execute_single_command(session, cmd)
                 executed += 1
-
-                if cmd.command_type == CommandType.GOTO:
-                    session.current_url = cmd.value
 
             except Exception as e:
                 error = str(e)
@@ -2025,9 +2023,35 @@ class AWIPlaywrightBridge:
                 "height": viewport[1] if viewport else 720,
             },
             user_agent="Mozilla/5.0 (compatible; AWI-Client/1.0; +https://agent-middleware.dev)",
+            service_workers="block",
         )
+        # Route every HTTP request through a no-redirect fetch. Chromium does
+        # not invoke context routes for redirect hops.
+        await context.route(
+            "**/*",
+            lambda route: self._guard_browser_route(route, context, session._page),
+        )
+        if self._playwright_initialized:
+            if not hasattr(context, "route_web_socket"):
+                await context.close()
+                raise RuntimeError("Playwright WebSocket routing is required")
+            await context.route_web_socket("**/*", self._guard_browser_websocket)
 
         page = await context.new_page()
+        if self._playwright_initialized:
+            # Playwright routes see only the first URL in a redirect chain.
+            # Chromium's Fetch domain pauses every hop before it is sent.
+            cdp = await context.new_cdp_session(page)
+            cdp.on(
+                "Fetch.requestPaused",
+                lambda event: asyncio.create_task(
+                    self._guard_browser_cdp_request(cdp, event)
+                ),
+            )
+            await cdp.send(
+                "Fetch.enable",
+                {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
+            )
 
         # Store real Playwright objects
         session._context = context
@@ -2038,6 +2062,110 @@ class AWIPlaywrightBridge:
         logger.info(
             f"Created browser context {session.browser_context_id} for session {session.session_id}"
         )
+
+    async def _guard_browser_route(
+        self, route: Any, context: Any = None, guarded_page: Any = None
+    ) -> None:
+        """Refuse unapproved requests and redirects before Chromium can follow them."""
+        url = getattr(getattr(route, "request", None), "url", "")
+        try:
+            reason = await browser_request_block_reason(str(url))
+            if reason:
+                logger.info("Blocked browser request (%s).", reason)
+                await route.abort("blockedbyclient")
+                return
+            if urlsplit(str(url)).scheme in {"about", "data", "blob"}:
+                await route.continue_()
+                return
+            if guarded_page is not None and route.request.frame.page == guarded_page:
+                # CDP screens this page's original request and every redirect.
+                # Other pages retain the no-redirect route fallback.
+                await route.continue_()
+                return
+            response = await route.fetch(max_redirects=0)
+            request = route.request
+            method = request.method
+            body = request.post_data_buffer
+            headers = await request.all_headers()
+            for redirect_count in range(21):
+                location = response.headers.get("location")
+                if response.status not in {301, 302, 303, 307, 308} or not location:
+                    await route.fulfill(response=response)
+                    return
+                if redirect_count == 20:
+                    logger.info("Blocked browser redirect (redirect_limit).")
+                    await route.abort("blockedbyclient")
+                    return
+                redirect_url = urljoin(str(url), location)
+                reason = await browser_request_block_reason(redirect_url)
+                if reason:
+                    logger.info("Blocked browser redirect (%s).", reason)
+                    await route.abort("blockedbyclient")
+                    return
+                if (
+                    response.status == 303
+                    and method != "HEAD"
+                    or (response.status in {301, 302} and method == "POST")
+                ):
+                    method, body = "GET", None
+                    headers = {
+                        key: value
+                        for key, value in headers.items()
+                        if key.lower() not in {"content-type", "content-length"}
+                    }
+                previous = urlsplit(str(url))
+                target = urlsplit(redirect_url)
+                if (previous.scheme, previous.netloc) != (target.scheme, target.netloc):
+                    headers = {
+                        key: value
+                        for key, value in headers.items()
+                        if key.lower() not in {"authorization", "proxy-authorization"}
+                    }
+                # The browser context supplies current cookies, including those
+                # set by an earlier hop, rather than forwarding stale headers.
+                next_headers = {
+                    key: value
+                    for key, value in headers.items()
+                    if key.lower() not in {"cookie", "host", "content-length"}
+                }
+                response = await context.request.fetch(
+                    redirect_url,
+                    method=method,
+                    data=body,
+                    headers=next_headers,
+                    max_redirects=0,
+                )
+                url = redirect_url
+        except Exception:
+            logger.warning("Browser URL guard failed closed.", exc_info=True)
+            await route.abort("blockedbyclient")
+
+    async def _guard_browser_cdp_request(self, cdp: Any, event: dict[str, Any]) -> None:
+        """Screen every Chromium request, including redirect hops."""
+        request_id = event["requestId"]
+        try:
+            reason = await browser_request_block_reason(event["request"]["url"])
+            if reason:
+                logger.info("Blocked browser request (%s).", reason)
+                await cdp.send(
+                    "Fetch.failRequest",
+                    {"requestId": request_id, "errorReason": "BlockedByClient"},
+                )
+            else:
+                await cdp.send("Fetch.continueRequest", {"requestId": request_id})
+        except Exception:
+            logger.warning("Browser URL guard failed closed.", exc_info=True)
+            try:
+                await cdp.send(
+                    "Fetch.failRequest",
+                    {"requestId": request_id, "errorReason": "BlockedByClient"},
+                )
+            except Exception:
+                logger.debug("Browser request was already closed.")
+
+    async def _guard_browser_websocket(self, route: Any) -> None:
+        """Refuse WebSockets, which HTTP context routes cannot intercept."""
+        await route.close(code=1008, reason="Browser WebSockets are blocked")
 
     async def _navigate_to(self, session: BridgeSession, url: str) -> None:
         """Navigate to a URL."""

@@ -189,8 +189,20 @@ async def test_openapi_contains_core_control_plane_routes(client):
     assert standard_mcp_body["required"] is True
     standard_mcp_schema = standard_mcp_body["content"]["application/json"]["schema"]
     assert standard_mcp_schema["type"] == "object"
-    assert set(standard_mcp_schema["required"]) == {"jsonrpc", "method"}
+    common_required = set(standard_mcp_schema["required"])
+    assert common_required == {"jsonrpc"}
     assert standard_mcp_schema["properties"]["jsonrpc"]["const"] == "2.0"
+    request, notification, rpc_response = standard_mcp_schema["oneOf"]
+    assert request["title"] == "JSON-RPC request"
+    assert common_required | set(request["required"]) == {"jsonrpc", "method", "id"}
+    assert notification["title"] == "JSON-RPC notification"
+    assert common_required | set(notification["required"]) == {"jsonrpc", "method"}
+    assert rpc_response["title"] == "JSON-RPC response"
+    assert common_required | set(rpc_response["required"]) == {"jsonrpc", "id"}
+    assert {frozenset(shape["required"]) for shape in rpc_response["oneOf"]} == {
+        frozenset({"result"}),
+        frozenset({"error"}),
+    }
     legacy_mcp_description = paths["/mcp/messages"]["post"]["description"]
     assert "does not implement the standard MCP initialization lifecycle" in (
         legacy_mcp_description

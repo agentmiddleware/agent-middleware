@@ -26,6 +26,7 @@ import pytest
 from app.core import url_guard
 from app.core.config import get_settings
 from app.core.url_guard import check_outbound_url
+from app.services import awi_playwright_bridge
 from app.services.awi_playwright_bridge import (
     AWIPlaywrightBridge,
     BridgeSession,
@@ -102,6 +103,13 @@ class TestOutboundUrlGuard:
         # These resolve to loopback/metadata despite not being dotted-quad
         # literals; the guard must still reject them.
         assert await check_outbound_url(url) == "private_address_blocked"
+
+    @pytest.mark.anyio
+    async def test_oversized_numeric_host_fails_closed(self):
+        assert (
+            await check_outbound_url(f"http://{'9' * 5000}/")
+            == "private_address_blocked"
+        )
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
@@ -293,6 +301,30 @@ class TestBrowserNavigationGuard:
     """The real browser must not fetch a target the URL guard rejected."""
 
     @pytest.mark.anyio
+    async def test_goto_command_refuses_data_document(self, bridge):
+        class Page:
+            url = "about:blank"
+
+            async def goto(self, url, **kwargs):
+                pytest.fail("blocked data URL reached page.goto")
+
+        session = BridgeSession(session_id="goto-data")
+        session._page = Page()
+        bridge._sessions[session.session_id] = session
+
+        result = await bridge.execute_commands(
+            session.session_id,
+            [
+                PlaywrightCommand(
+                    command_type=CommandType.GOTO, target="data:text/html,hi"
+                )
+            ],
+        )
+
+        assert result.success is False
+        assert "scheme_not_allowed" in (result.error or "")
+
+    @pytest.mark.anyio
     async def test_goto_reports_the_url_the_page_landed_on(self, bridge):
         class Page:
             url = "https://93.184.216.34/landed"
@@ -405,6 +437,32 @@ class TestBrowserNavigationGuard:
         await handler(local)
         assert local.aborted is False
         assert local.continued is True
+
+    @pytest.mark.anyio
+    async def test_browser_route_guard_failure_aborts(self, bridge, monkeypatch):
+        class Route:
+            request = type("Req", (), {"url": "https://example.com/"})()
+
+            def __init__(self):
+                self.aborted = False
+                self.continued = False
+
+            async def abort(self, error_code="failed"):
+                self.aborted = True
+
+            async def continue_(self):
+                self.continued = True
+
+        async def fail_guard(_url):
+            raise RuntimeError("guard failure")
+
+        monkeypatch.setattr(
+            awi_playwright_bridge, "browser_request_block_reason", fail_guard
+        )
+        failed = Route()
+        await bridge._guard_browser_route(failed)
+        assert failed.aborted is True
+        assert failed.continued is False
 
 
 class TestAWIScrollInjection:

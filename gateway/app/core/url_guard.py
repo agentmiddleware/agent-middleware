@@ -75,7 +75,10 @@ def _ipv4_number(part: str) -> int | None:
         return 0
     if any(character not in alphabet for character in digits):
         return None
-    return int(digits, base)
+    significant = digits.lstrip("0")
+    if len(significant) > 12:
+        return None
+    return int(significant or "0", base)
 
 
 def _parse_legacy_ipv4(host: str) -> ipaddress.IPv4Address | None:

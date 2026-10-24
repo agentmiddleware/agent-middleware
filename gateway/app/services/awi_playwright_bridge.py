@@ -2010,10 +2010,10 @@ class AWIPlaywrightBridge:
                 "height": viewport[1] if viewport else 720,
             },
             user_agent="Mozilla/5.0 (compatible; AWI-Client/1.0; +https://agent-middleware.dev)",
+            service_workers="block",
         )
-        # page.goto follows redirects. The URL checked before navigation is
-        # only the first hop, so every request, including the next hop and
-        # subresources, has to pass the same guard.
+        # Guard initial requests and subresources. Playwright does not route
+        # redirect hops, so this is not a complete browser egress boundary.
         await context.route("**/*", self._guard_browser_route)
 
         page = await context.new_page()

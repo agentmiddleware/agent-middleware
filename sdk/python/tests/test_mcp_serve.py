@@ -99,6 +99,56 @@ def test_serve_async_tool_invokes_gateway_with_arguments(monkeypatch, tmp_path, 
     }
 
 
+def test_registered_tool_forwards_caller_key_for_retries(monkeypatch, tmp_path):
+    fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
+    httpx = pytest.importorskip("httpx")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("B2A_WALLET_ID", "test-wallet")
+    monkeypatch.setenv("B2A_API_KEY", "test-key")
+    monkeypatch.setattr(
+        mcp,
+        "generate_manifest",
+        lambda **kwargs: {"tools": [{"name": "partner.search", "description": "Search"}]},
+    )
+    servers = []
+    requests = []
+
+    async def run_stdio(self):
+        servers.append(self)
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}]})
+
+    client_type = httpx.AsyncClient
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: client_type(transport=transport))
+    monkeypatch.setattr(fastmcp, "run_stdio_async", run_stdio)
+
+    asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
+    for _ in range(2):
+        asyncio.run(
+            servers[0].call_tool(
+                "partner.search", {"kwargs": "sample", "idempotency_key": "retry-1"}
+            )
+        )
+    tool_error = pytest.importorskip("mcp.server.fastmcp.exceptions").ToolError
+    with pytest.raises(tool_error, match="idempotency_key"):
+        asyncio.run(
+            servers[0].call_tool("partner.search", {"kwargs": "sample", "idempotency_key": " "})
+        )
+
+    assert len(requests) == 2
+    assert [request.headers["Idempotency-Key"] for request in requests] == [
+        "retry-1",
+        "retry-1",
+    ]
+    assert [json.loads(request.content)["arguments"] for request in requests] == [
+        {"kwargs": "sample"},
+        {"kwargs": "sample"},
+    ]
+
+
 def test_serve_async_rejects_unknown_transport(monkeypatch, tmp_path):
     fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
     monkeypatch.chdir(tmp_path)

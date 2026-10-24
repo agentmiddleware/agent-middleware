@@ -337,16 +337,29 @@ async def test_governed_tool_sends_declared_defaults_and_owns_key_handling(
                     await defaults_stub(message="explicit", idempotency_key=blank)
             assert calls == 1  # the rejected calls never reached the server
 
+            async def wallet_balance() -> Decimal:
+                response = await client.get(
+                    f"/v1/billing/wallets/{wallet_id}",
+                    headers=provisioned["agent_headers"],
+                )
+                assert response.status_code == 200
+                return Decimal(response.json()["balance_exact"])
+
             # Omitted key: derived deterministically from the permit, tool,
             # and arguments, so repeating the same logical call replays the
             # original receipt without re-executing or charging again.
             # Explicit None behaves the same.
+            balance_before = await wallet_balance()
             await defaults_stub(message="explicit")
             first_receipt = defaults_stub.last_receipt
+            balance_after_first = await wallet_balance()
+            assert balance_before - balance_after_first == Decimal("1")
             await defaults_stub(message="explicit")
             second_receipt = defaults_stub.last_receipt
+            assert await wallet_balance() == balance_after_first
             await defaults_stub(message="explicit", idempotency_key=None)
             third_receipt = defaults_stub.last_receipt
+            assert await wallet_balance() == balance_after_first
             assert calls == 2
             assert second_receipt.receipt_id == first_receipt.receipt_id
             assert third_receipt.receipt_id == first_receipt.receipt_id

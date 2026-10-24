@@ -197,12 +197,13 @@ async def serve_async(
         desc = tool.get("description", "")
 
         async def create_handler(svc_id: str, svc_name: str):
-            async def handler(**kwargs) -> dict:
+            async def handler(idempotency_key: str | None = None, **kwargs) -> dict:
                 return await call_tool(
                     service_id=svc_id,
                     input_data=kwargs,
                     wallet_id=os.getenv("B2A_WALLET_ID", ""),
                     api_key=os.getenv("B2A_API_KEY", ""),
+                    idempotency_key=idempotency_key,
                 )
 
             return handler

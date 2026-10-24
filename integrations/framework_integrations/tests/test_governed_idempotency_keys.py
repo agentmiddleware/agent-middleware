@@ -103,6 +103,7 @@ def test_derive_helper_rejects_blank_inputs():
         )
 
 
+@pytest.mark.asyncio
 async def test_wrapper_retry_of_same_tool_call_reuses_key():
     """Retrying the same logical call sends the same derived key twice."""
     session = _FakeSession()
@@ -120,6 +121,7 @@ async def test_wrapper_retry_of_same_tool_call_reuses_key():
     )
 
 
+@pytest.mark.asyncio
 async def test_wrapper_distinct_arguments_get_distinct_keys():
     """Two different actions get different keys: no accidental replay."""
     session = _FakeSession()
@@ -132,6 +134,7 @@ async def test_wrapper_distinct_arguments_get_distinct_keys():
     assert session.keys[0] != session.keys[1]
 
 
+@pytest.mark.asyncio
 async def test_wrapper_action_id_disambiguates_identical_arguments():
     """Identical arguments with different action ids bill separately."""
     session = _FakeSession()
@@ -146,6 +149,7 @@ async def test_wrapper_action_id_disambiguates_identical_arguments():
     assert session.keys[0] == session.keys[2]
 
 
+@pytest.mark.asyncio
 async def test_wrapper_explicit_key_wins_over_derivation():
     """A caller-supplied key is used as-is, even with an action id present."""
     session = _FakeSession()
@@ -156,6 +160,7 @@ async def test_wrapper_explicit_key_wins_over_derivation():
     assert session.keys == ["caller-key-1"]
 
 
+@pytest.mark.asyncio
 async def test_wrapper_rejects_blank_key_and_blank_action_id():
     """Blank key material is a caller bug: reject before dispatch."""
     session = _FakeSession()
@@ -168,6 +173,7 @@ async def test_wrapper_rejects_blank_key_and_blank_action_id():
     assert session.keys == []
 
 
+@pytest.mark.asyncio
 async def test_wrapper_coerces_non_string_action_id():
     """A numeric framework run id still derives a stable key."""
     session = _FakeSession()

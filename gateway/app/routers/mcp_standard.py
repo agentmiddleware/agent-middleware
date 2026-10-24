@@ -51,10 +51,9 @@ The endpoint is stateless: each POST gets a fresh SDK transport in JSON mode
 server-initiated stream and GET/DELETE answer 405. The signed receipt is
 returned on every ``tools/call`` result both under
 ``_meta["io.agentmiddleware/receipt"]`` (the spec's extension point) and as a
-top-level ``receipt`` field (the pre-SDK contract). Disabled by default —
-``ENABLE_STANDARD_MCP_ENDPOINT`` must be set explicitly, so the surface cannot
-be advertised (or preflighted by the registry publish gate) before an operator
-turns it on.
+top-level ``receipt`` field (the pre-SDK contract). Enabled by default and
+always authenticated; set ``ENABLE_STANDARD_MCP_ENDPOINT=false`` to answer 404
+and stop advertising it.
 """
 
 from __future__ import annotations
@@ -848,6 +847,83 @@ class _SdkTransportResponse(Response):
         "Standard MCP endpoint (official MCP SDK, stateless Streamable HTTP, "
         "JSON responses)"
     ),
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["jsonrpc"],
+                        "properties": {
+                            "jsonrpc": {"type": "string", "const": "2.0"},
+                        },
+                        "oneOf": [
+                            {
+                                "title": "JSON-RPC request",
+                                "required": ["method", "id"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": ["result"]},
+                                        {"required": ["error"]},
+                                    ]
+                                },
+                                "properties": {
+                                    "method": {"type": "string"},
+                                    "params": {
+                                        "anyOf": [{"type": "object"}, {"type": "null"}]
+                                    },
+                                    "id": {
+                                        "anyOf": [
+                                            {"type": "integer"},
+                                            {"type": "string"},
+                                        ]
+                                    },
+                                },
+                            },
+                            {
+                                "title": "JSON-RPC notification",
+                                "required": ["method"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": ["id"]},
+                                        {"required": ["result"]},
+                                        {"required": ["error"]},
+                                    ]
+                                },
+                                "properties": {
+                                    "method": {"type": "string"},
+                                    "params": {
+                                        "anyOf": [{"type": "object"}, {"type": "null"}]
+                                    },
+                                },
+                            },
+                            {
+                                "title": "JSON-RPC response",
+                                "required": ["id"],
+                                "not": {"required": ["method"]},
+                                "oneOf": [
+                                    {"required": ["result"]},
+                                    {"required": ["error"]},
+                                ],
+                                "properties": {
+                                    "id": {
+                                        "anyOf": [
+                                            {"type": "integer"},
+                                            {"type": "string"},
+                                            {"type": "null"},
+                                        ]
+                                    },
+                                    "result": {},
+                                    "error": {"type": "object"},
+                                },
+                            },
+                        ],
+                    }
+                }
+            },
+        }
+    },
 )
 async def handle_standard_mcp(
     request: Request,

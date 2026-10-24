@@ -13,5 +13,6 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[3]
 for _entry in (str(_ROOT / "integrations"), str(_ROOT / "sdk/python/src")):
-    if _entry not in sys.path:
-        sys.path.insert(0, _entry)
+    while _entry in sys.path:
+        sys.path.remove(_entry)
+    sys.path.insert(0, _entry)

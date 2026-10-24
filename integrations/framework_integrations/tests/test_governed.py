@@ -2,7 +2,10 @@
 
 import asyncio
 import inspect
+import runpy
+import sys
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -97,6 +100,39 @@ def test_reserved_key_is_not_sent_as_a_tool_argument():
     asyncio.run(write_note("hi", idempotency_key="caller-key"))
     assert session.calls[0]["idempotency_key"] == "caller-key"
     assert session.calls[0]["arguments"] == {"text": "hi"}
+
+
+def test_positional_reserved_key_replays_and_is_not_sent_to_tool():
+    session = FakeSession()
+
+    @governed_tool(session)
+    async def write_note(text: str, idempotency_key: str = "tool-default") -> dict:
+        raise AssertionError("stub body must never run")
+
+    asyncio.run(write_note("hi", "caller-key"))
+    asyncio.run(write_note("hi", "caller-key"))
+    assert [call["idempotency_key"] for call in session.calls] == [
+        "caller-key",
+        "caller-key",
+    ]
+    assert all(call["arguments"] == {"text": "hi"} for call in session.calls)
+    with pytest.raises(ValueError, match="must not be blank"):
+        asyncio.run(write_note("hi", "  "))
+    with pytest.raises(TypeError, match="multiple values"):
+        asyncio.run(write_note("hi", "caller-key", idempotency_key="other-key"))
+
+
+def test_conftest_moves_checkout_paths_ahead_of_other_paths():
+    root = Path(__file__).resolve().parents[3]
+    entries = [str(root / "integrations"), str(root / "sdk/python/src")]
+    original = sys.path[:]
+    try:
+        sys.path[:] = [path for path in original if path not in entries] + entries
+        runpy.run_path(str(Path(__file__).with_name("conftest.py")))
+        assert sys.path[:2] == entries[::-1]
+        assert all(sys.path.count(entry) == 1 for entry in entries)
+    finally:
+        sys.path[:] = original
 
 
 def test_blank_tool_name_refused_at_decoration_time():

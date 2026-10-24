@@ -59,6 +59,14 @@ async def test_preflight_default_is_no_go(client):
 
 
 @pytest.mark.anyio
+async def test_preflight_omitted_body_stays_optional(client):
+    """No JSON body still runs the empty-override sweep."""
+    resp = await client.post("/v1/launch/preflight", headers=HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["verdict"] == "NO-GO"
+
+
+@pytest.mark.anyio
 async def test_preflight_detects_placeholder_base_url(client):
     """Preflight should flag yourdomain.com as a placeholder."""
     resp = await client.post(

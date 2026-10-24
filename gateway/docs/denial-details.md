@@ -13,7 +13,7 @@ permit reaches a terminal non-success state, new receipts also carry a nullable
 
 `reason_code` is part of the receipt's signed payload. It survives portable
 export and is available in the verified `claims` returned by
-`b2a_sdk.receipt_verifier`; the human-readable `b2a-verify-receipt` output
+`verify_bundle` from the Agent Middleware (AMW) `amw` package; the `amw verify` output
 prints it as `reason`. This makes the denial category independently verifiable
 without treating the richer diagnostic context as a signed claim.
 
@@ -101,8 +101,9 @@ adjacent `details.field` value identifies the rejected field.
 | `policy_constraint_corrupt` | A wallet policy's allow-list column is not a JSON array of strings, so the policy cannot be applied. | Have an administrator repair or recreate the policy bundle; the action stays denied until then. |
 | `max_cost_per_action_exceeded` | The quoted action cost exceeds the wallet policy's per-action limit. | Lower the action cost or raise the policy limit. |
 | `daily_spend_limit_exceeded` | Current daily spend plus this action exceeds the wallet policy limit. | Wait for the policy window to reset or have an administrator change the limit. |
-| `risk_tier_not_allowed` | The task tier is above the wallet policy's risk-tier ceiling. | Run a lower-tier task or have an administrator raise the policy risk tier. |
 | `real_effects_required` | The policy forbids a simulated execution path. | Use a real-effects tool configuration or revise the policy. |
+| `risk_tier_not_allowed` | The action's risk tier exceeds the wallet policy bundle's tier ceiling (tiers run low < medium < high; the bundle's `risk_tier` is the highest tier it permits). | Lower the action's risk tier or have an administrator raise the policy ceiling. |
+| `daily_spend_unknown` | The policy sets a daily spend limit but past spending cannot be determined, so the cap cannot be shown to hold. Fail-closed denial. | Retry once spend accounting is healthy; if it persists, have an administrator investigate the ledger before spending resumes. |
 | `policy_denied` | Policy evaluation denied without a narrower stable reason. | Inspect the adjacent audit policy ID and evaluated constraints, then correct the blocking policy. |
 
 ### Terminal human approval
@@ -208,7 +209,7 @@ After exporting the receipt, an operator can verify and display the signed
 reason without calling the gateway:
 
 ```text
-$ b2a-verify-receipt --bundle receipt.json --keys trust-keys.json
+$ amw verify --bundle receipt.json --keys trust-keys.json
 VERIFIED  rcpt-example
   signed by   key-example
   permit      permit-example

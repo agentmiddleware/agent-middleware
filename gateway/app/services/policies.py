@@ -20,10 +20,11 @@ from app.schemas.policies import (
 
 logger = logging.getLogger(__name__)
 
-# Policy ``risk_tier`` is a ceiling over the planner's task tiers: a bundle
-# rated "low" admits only low-tier tasks, "medium" admits low and medium, and
-# "high" admits all three. Ordered comparison, not exact match, so raising a
-# wallet's ceiling never newly denies a task the wallet already allowed.
+# The planner's task tiers run low < medium < high (risk budgets in
+# app/optimizer/policy.py grow with tier, and app/routers/mcp.py maps them to
+# the same order for the risk guard). A bundle's risk_tier is the highest tier
+# it permits: an action at or below the ceiling passes, anything above it is
+# denied. Tiers outside this map fail closed.
 _RISK_TIER_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
@@ -251,9 +252,8 @@ async def evaluate_wallet_policy(
     ``risk_tier`` is the caller's task tier (the planner supplies it; the
     invoke path currently carries no tier signal and passes None). The
     bundle's own ``risk_tier`` is enforced as a ceiling: a task tier above
-    the bundle's tier denies with ``risk_tier_not_allowed``. A missing tier,
-    or a tier outside low/medium/high on either side, cannot be compared,
-    so it is recorded in ``evaluated_constraints`` without denying.
+    the bundle's tier denies with ``risk_tier_not_allowed``. A missing tier
+    cannot be compared; a supplied tier outside low/medium/high fails closed.
     """
     stmt = (
         select(PolicyBundleModel)
@@ -273,6 +273,21 @@ async def evaluate_wallet_policy(
     # Decimal and the incoming cost is normalized rather than compared as float.
     est = _as_decimal(estimated_cost)
     daily = _as_decimal(daily_spend_used)
+    for amount in (est, daily):
+        if amount is not None and not amount.is_finite():
+            # A non-finite cost poisons the monetary gates below: NaN makes
+            # Decimal ordering comparisons raise InvalidOperation (an
+            # unclassified 500 with no denial recorded), and -Infinity is
+            # smaller than every cap so it silently passes them. Neither can
+            # be shown under a cap, so deny instead of crashing or allowing.
+            # None keeps its existing meaning for each input: estimated cost
+            # skips its comparison, while unknown daily spend denies a cap.
+            return PolicyEvaluation(
+                False,
+                "policy_cost_invalid",
+                None,
+                {"policy_count": len(models)},
+            )
 
     evaluated: list[dict[str, Any]] = []
     for policy in models:
@@ -355,32 +370,27 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
-        if policy.daily_spend_limit is not None and (daily is None or est is None):
-            # The daily cap cannot be checked without both figures, so this
-            # bundle does not constrain the call on spend. Record which input
-            # was missing so the skip is visible in audit metadata instead of
-            # silent. Money-moving paths always supply both; planning and
-            # pre-cost checks may not.
-            constraints["daily_spend_unevaluated"] = sorted(
-                name
-                for name, value in (
-                    ("daily_spend_used", daily),
-                    ("estimated_cost", est),
+        if policy.daily_spend_limit is not None:
+            if daily is None:
+                # Past spending is unknown, so the cap cannot be shown to
+                # hold. Fail closed instead of skipping the check.
+                return PolicyEvaluation(
+                    False,
+                    "daily_spend_unknown",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
                 )
-                if value is None
-            )
-        if (
-            policy.daily_spend_limit is not None
-            and daily is not None
-            and est is not None
-            and daily + est > policy.daily_spend_limit
-        ):
-            return PolicyEvaluation(
-                False,
-                "daily_spend_limit_exceeded",
-                policy.policy_id,
-                {"evaluated": evaluated},
-            )
+            if est is None:
+                # Pre-cost checks cannot compare the cap yet; make the skipped
+                # comparison visible in the evaluated constraints.
+                constraints["daily_spend_unevaluated"] = ["estimated_cost"]
+            if est is not None and daily + est > policy.daily_spend_limit:
+                return PolicyEvaluation(
+                    False,
+                    "daily_spend_limit_exceeded",
+                    policy.policy_id,
+                    {"evaluated": evaluated},
+                )
         if policy.require_real_effects and simulation:
             return PolicyEvaluation(
                 False,
@@ -388,16 +398,17 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
-        if risk_tier is not None:
+        if risk_tier is not None and policy.risk_tier is not None:
             constraints["requested_risk_tier"] = risk_tier
-            # The tier arrives inside the planner's untyped task_context, so a
-            # caller can send any JSON value. Only strings can name a tier;
-            # anything else is recorded above and cannot be compared.
-            requested = (
+            requested_rank = (
                 _RISK_TIER_ORDER.get(risk_tier) if isinstance(risk_tier, str) else None
             )
-            ceiling = _RISK_TIER_ORDER.get(policy.risk_tier)
-            if requested is not None and ceiling is not None and requested > ceiling:
+            allowed_rank = _RISK_TIER_ORDER.get(policy.risk_tier)
+            if (
+                requested_rank is None
+                or allowed_rank is None
+                or requested_rank > allowed_rank
+            ):
                 return PolicyEvaluation(
                     False,
                     "risk_tier_not_allowed",

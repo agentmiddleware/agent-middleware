@@ -18,6 +18,7 @@ from app.schemas.trust import (
     PermitRequestCreate,
 )
 from app.services.idempotency import get_idempotency_service
+from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
@@ -419,7 +420,9 @@ async def test_permit_service_budget_lifecycle_and_filters(
     assert total == 1
     assert permits[0].permit_id == permit.permit_id
 
-    await service.reserve_budget(permit.permit_id, Decimal("4"))
+    await service.reserve_budget(
+        permit.permit_id, Decimal("4"), caller=CallerIdentity.admin()
+    )
     validation = await service.validate_for_action(
         permit_id=permit.permit_id,
         wallet_id=provisioned["agent_wallet_id"],
@@ -430,7 +433,9 @@ async def test_permit_service_budget_lifecycle_and_filters(
     assert validation.allowed is False
     assert validation.reason == "permit_budget_exceeded"
 
-    await service.release_budget(permit.permit_id, Decimal("2"))
+    await service.release_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
     validation = await service.validate_for_action(
         permit_id=permit.permit_id,
         wallet_id=provisioned["agent_wallet_id"],
@@ -441,11 +446,17 @@ async def test_permit_service_budget_lifecycle_and_filters(
     assert validation.allowed is True
 
     with pytest.raises(PermitError) as missing_reserve:
-        await service.reserve_budget("permit-missing", Decimal("1"))
+        await service.reserve_budget(
+            "permit-missing", Decimal("1"), caller=CallerIdentity.admin()
+        )
     assert missing_reserve.value.reason == "permit_not_found"
-    await service.release_budget("permit-missing", Decimal("1"))
+    await service.release_budget(
+        "permit-missing", Decimal("1"), caller=CallerIdentity.admin()
+    )
 
-    revoked = await service.revoke_permit(permit.permit_id)
+    revoked = await service.revoke_permit(
+        permit.permit_id, caller=CallerIdentity.admin()
+    )
     assert revoked.status == "revoked"
     assert revoked.revoked_at is not None
     validation = await service.validate_for_action(
@@ -457,6 +468,124 @@ async def test_permit_service_budget_lifecycle_and_filters(
     )
     assert validation.allowed is False
     assert validation.reason == "permit_revoked"
+
+
+async def _stored_permit_revocation(permit_id: str) -> tuple[str, datetime | None]:
+    factory = get_session_factory()
+    async with factory() as session:
+        model = await session.get(PermitModel, permit_id)
+        assert model is not None
+        return model.status, model.revoked_at
+
+
+@pytest.mark.anyio
+async def test_repeat_revoke_permit_keeps_original_revoked_at(
+    client,
+    clean_database,
+    enforce_naive_utc_datetime_columns,
+):
+    """A second revoke is a no-op on the stored revocation evidence.
+
+    ``revoked_at`` is returned in permit denial details. Moving it forward on
+    a repeat call would make that evidence describe the later call.
+    """
+    provisioned = await provision_agent_wallet(client)
+    service = get_permit_service()
+    permit = await service.create_permit(
+        PermitCreateRequest(
+            issuer_wallet_id=provisioned["agent_wallet_id"],
+            subject_wallet_id=provisioned["agent_wallet_id"],
+            subject_key_id=provisioned["key_id"],
+            allowed_tools=["repeat-revoke-tool"],
+            scopes=["tool:repeat-revoke-tool:invoke"],
+            max_credits=Decimal("10"),
+            expires_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).replace(
+                tzinfo=None
+            ),
+        )
+    )
+
+    issuer = CallerIdentity(
+        wallet_id=provisioned["agent_wallet_id"], key_id=provisioned["key_id"]
+    )
+    first = await service.revoke_permit(permit.permit_id, caller=issuer)
+    assert first.status == "revoked"
+    assert first.revoked_at is not None
+
+    original = datetime(2020, 1, 2, 3, 4, 5)
+    factory = get_session_factory()
+    async with factory() as session:
+        model = await session.get(PermitModel, permit.permit_id)
+        assert model is not None
+        model.revoked_at = original
+        await session.commit()
+
+    second = await service.revoke_permit(permit.permit_id, caller=issuer)
+    assert second.status == "revoked"
+    assert second.revoked_at == original
+    assert await _stored_permit_revocation(permit.permit_id) == ("revoked", original)
+
+    validation = await service.validate_for_action(
+        permit_id=permit.permit_id,
+        wallet_id=provisioned["agent_wallet_id"],
+        tool_name="repeat-revoke-tool",
+        estimated_credits=Decimal("1"),
+        key_id=provisioned["key_id"],
+    )
+    assert validation.allowed is False
+    assert validation.reason == "permit_revoked"
+    assert validation.details == {
+        "status": "revoked",
+        "revoked_at": "2020-01-02T03:04:05Z",
+    }
+
+    with pytest.raises(PermitError) as missing:
+        await service.revoke_permit("permit-does-not-exist", caller=issuer)
+    assert missing.value.reason == "permit_not_found"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("terminal_status", ["expired", "exhausted"])
+async def test_revoke_permit_does_not_relabel_non_active_permit(
+    client,
+    clean_database,
+    enforce_naive_utc_datetime_columns,
+    terminal_status,
+):
+    """Revoke only transitions an active permit. Expired or exhausted stays put."""
+    provisioned = await provision_agent_wallet(client)
+    service = get_permit_service()
+    permit = await service.create_permit(
+        PermitCreateRequest(
+            issuer_wallet_id=provisioned["agent_wallet_id"],
+            subject_wallet_id=provisioned["agent_wallet_id"],
+            subject_key_id=provisioned["key_id"],
+            allowed_tools=["terminal-revoke-tool"],
+            scopes=["tool:terminal-revoke-tool:invoke"],
+            max_credits=Decimal("10"),
+            expires_at=(datetime.now(timezone.utc) + timedelta(minutes=30)).replace(
+                tzinfo=None
+            ),
+        )
+    )
+
+    factory = get_session_factory()
+    async with factory() as session:
+        model = await session.get(PermitModel, permit.permit_id)
+        assert model is not None
+        model.status = terminal_status
+        model.revoked_at = None
+        await session.commit()
+
+    returned = await service.revoke_permit(
+        permit.permit_id,
+        caller=CallerIdentity(
+            wallet_id=provisioned["agent_wallet_id"], key_id=provisioned["key_id"]
+        ),
+    )
+    assert returned.status == terminal_status
+    assert returned.revoked_at is None
+    assert await _stored_permit_revocation(permit.permit_id) == (terminal_status, None)
 
 
 @pytest.mark.anyio
@@ -658,11 +787,20 @@ async def test_permit_service_validation_denial_reasons(client, clean_database):
         key_id=provisioned["key_id"],
     )
     assert validation.allowed is False
-    assert validation.reason == "permit_scope_missing"
+    # An empty allowlist admits no tool: the tool check fires before the
+    # scope check, so the reason names the empty list, not the missing scope.
+    assert validation.reason == "permit_tool_not_allowed"
+    assert validation.details == {
+        "requested_tool": "service-validate-tool",
+        "allowed_tools": [],
+    }
 
     async with factory() as session:
         model = await session.get(PermitModel, permit.permit_id)
         assert model is not None
+        # Restore a well-formed allowlist so this block proves signature
+        # checking (not the empty-allowlist denial asserted above).
+        model.allowed_tools_json = json.dumps(["service-validate-tool"])
         model.scopes_json = json.dumps(
             ["tool:service-validate-tool:invoke", "billing:charge"]
         )
@@ -718,7 +856,9 @@ async def test_reserve_budget_refuses_an_expired_permit(
             session.add(model)
 
     with pytest.raises(PermitError) as excinfo:
-        await service.reserve_budget(permit.permit_id, Decimal("1"))
+        await service.reserve_budget(
+            permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+        )
     assert str(excinfo.value) == "permit_expired"
 
     # And no budget moved.

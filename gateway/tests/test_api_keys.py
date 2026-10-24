@@ -308,6 +308,106 @@ async def test_revoke_api_key_not_found(client, api_headers, sponsor_wallet):
 
 
 @pytest.mark.anyio
+async def test_repeat_revoke_keeps_original_timestamp_and_reason(
+    client,
+    api_headers,
+    sponsor_wallet,
+    enforce_naive_utc_datetime_columns,
+):
+    """A second revoke must not replace the recorded time or reason.
+
+    An emergency reason such as ``EMERGENCY: …`` is evidence. A later
+    ``user_request`` call has to leave that record alone.
+    """
+    from app.services.api_key_service import KeyNotFoundError, get_api_key_service
+
+    wallet_id = sponsor_wallet["wallet_id"]
+    created = await client.post(
+        "/v1/api-keys",
+        json={"wallet_id": wallet_id},
+        headers=api_headers,
+    )
+    assert created.status_code == 201
+    key_id = created.json()["key_id"]
+    service = get_api_key_service()
+
+    assert await service.revoke_key(wallet_id, key_id, "EMERGENCY: containment") is True
+
+    original = datetime(2020, 1, 2, 3, 4, 5)
+    factory = get_session_factory()
+    async with factory() as session:
+        key = await session.get(APIKeyModel, key_id)
+        assert key is not None
+        assert key.status == "revoked"
+        assert key.revoke_reason == "EMERGENCY: containment"
+        key.revoked_at = original
+        await session.commit()
+
+    assert await service.revoke_key(wallet_id, key_id, "user_request") is True
+
+    async with factory() as session:
+        key = await session.get(APIKeyModel, key_id)
+        assert key is not None
+        assert key.status == "revoked"
+        assert key.revoked_at == original
+        assert key.revoke_reason == "EMERGENCY: containment"
+
+    with pytest.raises(KeyNotFoundError):
+        await service.revoke_key(wallet_id, "missing-key", "user_request")
+    with pytest.raises(KeyNotFoundError):
+        await service.revoke_key("other-wallet", key_id, "user_request")
+
+    async with factory() as session:
+        key = await session.get(APIKeyModel, key_id)
+        assert key is not None
+        assert key.status == "revoked"
+        assert key.revoke_reason == "EMERGENCY: containment"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("prior_status", ["suspended", "expired"])
+async def test_revoke_key_still_revokes_unrevoked_non_active_key(
+    client,
+    api_headers,
+    sponsor_wallet,
+    enforce_naive_utc_datetime_columns,
+    prior_status,
+):
+    """Only an already-revoked key is left untouched. Suspended or expired is not."""
+    from app.services.api_key_service import get_api_key_service
+
+    wallet_id = sponsor_wallet["wallet_id"]
+    created = await client.post(
+        "/v1/api-keys",
+        json={"wallet_id": wallet_id},
+        headers=api_headers,
+    )
+    assert created.status_code == 201
+    key_id = created.json()["key_id"]
+
+    factory = get_session_factory()
+    async with factory() as session:
+        key = await session.get(APIKeyModel, key_id)
+        assert key is not None
+        key.status = prior_status
+        key.revoked_at = None
+        key.revoke_reason = None
+        await session.commit()
+
+    assert (
+        await get_api_key_service().revoke_key(wallet_id, key_id, "user_request")
+        is True
+    )
+
+    async with factory() as session:
+        key = await session.get(APIKeyModel, key_id)
+        assert key is not None
+        assert key.status == "revoked"
+        assert key.revoke_reason == "user_request"
+        assert key.revoked_at is not None
+
+
+@pytest.mark.anyio
 async def test_emergency_revoke(client, api_headers, sponsor_wallet):
     """Test emergency key revocation."""
     await client.post(

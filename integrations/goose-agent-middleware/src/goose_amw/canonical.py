@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 
-
-def canonical_json(payload: Any) -> str:
-    """Sorted keys, no insignificant whitespace, ASCII only (the AMW signing form)."""
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+from b2a_sdk.receipt_verifier import canonical_json
 
 
 def sha256_hex(text: str) -> str:
@@ -35,3 +31,6 @@ def idempotency_key(
         "session_id": session_id,
     }
     return "amw-fb-" + sha256_hex(canonical_json(material))
+
+
+__all__ = ["args_hash", "canonical_json", "idempotency_key", "sha256_hex"]

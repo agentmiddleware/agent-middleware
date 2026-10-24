@@ -107,6 +107,41 @@ async def test_emit_telemetry_posts_a_batch_the_route_accepts():
 
 
 @pytest.mark.anyio
+async def test_emit_telemetry_surfaces_batch_ingestion_failure():
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(
+            202,
+            json={"ingested": 0, "failed": 1, "batch_id": "b1", "errors": [{}]},
+        )
+
+    client = _client(handler)
+    try:
+        with pytest.raises(RuntimeError, match="telemetry ingestion failed"):
+            await client.emit_telemetry("task_completed")
+    finally:
+        await client.close()
+
+    assert len(sent) == 1
+    assert sent[0].url.path == "/v1/telemetry/events"
+
+
+@pytest.mark.anyio
+async def test_emit_telemetry_rejects_a_missing_failure_count():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, json={"ingested": 1, "batch_id": "b1"})
+
+    client = _client(handler)
+    try:
+        with pytest.raises(ValueError, match="failed count"):
+            await client.emit_telemetry("task_completed")
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
 async def test_send_message_uses_the_comms_query_and_body():
     sent: list[httpx.Request] = []
 

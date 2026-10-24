@@ -169,7 +169,13 @@ class B2AClient:
             json=payload,
         )
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        failed = data.get("failed") if isinstance(data, dict) else None
+        if type(failed) is not int or failed < 0:
+            raise ValueError("telemetry response did not include a valid failed count")
+        if failed:
+            raise RuntimeError("telemetry ingestion failed")
+        return data
 
     async def send_message(
         self,

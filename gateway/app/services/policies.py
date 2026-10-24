@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from app.core.time import utc_now
 from decimal import Decimal
@@ -260,6 +261,35 @@ async def evaluate_wallet_policy(
     factory = get_session_factory()
     async with factory() as session:
         models = (await session.execute(stmt)).scalars().all()
+    return evaluate_policy_models(
+        models,
+        tool_name=tool_name,
+        service_category=service_category,
+        estimated_cost=estimated_cost,
+        daily_spend_used=daily_spend_used,
+        simulation=simulation,
+        risk_tier=risk_tier,
+        approval_gate_active=approval_gate_active,
+    )
+
+
+def evaluate_policy_models(
+    models: Sequence[PolicyBundleModel],
+    *,
+    tool_name: str | None = None,
+    service_category: str | None = None,
+    estimated_cost: float | Decimal | None = None,
+    daily_spend_used: float | Decimal | None = None,
+    simulation: bool | None = None,
+    risk_tier: str | None = None,
+    approval_gate_active: bool = False,
+) -> PolicyEvaluation:
+    """Evaluate already-loaded active policy bundles against one action.
+
+    This is the pure decision core of :func:`evaluate_wallet_policy`, split
+    out so offline callers (``amw replay``) evaluate recorded calls with the
+    exact same rules without a database read.
+    """
     if not models:
         return PolicyEvaluation(True, "allowed", None, {"policy_count": 0})
 

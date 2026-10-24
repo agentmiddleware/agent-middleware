@@ -569,9 +569,13 @@ app = FastAPI(
     # Omit contact metadata until an accountable, monitored identity is set.
     # This avoids presenting placeholder support details as a real escalation path.
     contact=public_contact or None,
+    # gateway/ is FSL-1.1-ALv2 (gateway/LICENSE.md), not the root Apache-2.0
+    # LICENSE. Keep this in step with LICENSING.md.
     license_info={
-        "name": "Business Source License 1.1",
-        "url": "https://github.com/PetrefiedThunder/agent-middleware/blob/main/LICENSE",
+        "name": (
+            "Functional Source License 1.1, Apache-2.0 future license (FSL-1.1-ALv2)"
+        ),
+        "url": "https://github.com/agentmiddleware/agent-middleware/blob/main/gateway/LICENSE.md",
     },
     servers=build_openapi_servers(settings.PUBLIC_URL, settings.ENVIRONMENT),
 )
@@ -1043,12 +1047,23 @@ async def root(request: Request):
                 "description": (
                     "Model Context Protocol (MCP) gateway for governed tool "
                     "discovery and execution (permit → meter → dispatch → "
-                    "receipt)."
+                    "receipt). "
+                    + (
+                        "New integrations should invoke tools through the "
+                        "standard Streamable HTTP endpoint at POST /mcp; "
+                        if get_settings().ENABLE_STANDARD_MCP_ENDPOINT
+                        else "New integrations should invoke tools through "
+                        "POST /mcp/tools/{service_id}/invoke; "
+                    )
+                    + "POST /mcp/messages and "
+                    "POST /mcp/tools/{service_id}/invoke are legacy and kept "
+                    "for existing clients. Transports are stateless JSON "
+                    "only: no SSE, no server-initiated streams."
                 ),
                 "endpoints": [
                     "GET /mcp/tools.json",
                     "GET /.well-known/mcp/tools.json",
-                    "POST /mcp/messages",
+                    "POST /mcp/messages (legacy)",
                     *(
                         ["POST /mcp"]
                         if get_settings().ENABLE_STANDARD_MCP_ENDPOINT
@@ -1056,7 +1071,7 @@ async def root(request: Request):
                     ),
                     "GET /mcp/tools",
                     "GET /mcp/tools/{service_id}",
-                    "POST /mcp/tools/{service_id}/invoke",
+                    "POST /mcp/tools/{service_id}/invoke (legacy)",
                 ],
             },
             "red_team_security": {

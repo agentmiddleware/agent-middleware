@@ -72,25 +72,24 @@ def test_real_tool_is_not_labeled_a_pointer():
     assert "Generate a passkey challenge" in description
 
 
-def test_preview_stub_tools_are_labeled_demos_without_side_effects():
+def test_preview_stub_tools_are_labeled_demos_without_side_effects(monkeypatch):
     """Marketplace stubs read as demos in the buyer-visible manifest."""
-    import os
-
     from app.core.config import get_settings
+    from app.services import mcp_phase9_tools
     from app.services.mcp_generator import McpGenerator
-    from app.services.mcp_phase9_tools import (
-        sync_proof_surface_mcp_registration,
-        unregister_proof_surface_mcp_stubs,
-    )
+    from app.services.service_registry import ServiceRegistry
 
-    os.environ["ENABLE_PROOF_SURFACES"] = "true"
-    get_settings.cache_clear()
+    registry = ServiceRegistry()
     try:
-        sync_proof_surface_mcp_registration()
-        manifest = McpGenerator().generate_tools_json()
+        with monkeypatch.context() as patch:
+            patch.setenv("ENABLE_PROOF_SURFACES", "true")
+            patch.setattr(mcp_phase9_tools, "get_service_registry", lambda: registry)
+            patch.setattr(mcp_phase9_tools, "_registered", False)
+            patch.setattr(mcp_phase9_tools, "_default_services_registered", False)
+            get_settings.cache_clear()
+            mcp_phase9_tools.sync_proof_surface_mcp_registration()
+            manifest = McpGenerator(registry).generate_tools_json()
     finally:
-        unregister_proof_surface_mcp_stubs()
-        del os.environ["ENABLE_PROOF_SURFACES"]
         get_settings.cache_clear()
 
     by_name = {tool["name"]: tool for tool in manifest["tools"]}
@@ -102,16 +101,32 @@ def test_preview_stub_tools_are_labeled_demos_without_side_effects():
 
 
 @pytest.mark.anyio
-async def test_root_discovery_names_one_invoke_path_and_legacy_routes(clean_database):
-    """Root discovery recommends POST /mcp and marks older routes legacy."""
+@pytest.mark.parametrize("standard_enabled", [False, True])
+async def test_root_discovery_names_one_invoke_path_and_legacy_routes(
+    clean_database, monkeypatch, standard_enabled
+):
+    """Root discovery recommends a listed invoke path for either flag state."""
+    from app.core.config import get_settings
     from app.main import app
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        response = await c.get("/")
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", str(standard_enabled).lower())
+            get_settings.cache_clear()
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as c:
+                response = await c.get("/")
+    finally:
+        get_settings.cache_clear()
     assert response.status_code == 200
     block = response.json()["services"]["mcp_server"]
-    assert "POST /mcp" in block["description"]
+    recommended = (
+        "POST /mcp; " if standard_enabled else "POST /mcp/tools/{service_id}/invoke; "
+    )
+    assert recommended in block["description"]
+    assert ("POST /mcp" in block["endpoints"]) is standard_enabled
+    if not standard_enabled:
+        assert "standard Streamable HTTP endpoint" not in block["description"]
     assert "legacy" in block["description"].lower()
     assert "no SSE" in block["description"]
     endpoints = block["endpoints"]

@@ -1046,9 +1046,15 @@ async def root(request: Request):
                 "description": (
                     "Model Context Protocol (MCP) gateway for governed tool "
                     "discovery and execution (permit → meter → dispatch → "
-                    "receipt). New integrations should invoke tools through "
-                    "the standard Streamable HTTP endpoint at POST /mcp; "
-                    "POST /mcp/messages and "
+                    "receipt). "
+                    + (
+                        "New integrations should invoke tools through the "
+                        "standard Streamable HTTP endpoint at POST /mcp; "
+                        if get_settings().ENABLE_STANDARD_MCP_ENDPOINT
+                        else "New integrations should invoke tools through "
+                        "POST /mcp/tools/{service_id}/invoke; "
+                    )
+                    + "POST /mcp/messages and "
                     "POST /mcp/tools/{service_id}/invoke are legacy and kept "
                     "for existing clients. Transports are stateless JSON "
                     "only: no SSE, no server-initiated streams."

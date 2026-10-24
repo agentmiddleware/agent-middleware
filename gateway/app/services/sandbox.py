@@ -492,8 +492,9 @@ class SandboxEngine:
                         False,
                     )
                 called = env.state.metadata.setdefault("endpoints_called", [])
-                if target not in called:
-                    called.append(target)
+                if target in called:
+                    return 0, "Endpoint already called. Try another endpoint.", False
+                called.append(target)
                 discovered = len(called)
                 env.state.metadata["endpoints_discovered"] = discovered
                 total = env.state.metadata["num_endpoints"]

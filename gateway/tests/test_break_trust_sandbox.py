@@ -103,6 +103,30 @@ class TestApiMockScoring:
         assert env.state.solved is False
 
     @pytest.mark.anyio
+    async def test_repeated_valid_endpoint_earns_no_extra_points(self, engine):
+        env = await engine.create_environment(
+            env_type="api_mock", difficulty="easy", seed=1, owner_wallet_id="w1"
+        )
+        real_path = env.state.metadata["mock_api"][0]["path"]
+        action = {"type": "call_endpoint", "value": real_path}
+
+        first = await engine.submit_action(env.env_id, action)
+        repeated = await engine.submit_action(env.env_id, action)
+
+        assert first.reward == 1.0
+        assert repeated.reward == 0.0
+        assert env.state.score == 1.0
+        assert env.state.metadata["endpoints_discovered"] == 1
+
+        next_path = env.state.metadata["mock_api"][1]["path"]
+        next_call = await engine.submit_action(
+            env.env_id, {"type": "call_endpoint", "value": next_path}
+        )
+        assert next_call.reward == 1.0
+        assert env.state.score == 2.0
+        assert env.state.metadata["endpoints_discovered"] == 2
+
+    @pytest.mark.anyio
     async def test_calling_every_real_endpoint_solves(self, engine):
         env = await engine.create_environment(
             env_type="api_mock", difficulty="easy", seed=1, owner_wallet_id="w1"

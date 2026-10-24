@@ -169,6 +169,23 @@ def test_verify_permit_accepts_genuine_signature():
     assert _validator(permit, key_document).verify_permit() is True
 
 
+def test_p256_receipt_key_does_not_verify_an_ed25519_permit():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    permit, key_document = _build_signed_permit()
+    public_der = (
+        ec.generate_private_key(ec.SECP256R1())
+        .public_key()
+        .public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    )
+    key_document["keys"][0].update(
+        alg="ECDSA-P256-SHA256", public_key_b64=base64.b64encode(public_der).decode()
+    )
+
+    assert _validator(permit, key_document).verify_permit() is False
+
+
 def test_verify_permit_normalizes_api_value_forms():
     """Naive timestamps and non-normalized decimals canonicalize identically.
 
@@ -253,6 +270,38 @@ def test_verify_permit_covers_v2_constraints_when_present():
         tampered[field] = forged_value
         validator = _validator(tampered, key_document)
         assert validator.verify_permit() is False, f"{field} must be signed"
+
+
+def test_signed_call_caps_and_repeat_windows_require_real_integers():
+    permit, keys = _build_signed_permit(max_calls_per_tool={TOOL: 3})
+    for value in ("3", True, 3.0):
+        changed = dict(permit, max_calls_per_tool={TOOL: value})
+        assert not _validator(changed, keys).verify_permit()
+
+    permit, keys = _build_signed_permit(repeat_window_seconds=3600)
+    for value in ("3600", True, 3600.0):
+        changed = dict(permit, repeat_window_seconds=value)
+        assert not _validator(changed, keys).verify_permit()
+
+
+def test_malformed_call_cap_containers_fail_closed_without_changing_legacy_absence():
+    permit, keys = _build_signed_permit()
+    expected = LocalPermitValidator.permit_signing_payload(permit)
+    for value in ([], 0):
+        changed = dict(permit, max_calls_per_tool=value)
+        assert not _validator(changed, keys).verify_permit()
+        decision = LocalPermitValidator(changed, {}).check(TOOL, Decimal("1"))
+        assert decision.reason == "permit_max_calls_exceeded"
+
+    for value in (None, {}):
+        changed = dict(permit, max_calls_per_tool=value)
+        assert LocalPermitValidator.permit_signing_payload(changed) == expected
+        assert _validator(changed, keys).verify_permit()
+        assert LocalPermitValidator(changed, {}).check(TOOL, Decimal("1")).allowed
+    absent = dict(permit)
+    absent.pop("max_calls_per_tool")
+    assert LocalPermitValidator.permit_signing_payload(absent) == expected
+    assert _validator(absent, keys).verify_permit()
 
 
 def test_verify_permit_fails_closed_on_unknown_key_and_malformed_input():
@@ -368,6 +417,107 @@ def test_record_use_advances_local_reservation_and_counters():
     assert validator.check(TOOL, Decimal("0")).allowed is True
 
 
+def test_check_denies_a_different_subject_wallet():
+    """The server returns permit_wallet_mismatch. The local mirror must too."""
+    validator = LocalPermitValidator(_permit_dict(), {})
+    decision = validator.check(TOOL, Decimal("1"), wallet_id="someone-else")
+    assert decision.allowed is False
+    assert decision.reason == "permit_wallet_mismatch"
+    assert validator.check(TOOL, Decimal("1"), None, "someone-else").reason == (
+        "permit_wallet_mismatch"
+    )
+    # Callers that do not pass a wallet keep the previous advisory check.
+    assert validator.check(TOOL, Decimal("1")).allowed is True
+
+
+def test_check_fails_closed_when_the_call_cap_is_not_a_real_int():
+    """bool, float, and digit strings must not become a permissive cap."""
+    for limit in (True, 1.5, "1"):
+        validator = LocalPermitValidator(_permit_dict(max_calls_per_tool={TOOL: limit}), {})
+        decision = validator.check(TOOL, Decimal("1"))
+        assert decision.allowed is False, limit
+        assert decision.reason == "permit_max_calls_exceeded"
+
+
+def test_record_use_ignores_negative_credits():
+    """A negative charge must not increase the budget the mirror will allow."""
+    validator = LocalPermitValidator(_permit_dict(max_credits="10", spent_credits="0"), {})
+    validator.record_use(TOOL, Decimal("-5"))
+    assert validator.reserved_credits == Decimal("0")
+    denied = validator.check(TOOL, Decimal("11"))
+    assert denied.allowed is False
+    assert denied.reason == "permit_budget_exceeded"
+
+
+def test_record_use_ignores_nonfinite_or_malformed_reservations_but_counts_calls():
+    validator = LocalPermitValidator(_permit_dict(max_credits="10", spent_credits="8"), {})
+    for amount in (
+        Decimal("-5"),
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+        None,
+    ):
+        validator.record_use(TOOL, amount)
+    assert validator.call_counts == {TOOL: 5}
+    assert validator.reserved_credits == Decimal("0")
+    assert validator.check(TOOL, Decimal("3")).reason == "permit_budget_exceeded"
+    assert validator.check(TOOL, Decimal("2")).allowed
+
+
+def test_check_denies_nested_forbidden_keys_but_not_values():
+    validator = LocalPermitValidator(_permit_dict(forbidden_fields=["password"]), {})
+    denied = validator.check(TOOL, Decimal("1"), arguments={"profile": [{"password": "secret"}]})
+    assert denied.reason == "permit_forbidden_field:password"
+    assert validator.check(TOOL, Decimal("1"), arguments={"note": "password"}).allowed
+    assert validator.check(TOOL, Decimal("1"), arguments={}).allowed
+
+
+@pytest.mark.parametrize("forbidden_fields", [[], ["password"]])
+def test_check_scans_shared_acyclic_arguments_in_linear_work(forbidden_fields):
+    class CountingDict(dict):
+        visits = 0
+
+        def items(self):
+            type(self).visits += 1
+            return super().items()
+
+    node: dict[str, Any] = CountingDict({"value": "safe"})
+    for _ in range(12):
+        node = CountingDict({"left": node, "right": node})
+    validator = LocalPermitValidator(_permit_dict(forbidden_fields=forbidden_fields), {})
+    assert validator.check(TOOL, Decimal("1"), arguments=node).allowed
+    assert CountingDict.visits <= 26  # 13 distinct dicts, including the leaf
+
+
+def test_check_finds_forbidden_key_in_shared_node_and_handles_deep_nesting():
+    validator = LocalPermitValidator(_permit_dict(forbidden_fields=["password"]), {})
+    shared = {"nested": {"password": "synthetic"}}
+    assert (
+        validator.check(TOOL, Decimal("1"), arguments={"left": shared, "right": shared}).reason
+        == "permit_forbidden_field:password"
+    )
+
+    node: dict[str, Any] = {}
+    for _ in range(1200):
+        node = {"next": [node]}
+    assert validator.check(TOOL, Decimal("1"), arguments=node).allowed
+
+
+@pytest.mark.parametrize("kind", ["dict", "list"])
+def test_check_denies_cyclic_argument_graphs(kind: str):
+    validator = LocalPermitValidator(_permit_dict(forbidden_fields=["password"]), {})
+    arguments: dict[str, Any] = {}
+    if kind == "dict":
+        arguments["self"] = arguments
+    else:
+        children: list[Any] = []
+        children.append(children)
+        arguments["children"] = children
+    decision = validator.check(TOOL, Decimal("1"), arguments=arguments)
+    assert decision.reason == "permit_forbidden_field:malformed"
+
+
 # ---------------------------------------------------------------------------
 # GovernedEdgeSession over MockTransport
 # ---------------------------------------------------------------------------
@@ -456,6 +606,68 @@ async def test_session_open_verifies_and_local_denial_skips_the_server():
 
 
 @pytest.mark.asyncio
+async def test_session_rejects_nested_and_cyclic_arguments_before_invoke():
+    permit, key_document = _build_signed_permit(forbidden_fields=["password"])
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/v1/permits/permit-local-1":
+            return httpx.Response(200, json=permit)
+        if request.url.path == "/.well-known/trust-keys.json":
+            return httpx.Response(200, json=key_document)
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    client = AgentMiddlewareClient(
+        api_key="test-key",
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        session = await GovernedEdgeSession.open(
+            client, permit_id="permit-local-1", wallet_id="wallet-1"
+        )
+        with pytest.raises(PermitDeniedError) as denied:
+            await session.invoke(
+                TOOL,
+                {"profile": [{"password": "secret"}]},
+                idempotency_key="nested-field-1",
+            )
+        assert denied.value.reason == "permit_forbidden_field:password"
+
+        self_dict: dict[str, Any] = {}
+        self_dict["self"] = self_dict
+        self_list: list[Any] = []
+        self_list.append(self_list)
+        for arguments in (self_dict, {"children": self_list}):
+            with pytest.raises(PermitDeniedError) as denied:
+                await session.invoke(TOOL, arguments, idempotency_key="cyclic-args-1")
+            assert denied.value.reason == "permit_forbidden_field:malformed"
+        assert seen == ["/v1/permits/permit-local-1", "/.well-known/trust-keys.json"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_session_open_rejects_unsafe_path_and_blank_wallet_without_request():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    client = AgentMiddlewareClient(
+        api_key="test-key",
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ValueError, match="permit_id"):
+            await GovernedEdgeSession.open(client, permit_id="../admin", wallet_id="wallet-1")
+        with pytest.raises(ValueError, match="wallet_id"):
+            await GovernedEdgeSession.open(client, permit_id="permit-local-1", wallet_id="  ")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_session_open_raises_permit_denied_for_malformed_trust_keys():
     """A broken trust-keys.json surfaces as the documented boundary error.
 
@@ -510,6 +722,37 @@ async def test_session_open_rejects_a_permit_the_published_keys_cannot_verify():
         with pytest.raises(PermitDeniedError) as exc_info:
             await GovernedEdgeSession.open(client, permit_id="permit-local-1", wallet_id="wallet-1")
         assert exc_info.value.reason == "permit_signature_invalid"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_session_open_rejects_a_permit_bound_to_another_wallet():
+    """A signed permit for wallet-1 must not open a session for someone else."""
+    permit, key_document = _build_signed_permit()
+    invoked = False
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal invoked
+        if request.url.path == "/v1/permits/permit-local-1":
+            return httpx.Response(200, json=permit)
+        if request.url.path == "/.well-known/trust-keys.json":
+            return httpx.Response(200, json=key_document)
+        invoked = True
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    client = AgentMiddlewareClient(
+        api_key="test-key",
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(PermitDeniedError) as exc_info:
+            await GovernedEdgeSession.open(
+                client, permit_id="permit-local-1", wallet_id="other-wallet"
+            )
+        assert exc_info.value.reason == "permit_wallet_mismatch"
+        assert invoked is False
     finally:
         await client.close()
 

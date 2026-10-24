@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.config import get_settings
+from app.services.ownership import CallerIdentity
 from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import (
@@ -621,7 +622,7 @@ async def test_duplicate_detection_opt_out(client, clean_database, monkeypatch):
 
 @pytest.mark.anyio
 async def test_same_key_replay_unchanged(client, clean_database):
-    """Same-key replay returns original receipt with no second call or charge.
+    """a retry with the same key returns the original receipt instead of dispatching again.
 
     This behavior must not regress.
     """
@@ -1221,14 +1222,24 @@ async def test_pre_dispatch_release_replays_a_lost_slot_cas(
 
     misses = _inject_one_lost_counter_cas(monkeypatch)
     permits = get_permit_service()
-    assert await permits.release_dispatch_budget_once(attempt.attempt_id) is True
+    assert (
+        await permits.release_dispatch_budget_once(
+            attempt.attempt_id, caller=CallerIdentity.admin()
+        )
+        is True
+    )
 
     assert misses["count"] == 1
     counts, spent = await _permit_slot_state(permit_id)
     assert counts == {tool_name: 0}
     assert spent == Decimal("0")
     # The guarded claim keeps the release once-only across replays too.
-    assert await permits.release_dispatch_budget_once(attempt.attempt_id) is False
+    assert (
+        await permits.release_dispatch_budget_once(
+            attempt.attempt_id, caller=CallerIdentity.admin()
+        )
+        is False
+    )
 
 
 @pytest.mark.anyio
@@ -1272,7 +1283,7 @@ async def test_reserve_contention_is_retryable_and_frees_the_key(
         assert "error" in body1, body1
         assert body1["error"]["code"] == -32005
         assert body1["error"]["message"] == "permit_write_contended"
-        assert "data" not in body1["error"]
+        assert body1["error"]["data"]["code"] == "permit_write_contended"
         assert misses["count"] == 1
         assert executor.dispatch_count == 0
         counts, spent = await _permit_slot_state(permit_id)

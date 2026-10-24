@@ -46,6 +46,7 @@ from ..schemas.billing import (
     WalletStatus,
     WalletType,
 )
+from .ownership import CallerIdentity, require_wallet_owner
 from .pricing import PROOF_SURFACE_CATEGORIES
 from .shadow_ledger import SimulatedChargeResult, get_shadow_ledger
 from .velocity_monitor import get_velocity_monitor
@@ -248,7 +249,9 @@ class BillingEngine:
             shadow_ledger = get_shadow_ledger()
             try:
                 session = await shadow_ledger.get_session(session_id)
-                if session is None:
+                # charge() authorized ``wallet_id`` only; a session on another
+                # wallet is answered as missing, like the router does.
+                if session is None or session.wallet_id != wallet_id:
                     raise ValueError(f"Session not found: {session_id}")
                 result = await shadow_ledger.simulate_charge(
                     session_id=session_id,
@@ -609,6 +612,8 @@ class BillingEngine:
         dry_run: bool = False,
         dry_run_session_id: str | None = None,
         operation_key: str | None = None,
+        *,
+        caller: CallerIdentity,
     ) -> LedgerEntry | InsufficientFundsResponse | SimulatedChargeResult:
         """
         Charge an agent wallet for API usage with ACID transaction.
@@ -618,7 +623,11 @@ class BillingEngine:
 
         If dry_run=True, simulates the charge without affecting real balance
         or triggering velocity monitoring. Uses the shadow ledger for tracking.
+
+        The caller must own the wallet, simulated or not: a dry run still
+        answers whether the wallet could cover the charge.
         """
+        require_wallet_owner(caller, wallet_id)
         # Non-finite units are refused here, not only at the HTTP boundary.
         # This is the choke point every caller passes through -- the governed
         # MCP path and the SDK reach it without going near the billing router
@@ -1063,8 +1072,10 @@ class BillingEngine:
         wallet_id: str,
         charge_entry_id: str,
         description: str = "",
+        caller: CallerIdentity,
     ) -> LedgerEntry:
         """Reverse a prior debit with a correlated refund ledger entry."""
+        require_wallet_owner(caller, wallet_id)
         async with self._session_factory()() as session:
             async with session.begin():
                 refund_entry_id = f"refund-{charge_entry_id}"

@@ -172,17 +172,23 @@ repo; do not Redeploy from GitHub source).
 
 ## CORS Posture
 
-The default `CORS_ORIGINS=*` is a deliberate decision, not an oversight:
+The default `CORS_ORIGINS` is empty, granting no cross-origin access. An
+explicitly configured wildcard remains a deliberate posture, not an
+oversight:
 
 - Every authenticated route takes explicit header credentials (`X-API-Key`
   or `Authorization: Bearer`), never cookies or other ambient browser
   credentials, so there is nothing a cross-origin page can ride.
-- `app.main.add_cors_middleware` refuses to pair a wildcard with
-  credentialed CORS: under `*`, `Access-Control-Allow-Credentials` is never
-  emitted. An explicit origin list is required before credentialed
-  cross-origin requests are possible at all.
-- What the wildcard actually grants is cross-origin *reads of remaining
-  public surfaces* (`/.well-known/trust-keys.json`, `/.well-known/jwks.json`,
+- `app.main.add_cors_middleware` refuses to pair a wildcard (or an empty
+  list) with credentialed CORS: under `*` or with no origins configured,
+  `Access-Control-Allow-Credentials` is never emitted. An explicit origin
+  list is required before credentialed cross-origin requests are possible
+  at all.
+- Production-like boots refuse to start with `*` in `CORS_ORIGINS` (see the
+  trust-mode guardrails).
+- What an explicitly configured wildcard actually grants is cross-origin
+  *reads of remaining public surfaces*
+  (`/.well-known/trust-keys.json`, `/.well-known/jwks.json`,
   `/.well-known/agent.json`, `/health*`, `/llms.txt`, `/openapi.json`) — not
   tool catalogs, which require a key on production-like boots.
 - The one route that is unauthenticated yet returns a secret

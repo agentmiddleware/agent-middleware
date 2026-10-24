@@ -66,7 +66,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from failure_lab import TEST_DEFINITION_VERSION
-from failure_lab import __version__ as FAILURE_LAB_VERSION
+from failure_lab import __version__
+
+FAILURE_LAB_VERSION = __version__
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, keeps the import graph light
     from failure_lab.scenarios.base import ScenarioResult

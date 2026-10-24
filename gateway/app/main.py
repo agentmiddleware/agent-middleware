@@ -14,6 +14,8 @@ import math
 from pathlib import Path
 import sys
 import time
+import traceback
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -47,6 +49,8 @@ from .core.product_positioning import (
 from .core.rate_limiter import RateLimitMiddleware, rate_limit_discovery
 from .core.runtime_mode import get_simulation_modes
 from .middleware.head_method import HeadMethodMiddleware
+from .middleware.error_envelope import ErrorEnvelopeMiddleware, error_envelope
+from .middleware.demo_key_cors import DemoKeyCORSMiddleware
 from .middleware.request_body_limit import RequestBodyLimitMiddleware
 from .middleware.security_headers import SecurityHeadersMiddleware
 from .core.trust_mode import (
@@ -56,7 +60,9 @@ from .core.trust_mode import (
 )
 from .db.database import SchemaInitError, init_db, close_db
 from .services.mcp_dispatch_attempts import get_duplicate_guard_metrics
+from .services.dogfood_tool import sync_dogfood_tool_registration
 from .services.mcp_phase9_tools import sync_proof_surface_mcp_registration
+from .services.demo_tenant_boundary import DemoRequestContextMiddleware
 from .services.signing_keys import (
     SigningKeyError,
     validate_signing_key_configuration,
@@ -96,6 +102,7 @@ from .routers import (
     kyc,
     api_keys,
     dev_keys,
+    demo_keys,
     keys,
     me,
     awi,
@@ -308,6 +315,7 @@ async def lifespan(app: FastAPI):
                             dispatch_marked_uncertain=(
                                 dispatch_result.dispatched_uncertain
                             ),
+                            dispatch_status_resolved=dispatch_result.status_resolved,
                             dispatch_terminal_recovered=(
                                 dispatch_result.terminal_recovered
                             ),
@@ -439,6 +447,7 @@ async def lifespan(app: FastAPI):
 
     startup_time = time.monotonic()
     sync_proof_surface_mcp_registration()
+    sync_dogfood_tool_registration()
     logger.info(
         "app_startup",
         phase="mcp_proof_surface_registration_synced",
@@ -484,7 +493,11 @@ async def lifespan(app: FastAPI):
     await close_db()
     await close_durable_state()
 
-    await asyncio.sleep(2)  # Allow in-flight requests to drain
+    # Fixed 2s pause before process exit. This coordinates with nothing and
+    # drains nothing: graceful connection draining belongs to the server
+    # (uvicorn --timeout-graceful-shutdown), not to this sleep. Kept only as
+    # a brief settling window for background log and metric flushes.
+    await asyncio.sleep(2)
     logger.info(
         "app_shutdown",
         phase="complete",
@@ -493,6 +506,28 @@ async def lifespan(app: FastAPI):
 
 
 public_contact = _public_contact_metadata(settings)
+
+
+def build_openapi_servers(
+    public_url: str, environment: str
+) -> list[dict[str, str]] | None:
+    """Servers advertised in the OpenAPI spec, or None to omit the field.
+
+    No placeholder domain is ever advertised: when PUBLIC_URL is unset the
+    servers field is omitted entirely (consumers default to "/") instead of
+    pointing agents at a domain the operator does not control. The loopback
+    entry is only ever listed alongside a real public URL, and only outside
+    production-like environments.
+    """
+    public_url = (public_url or "").strip()
+    if not public_url:
+        return None
+    servers = [{"url": public_url, "description": "Public API (set PUBLIC_URL)"}]
+    if not is_production_like_environment(environment):
+        servers.append(
+            {"url": "http://localhost:8000", "description": "Local Development"}
+        )
+    return servers
 
 
 app = FastAPI(
@@ -541,17 +576,7 @@ app = FastAPI(
         "name": "Business Source License 1.1",
         "url": "https://github.com/PetrefiedThunder/agent-middleware/blob/main/LICENSE",
     },
-    servers=[
-        {
-            "url": settings.PUBLIC_URL or "https://api.thisisatest.tech",
-            "description": "Public API (set PUBLIC_URL)",
-        },
-        *(
-            []
-            if is_production_like_environment(settings.ENVIRONMENT)
-            else [{"url": "http://localhost:8000", "description": "Local Development"}]
-        ),
-    ],
+    servers=build_openapi_servers(settings.PUBLIC_URL, settings.ENVIRONMENT),
 )
 
 # --- Middleware Stack ---
@@ -582,27 +607,30 @@ def add_cors_middleware(application: FastAPI, origins: list[str]) -> None:
     application.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_credentials=not allow_all_origins,
+        allow_credentials=bool(origins) and not allow_all_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
 
 # CORS origins are configurable via the CORS_ORIGINS env var (comma-separated).
-# The default wildcard is a deliberate posture, not an accident: every
-# authenticated route takes explicit header credentials (X-API-Key / Bearer),
-# never cookies, and add_cors_middleware disables credentialed CORS under a
-# wildcard, so `*` here grants cross-origin reads of public discovery
-# surfaces and nothing else. Operators fronting a browser app that sends
-# credentials must set an explicit origin list instead. Decision documented
+# The default is empty (no cross-origin grant). Every authenticated route
+# takes explicit header credentials (X-API-Key / Bearer), never cookies,
+# and add_cors_middleware disables credentialed CORS under a wildcard or
+# an empty list, so `*` here would only grant credential-less cross-origin
+# reads of public discovery surfaces. Operators fronting a browser app that
+# sends credentials must set an explicit origin list instead. Production-like
+# boots refuse `*` via the trust-mode guardrails. Decision documented
 # in SECURITY_LIMITATIONS.md ("CORS posture").
 cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 add_cors_middleware(app, cors_origins)
+# The anonymous demo-key path has a separate, narrow browser allowlist.
+app.add_middleware(DemoKeyCORSMiddleware)
 if "*" in cors_origins:
     logger.info(
-        "cors_wildcard_active: credential-less wildcard CORS is the documented "
-        "default for this header-authenticated API; set CORS_ORIGINS to an "
-        "explicit list to change it (see SECURITY_LIMITATIONS.md)"
+        "cors_wildcard_active: credential-less wildcard CORS is an explicit "
+        "opt-in, not the default; production-like boots refuse it "
+        "(see SECURITY_LIMITATIONS.md)"
     )
 
 # Baseline response hardening (nosniff, framing, referrer, CSP, no-store
@@ -611,12 +639,17 @@ if "*" in cors_origins:
 # and stamping rate-limit 429s and CORS preflights too is the point.
 app.add_middleware(SecurityHeadersMiddleware)
 
+# All HTTP refusals, including those emitted by outer request and rate limit
+# middleware, use the same envelope. JSON RPC errors keep their protocol shape.
+app.add_middleware(ErrorEnvelopeMiddleware)
+
 # HEAD → GET translation, outermost. FastAPI's APIRoute does not auto-register
 # HEAD for GET routes (plain Starlette routes like /openapi.json do), which
 # made HEAD answer 405 on most public GETs. Outermost placement means every
 # layer below — routing included — sees a GET, and the response leaves with
 # the GET's status and headers but no body, per RFC 9110 §9.3.2.
 app.add_middleware(HeadMethodMiddleware)
+app.add_middleware(DemoRequestContextMiddleware)
 
 
 def _json_safe_numbers(value: Any) -> Any:
@@ -645,6 +678,21 @@ async def request_validation_error_handler(
     return JSONResponse(
         status_code=422,
         content={"detail": _json_safe_numbers(jsonable_encoder(exc.errors()))},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    correlation_id = uuid.uuid4().hex
+    logging.getLogger(__name__).error(
+        "unhandled_error correlation_id=%s exception_type=%s traceback:\n%s",
+        correlation_id,
+        type(exc).__name__,
+        "".join(traceback.format_tb(exc.__traceback__)),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={**error_envelope("internal_error"), "correlation_id": correlation_id},
     )
 
 
@@ -762,6 +810,8 @@ for router_module in CORE_TRUST_ROUTERS:
 app.include_router(
     dev_keys.router, include_in_schema=settings.ENABLE_DEV_KEY_SELF_PROVISION
 )
+app.include_router(demo_keys.router)
+app.include_router(demo_keys.admin_router)
 
 # Stripe webhooks answer only signed Stripe traffic; a deployment with no
 # Stripe key configured has nothing that could ever call them, so they are

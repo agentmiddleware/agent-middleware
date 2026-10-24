@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, PlainTextResponse
 from starlette.routing import Route
@@ -111,6 +112,9 @@ def test_public_discovery_is_not_forced_no_store() -> None:
     app = Starlette(
         routes=[
             Route("/openapi.json", lambda request: PlainTextResponse("{}")),
+            Route(
+                "/docs/concepts/request-keys", lambda request: PlainTextResponse("{}")
+            ),
             Route("/v1/discover", lambda request: PlainTextResponse("{}")),
             Route(
                 "/.well-known/agent.json",
@@ -121,7 +125,11 @@ def test_public_discovery_is_not_forced_no_store() -> None:
     app.add_middleware(SecurityHeadersMiddleware)
     client = TestClient(app)
 
-    for path in ("/openapi.json", "/.well-known/agent.json"):
+    for path in (
+        "/openapi.json",
+        "/docs/concepts/request-keys",
+        "/.well-known/agent.json",
+    ):
         assert "cache-control" not in client.get(path).headers
 
 
@@ -202,6 +210,60 @@ def test_explicit_route_headers_are_not_overridden() -> None:
     app.add_middleware(SecurityHeadersMiddleware)
 
     assert TestClient(app).get("/framed").headers["x-frame-options"] == "DENY"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/health?other",
+        "/health#other",
+        "/docs?other",
+        "/docs#other",
+        "/mcp/public?other",
+        "/mcp/public#other",
+    ],
+)
+def test_encoded_delimiter_path_has_private_cache_and_narrow_csp(path: str) -> None:
+    """Cache and CSP use the decoded router path, including delimiters."""
+    import anyio
+    from starlette.requests import Request
+
+    async def always_ok(scope, receive, send):
+        await HTMLResponse("<html>private</html>")(scope, receive, send)
+
+    middleware = SecurityHeadersMiddleware(always_ok)
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.replace("?", "%3F").replace("#", "%23").encode(),
+        "query_string": b"",
+        "headers": [(b"host", b"test")],
+        "client": ("127.0.0.1", 9),
+        "server": ("test", 80),
+    }
+
+    async def run():
+        await middleware(scope, receive, send)
+
+    anyio.run(run)
+    start = next(
+        message for message in sent if message["type"] == "http.response.start"
+    )
+    headers = Request({"type": "http", "headers": start["headers"]}).headers
+    assert headers["cache-control"] == "no-store"
+    assert headers["content-security-policy"] == FIRST_PARTY_HTML_CSP
 
 
 def test_middleware_is_registered_on_the_application() -> None:

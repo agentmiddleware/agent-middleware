@@ -17,6 +17,9 @@ _CONTACT_PLACEHOLDER_MARKERS = (
 _RESERVED_CONTACT_HOSTS = {"example", "invalid", "localhost", "test"}
 _BLOCKED_BOOKING_HOSTS = {
     "api.thisisatest.tech",
+    "agentmiddleware.dev",
+    "www.agentmiddleware.dev",
+    # The previous marketing host is still not a booking service.
     "thisisatest.tech",
     "www.thisisatest.tech",
 }

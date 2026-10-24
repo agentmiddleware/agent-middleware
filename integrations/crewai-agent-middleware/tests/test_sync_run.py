@@ -11,7 +11,7 @@ import pytest
 from crewai_b2a import B2AClient, CrewAIB2ATool
 
 
-def _tool(handler) -> tuple[CrewAIB2ATool, B2AClient]:
+def _tool(handler, *, sync: bool = True) -> tuple[CrewAIB2ATool, B2AClient]:
     transport = httpx.MockTransport(handler)
     client = B2AClient(
         api_key="test-key",
@@ -24,6 +24,12 @@ def _tool(handler) -> tuple[CrewAIB2ATool, B2AClient]:
         base_url="http://127.0.0.1:9",
     )
     tool.client = client
+    if sync:
+        tool._sync_client = B2AClient(
+            api_key="test-key",
+            base_url="http://127.0.0.1:9",
+            transport=transport,
+        )
     return tool, client
 
 
@@ -53,13 +59,12 @@ def test_sync_run_from_a_worker_thread_calls_the_api():
             "/v1/billing/wallets/wallet-1",
         ]
     finally:
-        if hasattr(tool, "_sync_await"):
-            tool._sync_await(client.close())
-            tool._stop_sync_runner()
+        tool.close()
+        asyncio.run(client.close())
 
 
 @pytest.mark.parametrize("async_first", [False, True])
-def test_sync_and_async_calls_use_one_loop_and_close_borrowed_runner(async_first):
+def test_sync_and_async_calls_keep_borrowed_client_on_caller_loop(async_first):
     loops: list[asyncio.AbstractEventLoop] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -67,21 +72,48 @@ def test_sync_and_async_calls_use_one_loop_and_close_borrowed_runner(async_first
         return httpx.Response(200, json={"balance": 3})
 
     tool, client = _tool(handler)
+
+    async def call_async() -> None:
+        owner = asyncio.get_running_loop()
+        assert await tool._arun("balance") == "Balance: 3 credits"
+        assert loops[-1] is owner
+
     if async_first:
-        assert asyncio.run(tool._arun("balance")) == "Balance: 3 credits"
+        asyncio.run(call_async())
         assert tool._run("balance") == "Balance: 3 credits"
     else:
         assert tool._run("balance") == "Balance: 3 credits"
-        assert asyncio.run(tool._arun("balance")) == "Balance: 3 credits"
+        asyncio.run(call_async())
     loop = tool._sync_runner_loop
     thread = tool._sync_runner_thread
-    assert loops == [loop, loop]
+    assert loops.count(loop) == 1
     assert thread is not None and thread.is_alive()
     tool.close()
     assert loop is not None and loop.is_closed()
     assert not thread.is_alive()
     assert not client._client.is_closed
     asyncio.run(client.close())
+
+
+def test_borrowed_client_with_loop_bound_transport_stays_on_owner_loop(monkeypatch):
+    tool, client = _tool(
+        lambda request: httpx.Response(200, json={"balance": 3}), sync=False
+    )
+
+    async def run() -> None:
+        owner = asyncio.get_running_loop()
+        original = client.get_balance
+
+        async def loop_bound(wallet_id):
+            assert asyncio.get_running_loop() is owner
+            return await original(wallet_id)
+
+        monkeypatch.setattr(client, "get_balance", loop_bound)
+        assert await tool._arun("balance") == "Balance: 3 credits"
+        tool.close()
+        await client.close()
+
+    asyncio.run(run())
 
 
 def test_context_manager_closes_owned_client_on_runner_loop(monkeypatch):
@@ -166,6 +198,115 @@ def test_close_cancels_in_flight_sync_call_within_timeout(monkeypatch):
     assert client._client.is_closed
 
 
+def test_first_submit_waits_until_runner_is_running(monkeypatch):
+    entered = threading.Event()
+    resume = threading.Event()
+    original = asyncio.BaseEventLoop.run_forever
+
+    def paused_start(loop):
+        if threading.current_thread().name == "crewai-b2a-loop":
+            entered.set()
+            assert resume.wait(timeout=5)
+        return original(loop)
+
+    monkeypatch.setattr(asyncio.BaseEventLoop, "run_forever", paused_start)
+    tool, client = _tool(lambda request: httpx.Response(200, json={"balance": 3}))
+    results: list[str] = []
+    caller = threading.Thread(target=lambda: results.append(tool._run("balance")))
+    caller.start()
+    try:
+        assert entered.wait(timeout=2)
+        assert results == []
+    finally:
+        resume.set()
+        caller.join(timeout=5)
+        tool.close()
+        asyncio.run(client.close())
+    assert not caller.is_alive()
+    assert results == ["Balance: 3 credits"]
+
+
+def test_close_between_runner_lookup_and_submit_rejects_without_hanging(monkeypatch):
+    tool, client = _tool(lambda request: httpx.Response(200, json={"balance": 3}))
+    entered = threading.Event()
+    resume = threading.Event()
+    original = tool._ensure_sync_runner
+
+    def pause_after_lookup():
+        loop = original()
+        entered.set()
+        assert resume.wait(timeout=5)
+        return loop
+
+    monkeypatch.setattr(tool, "_ensure_sync_runner", pause_after_lookup)
+    results: list[str] = []
+    caller = threading.Thread(target=lambda: results.append(tool._run("balance")))
+    caller.start()
+    try:
+        assert entered.wait(timeout=2)
+        tool.close()
+    finally:
+        resume.set()
+        caller.join(timeout=5)
+        asyncio.run(client.close())
+    assert not caller.is_alive()
+    assert results == ["Error: CrewAI tool is closed"]
+
+
+def test_failed_close_can_be_retried(monkeypatch):
+    tool = CrewAIB2ATool(api_key="test-key", wallet_id="wallet-1")
+    client = B2AClient(
+        api_key="test-key",
+        base_url="http://127.0.0.1:9",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"balance": 3})
+        ),
+    )
+    monkeypatch.setattr("crewai_b2a.tool.B2AClient", lambda **kwargs: client)
+    assert tool._run("balance") == "Balance: 3 credits"
+    loop = tool._sync_runner_loop
+    original_close = client.close
+    attempts = 0
+
+    async def fail_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("close failed")
+        await original_close()
+
+    monkeypatch.setattr(client, "close", fail_once)
+    with pytest.raises(RuntimeError, match="close failed"):
+        tool.close()
+    assert loop is not None and loop.is_running()
+    tool.close()
+    assert attempts == 2
+    assert loop.is_closed()
+    assert client._client.is_closed
+
+
+def test_close_retry_finishes_a_stopped_runner(monkeypatch):
+    tool, client = _tool(lambda request: httpx.Response(200, json={"balance": 3}))
+    assert tool._run("balance") == "Balance: 3 credits"
+    loop = tool._sync_runner_loop
+    thread = tool._sync_runner_thread
+    assert thread is not None
+    original_join = thread.join
+
+    def fail_after_join(timeout=None):
+        original_join(timeout)
+        monkeypatch.setattr(thread, "join", original_join)
+        raise RuntimeError("join interrupted")
+
+    monkeypatch.setattr(thread, "join", fail_after_join)
+    with pytest.raises(RuntimeError, match="join interrupted"):
+        tool.close()
+    assert loop is not None and not loop.is_running() and not loop.is_closed()
+    tool.close()
+    assert loop.is_closed()
+    asyncio.run(client.close())
+
+
 def test_sync_call_inside_running_loop_does_not_block_it():
     seen = threading.Event()
 
@@ -174,7 +315,7 @@ def test_sync_call_inside_running_loop_does_not_block_it():
         await asyncio.Event().wait()
         return httpx.Response(200, json={"balance": 3})
 
-    tool, client = _tool(handler)
+    tool, client = _tool(handler, sync=False)
     result: list[str] = []
 
     def run_loop() -> None:

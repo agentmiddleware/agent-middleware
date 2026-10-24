@@ -120,8 +120,11 @@ class CrewAIB2ATool(BaseTool):
     _sync_runner_lock: Any = PrivateAttr(default=None)
     _sync_runner_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
     _sync_runner_thread: threading.Thread | None = PrivateAttr(default=None)
+    _sync_client: B2AClient | None = PrivateAttr(default=None)
+    _close_lock: Any = PrivateAttr(default=None)
     _owns_client: bool = PrivateAttr(default=False)
     _closing: bool = PrivateAttr(default=False)
+    _runner_shutdown: bool = PrivateAttr(default=False)
 
     def __init__(
         self,
@@ -150,13 +153,27 @@ class CrewAIB2ATool(BaseTool):
         self._sync_runner_lock = threading.RLock()
         self._sync_runner_loop = None
         self._sync_runner_thread = None
+        self._sync_client = None
+        self._close_lock = threading.Lock()
         self._owns_client = False
         self._closing = False
+        self._runner_shutdown = False
 
     def _get_client(self) -> B2AClient:
         with self._sync_runner_lock:
             if self._closing:
                 raise RuntimeError("CrewAI tool is closed")
+            if (
+                self.client is not None
+                and not self._owns_client
+                and asyncio.get_running_loop() is self._sync_runner_loop
+            ):
+                if self._sync_client is None:
+                    self._sync_client = B2AClient(
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                    )
+                return self._sync_client
             if self.client is None:
                 self.client = B2AClient(
                     api_key=self.api_key,
@@ -236,7 +253,7 @@ class CrewAIB2ATool(BaseTool):
 
             def _run_loop() -> None:
                 asyncio.set_event_loop(loop)
-                ready.set()
+                loop.call_soon(ready.set)
                 loop.run_forever()
 
             thread = threading.Thread(
@@ -286,32 +303,43 @@ class CrewAIB2ATool(BaseTool):
 
     def close(self) -> None:
         """Close the owned client and sync loop. Safe to call more than once."""
-        with self._sync_runner_lock:
-            if self._closing:
-                return
-            self._closing = True
-            client = self.client if self._owns_client else None
-            loop = self._sync_runner_loop
+        with self._close_lock:
+            with self._sync_runner_lock:
+                self._closing = True
+                clients = [
+                    client
+                    for client in (
+                        self._sync_client,
+                        self.client if self._owns_client else None,
+                    )
+                    if client is not None
+                ]
+                loop = self._sync_runner_loop
 
-        async def shutdown() -> None:
-            current = asyncio.current_task()
-            pending = [task for task in asyncio.all_tasks() if task is not current]
-            for task in pending:
-                task.cancel()
-            if pending:
-                _, still_pending = await asyncio.wait(pending, timeout=1)
-                if still_pending:
-                    raise RuntimeError("sync runner tasks did not cancel")
-            if client is not None:
-                await asyncio.wait_for(client.close(), timeout=1)
+            async def shutdown() -> None:
+                current = asyncio.current_task()
+                pending = [task for task in asyncio.all_tasks() if task is not current]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    _, still_pending = await asyncio.wait(pending, timeout=1)
+                    if still_pending:
+                        raise RuntimeError("sync runner tasks did not cancel")
+                for client in clients:
+                    await asyncio.wait_for(client.close(), timeout=1)
 
-        try:
-            if loop is not None and loop.is_running():
-                asyncio.run_coroutine_threadsafe(shutdown(), loop).result(timeout=2)
-            if client is not None:
-                self.client = None
-        finally:
+            if not self._runner_shutdown and loop is not None and loop.is_running():
+                asyncio.run_coroutine_threadsafe(shutdown(), loop).result(
+                    timeout=2 + len(clients)
+                )
+                self._runner_shutdown = True
+            elif not self._runner_shutdown and clients:
+                raise RuntimeError("sync runner loop is not running")
             self._stop_sync_runner()
+            self._sync_client = None
+            if self._owns_client:
+                self.client = None
+            self._runner_shutdown = False
 
     def __enter__(self) -> Self:
         return self
@@ -423,7 +451,7 @@ class CrewAIB2ATool(BaseTool):
         arguments: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> str:
-        """Asynchronous operation on the same loop as synchronous calls."""
+        """Asynchronous operation on the client's owning loop."""
         replay_permit = self._begin_permit_call(operation, permit_idempotency_key)
         coro = self._execute(
             operation,
@@ -435,6 +463,8 @@ class CrewAIB2ATool(BaseTool):
             **kwargs,
         )
         try:
+            if self.client is not None and not self._owns_client:
+                return await coro
             try:
                 future = self._submit(coro)
             except Exception:

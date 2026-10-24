@@ -556,3 +556,17 @@ async def test_zero_budget_and_ttl_are_refused_before_any_request():
 
     assert gateway.permit_keys == []
     await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("field", ["permit_budget", "permit_ttl_minutes"])
+async def test_nonfinite_budget_and_ttl_are_refused_at_tool_creation(field: str, value: float):
+    gateway = _Gateway()
+    client = _client(gateway)
+    try:
+        with pytest.raises(ValueError, match=field):
+            get_mcp_tools(client, wallet_id="wallet-1", **{field: value})
+        assert gateway.permit_keys == []
+    finally:
+        await client.close()

@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from math import isnan
+from math import isfinite
 from typing import Any
 
 from b2a_sdk.models import PermitRequest
@@ -27,7 +27,7 @@ def _require_permit_budget(permit_budget: object) -> None:
         if not permit_budget.is_finite() or permit_budget <= 0:
             raise ValueError("permit_budget must be a positive amount")
         return
-    if (isinstance(permit_budget, float) and isnan(permit_budget)) or permit_budget <= 0:
+    if (isinstance(permit_budget, float) and not isfinite(permit_budget)) or permit_budget <= 0:
         raise ValueError("permit_budget must be a positive amount")
 
 
@@ -36,7 +36,9 @@ def _require_permit_ttl(permit_ttl_minutes: object) -> None:
         raise ValueError(  # noqa: TRY004 - caller contract
             "permit_ttl_minutes must be a positive number of minutes"
         )
-    if permit_ttl_minutes <= 0:
+    if (
+        isinstance(permit_ttl_minutes, float) and not isfinite(permit_ttl_minutes)
+    ) or permit_ttl_minutes <= 0:
         raise ValueError("permit_ttl_minutes must be a positive number of minutes")
 
 

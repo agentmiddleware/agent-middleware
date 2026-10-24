@@ -103,3 +103,21 @@ def test_trust_release_gate_is_separate_from_required_ci_result():
 
     makefile = (ROOT / "gateway" / "Makefile").read_text()
     assert "\ncheck-railway-iac:" in makefile
+
+
+def test_acp_latency_runs_serially_in_required_ci():
+    """The xdist run must still execute its deselected latency test serially."""
+    workflow = CI_WORKFLOW.read_text()
+    pytest_step = workflow.split("      - name: Test (pytest)\n", 1)[1].split(
+        "      - name: Offline verifier vectors\n", 1
+    )[0]
+    node = "tests/test_acp_bridge.py::test_acp_checkout_end_to_end_latency_budget"
+    deselection = f"--deselect={node}"
+    serial_run = (
+        "ACP_CHECKOUT_MEDIAN_BUDGET_S=0.055 uv run --no-sync pytest -q "
+        f"{node} --timeout 300"
+    )
+    commands = " ".join(pytest_step.replace("\\\n", " ").split())
+    assert deselection in pytest_step
+    assert serial_run in commands
+    assert commands.index(deselection) < commands.index(serial_run)

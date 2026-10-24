@@ -280,9 +280,12 @@ jobs:
         run: |
           set +e
           if [ "${{ matrix.project }}" = "gateway" ]; then
-            # Shared-runner scheduling can add a few ms to the ACP wall-clock
-            # median. The separate trust gate still checks its strict 45 ms bound.
-            ACP_CHECKOUT_MEDIAN_BUDGET_S=0.055 uv run --no-sync pytest -q -m "not production_trust" -n auto --timeout 300 &&
+            # Other xdist workers contend for CPU during the wall-clock ACP
+            # latency samples. Run the same test serially after they exit.
+            uv run --no-sync pytest -q -m "not production_trust" -n auto --timeout 300 \
+              --deselect=tests/test_acp_bridge.py::test_acp_checkout_end_to_end_latency_budget &&
+            ACP_CHECKOUT_MEDIAN_BUDGET_S=0.055 uv run --no-sync pytest -q \
+              tests/test_acp_bridge.py::test_acp_checkout_end_to_end_latency_budget --timeout 300 &&
             TRUST_MODE_ENABLED=true ALLOW_LEGACY_UNPERMITTED_MCP=false ENABLE_PROOF_SURFACES=false \
               uv run --no-sync pytest -q -m production_trust --timeout 300
           else

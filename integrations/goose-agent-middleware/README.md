@@ -39,8 +39,9 @@ Goose (protocol 2026-07-28) sends `_meta["agent-tool-call-request-id"]`, but
 that id is the model's tool-call id: when a call fails and the model retries,
 Goose sends a **new** id (recorded in `tests/fixtures/g1_gate_calls.jsonl`).
 AMW therefore logs it on receipts and in the ledger but never uses it as the
-key. Older protocols without `_meta` use the same fallback key; a missing
-session id is treated as the empty string.
+key. A **write without `agent-session-id`** (for example an older protocol with
+no `_meta`) is refused with a clear reason and a `refuse` receipt, because it
+cannot be deduplicated safely. Reads do not need a session id.
 
 The caller is verified from the `Authorization: Bearer` header against
 `AMW_CALLERS` (a JSON map of `sha256(token)` to caller id). Unverified calls

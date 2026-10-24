@@ -18,6 +18,9 @@ It does not manage organization rulesets. It keeps the classic rule's existing
 required checks when proposing a change. If no classic rule exists, supply
 each required check with `--required-check` before creating one. The default
 dry run exits 1 when it finds drift.
+When updating an existing classic rule, the script retains review dismissal
+restrictions, pull request bypass allowances, and last-push approval. It exits
+2 if the live rule cannot be represented safely in the PUT request.
 
 ```bash
 python3 .github/scripts/github_repo_settings.py
@@ -30,20 +33,31 @@ with zero approvals for a solo maintainer, dismiss stale reviews, include
 admins, resolve conversations, and disallow force pushes and branch deletion.
 Review the live ruleset and [proof matrix](PROOF_MATRIX.md) before applying a
 classic rule. The monorepo's documented required checks are `CI result` and
-`gitleaks`; [CONTRIBUTING.md](../../CONTRIBUTING.md) also names `License result`.
+`gitleaks`. The [license workflow](../../.github/workflows/license-check.yml)
+defines `License result`; [CONTRIBUTING.md](../../CONTRIBUTING.md) asks
+contributors to run relevant checks but does not list required check names.
 Use the actual current check names rather than assuming this list is complete.
 
 `--apply` changes repository settings. Do not run it as part of an audit.
 GitHub may decline secret scanning or push protection on a private repository
 without the required plan. That does not change the local or CI gitleaks checks.
+Exit status is 0 for no remaining drift, 1 for dry-run drift, 2 for other API
+failures or an unrepresentable protection rule, and 3 for a 403/404 secret
+scanning error that identifies a plan or entitlement limitation. The CI
+secret-scanning job is `gitleaks` in `.github/workflows/secrets.yml`.
 
 ## Branch cleanup
 
 The cleanup script compares each unprotected branch with the base branch and
 lists branches with zero commits ahead. It never selects the base branch, a
 protected branch, or a branch with a configured keep prefix. It rechecks the
-tip and comparison before a deletion. An unrelated branch should be reviewed
-manually; do not infer it is safe to delete from age alone.
+tip and comparison, then reads the ref and requires the original SHA before
+deletion. REST deletion has no SHA precondition, so a branch can still move
+between that final read and DELETE. The built-in `backup/` prefix is always
+kept; each `--keep-prefix` adds another prefix. Branch compare or stale-tip
+lookup errors are reported by name and cause a nonzero exit after the scan.
+An unrelated branch should be reviewed manually; do not infer it is safe to
+delete from age alone.
 
 ```bash
 python3 .github/scripts/github_branch_cleanup.py

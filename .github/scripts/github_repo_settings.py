@@ -21,17 +21,19 @@ What it manages:
      dismissed, admins not exempt, conversations resolved, no force push,
      no deletion.
   3. Secret scanning and push protection. GitHub refuses these on a private
-     repository without the paid Secret Protection add-on; the script
-     reports that and moves on instead of failing.
+     repository without the required entitlement. The script reports that
+     separately from other API failures.
 
 Exit status is 0 when nothing drifts (or everything was applied), 1 when a
-dry run found drift, 2 on a gh failure.
+dry run found drift, 2 on a gh failure or an unrepresentable protection rule,
+and 3 when GitHub rejects secret scanning for an entitlement or plan reason.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from typing import Any
@@ -83,8 +85,12 @@ def gh_api(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         status = 0
         try:
             status = int(json.loads(proc.stdout or "{}").get("status", 0))
-        except (ValueError, AttributeError):
+        except (ValueError, TypeError, AttributeError):
             pass
+        if not status:
+            match = re.search(r"\bHTTP\s+(403|404)\b", detail)
+            if match:
+                status = int(match.group(1))
         raise GhError(status, detail)
     return json.loads(proc.stdout) if proc.stdout.strip() else None
 
@@ -132,6 +138,45 @@ def _protection_view(rule: dict[str, Any]) -> dict[str, Any]:
             ),
         }
     return view
+
+
+def _review_passthrough(reviews: dict[str, Any]) -> dict[str, Any]:
+    """Convert existing review restrictions to the PUT request's identity lists."""
+    result: dict[str, Any] = {}
+    last_push = reviews.get("require_last_push_approval")
+    if not isinstance(last_push, bool):
+        raise GhError(
+            0, "cannot preserve require_last_push_approval from the live rule"
+        )
+    result["require_last_push_approval"] = last_push
+    for field in ("dismissal_restrictions", "bypass_pull_request_allowances"):
+        if field not in reviews:
+            raise GhError(0, f"cannot preserve {field}: missing from the live rule")
+        value = reviews[field]
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise GhError(0, f"cannot preserve {field}: unexpected value")
+        converted: dict[str, list[str]] = {}
+        for group, identity in (
+            ("users", "login"),
+            ("teams", "slug"),
+            ("apps", "slug"),
+        ):
+            entries = value.get(group)
+            if not isinstance(entries, list):
+                raise GhError(0, f"cannot preserve {field}.{group}: expected a list")
+            names: list[str] = []
+            for entry in entries:
+                name = entry.get(identity) if isinstance(entry, dict) else None
+                if not isinstance(name, str) or not name:
+                    raise GhError(
+                        0, f"cannot preserve {field}.{group}: missing {identity}"
+                    )
+                names.append(name)
+            converted[group] = names
+        result[field] = converted
+    return result
 
 
 def check_branch_protection(
@@ -202,12 +247,14 @@ def check_branch_protection(
     if not drift:
         return 0
 
+    review_target = dict(PROTECTION_TARGET["required_pull_request_reviews"])
+    if rule is not None and rule.get("required_pull_request_reviews") is not None:
+        review_target.update(_review_passthrough(rule["required_pull_request_reviews"]))
+
     body = {
         "required_status_checks": required_status_checks,
         "enforce_admins": PROTECTION_TARGET["enforce_admins"],
-        "required_pull_request_reviews": PROTECTION_TARGET[
-            "required_pull_request_reviews"
-        ],
+        "required_pull_request_reviews": review_target,
         "required_conversation_resolution": PROTECTION_TARGET[
             "required_conversation_resolution"
         ],
@@ -245,14 +292,14 @@ def check_secret_scanning(repo: str, apply: bool) -> int:
     try:
         gh_api("PATCH", f"repos/{repo}", body)
     except GhError as exc:
-        print(
-            "  GitHub refused to enable secret scanning here. On a private\n"
-            "  repository this needs the Secret Protection add-on (free on a\n"
-            "  public repository). The gitleaks pre-commit hook and CI\n"
-            "  secret_scan job remain the controls until then.\n"
-            f"  gh said: {exc}"
-        )
-        return 1
+        if exc.status in (403, 404) and re.search(
+            r"plan|Advanced Security|Secret Protection|not available", str(exc), re.I
+        ):
+            print(
+                f"  secret scanning is unavailable on this plan: {exc}", file=sys.stderr
+            )
+            return 3
+        raise
     print("  applied")
     return 0
 
@@ -288,6 +335,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"gh api failed: {exc}", file=sys.stderr)
         return 2
 
+    if 3 in results:
+        return 3
     if any(results):
         print(
             "\nDrift remains." + ("" if args.apply else " Re-run with --apply to fix.")

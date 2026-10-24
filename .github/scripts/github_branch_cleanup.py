@@ -13,8 +13,12 @@ Usage:
   python .github/scripts/github_branch_cleanup.py --stale-days 90  # also list old unmerged ones
 
 Runs through the gh CLI as the logged-in account; deleting needs write
-access to the repository. One compare request per branch, so a repository
-with 500 branches takes a few minutes.
+access to the repository. The scan makes one compare request per branch, so a
+repository with 500 branches takes a few minutes.
+
+Before each deletion, the script reads the ref again and requires its SHA to
+match the scanned SHA. REST ref deletion has no SHA precondition, so a branch
+can still move between that final read and DELETE.
 """
 
 from __future__ import annotations
@@ -59,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         "--keep-prefix",
         action="append",
         default=None,
-        help=f"never touch branches starting with this (default: {DEFAULT_KEEP_PREFIXES})",
+        help=f"also keep branches starting with this (always kept: {', '.join(DEFAULT_KEEP_PREFIXES)})",
     )
     parser.add_argument(
         "--stale-days",
@@ -67,9 +71,13 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="also list unmerged branches whose last commit is older than this",
     )
-    parser.add_argument("--apply", action="store_true", help="delete merged branches")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="delete merged branches after a final ref SHA check; a move before DELETE remains possible",
+    )
     args = parser.parse_args(argv)
-    keep_prefixes = tuple(args.keep_prefix or DEFAULT_KEEP_PREFIXES)
+    keep_prefixes = DEFAULT_KEEP_PREFIXES + tuple(args.keep_prefix or ())
 
     try:
         branches = list_branches(args.repo)
@@ -79,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
 
     merged: list[tuple[str, str]] = []  # (name, sha seen during the scan)
     stale: list[tuple[str, str, int]] = []
+    scan_failures = 0
     skipped = {"protected": 0, "kept": 0, "base": 0}
     cutoff = None
     if args.stale_days is not None:
@@ -102,7 +111,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"repos/{args.repo}/compare/{quote(args.base, safe='')}...{quote(name, safe='')}",
             )
         except RuntimeError as exc:
-            print(f"  ? {name}: compare failed ({exc})")
+            scan_failures += 1
+            print(f"  ? {name}: compare failed ({exc})", file=sys.stderr)
             continue
         if compare.get("ahead_by") == 0:
             merged.append((name, branch["commit"]["sha"]))
@@ -110,7 +120,14 @@ def main(argv: list[str] | None = None) -> int:
             # The compare response lists at most one page of commits, oldest
             # first, so its last entry is not the tip of a long branch. Read
             # the tip commit itself.
-            tip = gh_api("GET", f"repos/{args.repo}/commits/{branch['commit']['sha']}")
+            try:
+                tip = gh_api(
+                    "GET", f"repos/{args.repo}/commits/{branch['commit']['sha']}"
+                )
+            except RuntimeError as exc:
+                scan_failures += 1
+                print(f"  ? {name}: commit lookup failed ({exc})", file=sys.stderr)
+                continue
             last = tip["commit"]["committer"]["date"]
             if datetime.fromisoformat(last) < cutoff:
                 stale.append((name, last[:10], int(compare.get("ahead_by", 0))))
@@ -134,12 +151,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args.apply:
         if merged:
             print("\nDry run. Re-run with --apply to delete the merged branches.")
-        return 0
+        return 1 if scan_failures else 0
 
     # The scan above takes minutes on a large repository. A branch that moved
     # in the meantime is re-checked right before its ref is deleted: same tip
     # as during the scan, and still zero commits ahead of the base.
-    failures = 0
+    failures = scan_failures
     deleted = 0
     for name, scanned_sha in merged:
         encoded = quote(name, safe="")
@@ -157,6 +174,14 @@ def main(argv: list[str] | None = None) -> int:
             if recheck.get("ahead_by") != 0:
                 print(f"  skipped {name}: now {recheck.get('ahead_by')} ahead")
                 continue
+            ref_sha = gh_api("GET", f"repos/{args.repo}/git/ref/heads/{encoded}")[
+                "object"
+            ]["sha"]
+            if ref_sha != scanned_sha:
+                print(f"  skipped {name}: ref moved since the scan ({ref_sha[:8]})")
+                continue
+            # REST DELETE has no expected-SHA precondition. A move after this
+            # read and before DELETE can still delete the new ref target.
             gh_api("DELETE", f"repos/{args.repo}/git/refs/heads/{encoded}")
             deleted += 1
             print(f"  deleted {name}")

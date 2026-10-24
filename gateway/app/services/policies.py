@@ -365,17 +365,16 @@ async def evaluate_wallet_policy(
                 {"evaluated": evaluated},
             )
         if policy.daily_spend_limit is not None:
-            if daily is None or est is None:
-                # Fail closed: when past spending or the estimate is
-                # unknown, the cap cannot be shown to hold, so the action
-                # is denied instead of skipping the check.
+            if daily is None:
+                # Past spending is unknown, so the cap cannot be shown to
+                # hold. Fail closed instead of skipping the check.
                 return PolicyEvaluation(
                     False,
                     "daily_spend_unknown",
                     policy.policy_id,
                     {"evaluated": evaluated},
                 )
-            if daily + est > policy.daily_spend_limit:
+            if est is not None and daily + est > policy.daily_spend_limit:
                 return PolicyEvaluation(
                     False,
                     "daily_spend_limit_exceeded",

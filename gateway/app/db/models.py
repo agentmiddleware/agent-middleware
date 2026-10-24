@@ -7,7 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Column, Index, Text, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, Column, Index, Text, UniqueConstraint, text
 from sqlmodel import SQLModel, Field
 
 from app.core.time import utc_now
@@ -908,6 +908,58 @@ class ReceiptModel(SQLModel, table=True):
     action_upstream_binding_hash: Optional[str] = Field(default=None)
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+class ResolutionChainHeadModel(SQLModel, table=True):
+    """Optimistic per-wallet head for signed receipt resolutions."""
+
+    __tablename__ = "resolution_chain_heads"
+    __table_args__ = (
+        CheckConstraint(
+            "last_sequence >= 0", name="ck_resolution_chain_heads_sequence"
+        ),
+    )
+
+    wallet_id: str = Field(
+        primary_key=True, max_length=50, foreign_key="wallets.wallet_id"
+    )
+    last_sequence: int = Field(default=0)
+    last_hash: Optional[str] = Field(default=None, max_length=64)
+    updated_at: datetime = Field(sa_type=NaiveUTCDateTime, default_factory=utc_now)
+
+
+class ReceiptResolutionModel(SQLModel, table=True):
+    """One immutable, signed final outcome for an uncertain receipt."""
+
+    __tablename__ = "receipt_resolutions"
+    __table_args__ = (
+        UniqueConstraint(
+            "wallet_id", "sequence", name="uq_receipt_resolutions_wallet_seq"
+        ),
+        CheckConstraint("sequence >= 1", name="ck_receipt_resolutions_sequence"),
+        CheckConstraint(
+            "outcome IN ('confirmed_success', 'confirmed_not_delivered')",
+            name="ck_receipt_resolutions_outcome",
+        ),
+    )
+
+    resolution_id: str = Field(primary_key=True, max_length=64)
+    receipt_id: str = Field(
+        max_length=64, foreign_key="receipts.receipt_id", index=True, unique=True
+    )
+    wallet_id: str = Field(max_length=50, foreign_key="wallets.wallet_id", index=True)
+    sequence: int
+    prev_hash: Optional[str] = Field(default=None, max_length=64)
+    receipt_hash: str = Field(max_length=64, index=True)
+    outcome: str = Field(max_length=32)
+    created_at: datetime = Field(sa_type=NaiveUTCDateTime, default_factory=utc_now)
+    payload_hash: str = Field(max_length=64)
+    resolution_hash: str = Field(max_length=64, unique=True, index=True)
+    signing_input: str = Field(sa_type=Text)
+    signature: str
+    signature_key_id: str = Field(
+        max_length=64, foreign_key="signing_keys.key_id", index=True
+    )
 
 
 class HumanApprovalModel(SQLModel, table=True):

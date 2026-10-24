@@ -2294,6 +2294,163 @@
         }
       }
     },
+    "/v1/receipts/resolutions/wallet/{wallet_id}": {
+      "get": {
+        "tags": [
+          "Trust Receipts"
+        ],
+        "summary": "Get Wallet Resolution Chain",
+        "description": "List a wallet's resolution chain for readers with receipt access.",
+        "operationId": "get_wallet_resolution_chain_v1_receipts_resolutions_wallet__wallet_id__get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "wallet_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Wallet Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolutionListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/receipts/{receipt_id}/resolution": {
+      "get": {
+        "tags": [
+          "Trust Receipts"
+        ],
+        "summary": "Get Receipt Resolution",
+        "description": "Return a receipt's resolution to a reader with receipt access.",
+        "operationId": "get_receipt_resolution_v1_receipts__receipt_id__resolution_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "receipt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Receipt Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolutionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/receipts": {
       "get": {
         "tags": [
@@ -2880,7 +3037,7 @@
           "Trust Receipts"
         ],
         "summary": "Get Portable Receipt",
-        "description": "Export a receipt as evidence that survives leaving this plane.\n\nReading a receipt is authorized like any other tenant data. What the\ncaller gets back is not: the bundle can be handed to a downstream agent,\nan auditor, or an operator who holds no credential here, and they can\nstill check the signature against the published keys.",
+        "description": "Export a receipt as evidence that survives leaving this plane.\n\nReading a receipt requires receipt access. After export, a downstream\nagent, auditor, or operator can verify the bundle offline using only\ntrusted public keys.",
         "operationId": "get_portable_receipt_v1_receipts__receipt_id__portable_get",
         "security": [
           {
@@ -9940,6 +10097,165 @@
           "replayed"
         ],
         "title": "RefundReconciliationRetryResponse"
+      },
+      "ResolutionListResponse": {
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/ResolutionResponse"
+            },
+            "type": "array",
+            "title": "Records"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "records",
+          "total",
+          "limit",
+          "offset",
+          "has_more",
+          "next_offset"
+        ],
+        "title": "ResolutionListResponse"
+      },
+      "ResolutionResponse": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "const": "resolution-v0.1",
+            "title": "Version"
+          },
+          "issuer": {
+            "type": "string",
+            "title": "Issuer"
+          },
+          "resolution_id": {
+            "type": "string",
+            "title": "Resolution Id"
+          },
+          "receipt_id": {
+            "type": "string",
+            "title": "Receipt Id"
+          },
+          "wallet_id": {
+            "type": "string",
+            "title": "Wallet Id"
+          },
+          "sequence": {
+            "type": "integer",
+            "title": "Sequence"
+          },
+          "prev_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prev Hash"
+          },
+          "receipt_hash": {
+            "type": "string",
+            "title": "Receipt Hash"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "confirmed_success",
+              "confirmed_not_delivered"
+            ],
+            "title": "Outcome"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "payload_hash": {
+            "type": "string",
+            "title": "Payload Hash"
+          },
+          "resolution_hash": {
+            "type": "string",
+            "title": "Resolution Hash"
+          },
+          "signing_input": {
+            "type": "string",
+            "title": "Signing Input"
+          },
+          "signature": {
+            "type": "string",
+            "title": "Signature"
+          },
+          "alg": {
+            "type": "string",
+            "const": "Ed25519",
+            "title": "Alg",
+            "default": "Ed25519"
+          },
+          "kid": {
+            "type": "string",
+            "title": "Kid"
+          },
+          "canonicalization": {
+            "type": "string",
+            "title": "Canonicalization",
+            "default": "awi-canonical-json/1"
+          },
+          "keys_url": {
+            "type": "string",
+            "title": "Keys Url",
+            "default": "/.well-known/trust-keys.json"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "issuer",
+          "resolution_id",
+          "receipt_id",
+          "wallet_id",
+          "sequence",
+          "prev_hash",
+          "receipt_hash",
+          "outcome",
+          "created_at",
+          "payload_hash",
+          "resolution_hash",
+          "signing_input",
+          "signature",
+          "kid"
+        ],
+        "title": "ResolutionResponse"
       },
       "RotateAPIKeyRequest": {
         "properties": {

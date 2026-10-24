@@ -369,6 +369,7 @@ async def test_governed_tool_sends_declared_defaults_and_owns_key_handling(
             await defaults_stub(message="explicit", action_id="inproc-action-2")
             assert calls == 3
             assert defaults_stub.last_receipt.receipt_id != first_receipt.receipt_id
+            assert balance_after_first - await wallet_balance() == Decimal("1")
         finally:
             await sdk.close()
     finally:

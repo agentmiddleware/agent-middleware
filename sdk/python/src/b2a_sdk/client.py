@@ -8,6 +8,7 @@ Provides wallet management, telemetry, and billing for agent swarms.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -753,6 +754,7 @@ class AgentMiddlewareClient:
             except httpx.HTTPError:
                 if attempts >= max_attempts:
                     raise
+                await asyncio.sleep(0.1)
                 continue
             break
 

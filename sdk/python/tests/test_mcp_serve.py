@@ -60,7 +60,7 @@ def test_serve_async_registers_tool_and_starts_transport(monkeypatch, tmp_path, 
         (403, "other_denial", None, None, False),
         (403, "permit_required", None, None, False),
         (403, {"error": "permit_required"}, None, None, False),
-        (400, "idempotency_key_required", "permit-123", None, False),
+        (400, "idempotency_key_required", "permit-123", "invoke-123", False),
         (
             202,
             {
@@ -256,6 +256,12 @@ def test_registered_tool_keeps_retry_metadata_separate_from_tool_inputs(monkeypa
     metadata["io.agentmiddleware/idempotency_key"] = " "
     with pytest.raises(tool_error, match="idempotency_key"):
         asyncio.run(servers[0].call_tool("partner.search", arguments))
+    metadata.clear()
+    missing_key = asyncio.run(
+        servers[0].call_tool("partner.search", {**arguments, "permit_id": "permit-1"})
+    )
+    assert missing_key.isError is True
+    assert missing_key.structuredContent["error"] == "idempotency_key_required"
 
     assert len(requests) == 2
     assert [request.headers["Idempotency-Key"] for request in requests] == [

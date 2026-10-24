@@ -174,13 +174,16 @@ class TestB2AClient:
         return client, seen
 
     @pytest.mark.asyncio
-    async def test_charge_retry_reuses_same_minted_key(self):
+    async def test_charge_retry_reuses_same_minted_key(self, monkeypatch):
         """A timeout then retry sends the same auto-minted key on both tries."""
         client, seen = self._flaky_charge_client(failures_before_success=1)
+        wait = AsyncMock()
+        monkeypatch.setattr("b2a_sdk.client.asyncio.sleep", wait)
         async with client:
             result = await client.charge("wallet-123", "iot_bridge", max_attempts=2)
 
         assert result["action"] == "debit"
+        wait.assert_awaited_once_with(0.1)
         assert len(seen) == 2
         first_key = seen[0].headers["idempotency-key"]
         assert first_key.strip() != ""

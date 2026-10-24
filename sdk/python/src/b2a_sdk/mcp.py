@@ -187,6 +187,18 @@ async def serve_async(
         idempotency_key: str | None,
     ) -> Any:
         if idempotency_key is None:
+            if permit_id is not None:
+                guidance = "Supply io.agentmiddleware/idempotency_key in request _meta."
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=f"idempotency_key_required: {guidance}")
+                    ],
+                    isError=True,
+                    structuredContent={
+                        "error": "idempotency_key_required",
+                        "guidance": guidance,
+                    },
+                )
             key = uuid.uuid4().hex
         else:
             from .client import AgentMiddlewareClient

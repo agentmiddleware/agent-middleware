@@ -884,6 +884,41 @@ async def test_receipt_for_a_different_action_is_not_stored(tmp_path, field, val
     assert saved["operations"]["call_1"]["receipt_id"] is None
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("wallet_id", "wallet-other"),
+        ("tool", "partner.notes.count"),
+        ("permit_id", "permit-other"),
+    ],
+)
+async def test_runner_rejects_mismatched_receipt_after_client_validation(
+    tmp_path, monkeypatch, field, value
+):
+    plane = FakeTrustPlane()
+    client = _client(plane)
+    real_invoke = client.invoke_tool
+
+    async def mismatched_invoke(*args, **kwargs):
+        result = await real_invoke(*args, **kwargs)
+        setattr(result.receipt, field, value)
+        return result
+
+    monkeypatch.setattr(client, "invoke_tool", mismatched_invoke)
+    store_path = tmp_path / "operations.json"
+    runner = GovernedToolRunner(
+        client,
+        wallet_id=WALLET,
+        run_id="run-1",
+        key_store=JsonFileOperationKeyStore(store_path),
+    )
+    runner.register_tool(TOOL, description="Append a note")
+    with pytest.raises(ValueError, match="receipt does not match this wallet, tool, and permit"):
+        await runner.run(_chat_tool_call("call_1"))
+    saved = json.loads(store_path.read_text())
+    assert saved["operations"]["call_1"]["receipt_id"] is None
+
+
 async def test_replayed_receipt_id_must_match_the_recorded_action(tmp_path):
     plane = FakeTrustPlane()
     store_path = tmp_path / "operations.json"
@@ -970,6 +1005,15 @@ def test_permit_budget_must_be_an_issuable_amount(budget):
             run_id="run-1",
             permit_budget=budget,  # type: ignore[arg-type]
         )
+
+
+def test_permit_budget_accepts_maximum_numeric_20_8_value():
+    GovernedToolRunner(
+        _client(FakeTrustPlane()),
+        wallet_id=WALLET,
+        run_id="run-1",
+        permit_budget=Decimal("999999999999.99999999"),
+    )
 
 
 @pytest.mark.parametrize("ttl", [0, -1, True])

@@ -315,6 +315,7 @@ async def lifespan(app: FastAPI):
                             dispatch_marked_uncertain=(
                                 dispatch_result.dispatched_uncertain
                             ),
+                            dispatch_status_resolved=dispatch_result.status_resolved,
                             dispatch_terminal_recovered=(
                                 dispatch_result.terminal_recovered
                             ),

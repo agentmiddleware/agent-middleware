@@ -333,8 +333,8 @@ def billable(
     Raises:
         InsufficientFundsError: If wallet balance is insufficient
         IdempotencyConflictError: If the key was used for a different charge
-        ValueError: If the factory returns a blank or overlong key (nothing is
-            charged and the function does not run)
+        ValueError: If the factory returns a non-string or invalid idempotency
+            key (nothing is charged and the function does not run)
     """
 
     def decorator(
@@ -357,9 +357,12 @@ def billable(
 
             charge_kwargs: dict[str, Any] = {}
             if idempotency_key_factory is not None:
+                factory_key = idempotency_key_factory(*args, **kwargs)
+                if not isinstance(factory_key, str):
+                    raise ValueError("idempotency_key_factory must return a string idempotency key")
                 # Passed only when configured, so a client whose charge()
                 # predates the keyword keeps working.
-                charge_kwargs["idempotency_key"] = idempotency_key_factory(*args, **kwargs)
+                charge_kwargs["idempotency_key"] = B2AClient._validate_idempotency_key(factory_key)
             await client.charge(
                 wallet_id=wallet_id,
                 service_category=service_category,

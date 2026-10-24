@@ -9,14 +9,6 @@ const homeHtml = readFileSync(new URL("./index.html", import.meta.url), "utf8");
 const heroCode = homeHtml.match(/<pre id="home-hero-python"[^>]*><code>([\s\S]*?)<\/code><\/pre>/);
 assert.ok(heroCode, "hero Python command block must exist");
 const heroTemplate = heroCode[1].replaceAll("&amp;", "&");
-const template = `git clone https://github.com/agentmiddleware/amw-demo.git
-cd amw-demo
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-export AMW_API_KEY='YOUR_DEMO_KEY'
-export AMW_WALLET_ID='YOUR_WALLET_ID'
-python examples/permit_echo_retry.py`;
 
 function makePage(fetchResponse, { copyFails = false, capture = true, search = "", referrer = "", session: stored = {} } = {}) {
   const ids = [
@@ -24,19 +16,15 @@ function makePage(fetchResponse, { copyFails = false, capture = true, search = "
     "home-key-title", "home-key-result", "home-key-error", "home-key-error-message",
     "home-key-value", "home-wallet-value", "home-key-reveal", "home-wallet-reveal",
     "home-key-copy", "home-wallet-copy", "home-key-copy-both", "home-key-budget",
-    "home-key-retry", "home-key-email", "home-quickstart-code",
-    "home-copy-quickstart", "home-copy-status",
-    "home-hero-python-copy", "home-hero-curl-copy", "home-hero-python",
-    "home-hero-curl", "home-hero-copy-status",
+    "home-key-retry", "home-key-email", "home-hero-python-copy",
+    "home-hero-python", "home-hero-copy-status",
   ];
   const elements = new Map(ids.map((id) => [id, {
     id,
     hidden: ["home-key-trigger", "home-key-panel", "home-key-result", "home-key-error",
       "home-key-retry", "home-key-email"].includes(id),
-    disabled: id === "home-copy-quickstart" || id === "home-hero-python-copy",
-    textContent: id === "home-quickstart-code" ? template :
-      id === "home-hero-python" ? heroTemplate :
-      id === "home-hero-curl" ? "curl -s -X POST https://api.thisisatest.tech/v1/demo/keys" :
+    disabled: id === "home-hero-python-copy",
+    textContent: id === "home-hero-python" ? heroTemplate :
       id === "home-key-trigger" ? "Get a free demo key" : "",
     value: "",
     type: id === "home-key-value" || id === "home-wallet-value" ? "password" : "button",
@@ -50,7 +38,6 @@ function makePage(fetchResponse, { copyFails = false, capture = true, search = "
     select() { this.selectCount += 1; },
     set innerHTML(_) { throw new Error("API data must not be inserted as HTML"); },
   }]));
-  elements.get("home-quickstart-code").select = undefined;
   const requests = [];
   const copies = [];
   const session = new Map(Object.entries(stored));
@@ -111,13 +98,13 @@ function issuedResponse(apiKey = "b2a_" + "test", walletId = "agt-test", credits
 test("hero Python copy requires an issued demo key and wallet", async () => {
   assert.match(heroTemplate, /export AMW_API_KEY='YOUR_DEMO_KEY'\nexport AMW_WALLET_ID='YOUR_WALLET_ID'\npython examples\/permit_echo_retry\.py$/);
   assert.match(homeHtml, /id="home-hero-python-copy"[^>]*disabled/);
+  assert.equal(homeHtml.match(/git clone https:\/\/github.com\/agentmiddleware\/amw-demo\.git/g)?.length, 1);
+  assert.match(homeHtml, /hero-v2-tab-disabled"><code>curl<\/code><span>coming soon<\/span>/);
+  assert.doesNotMatch(homeHtml, /id="home-hero-curl(?:-copy)?"|curl -s -X POST/);
+  assert.doesNotMatch(homeHtml, /id="home-quickstart-code"|id="home-copy-quickstart"/);
   const page = makePage(() => { throw new Error("unexpected key request"); });
   await page.click("home-hero-python-copy");
-  await page.click("home-hero-curl-copy");
-  assert.deepEqual(page.copies, [
-    "curl -s -X POST https://api.thisisatest.tech/v1/demo/keys",
-  ]);
-  assert.equal(page.elements.get("home-hero-copy-status").textContent, "Commands copied.");
+  assert.deepEqual(page.copies, []);
   assert.equal(page.requests.length, 0);
 });
 
@@ -127,7 +114,6 @@ test("idle, loading, and success issue one empty POST and fill the live quicksta
   const get = (id) => page.elements.get(id);
   assert.equal(get("home-key-trigger").hidden, false);
   assert.equal(get("home-key-panel").hidden, true);
-  assert.equal(get("home-copy-quickstart").disabled, true);
   assert.equal(get("home-hero-python-copy").disabled, true);
   assert.equal(page.requests.length, 0);
 
@@ -157,16 +143,13 @@ test("idle, loading, and success issue one empty POST and fill the live quicksta
   assert.equal(get("home-key-value").value, key);
   assert.equal(get("home-wallet-value").value, "agt-test");
   assert.equal(get("home-key-budget").textContent, "1000");
-  assert.equal(get("home-copy-quickstart").disabled, false);
   assert.equal(get("home-hero-python-copy").disabled, false);
-  assert.equal(get("home-quickstart-code").textContent,
-    template.replace("export AMW_API_KEY='YOUR_DEMO_KEY'", () => "export AMW_API_KEY='b2a_test_'\"'\"'$&<img>'")
-      .replace("export AMW_WALLET_ID='YOUR_WALLET_ID'", "export AMW_WALLET_ID='agt-test'"));
   assert.equal(get("home-hero-python").textContent,
     heroTemplate.replace("export AMW_API_KEY='YOUR_DEMO_KEY'", () => "export AMW_API_KEY='b2a_test_'\"'\"'$&<img>'")
       .replace("export AMW_WALLET_ID='YOUR_WALLET_ID'", "export AMW_WALLET_ID='agt-test'"));
   await page.click("home-hero-python-copy");
   assert.equal(page.copies[0], get("home-hero-python").textContent);
+  assert.equal(get("home-hero-copy-status").textContent, "Commands copied.");
   assert.match(page.copies[0], /export AMW_WALLET_ID='agt-test'\npython examples\/permit_echo_retry\.py$/);
   assert.equal(page.copies[0].includes("YOUR_DEMO_KEY"), false);
   assert.equal(get("home-key-trigger").disabled, false);
@@ -238,14 +221,11 @@ test("reveal and copy controls use full values and quote shell commands", async 
   await page.click("home-key-copy");
   await page.click("home-wallet-copy");
   await page.click("home-key-copy-both");
-  await page.click("home-copy-quickstart");
   assert.deepEqual(page.copies, [
     "b2a_a'b",
     "agt-w",
     "export AMW_API_KEY='b2a_a'\"'\"'b'\nexport AMW_WALLET_ID='agt-w'",
-    get("home-quickstart-code").textContent,
   ]);
-  assert.equal(get("home-copy-status").textContent, "Quickstart copied.");
 });
 
 test("network and service failures show retry and a later request can succeed", async () => {
@@ -319,7 +299,6 @@ test("malformed success fails closed and unavailable clipboard focuses a manual 
     await invalid.click("home-key-trigger");
     assert.equal(invalid.elements.get("home-key-result").hidden, true);
     assert.equal(invalid.elements.get("home-key-retry").hidden, false);
-    assert.equal(invalid.elements.get("home-copy-quickstart").disabled, true);
     assert.equal(invalid.elements.get("home-hero-python-copy").disabled, true);
   }
 
@@ -331,9 +310,9 @@ test("malformed success fails closed and unavailable clipboard focuses a manual 
   await page.click("home-key-copy-both");
   assert.equal(page.elements.get("home-key-status").textContent,
     "Copy was unavailable. Copy Key and Wallet separately.");
-  await page.click("home-copy-quickstart");
-  assert.equal(page.elements.get("home-quickstart-code").focusCount, 1);
-  assert.equal(page.elements.get("home-copy-status").textContent,
+  await page.click("home-hero-python-copy");
+  assert.equal(page.elements.get("home-hero-python").focusCount, 1);
+  assert.equal(page.elements.get("home-hero-copy-status").textContent,
     "Copy was unavailable. Select the text and copy it manually.");
 });
 

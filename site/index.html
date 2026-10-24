@@ -171,7 +171,7 @@
     <script defer src="/arcade-boot.js?v=home-light-1"></script>
     <script defer src="/analytics.js?v=home-light-1"></script>
     <script defer src="/utm-capture.js?v=home-light-1"></script>
-    <script defer src="/home-key.js?v=home-light-2"></script>
+    <script defer src="/home-key.js?v=home-light-3"></script>
     <script defer src="/a11y.js?v=home-light-1"></script>
   </head>
   <body class="home-light site-light">
@@ -196,9 +196,10 @@
         <div class="hero-v2-inner">
           <div class="hero-v2-intro">
             <h1>Let agents retry safely.</h1>
-            <p>One accepted request key permits at most one gateway dispatch to the configured upstream tool and at most one debit. Each finalized or reconciled path has a receipt.</p>
+            <p>Each action runs once and leaves a receipt.</p>
+            <p class="hero-v2-boundary">One accepted request key permits at most one gateway dispatch to the configured upstream tool and at most one debit. Each finalized or reconciled path has a receipt.</p>
             <div class="hero-v2-actions">
-              <button class="hero-v2-action hero-v2-action-primary" id="home-key-trigger" type="button" aria-controls="home-key-panel" hidden>Get a demo key</button>
+              <button class="hero-v2-action hero-v2-action-primary" id="home-key-trigger" type="button" aria-controls="home-key-panel" data-analytics-event="demo_key_click" hidden>Get a demo key</button>
               <noscript><a class="hero-v2-action hero-v2-action-primary" href="/demo-key/">Get a demo key</a></noscript>
               <a class="hero-v2-action hero-v2-action-secondary" href="https://github.com/agentmiddleware/amw-demo" rel="noopener noreferrer">Run the quickstart: amw-demo <span aria-hidden="true">→</span></a>
             </div>
@@ -219,11 +220,12 @@ export AMW_WALLET_ID='YOUR_WALLET_ID'
 python examples/permit_echo_retry.py</code></pre>
               <button id="home-hero-python-copy" type="button" aria-label="Copy Python commands" disabled>Copy</button>
             </div>
-            <div class="hero-v2-command-row hero-v2-curl-row">
-              <pre id="home-hero-curl" tabindex="0"><code>curl -s -X POST https://api.thisisatest.tech/v1/demo/keys</code></pre>
-              <button id="home-hero-curl-copy" type="button" aria-label="Copy curl command">Copy</button>
+            <div class="hero-v2-command-row hero-v2-output" aria-label="Example output">
+              <p>Example output</p>
+              <pre tabindex="0"><code>receipt_id: rcpt_7Kq2mX9
+Same receipt. The tool did not run again.</code></pre>
             </div>
-            <p class="hero-v2-code-note">The button above fills these Python commands with a demo key. With curl, replace both export placeholders using <code>api_key</code> and <code>wallet_id</code> from the response.</p>
+            <p class="hero-v2-code-note">Get a demo key to fill the Python commands with your key and wallet ID.</p>
             <p class="hero-v2-copy-status" id="home-hero-copy-status" role="status" aria-live="polite"></p>
           </section>
           <section class="hero-v2-flow" aria-label="Four step request flow">
@@ -292,26 +294,13 @@ python examples/permit_echo_retry.py</code></pre>
 
       <section class="home-v2-section home-v2-how" id="how-it-works" aria-labelledby="how-title" data-wave="order">
         <div class="home-v2-section-heading"><p>How it works</p><h2 id="how-title">From demo key to checked receipt</h2></div>
-        <div class="home-v2-steps">
-          <article class="home-v2-guide-step"><span class="home-v2-guide-number">1</span><div><h3>Get a demo key</h3><p>Use the button above. Save both <code>api_key</code> and <code>wallet_id</code> for the demo call.</p></div></article>
-          <article class="home-v2-guide-step" id="quickstart"><span class="home-v2-guide-number">2</span><div><h3>Set up</h3><p>Run the Python example with your demo key and wallet. It needs Python 3.10 or newer.</p>
-            <div class="home-code-panel">
-              <div class="home-code-toolbar"><span>Python</span><button id="home-copy-quickstart" type="button" disabled>Copy setup</button></div>
-              <pre class="home-code-scroll" tabindex="0"><code id="home-quickstart-code" tabindex="-1">git clone https://github.com/agentmiddleware/amw-demo.git
-cd amw-demo
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-export AMW_API_KEY='YOUR_DEMO_KEY'
-export AMW_WALLET_ID='YOUR_WALLET_ID'
-python examples/permit_echo_retry.py</code></pre>
-              <p class="home-code-help" id="home-copy-status" role="status" aria-live="polite">Get a demo key to fill in the two export lines.</p>
-            </div>
-          </div></article>
-          <article class="home-v2-guide-step"><span class="home-v2-guide-number">3</span><div><h3>First call returns a receipt</h3><p>The example creates a permit and calls <code>partner.echo</code> through the gateway. It prints a receipt ID for the result.</p></div></article>
-          <article class="home-v2-guide-step"><span class="home-v2-guide-number">4</span><div><h3>Retry with the same request key</h3><p>For an accepted request key on the configured upstream tool, a retry with the same key returns the original receipt instead of dispatching again. The receipt does not prove what happened inside the tool.</p></div></article>
-          <article class="home-v2-guide-step"><span class="home-v2-guide-number">5</span><div><h3>Check the receipt offline</h3><p>The example fetches the receipt and public keys, then checks the signature on your machine. <a href="/proof/">See a published sample and verifier.</a></p></div></article>
-        </div>
+        <ul class="home-v2-steps">
+          <li>Get a demo key and save the API key and wallet ID.</li>
+          <li id="quickstart">Set the key and wallet ID in the Python commands above, then run the example.</li>
+          <li>The first call creates a permit and prints the receipt ID.</li>
+          <li>For an accepted request key on the configured upstream tool, a retry with the same key returns the original receipt instead of dispatching again.</li>
+          <li>Check the receipt signature offline. <a href="/proof/">See a published sample and verifier.</a></li>
+        </ul>
       </section>
 
       <section class="home-v2-section home-v2-limits" id="limits" aria-labelledby="limits-title" data-wave="quiet">

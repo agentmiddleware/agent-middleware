@@ -386,6 +386,7 @@ def mount_dormant_surfaces_for_marked_tests(request):
 async def setup_database():
     """Set up database tables before any tests run."""
     require_disposable_test_database()
+    import app.db.approval_gate_models  # noqa: F401 -- registers table on SQLModel.metadata
     from app.core.durable_state import close_durable_state
     from app.db.database import init_db, close_db
 

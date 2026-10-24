@@ -204,16 +204,30 @@ def test_require_loopback_allows_loopback(host: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "host",
+    "case",
     [
-        _random_10_host(),
-        _random_192_168_host(),
-        _random_invalid_host(),
+        "rfc1918-10",
+        "rfc1918-192-168",
+        "uuid-invalid-host",
         "testclient",
-        "",
+        "missing",
     ],
 )
-def test_require_loopback_rejects_remote(host: str) -> None:
+def test_require_loopback_rejects_remote(case: str) -> None:
+    # Hosts stay runtime-generated, but collection must be deterministic:
+    # xdist workers collect independently, so a random value baked into the
+    # parametrize list yields different test ids per worker. Parametrize over
+    # stable labels and generate the random host inside the test body.
+    if case == "rfc1918-10":
+        host = _random_10_host()
+    elif case == "rfc1918-192-168":
+        host = _random_192_168_host()
+    elif case == "uuid-invalid-host":
+        host = _random_invalid_host()
+    elif case == "testclient":
+        host = "testclient"
+    else:
+        host = ""
     scope: dict[str, Any] = {"type": "http", "headers": []}
     if host:
         scope["client"] = (host, _random_port())

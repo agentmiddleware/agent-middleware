@@ -2,7 +2,7 @@
 
 SEP-2322 flow: the first ``tools/call`` for an irreversible tool PAUSEs with a
 ``resultType='input_required'`` result carrying an opaque ``requestState``. The
-client retries the same ``tools/call`` with ``inputResponses`` plus the
+client retries the same ``tools/call`` with "inputResponses" plus the
 ``requestState``; this gate EXECUTEs only after a local human approved, else it
 REJECTs. The hook in ``mcp_standard.py`` that calls :meth:`ApprovalGate.evaluate`
 lands in a later PR.

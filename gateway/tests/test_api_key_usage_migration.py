@@ -8,7 +8,10 @@ from sqlalchemy import create_engine, inspect, text
 
 def test_045_revision_and_daily_view(tmp_path, monkeypatch) -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["045_api_key_usage_events"]
+    assert script.get_heads() == ["046_api_key_usage_reporting"]
+    assert script.get_revision("046_api_key_usage_reporting").down_revision == (
+        "045_api_key_usage_events"
+    )
     assert script.get_revision("045_api_key_usage_events").down_revision == (
         "044_receipt_resolutions"
     )
@@ -110,6 +113,14 @@ def test_045_revision_and_daily_view(tmp_path, monkeypatch) -> None:
         ),
     ]
 
+    command.upgrade(config, "046_api_key_usage_reporting")
+    engine = create_engine(f"sqlite:///{db_path}")
+    assert "api_key_usage_events" in inspect(engine).get_table_names()
+    engine.dispose()
+    command.downgrade(config, "045_api_key_usage_events")
+    engine = create_engine(f"sqlite:///{db_path}")
+    assert "api_key_usage_daily" in inspect(engine).get_view_names()
+    engine.dispose()
     command.downgrade(config, "044_receipt_resolutions")
     engine = create_engine(f"sqlite:///{db_path}")
     inspector = inspect(engine)

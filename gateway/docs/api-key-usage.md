@@ -19,3 +19,6 @@ The read-only `api_key_usage_daily` SQL view groups by key ID and UTC day. It
 reports calls, 4xx, 5xx, continuous p50/p95 latency, and first/last call.
 `GET /v1/admin/api-keys/usage/daily` reads the view; an optional `key_id`
 query parameter filters one key. Only bootstrap admins can access it.
+`GET /v1/api-keys/usage/daily` also reads the same view for bootstrap admins.
+It returns a list with the archived PR #840 field names and accepts optional
+`key_id` and `limit` query parameters (default 100, maximum 1000).

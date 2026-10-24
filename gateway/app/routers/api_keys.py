@@ -6,7 +6,7 @@ Handles API key creation, rotation, and revocation for wallet security.
 
 from datetime import date, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -76,6 +76,12 @@ async def admin_api_key_usage_daily(
     auth: AuthContext = Depends(get_auth_context),
 ) -> APIKeyUsageDailyResponse:
     auth.require_bootstrap_admin()
+    return await _read_api_key_usage_daily(key_id)
+
+
+async def _read_api_key_usage_daily(
+    key_id: str | None, limit: int | None = None
+) -> APIKeyUsageDailyResponse:
     query = (
         "SELECT key_id, day, calls, calls_4xx, calls_5xx, p50_latency_ms, "
         "p95_latency_ms, first_call_at, last_call_at FROM api_key_usage_daily"
@@ -85,6 +91,9 @@ async def admin_api_key_usage_daily(
         query += " WHERE key_id = :key_id"
         parameters["key_id"] = key_id
     query += " ORDER BY day DESC, key_id"
+    if limit is not None:
+        query += " LIMIT :limit"
+        parameters["limit"] = limit
     async with get_session_factory()() as session:
         result = await session.execute(text(query), parameters)
         return APIKeyUsageDailyResponse(
@@ -93,6 +102,39 @@ async def admin_api_key_usage_daily(
                 for row in result.mappings()
             ]
         )
+
+
+@router.get(
+    "/usage/daily",
+    summary="Get daily API key usage statistics",
+    description=(
+        "Get aggregated daily usage statistics for API keys. "
+        "Admin-only endpoint; demo keys receive 403. "
+        "Returns call counts, error rates, latency percentiles, and first/last call timestamps."
+    ),
+)
+async def get_daily_usage_stats(
+    key_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    auth: AuthContext = Depends(get_auth_context),
+) -> list[dict]:
+    """Expose the existing daily view through the PR #840 route shape."""
+    auth.require_bootstrap_admin()
+    daily = await _read_api_key_usage_daily(key_id, limit)
+    return [
+        {
+            "key_id": row.key_id,
+            "day": row.day.isoformat(),
+            "calls": row.calls,
+            "count_4xx": row.calls_4xx,
+            "count_5xx": row.calls_5xx,
+            "p50_latency_ms": row.p50_latency_ms,
+            "p95_latency_ms": row.p95_latency_ms,
+            "first_call": row.first_call_at.isoformat(),
+            "last_call": row.last_call_at.isoformat(),
+        }
+        for row in daily.rows
+    ]
 
 
 def _not_found(error: str, message: str) -> dict:

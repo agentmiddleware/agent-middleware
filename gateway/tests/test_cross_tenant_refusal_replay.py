@@ -31,6 +31,7 @@ from sqlalchemy import func, select
 from app.db.database import get_session_factory
 from app.db.models import IdempotencyRecordModel, PermitModel, ReceiptModel
 from app.main import app
+from app.services.receipts import get_receipt_service
 from tests.test_mcp_idempotency_key_validation import counted_tool  # noqa: F401
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
 
@@ -181,6 +182,29 @@ async def test_foreign_permit_refusal_replay_has_no_side_effects(
     assert receipt["wallet_id"] == tenant_b["agent_wallet_id"]
     assert receipt["credits_charged"] == "0"
     assert receipt["ledger_entry_id"] is None
+
+    # The denial receipt is durable, belongs to tenant B, names only B's
+    # wallet and key, charges nothing, and still verifies against its
+    # signature.
+    async with get_session_factory()() as session:
+        durable = await session.get(ReceiptModel, receipt["receipt_id"])
+    assert durable is not None
+    assert durable.wallet_id == tenant_b["agent_wallet_id"]
+    assert durable.key_id == tenant_b["key_id"]
+    assert durable.wallet_id != tenant_a["agent_wallet_id"]
+    assert durable.permit_id == permit_a["permit_id"]
+    assert durable.tool == counted_tool.name
+    assert durable.outcome == "denied"
+    assert durable.credits_charged == 0
+    assert durable.ledger_entry_id is None
+    valid, reason, verified = await get_receipt_service().verify_receipt(
+        receipt["receipt_id"]
+    )
+    assert (valid, reason) == (True, None), reason
+    assert verified is not None
+    assert verified.receipt_id == receipt["receipt_id"]
+    assert verified.wallet_id == tenant_b["agent_wallet_id"]
+    assert verified.outcome == "denied"
 
     # The replay was served from the one stored refusal under B's wallet.
     assert await _count(IdempotencyRecordModel) == records_before + 1

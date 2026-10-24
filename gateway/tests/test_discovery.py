@@ -103,6 +103,25 @@ async def test_doc_index(client):
 
 
 @pytest.mark.anyio
+async def test_request_keys_guide_is_listed_and_served(client):
+    index = (await client.get("/docs/index")).json()
+    assert any(
+        section["path"] == "/docs/concepts/request-keys"
+        for section in index["sections"]
+    )
+
+    guide = await client.get("/docs/concepts/request-keys")
+    assert guide.status_code == 200
+    assert guide.headers["content-type"].startswith("text/markdown")
+    assert guide.text.startswith("# Request keys\n")
+    assert "idempotency_key_reused" in guide.text
+    operation = (await client.get("/openapi.json")).json()["paths"][
+        "/docs/concepts/request-keys"
+    ]["get"]
+    assert "text/markdown" in operation["responses"]["200"]["content"]
+
+
+@pytest.mark.anyio
 async def test_v1_discover_includes_agent_first(client):
     from app.routers.well_known import get_agent_first_metadata
 

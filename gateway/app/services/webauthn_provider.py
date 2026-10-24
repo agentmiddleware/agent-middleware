@@ -19,6 +19,17 @@ Architecture:
 2. Client uses navigator.credentials.get() with challenge → gets credential
 3. Client calls POST /v1/awi/passkey/verify → verifies credential (cryptographic!)
 4. Subsequent AWI action executions check verification status
+
+Development-only provider, not a production login path
+------------------------------------------------------
+Registered credentials and authenticator replay counters are held only in
+process memory: a restart forgets every credential and every sign count, and
+a second instance knows none of them. The singleton constructor below
+therefore refuses to build a provider unless ENABLE_PROOF_SURFACES is
+explicitly true (local development and proof-surface demos only;
+production-like boots refuse that flag). No persistence is offered on
+purpose: promoting passkeys to a real login path needs durable credential
+storage first, which is out of scope for this module.
 """
 
 import base64
@@ -130,6 +141,10 @@ class CredentialRecord:
 class WebAuthnProvider:
     """
     WebAuthn/Passkey flow for high-risk AWI actions.
+
+    Development-only: credentials and replay counters live in process memory
+    (see module docstring). App code must use get_webauthn_provider(), which
+    enforces the dev-surface gate; direct construction is for tests.
 
     This provider implements the FIDO2 WebAuthn specification to enable
     biometric authentication (TouchID, FaceID, Windows Hello, etc.) for
@@ -537,8 +552,10 @@ class WebAuthnProvider:
         """
         Register a new WebAuthn credential for a user.
 
-        This stores the credential's public key for later verification.
-        In production, credentials would be stored in a persistent database.
+        This stores the credential's public key for later verification in
+        process memory only. It does not survive restarts and is not shared
+        between instances, which is why this provider is dev-only and never
+        a production login path.
 
         Args:
             user_id: The user identifier.
@@ -702,11 +719,26 @@ _webauthn_provider: Optional[WebAuthnProvider] = None
 
 
 def get_webauthn_provider() -> WebAuthnProvider:
-    """Get or create the WebAuthnProvider singleton."""
+    """Get or create the WebAuthnProvider singleton.
+
+    Refuses unless ENABLE_PROOF_SURFACES is explicitly true. Credentials and
+    replay counters are process-memory only, so handing out a provider on a
+    production-shaped boot would offer login-grade checks with none of the
+    durability they need. Local development and proof-surface demos opt in
+    with that flag; production-like boots refuse it.
+    """
+    from ..core.config import get_settings
+
+    if not get_settings().ENABLE_PROOF_SURFACES:
+        raise RuntimeError(
+            "WebAuthn/passkey provider is disabled: passkey credentials and "
+            "authenticator replay counters are held only in process memory, "
+            "so this provider is not a production login path. It is available "
+            "only with ENABLE_PROOF_SURFACES=true (local development and "
+            "proof-surface demos)."
+        )
     global _webauthn_provider
     if _webauthn_provider is None:
-        from ..core.config import get_settings
-
         settings = get_settings()
 
         _webauthn_provider = WebAuthnProvider(

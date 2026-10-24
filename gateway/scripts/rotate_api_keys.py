@@ -60,7 +60,13 @@ def generate(count: int) -> int:
 
 
 def _probe(base_url: str, api_key: str) -> httpx.Response:
-    with httpx.Client(base_url=base_url, timeout=30, follow_redirects=False) as client:
+    # Stay on the named origin: an ambient proxy can move this key.
+    with httpx.Client(
+        base_url=base_url,
+        timeout=30,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
         return client.get(CHECK_PATH, headers={"X-API-Key": api_key})
 
 

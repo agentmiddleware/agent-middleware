@@ -80,6 +80,8 @@ async def test_init_db_sqlite_non_prod_uses_create_all(tmp_path, monkeypatch):
     assert "permits" in tables
     assert "repeat_window_seconds" in permit_columns
     assert "receipts" in tables
+    assert "receipt_resolutions" in tables
+    assert "resolution_chain_heads" in tables
     assert "idempotency_records" in tables
     # create_all does not create alembic_version
     assert "alembic_version" not in tables
@@ -113,6 +115,68 @@ async def test_init_db_production_like_fails_without_migrations(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_production_boot_fails_with_only_legacy_four_trust_tables(
+    tmp_path, monkeypatch
+):
+    """A DB with only permits/receipts/idempotency/dispatch must fail closed.
+
+    The audit chain, signing-key registry and approval gate are trust tables
+    too: booting without them would run issuance and verification with no
+    durable audit trail, no key registry and no approval records.
+    """
+    import app.db.models  # noqa: F401 (register every table on SQLModel.metadata)
+    from sqlmodel import SQLModel
+
+    db_path = tmp_path / "four_tables.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DEBUG", "false")
+    monkeypatch.setenv("ENABLE_PROOF_SURFACES", "false")
+    monkeypatch.setenv("ALLOW_METADATA_CREATE_ALL", "false")
+    get_settings.cache_clear()
+    await close_db()
+
+    engine = get_engine()
+    assert engine is not None
+    legacy_tables = [
+        SQLModel.metadata.tables[name]
+        for name in (
+            "permits",
+            "receipts",
+            "idempotency_records",
+            "mcp_dispatch_attempts",
+        )
+    ]
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            lambda sync_conn: SQLModel.metadata.create_all(
+                sync_conn, tables=legacy_tables
+            )
+        )
+    # Boot fresh from the file, like a real restart.
+    await close_db()
+
+    with pytest.raises(
+        SchemaInitError, match="Required database tables missing"
+    ) as exc_info:
+        await init_db()
+    message = str(exc_info.value)
+    for missing in (
+        "control_plane_audit_events",
+        "audit_chain_heads",
+        "signing_keys",
+        "human_approvals",
+        "receipt_resolutions",
+        "resolution_chain_heads",
+    ):
+        assert missing in message
+    assert "alembic upgrade head" in message
+
+    await close_db()
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_init_db_production_like_accepts_legacy_create_all_tables(
     tmp_path, monkeypatch
 ):
@@ -136,6 +200,7 @@ async def test_init_db_production_like_accepts_legacy_create_all_tables(
     tables = set(inspect(sync).get_table_names())
     sync.dispose()
     assert REQUIRED_TRUST_TABLES <= tables
+    assert {"receipt_resolutions", "resolution_chain_heads"} <= REQUIRED_TRUST_TABLES
     assert "alembic_version" not in tables
 
     await init_db()  # must not raise SchemaInitError
@@ -150,6 +215,9 @@ async def test_init_db_production_like_accepts_legacy_create_all_tables(
     [
         ("mcp_dispatch_attempts", "dispatch_claim_hash"),
         ("permits", "repeat_window_seconds"),
+        ("receipt_resolutions", "payload_hash"),
+        ("receipt_resolutions", "signing_input"),
+        ("resolution_chain_heads", "last_hash"),
         *[
             (table, column)
             for table in ("permits", "receipts")

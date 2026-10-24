@@ -36,7 +36,7 @@ paths = [
 # still scans them.
 [[allowlists]]
 description = "Fake keys in test files and generated test vectors (generic-api-key only)"
-rules = ["generic-api-key"]
+targetRules = ["generic-api-key"]
 paths = [
   '''(?:^|/)(?:gateway/tests/|spec/test-vectors/|sdk/python/tests/|sdk/typescript/test/|integrations/[^/]+/tests/)''',
 ]

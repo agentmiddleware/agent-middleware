@@ -138,9 +138,35 @@ async def test_doc_index_names_standard_mcp_as_the_governed_invoke_surface(
     assert service["base_path"] == "/mcp"
     assert service["transport"] == "standard_streamable_http"
     assert service["quickstart_endpoint"] == "POST /mcp"
-    # The legacy transport stays advertised rather than hidden: it is the one
-    # that accepts a permit another issuer granted.
+    # The legacy transport stays advertised rather than hidden, but not
+    # because it is the only one that accepts an externally issued permit:
+    # both do. See test_doc_index_describes_the_caller_supplied_permit_path.
     assert service["legacy_json_rpc_endpoint"] == "/mcp/messages"
+
+
+@pytest.mark.anyio
+async def test_doc_index_describes_the_caller_supplied_permit_path(
+    client, standard_mcp_enabled
+):
+    """The catalog must name the _meta key, not claim permits cannot be carried.
+
+    /mcp reads a caller-supplied permit from
+    params._meta["io.agentmiddleware/permit_id"] (and legacy
+    mcpContext.permit_id) in _action_permit_reference, and only mints one when
+    the caller supplied none -- mcp_standard.py sets
+    ``auto_minted = permit_id is None``. Earlier copy here asserted the
+    opposite, which steered agents holding a delegated permit to the legacy
+    transport for a capability the standard endpoint already has.
+    """
+
+    index = (await client.get("/docs/index")).json()
+    service = next(s for s in index["services"] if s["id"] == "mcp-trust-plane")
+
+    assert 'params._meta["io.agentmiddleware/permit_id"]' in (service["transport_note"])
+    assert "only when none is supplied" in service["transport_note"]
+    # The legacy note must not sell itself as the way to present a permit.
+    assert "instead of self-issuing" not in service["legacy_json_rpc_note"]
+    assert "permit_id field" in service["legacy_json_rpc_note"]
 
 
 @pytest.mark.anyio

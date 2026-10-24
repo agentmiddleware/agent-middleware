@@ -131,15 +131,16 @@ _TRUST_PLANE_SERVICES = [
         "transport": "standard_streamable_http",
         "transport_note": (
             "Standards-compliant MCP Streamable HTTP on the official SDK, in "
-            "stateless JSON mode. A standard client cannot carry permit "
-            "context, so the server mints a bounded single-tool permit from "
-            "the caller's wallet."
+            "stateless JSON mode. A caller presents a permit another issuer "
+            'granted in params._meta["io.agentmiddleware/permit_id"]; the '
+            "server mints a bounded single-tool permit from the caller's "
+            "wallet only when none is supplied."
         ),
         "legacy_json_rpc_endpoint": "/mcp/messages",
         "legacy_json_rpc_note": (
             "Project-specific JSON-RPC endpoint; it does not implement the "
-            "standard MCP initialization lifecycle. Take it to present a "
-            "permit another issuer granted instead of self-issuing one."
+            "standard MCP initialization lifecycle. It accepts the same "
+            "externally issued permit as a top-level permit_id field."
         ),
         "surface": "product",
         "transaction_scope": "configured_upstream_mcp_tool_only",

@@ -86,7 +86,7 @@ async def _read_api_key_usage_daily(
         "SELECT key_id, day, calls, calls_4xx, calls_5xx, p50_latency_ms, "
         "p95_latency_ms, first_call_at, last_call_at FROM api_key_usage_daily"
     )
-    parameters = {}
+    parameters: dict[str, str | int] = {}
     if key_id is not None:
         query += " WHERE key_id = :key_id"
         parameters["key_id"] = key_id

@@ -361,16 +361,16 @@ async def test_iot_registration_metadata_cannot_assign_ownership(
 
     # B registers a device while naming A as owner in client-controlled
     # metadata. Ownership comes from the authenticated key, never the body.
-    spoof = {
-        key: a["agent_wallet_id"]
-        for key in (
+    spoof = dict.fromkeys(
+        (
             "owner_wallet_id",
             "_owner_wallet_id",
             "__owner_wallet_id",
             "wallet_id",
             "owner",
-        )
-    }
+        ),
+        a["agent_wallet_id"],
+    )
     create = await client.post(
         "/v1/iot/devices",
         json=_iot_device(device_id, metadata=spoof),
@@ -384,6 +384,74 @@ async def test_iot_registration_metadata_cannot_assign_ownership(
     listing = await client.get("/v1/iot/devices", headers=a["agent_headers"])
     assert device_id not in listing.text
     assert (await client.get(base, headers=b["agent_headers"])).status_code == 200
+
+
+@pytest.mark.proof
+@pytest.mark.anyio
+async def test_foreign_device_register_matches_missing_device(client, clean_database):
+    """Registering someone else's device id must look like a missing id.
+
+    A 409 device_exists told the caller the id was already taken. The owner
+    still gets that conflict, because they can already read the device.
+    """
+    a = await provision_agent_wallet(client)
+    b = await provision_agent_wallet(client)
+    device_id = _iot_id("taken")
+    missing_id = _iot_id("missing")
+    admin_id = _iot_id("admin")
+    body = _iot_device(device_id)
+
+    created = await client.post(
+        "/v1/iot/devices", json=body, headers=a["agent_headers"]
+    )
+    assert created.status_code == 201
+
+    own_again = await client.post(
+        "/v1/iot/devices", json=body, headers=a["agent_headers"]
+    )
+    assert own_again.status_code == 409
+    assert own_again.json()["detail"]["error"] == "device_exists"
+
+    admin_created = await client.post(
+        "/v1/iot/devices", json=_iot_device(admin_id), headers=BOOTSTRAP_HEADERS
+    )
+    assert admin_created.status_code == 201
+    admin_again = await client.post(
+        "/v1/iot/devices", json=_iot_device(admin_id), headers=BOOTSTRAP_HEADERS
+    )
+    assert admin_again.status_code == 409
+    assert admin_again.json()["detail"]["error"] == "device_exists"
+
+    foreign = await client.post(
+        "/v1/iot/devices", json=body, headers=b["agent_headers"]
+    )
+    foreign_admin = await client.post(
+        "/v1/iot/devices", json=_iot_device(admin_id), headers=b["agent_headers"]
+    )
+    missing = await client.get(
+        f"/v1/iot/devices/{missing_id}", headers=b["agent_headers"]
+    )
+    assert missing.status_code == 404
+    missing_message = missing.json()["detail"]["message"].replace(missing_id, "<id>")
+    for resp, taken_id in ((foreign, device_id), (foreign_admin, admin_id)):
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["detail"]["error"] == "device_not_found"
+        assert resp.json()["detail"]["message"].replace(taken_id, "<id>") == (
+            missing_message
+        )
+        assert "device_exists" not in resp.text
+        assert a["agent_wallet_id"] not in resp.text
+
+    # Neither attempt took the id or changed who can read it.
+    assert (
+        await client.get(f"/v1/iot/devices/{device_id}", headers=a["agent_headers"])
+    ).status_code == 200
+    assert (
+        await client.get(f"/v1/iot/devices/{device_id}", headers=b["agent_headers"])
+    ).status_code == 404
+    assert (
+        await client.get(f"/v1/iot/devices/{admin_id}", headers=BOOTSTRAP_HEADERS)
+    ).status_code == 200
 
 
 @pytest.mark.anyio

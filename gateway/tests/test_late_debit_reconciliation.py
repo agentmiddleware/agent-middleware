@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.dml import Update
 
 from app.core.time import utc_now
+from app.services.ownership import CallerIdentity
 from app.db.database import get_session_factory
 from app.db.models import BillingAlertModel, WalletModel
 from app.schemas.billing import ServiceCategory
@@ -131,6 +132,7 @@ async def test_delayed_debit_cannot_contradict_completed_no_dispatch_cleanup(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=prepared.idempotency_record_id,
+            caller=CallerIdentity.admin(),
         )
     except (LedgerOperationConflictError, ValueError):
         pass
@@ -198,6 +200,7 @@ async def test_cleanup_winning_before_debit_fence_leaves_no_velocity_residue(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=prepared.idempotency_record_id,
+            caller=CallerIdentity.admin(),
         )
     )
     try:
@@ -276,6 +279,7 @@ async def test_governed_charge_exception_rolls_back_all_accounting_state(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=prepared.idempotency_record_id,
+            caller=CallerIdentity.admin(),
         )
     assert await _wallet_accounting_snapshot(seed.wallet_id) == before
     assert await _ledger_counts(seed.wallet_id) == (0, 0)
@@ -324,6 +328,7 @@ async def test_freeze_notification_observes_only_committed_state(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=prepared.idempotency_record_id,
+            caller=CallerIdentity.admin(),
         )
         assert result.error == "wallet_frozen"
     else:
@@ -363,6 +368,7 @@ async def test_debit_after_cleanup_observation_is_captured_or_yields_safely(
         units=Decimal("1"),
         request_path=ENDPOINT,
         operation_key=observed_attempt.idempotency_record_id,
+        caller=CallerIdentity.admin(),
     )
     assert hasattr(debit, "entry_id")
     assert await _ledger_counts(seed.wallet_id) == (1, 0)
@@ -450,6 +456,7 @@ async def test_existing_debit_is_adopted_after_its_cleanup_refund(
         units=Decimal("1"),
         request_path=ENDPOINT,
         operation_key=prepared.idempotency_record_id,
+        caller=CallerIdentity.admin(),
     )
     assert replayed_debit.entry_id == seed.ledger_entry_id
     after = await get_agent_money().get_wallet(seed.wallet_id)
@@ -503,6 +510,7 @@ async def test_cleanup_after_inflight_debit_refunds_once(
             units=Decimal("1"),
             request_path=ENDPOINT,
             operation_key=prepared.idempotency_record_id,
+            caller=CallerIdentity.admin(),
         )
     )
     cleanup_task = None

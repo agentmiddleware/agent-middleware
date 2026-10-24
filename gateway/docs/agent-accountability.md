@@ -79,6 +79,10 @@ stays online and funded.
 Reading a receipt is authorized like any other tenant data. Verifying one you
 were given is not gated at all — that asymmetry is the point.
 
+Install the Agent Middleware (AMW) Python SDK from this checkout with
+`python -m pip install "../sdk/python[verify]"` from `gateway/` before running
+the verifier.
+
 ```bash
 # As the receipt's owner: export it.
 curl -H "X-API-Key: $KEY" \
@@ -86,14 +90,13 @@ curl -H "X-API-Key: $KEY" \
 
 # As anyone at all: fetch the keys and check the signature.
 curl "$API/.well-known/trust-keys.json" > trust-keys.json
-b2a-verify-receipt --bundle receipt.json --keys trust-keys.json
+amw verify --bundle receipt.json --keys trust-keys.json
 ```
 
-`b2a-verify-receipt` ships in the SDK (`pip install "b2a-sdk[verify]"`) and
-imports nothing from this application. In Python:
+The verifier imports nothing from this application. In Python:
 
 ```python
-from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
+from amw import key_set_from_document, verify_bundle
 
 result = verify_bundle(bundle, key_set_from_document(key_document))
 if result.ok:

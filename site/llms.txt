@@ -1,0 +1,139 @@
+# Agent Middleware: machine discovery
+
+This origin is the human site. Its homepage offers free sandbox demo keys inline
+at https://www.agentmiddleware.dev/ with no account needed. The /demo-key/ page
+is the fallback without JavaScript. Production keys are issued to design
+partners. The site does not execute protected tools.
+Platform engineering, AI infrastructure, and security teams operating
+consequential autonomous actions are the buyers; autonomous clients consume
+the discovery contract below.
+
+## Transaction-integrity boundary
+
+Transaction integrity for one consequential, autonomous, retry-sensitive action
+on the configured upstream-MCP path: bind delegated authority and configured
+consumption to one logical action, permit at most one gateway dispatch and
+debit, preserve `delivery_uncertain`, and link gateway evidence for required
+external reconciliation.
+
+This is not one distributed ACID transaction, proof of the downstream effect,
+an IAM replacement, production settlement, or an independently witnessed
+receipt system.
+
+## Transaction loop
+
+logical action -> authorize -> reserve allowance -> debit -> claim dispatch
+-> confirmed outcome | delivery_uncertain -> receipt/audit
+-> authoritative external reconciliation required
+
+## Canonical API
+
+https://api.thisisatest.tech
+
+## Bootstrap
+
+Fetch in this order:
+
+1. GET https://api.thisisatest.tech/.well-known/agent.json
+2. GET https://api.thisisatest.tech/llms.txt
+3. GET https://api.thisisatest.tech/mcp/tools.json
+4. GET https://api.thisisatest.tech/openapi.json
+
+On production-like API deployments, GET /mcp/tools.json requires a key and
+returns 401 without one. The other bootstrap GETs are
+unauthenticated. The local quickstart exposes the catalog without a key.
+
+Before assuming real side effects, fetch:
+
+GET https://api.thisisatest.tech/health/dependencies
+
+Inspect the JSON body: HTTP 200 alone does not mean every dependency is ready.
+Check `status` and the selected tool's dependencies. Health never replaces
+authentication or permit checks.
+
+## Authority
+
+Protected routes use the X-API-Key header. Free sandbox demo keys are available
+at https://www.agentmiddleware.dev/ with no account needed. Production keys
+are issued to design partners.
+
+## Three minute hosted demo
+
+The homepage presents one Python path using https://github.com/agentmiddleware/amw-demo.
+Get a demo key inline, save both api_key and wallet_id, then clone the demo,
+create a Python 3.10+ virtual environment, install it with `pip install -e .`,
+export AMW_API_KEY and AMW_WALLET_ID, and run
+`python examples/permit_echo_retry.py`. The script issues a permit for
+partner.echo, calls it, retries with the same request key, and checks the
+receipt offline. The curl invoke path is not published yet.
+
+## Published receipt proof
+
+The public proof page is:
+
+https://www.agentmiddleware.dev/proof/
+
+It labels the evidence as a self-issued sample issued on @@PROOF_RECEIPT_ISSUED@@,
+not customer traction and not a test of the deployment running today. The exact portable receipt and matching key snapshot can be checked
+offline with the standalone verifier published next to them. The receipt, key,
+and verifier files are all public.
+
+## Check it today, no access needed
+
+Verify the published receipt offline, as on /proof/:
+
+    curl -fsSLO https://www.agentmiddleware.dev/proof/receipt.json
+    curl -fsSLO https://www.agentmiddleware.dev/proof/trust-keys.json
+    curl -fsSLO https://www.agentmiddleware.dev/proof/verify_receipt.py
+    python3 -m pip install cryptography
+    python3 verify_receipt.py --bundle receipt.json --keys trust-keys.json \
+      --expect-issuer https://api.thisisatest.tech
+
+Keyless live calls: curl -sS https://api.thisisatest.tech/health and
+https://api.thisisatest.tech/.well-known/trust-keys.json. Public API contract:
+https://api.thisisatest.tech/openapi.json and https://api.thisisatest.tech/docs.
+The free sandbox demo key can run the demo tool. Production tool calls need a
+design partner key.
+
+## Try the complete loop locally (public source)
+
+No live API credentials are required. Clone
+https://github.com/agentmiddleware/agent-middleware. Install Python 3.11+,
+git, make, curl, and uv first; see docs/quickstart.md. Two local paths are
+self-contained:
+
+Drive it yourself (a real server, you hold the keys):
+
+1. Run `make quickstart` from the repository root.
+2. Follow docs/quickstart.md: mint your own wallet-scoped key, issue
+   yourself a permit, invoke one governed tool, replay it, overspend it,
+   and verify the signed receipt offline.
+
+Watch it prove itself (no server, one command):
+
+1. Run `make prove-trust-plane` from the repository root.
+
+Both use a throwaway local SQLite database and real FastAPI routes. They
+demonstrate permit → invoke → charge → signed receipt → replay. For a finalized
+request, a retry with the same key returns the original receipt instead of
+dispatching again. An action outside the permit scope is denied. These are
+local proofs, not a partner owned consequential action, customer validation,
+production settlement, or compliance evidence.
+
+## Humans and operators
+
+https://www.agentmiddleware.dev/
+https://www.agentmiddleware.dev/pilot/ (pilot details and calculator)
+https://www.agentmiddleware.dev/proof/ (download a receipt and verify it offline)
+https://www.agentmiddleware.dev/compare/ (named alternatives, including the rows this loses)
+https://github.com/agentmiddleware/agent-middleware (public source repository)
+
+## Longer machine brief
+
+The product boundary, the vocabulary, and the claims deliberately NOT made:
+
+https://www.agentmiddleware.dev/llms-full.txt
+
+## Security contact
+
+https://www.agentmiddleware.dev/.well-known/security.txt

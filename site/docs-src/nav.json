@@ -1,0 +1,51 @@
+{
+  "sections": [
+    {
+      "title": "Start",
+      "pages": [
+        {"title": "What is AMW", "slug": "what-is-amw"},
+        {"title": "3 minute quickstart", "slug": "three-minute-quickstart"},
+        {"title": "Run locally", "slug": "run-locally"}
+      ]
+    },
+    {
+      "title": "Concepts",
+      "pages": [
+        {"title": "Permits", "slug": "permits"},
+        {"title": "Calls and request keys", "slug": "calls-and-request-keys"},
+        {"title": "Receipts", "slug": "receipts"},
+        {"title": "Credits", "slug": "credits"}
+      ]
+    },
+    {
+      "title": "Guides",
+      "pages": [
+        {"title": "Put a refund tool behind AMW", "slug": "put-a-refund-tool-behind-amw"},
+        {"title": "MCP client setup", "slug": "mcp-client-setup"},
+        {"title": "LangChain", "slug": "langchain"},
+        {"title": "CrewAI", "slug": "crewai"},
+        {"title": "AutoGen", "slug": "autogen"},
+        {"title": "OpenAI Agents", "slug": "openai-agents"},
+        {"title": "PayPal sandbox demo", "slug": "paypal-sandbox-demo"}
+      ]
+    },
+    {
+      "title": "Reference",
+      "pages": [
+        {"title": "HTTP API", "slug": "http-api"},
+        {"title": "Errors", "slug": "errors"},
+        {"title": "Python SDK", "slug": "python-sdk"},
+        {"title": "TS verifier", "slug": "ts-verifier"},
+        {"title": "Receipt spec v0.1", "slug": "receipt-spec-v0-1"}
+      ]
+    },
+    {
+      "title": "Trust",
+      "pages": [
+        {"title": "Limits", "slug": "limits"},
+        {"title": "Security limitations", "slug": "security-limitations"},
+        {"title": "Proof and published receipts", "slug": "proof-and-published-receipts"}
+      ]
+    }
+  ]
+}

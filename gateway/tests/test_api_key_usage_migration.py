@@ -8,18 +8,18 @@ from sqlalchemy import create_engine, inspect, text
 from app.db.database import CREATE_API_KEY_USAGE_DAILY_VIEW_SQL
 
 
-def test_045_revision_and_daily_view(tmp_path, monkeypatch) -> None:
+def test_046_revision_and_daily_view(tmp_path, monkeypatch) -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["045_api_key_usage_events"]
-    assert script.get_revision("045_api_key_usage_events").down_revision == (
-        "044_receipt_resolutions"
+    assert script.get_heads() == ["046_api_key_usage_events"]
+    assert script.get_revision("046_api_key_usage_events").down_revision == (
+        "045_approval_gate_approvals"
     )
 
     db_path = tmp_path / "api-key-usage-migration.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     config = Config("alembic.ini")
-    command.upgrade(config, "044_receipt_resolutions")
-    command.upgrade(config, "045_api_key_usage_events")
+    command.upgrade(config, "045_approval_gate_approvals")
+    command.upgrade(config, "046_api_key_usage_events")
 
     engine = create_engine(f"sqlite:///{db_path}")
     inspector = inspect(engine)
@@ -120,7 +120,7 @@ def test_045_revision_and_daily_view(tmp_path, monkeypatch) -> None:
         ),
     ]
 
-    command.downgrade(config, "044_receipt_resolutions")
+    command.downgrade(config, "045_approval_gate_approvals")
     engine = create_engine(f"sqlite:///{db_path}")
     inspector = inspect(engine)
     assert "api_key_usage_events" not in inspector.get_table_names()

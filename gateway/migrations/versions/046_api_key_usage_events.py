@@ -1,7 +1,7 @@
 """Store per-key API call facts and expose daily aggregates.
 
-Revision ID: 045_api_key_usage_events
-Revises: 044_receipt_resolutions
+Revision ID: 046_api_key_usage_events
+Revises: 045_approval_gate_approvals
 
 The event rows contain route templates only, never request payloads, raw URLs,
 headers, client addresses, or credentials. Timestamps are naive UTC.
@@ -50,8 +50,8 @@ FROM positioned
 GROUP BY key_id, day
 """
 
-revision: str = "045_api_key_usage_events"
-down_revision: str = "044_receipt_resolutions"
+revision: str = "046_api_key_usage_events"
+down_revision: str = "045_approval_gate_approvals"
 branch_labels = None
 depends_on = None
 

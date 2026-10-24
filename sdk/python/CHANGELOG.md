@@ -65,6 +65,12 @@ still unreleased.
 
 ### Added
 
+- **Legacy MCP `serve` result format**: Successful served-tool calls now pass
+  through the gateway's MCP `content` and `structuredContent` directly. Older
+  clients that parse the full gateway JSON response from `content[0].text` can
+  start `python -m b2a_sdk.mcp serve --legacy-result-format` to retain that
+  envelope. Permit denials and pending human approvals return actionable MCP
+  results with retry guidance.
 - **ACP (Agentic Commerce Protocol) checkout**: Add `ACPLineItem`,
   `ACPCheckoutRequest`, `ACPCheckoutResponse` models and
   `AgentMiddlewareClient.acp_checkout()` method for POST /v1/billing/acp/checkout.

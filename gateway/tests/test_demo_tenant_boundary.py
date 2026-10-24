@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.database import get_session_factory
-from app.db.models import WalletModel
+from app.db.models import IdempotencyRecordModel, WalletModel
 from app.main import app
 from app.schemas.billing import ServiceCategory
 from app.services.agent_money import get_agent_money
@@ -235,6 +237,18 @@ async def test_cross_tenant_transfer_refusal_replays_same_error_body(
     assert first.json()["error"] == "cross_tenant_transfer_refused"
     assert first.json()["message"] == "The request could not be completed."
     assert "detail" not in first.json()
+    async with get_session_factory()() as session:
+        record = (
+            await session.execute(
+                select(IdempotencyRecordModel).where(
+                    IdempotencyRecordModel.idempotency_key == "cross-tenant-transfer"
+                )
+            )
+        ).scalar_one()
+    stored_message = json.loads(record.response_json)["message"]
+    assert stored_message == first.json()["message"]
+    assert demo.wallet_id not in stored_message
+    assert normal.wallet_id not in stored_message
     assert (await money.get_wallet(normal.wallet_id)).balance == Decimal("20")
     assert (await money.get_wallet(demo.wallet_id)).balance == Decimal("20")
 

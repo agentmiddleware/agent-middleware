@@ -37,7 +37,7 @@ def proof_environment(tmp_path):
     "target", ["prove-crash-recovery", "prove-trust-plane-postgres"]
 )
 @pytest.mark.parametrize(
-    "overrides, accepted",
+    ("overrides", "accepted"),
     [
         ({}, True),
         ({"ENVIRONMENT": "production"}, False),

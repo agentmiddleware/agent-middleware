@@ -57,7 +57,9 @@ def get_build_provenance() -> str:
 
     The documented Railway release path builds a temporary context from
     ``git archive`` at the exact release SHA and adds a stamp file before
-    upload. The Dockerfile requires that file at build time. Railway sets
+    upload. The production image build writes that same path from the staged
+    file or, when the file is absent, from the ``RELEASE_COMMIT_SHA`` build
+    arg. A missing, invalid, or disagreeing stamp fails the build. Railway sets
     ``RAILWAY_GIT_COMMIT_SHA`` only for GitHub-triggered deployments, so a
     local ``railway up`` release relies on the baked stamp. A disagreement —
     or a missing stamp — is the signature of a build that did not come through

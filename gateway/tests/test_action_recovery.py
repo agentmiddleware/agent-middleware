@@ -229,6 +229,13 @@ async def test_terminal_and_uncertain_owners_never_reopen(action_runtime, mode):
     action_runtime[3].mode = mode
     await invoke_action(action_runtime, "standard", "first")
     owner = (await action_rows())[0]
+    if mode in {"pre_dispatch_failure", "delivery_uncertain", "returned_error"}:
+        async with get_session_factory()() as session:
+            receipt = await session.get(ReceiptModel, owner.response_reference)
+            assert receipt is not None
+            assert json.loads(receipt.constraints_evaluated_json or "{}") == {
+                "max_calls_per_tool": {"partner.pay": 1}
+            }
     before = owner.model_dump()
     calls = len(action_runtime[3].calls)
     effects = action_runtime[3].dispatch_count
@@ -619,9 +626,9 @@ async def test_receipt_conflicts_include_action_binding(action_runtime):
     bad = original.model_copy(update={"action_payload_hash": "b" * 64})
     with pytest.raises(ReceiptError, match="receipt_action_binding_conflict"):
         await service.assert_action_receipt_binding(bad)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="incomplete_action_binding"):
         ActionPermitFields(action_contract_version=1)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unsupported_action_contract"):
         ActionPermitFields.model_validate({**expected, "action_contract_version": 2})
     # A syntactically valid binding with a valid signature for the wrong digest
     # must also be refused by reconciliation's adoption path.

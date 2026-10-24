@@ -23,6 +23,7 @@ from ..core.time import utc_now
 from ..db.database import get_session_factory
 from ..db.models import KYCVerificationModel, WalletModel
 from ..core.config import get_settings
+from ..core.webhook_auth import WebhookVerificationError, verify_stripe_event
 from ..schemas.billing import KYCDocumentType, KYCStatus, WalletStatus
 from .agent_money import WalletNotFoundError
 from .wallet_status import SPENDABLE_WALLET_STATUSES
@@ -327,15 +328,13 @@ class KYCService:
             True if processed successfully, False on signature failure
         """
         try:
-            event = stripe.Webhook.construct_event(
+            event = verify_stripe_event(
                 payload,
                 sig_header,
-                settings.STRIPE_WEBHOOK_SECRET,
+                get_settings().STRIPE_WEBHOOK_SECRET,
             )
-        # SignatureVerificationError is a StripeError, not a ValueError, so it
-        # must be named: otherwise a bad signature escapes as a 500.
-        except (ValueError, stripe.SignatureVerificationError) as e:
-            logger.error(f"Invalid Stripe signature: {e}")
+        except WebhookVerificationError as e:
+            logger.warning("Rejected Stripe Identity webhook: %s", e)
             return False
 
         handler_map = {

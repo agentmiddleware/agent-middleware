@@ -8,6 +8,8 @@ lying about (or omitting) Content-Length.
 
 from __future__ import annotations
 
+from array import array
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
@@ -198,6 +200,190 @@ async def test_non_http_scopes_are_passed_through(limited_app):
     for scope_type in ("lifespan", "websocket"):
         await RequestBodyLimitMiddleware(spy, LIMIT)({"type": scope_type}, noop, send)
     assert seen == ["lifespan", "websocket"]
+
+
+@pytest.mark.anyio
+async def test_oversized_chunk_is_rejected_without_being_copied(monkeypatch):
+    """One ASGI frame bigger than the ceiling must not be copied into the buffer.
+
+    The check used to extend first and measure after, so a single message
+    could force a copy of the whole frame. The ceiling is the bound.
+    """
+    import app.middleware.request_body_limit as body_limit
+
+    ceiling = 8
+    chunk = b"y" * 100
+
+    class GuardedBytearray(bytearray):
+        def extend(self, item):
+            incoming = len(item)
+            if len(self) + incoming > ceiling:
+                raise RuntimeError(f"copied {incoming} bytes past the ceiling")
+            super().extend(item)
+
+    # bytearray is a builtin, not a module global, until the test plants one.
+    monkeypatch.setattr(body_limit, "bytearray", GuardedBytearray, raising=False)
+
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "http.request", "body": chunk, "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    async def app(scope, receive, send):
+        raise AssertionError("oversized body reached the application")
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/echo",
+        "headers": [(b"host", b"test")],
+        "query_string": b"",
+    }
+    await body_limit.RequestBodyLimitMiddleware(app, ceiling)(scope, receive, send)
+
+    assert sent[0]["status"] == 413
+
+
+@pytest.mark.anyio
+async def test_omitted_body_frame_is_an_empty_body(limited_app):
+    """ASGI allows the body key to be omitted for an empty frame."""
+    frames = [{"type": "http.request", "more_body": False}]
+    sent: list[dict] = []
+
+    async def receive():
+        return frames.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/echo",
+        "headers": [(b"host", b"test")],
+        "query_string": b"",
+    }
+    await RequestBodyLimitMiddleware(limited_app, LIMIT)(scope, receive, send)
+
+    assert sent[0]["status"] == 200
+    raw = b"".join(
+        message.get("body", b"")
+        for message in sent
+        if message["type"] == "http.response.body"
+    )
+    assert b'"length":0' in raw or b'"length": 0' in raw
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "body",
+    [
+        None,
+        ["not", "bytes"],
+        memoryview(b"bytes"),
+        memoryview(array("I", [1, 2])),
+    ],
+)
+async def test_non_bytes_body_frame_is_rejected(limited_app, body):
+    """Malformed frames, including views with len < nbytes, get a 400."""
+    frames = [{"type": "http.request", "body": body, "more_body": False}]
+    sent: list[dict] = []
+    reached = False
+
+    async def receive():
+        return frames.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    async def spy(scope, receive, send):
+        nonlocal reached
+        reached = True
+        await limited_app(scope, receive, send)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/echo",
+        "headers": [(b"host", b"test")],
+        "query_string": b"",
+    }
+    # The array view has len 2 and nbytes 8: a four-byte limit catches the
+    # old memoryview counting bypass if it is accidentally accepted again.
+    limit = 4 if isinstance(body, memoryview) else LIMIT
+    await RequestBodyLimitMiddleware(spy, limit)(scope, receive, send)
+
+    assert sent[0]["status"] == 400
+    assert reached is False
+
+
+@pytest.mark.anyio
+async def test_bytearray_chunks_at_limit_are_replayed_as_bytes():
+    frames = [
+        {"type": "http.request", "body": bytearray(b"abcd"), "more_body": True},
+        {"type": "http.request", "body": b"efgh", "more_body": False},
+    ]
+    received = []
+    sent = []
+
+    async def receive():
+        return frames.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    async def app(scope, receive, send):
+        received.append(await receive())
+        await JSONResponse({"ok": True})(scope, receive, send)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/echo",
+        "headers": [(b"content-length", b"8")],
+        "query_string": b"",
+    }
+    await RequestBodyLimitMiddleware(app, 8)(scope, receive, send)
+
+    assert sent[0]["status"] == 200
+    assert received == [
+        {"type": "http.request", "body": b"abcdefgh", "more_body": False}
+    ]
+
+
+@pytest.mark.anyio
+async def test_disconnect_after_partial_body_is_replayed():
+    frames = [
+        {"type": "http.request", "body": b"ab", "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+    received = []
+
+    async def receive():
+        return frames.pop(0)
+
+    async def send(message):
+        pass
+
+    async def app(scope, receive, send):
+        received.extend([await receive(), await receive()])
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/echo",
+        "headers": [],
+        "query_string": b"",
+    }
+    await RequestBodyLimitMiddleware(app, 8)(scope, receive, send)
+
+    assert received == [
+        {"type": "http.request", "body": b"ab", "more_body": True},
+        {"type": "http.disconnect"},
+    ]
 
 
 def test_the_real_app_registers_the_limit_from_settings():

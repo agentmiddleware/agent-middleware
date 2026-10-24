@@ -4,7 +4,9 @@ Use Agent Middleware API tools with LlamaIndex agents.
 
 ## Installation
 
-No PyPI package is published. Work from a checkout of this repository:
+No PyPI package is published. The SDK distribution will be published as
+`amw-sdk` (`pip install amw-sdk`). For now, work from a checkout of this
+repository:
 
 ```bash
 git clone https://github.com/PetrefiedThunder/agent-middleware.git

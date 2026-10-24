@@ -104,6 +104,15 @@ async def test_doc_index(client):
 
 
 @pytest.fixture
+def standard_mcp_enabled(monkeypatch):
+    monkeypatch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", "true")
+    get_settings.cache_clear()
+    yield
+    monkeypatch.delenv("ENABLE_STANDARD_MCP_ENDPOINT", raising=False)
+    get_settings.cache_clear()
+
+
+@pytest.fixture
 def standard_mcp_disabled(monkeypatch):
     monkeypatch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", "false")
     get_settings.cache_clear()
@@ -113,7 +122,9 @@ def standard_mcp_disabled(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_doc_index_names_standard_mcp_as_the_governed_invoke_surface(client):
+async def test_doc_index_names_standard_mcp_as_the_governed_invoke_surface(
+    client, standard_mcp_enabled
+):
     """Standard MCP is the canonical path, so the catalog must lead with it.
 
     An agent reads this entry to find out how to call a tool. Pointing it at the

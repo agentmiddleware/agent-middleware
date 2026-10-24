@@ -64,11 +64,11 @@ amw = "amw.cli:main"
 b2a-verify-receipt = "b2a_sdk.verify_cli:main"
 
 [project.urls]
-Homepage = "https://github.com/PetrefiedThunder/agent-middleware"
-Documentation = "https://github.com/PetrefiedThunder/agent-middleware"
-Repository = "https://github.com/PetrefiedThunder/agent-middleware"
-Issues = "https://github.com/PetrefiedThunder/agent-middleware/issues"
-Changelog = "https://github.com/PetrefiedThunder/agent-middleware/blob/main/sdk/python/CHANGELOG.md"
+Homepage = "https://github.com/agentmiddleware/agent-middleware"
+Documentation = "https://github.com/agentmiddleware/agent-middleware"
+Repository = "https://github.com/agentmiddleware/agent-middleware"
+Issues = "https://github.com/agentmiddleware/agent-middleware/issues"
+Changelog = "https://github.com/agentmiddleware/agent-middleware/blob/main/sdk/python/CHANGELOG.md"
 
 [tool.ruff]
 line-length = 100

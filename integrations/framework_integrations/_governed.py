@@ -26,8 +26,9 @@ import functools
 import hashlib
 import inspect
 import json
+from collections.abc import Callable
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 try:
     from b2a_sdk.edge_client import GovernedEdgeSession

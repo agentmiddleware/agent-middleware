@@ -15,6 +15,7 @@ from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from .config import get_settings
 from .oidc_iga import EnterprisePrincipal, IGADecision, IGAError, is_iga_issuer_token
+from .time import utc_now
 from .trust_mode import is_production_like_environment
 
 settings = get_settings()
@@ -47,7 +48,12 @@ class AuthContext:
     key_id: str | None = None
     wallet_id: str | None = None
     is_bootstrap_admin: bool = False
-    scopes: list[str] = None  # type: ignore[assignment]
+    # Omitted scopes arrive as None. __post_init__ stores [] so a constructed
+    # context carries a list; readers must still treat None as no scopes,
+    # because a context that skipped the constructor can leave None in place.
+    scopes: list[str] | None = None
+    allowed_tools: tuple[str, ...] | None = None
+    tenant: str | None = None
     # Enterprise (Okta/Entra) bearer that accompanied an X-API-Key call. Set
     # ONLY when the Authorization header carried a token whose UNVERIFIED
     # issuer names a pinned IGA issuer (see get_auth_context). It is identity
@@ -92,6 +98,40 @@ class AuthContext:
                 "message": "This operation requires a bootstrap admin API key.",
             },
         )
+
+
+async def _key_tenant_for_auth(key_tenant: str | None, wallet_id: str) -> str | None:
+    """Apply demo confinement to the key and its owning wallet."""
+    from ..services.demo_tenant_boundary import (
+        DEMO_KEY_ROUTE_FORBIDDEN,
+        DEMO_TENANT_DISABLED,
+        DEMO_TENANT_LABEL,
+        current_demo_request,
+        demo_route_allowed,
+        resolve_effective_tenant,
+    )
+
+    tenant = await resolve_effective_tenant(key_tenant, wallet_id)
+    if tenant != DEMO_TENANT_LABEL:
+        return tenant
+    if not get_settings().ENABLE_DEMO_TENANT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": DEMO_TENANT_DISABLED,
+                "message": "The demo tenant is currently disabled.",
+            },
+        )
+    current = current_demo_request()
+    if current is None or not demo_route_allowed(*current):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": DEMO_KEY_ROUTE_FORBIDDEN,
+                "message": "This demo key may not call this route.",
+            },
+        )
+    return tenant
 
 
 # Internal marker on a response that failed *authentication* rather than
@@ -235,7 +275,7 @@ async def _resolve_auth_context(
 
     valid_keys = [k.strip() for k in settings.VALID_API_KEYS.split(",") if k.strip()]
 
-    if any(hmac.compare_digest(stripped, key) for key in valid_keys):
+    if any(_constant_time_equal(stripped, key) for key in valid_keys):
         return AuthContext(
             source="env",
             raw_key=stripped,
@@ -254,7 +294,7 @@ async def _resolve_auth_context(
         if is_production_like_environment(settings.ENVIRONMENT)
         else _parse_static_dev_keys(settings.STATIC_DEV_API_KEYS)
     )
-    if any(hmac.compare_digest(stripped, key) for key in static_dev_keys):
+    if any(_constant_time_equal(stripped, key) for key in static_dev_keys):
         return AuthContext(
             source="static-dev",
             raw_key=stripped,
@@ -262,19 +302,35 @@ async def _resolve_auth_context(
         )
 
     try:
-        from ..services.api_key_service import get_api_key_service
+        from ..services.api_key_service import _key_is_live, get_api_key_service
 
-        db_key = await get_api_key_service().validate_key(stripped)
+        key_service = get_api_key_service()
+        candidate = await key_service.validate_key(stripped, consume=False)
     except RuntimeError:
+        candidate = None
+
+    if candidate:
+        if _key_is_live(candidate, utc_now()):
+            await _key_tenant_for_auth(candidate.tenant, candidate.wallet_id)
+        try:
+            db_key = await key_service.validate_key(stripped)
+        except RuntimeError:
+            db_key = None
+    else:
         db_key = None
 
     if db_key:
+        from ..services.demo_tenant_boundary import parse_allowlist
+
+        tenant = await _key_tenant_for_auth(db_key.tenant, db_key.wallet_id)
         return AuthContext(
             source="db",
             raw_key=stripped,
             key_id=db_key.key_id,
             wallet_id=db_key.wallet_id,
             is_bootstrap_admin=False,
+            allowed_tools=parse_allowlist(db_key.allowed_tools_json),
+            tenant=tenant,
         )
 
     # Configured static dev keys close DEBUG open mode the same way
@@ -325,6 +381,18 @@ async def reject_anonymous_production_catalog(request: Request) -> None:
         or request.headers.get("x-api-key"),
         authorization=request.headers.get("authorization"),
     )
+
+
+def _constant_time_equal(presented: str, expected: str) -> bool:
+    """Compare two key strings without raising on non-ASCII input.
+
+    ``hmac.compare_digest`` on ``str`` raises ``TypeError`` when either side
+    has non-ASCII characters, which turned a refused API key into an
+    unhandled 500. Comparing the UTF-8 bytes keeps arbitrary input safe: a
+    non-ASCII presentation simply never matches an ASCII configured key,
+    and a non-ASCII configured key still compares correctly.
+    """
+    return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
 
 
 def _parse_static_dev_keys(configured: str) -> list[str]:
@@ -387,11 +455,18 @@ async def _auth_from_jwt(token: str) -> AuthContext:
             },
         )
 
-    from ..services.api_key_service import get_api_key_service
+    from ..services.api_key_service import _key_is_live, get_api_key_service
 
-    if not await get_api_key_service().consume_derived_key_use(
-        payload.key_id, payload.sub
+    key_service = get_api_key_service()
+    candidate = await key_service.get_key_record(payload.key_id)
+    if (
+        candidate is not None
+        and candidate.wallet_id == payload.sub
+        and _key_is_live(candidate, utc_now())
     ):
+        await _key_tenant_for_auth(candidate.tenant, candidate.wallet_id)
+
+    if not await key_service.consume_derived_key_use(payload.key_id, payload.sub):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
@@ -402,6 +477,37 @@ async def _auth_from_jwt(token: str) -> AuthContext:
             },
         )
 
+    key_row = await key_service.get_key_record(payload.key_id)
+    if key_row is None:
+        # Signed legacy tokens remain valid when the originating-key liveness
+        # check succeeds without a readable key row. A demo wallet must have
+        # a matching key row so its tenant and tool policy can be enforced.
+        from ..services.demo_tenant_boundary import (
+            DEMO_TENANT_LABEL,
+            resolve_effective_tenant,
+        )
+
+        if await resolve_effective_tenant(None, payload.sub) != DEMO_TENANT_LABEL:
+            return AuthContext(
+                source="jwt",
+                raw_key=f"jwt:{payload.key_id}",
+                wallet_id=payload.sub,
+                key_id=payload.key_id,
+                is_bootstrap_admin=False,
+                scopes=payload.scopes,
+            )
+
+    if key_row is None or key_row.wallet_id != payload.sub:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "no_active_api_key",
+                "message": "The API key that issued this access token is no longer active.",
+            },
+        )
+    from ..services.demo_tenant_boundary import parse_allowlist
+
+    tenant = await _key_tenant_for_auth(key_row.tenant, key_row.wallet_id)
     return AuthContext(
         source="jwt",
         # Not a credential: a stable, non-secret handle for the API key that
@@ -412,6 +518,8 @@ async def _auth_from_jwt(token: str) -> AuthContext:
         key_id=payload.key_id,
         is_bootstrap_admin=False,
         scopes=payload.scopes,
+        allowed_tools=parse_allowlist(key_row.allowed_tools_json),
+        tenant=tenant,
     )
 
 

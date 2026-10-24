@@ -9,10 +9,12 @@ Provides wallet management, telemetry, and billing for agent swarms.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 import warnings
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, overload
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -37,8 +39,42 @@ from .models import (
     ReceiptVerification,
     ToolDefinition,
 )
+from .request_key import request_key
 
 logger = logging.getLogger("b2a_sdk")
+
+_UNSAFE_PATH_SEGMENT = re.compile(r"[\x00-\x20\x7f\\/?#%]")
+
+
+def require_path_segment(value: object, label: str) -> str:
+    """Reject an identifier that could change the URL route before sending it."""
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or _UNSAFE_PATH_SEGMENT.search(value)
+    ):
+        raise ValueError(f"{label} is not a safe path segment")
+    return value
+
+
+def _top_up_url(value: Any) -> str | None:
+    """Keep a valid server link verbatim without masking a 402 parsing error."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        # Accessing port also validates malformed values such as :not-a-port.
+        _ = parsed.port
+        if parsed.scheme in {"http", "https"}:
+            return value if parsed.hostname else None
+        if not parsed.scheme and value.startswith("/") and not value.startswith("//"):
+            return value
+    except ValueError:
+        return None
+    return None
 
 
 def new_idempotency_key() -> str:
@@ -113,8 +149,9 @@ class DryRunSimulation:
         """End the simulation session and get summary."""
         if self.session_id:
             try:
+                safe_id = require_path_segment(self.session_id, "session_id")
                 response = await self._client._client.delete(
-                    f"/v1/billing/dry-run/session/{self.session_id}"
+                    f"/v1/billing/dry-run/session/{safe_id}"
                 )
                 if response.status_code == 200:
                     return response.json()
@@ -143,7 +180,7 @@ class AgentMiddlewareClient:
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://api.thisisatest.tech",
+        base_url: str = "http://localhost:8000",
         timeout: float = 10.0,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -154,7 +191,9 @@ class AgentMiddlewareClient:
 
         Args:
             api_key: API key for authentication (X-API-Key header)
-            base_url: Base URL of the middleware API
+            base_url: Base URL of the middleware API. Defaults to the local
+                gateway; pass the deployment URL explicitly for anything
+                else, since the default never points at a hosted server.
             timeout: Request timeout in seconds
             transport: Optional HTTPX transport, primarily for in-process tests
             bearer_token: Optional Bearer token for IGA-governed flows. Omit it
@@ -163,16 +202,21 @@ class AgentMiddlewareClient:
                 environment variable fails here instead of at the server.
 
         Raises:
-            ValueError: if bearer_token is supplied but blank.
+            ValueError: if bearer_token is supplied but blank, or if api_key
+                or bearer_token contains a control character. A carriage
+                return or newline in a header value can split the request.
         """
         # The key is held only in the transport's default headers (see the
         # ``api_key`` property), not duplicated as instance state, so debug
         # dumps of ``vars(client)`` do not carry the secret.
+        # Do not strip the key: leading or trailing spaces can be significant,
+        # and stripping would also hide a newline that belongs in the check.
+        self._reject_header_controls(api_key, "api_key")
         self.base_url = base_url.rstrip("/")
         headers = {
             "X-API-Key": api_key,
             "Content-Type": "application/json",
-            "User-Agent": "b2a-sdk/0.5.0",
+            "User-Agent": "amw-sdk/0.5.0",
         }
         if bearer_token is not None:
             token = bearer_token.strip()
@@ -180,6 +224,7 @@ class AgentMiddlewareClient:
                 raise ValueError(
                     "bearer_token must not be blank; omit it to send no Authorization header"
                 )
+            self._reject_header_controls(token, "bearer_token")
             headers["Authorization"] = f"Bearer {token}"
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
@@ -195,12 +240,25 @@ class AgentMiddlewareClient:
         return self._client.headers["X-API-Key"]
 
     @staticmethod
+    def _reject_header_controls(value: str, field: str) -> None:
+        """Refuse a header value that could split the request.
+
+        httpx accepts CR, LF, and DEL in a header. Those bytes let a caller
+        inject another header. Reject them before anything is sent.
+        """
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError(f"{field} must not contain control characters")
+
+    @staticmethod
     def _validate_idempotency_key(idempotency_key: str) -> str:
+        if not isinstance(idempotency_key, str):
+            raise ValueError("idempotency_key must be a string")
         key = idempotency_key.strip()
         if not key:
             raise ValueError("idempotency_key must not be blank")
         if len(key) > 128:
             raise ValueError("idempotency_key must be at most 128 characters")
+        AgentMiddlewareClient._reject_header_controls(key, "idempotency_key")
         return key
 
     @staticmethod
@@ -234,10 +292,16 @@ class AgentMiddlewareClient:
         if status_code == 402:
             body_detail = payload.get("detail")
             detail_payload = body_detail if isinstance(body_detail, dict) else {}
+            reported_wallet = detail_payload.get("wallet_id")
             raise InsufficientFundsError(
-                wallet_id=wallet_id or "unknown",
+                wallet_id=(
+                    reported_wallet
+                    if isinstance(reported_wallet, str) and reported_wallet.strip()
+                    else wallet_id or "unknown"
+                ),
                 shortfall=detail_payload.get("shortfall"),
-                top_up_url=detail_payload.get("top_up_url"),
+                shortfall_exact=detail_payload.get("shortfall_exact"),
+                top_up_url=_top_up_url(detail_payload.get("top_up_url")),
                 payload=payload,
             )
         if status_code == 403:
@@ -298,6 +362,23 @@ class AgentMiddlewareClient:
         except ValueError as exc:
             raise APIError(f"invalid_{response_name}_receipt: {exc}") from exc
 
+    @staticmethod
+    def _assert_receipt_matches_request(
+        receipt: Receipt,
+        *,
+        tool: str,
+        permit_id: str,
+        wallet_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Refuse a receipt that names a different call than the one just made.
+
+        A success or error body can still describe another tool, permit, or
+        wallet. That body is not evidence for this call.
+        """
+        if receipt.tool != tool or receipt.permit_id != permit_id or receipt.wallet_id != wallet_id:
+            raise APIError("mcp_receipt_does_not_match_request", payload=payload)
+
     async def discover_tools(self) -> list[ToolDefinition]:
         """Return the executable tools advertised by the MCP gateway."""
         payload = await self._request_json("GET", "/mcp/tools.json")
@@ -335,6 +416,8 @@ class AgentMiddlewareClient:
         self,
         error: dict[str, Any],
         *,
+        tool: str,
+        permit_id: str,
         wallet_id: str,
         envelope: dict[str, Any],
     ) -> None:
@@ -345,6 +428,13 @@ class AgentMiddlewareClient:
         receipt: Receipt | None = None
         if isinstance(receipt_data, dict):
             receipt = self._parse_receipt(receipt_data, response_name="mcp_error")
+            self._assert_receipt_matches_request(
+                receipt,
+                tool=tool,
+                permit_id=permit_id,
+                wallet_id=wallet_id,
+                payload=envelope,
+            )
         receipt_id = receipt.receipt_id if receipt else None
         outcome = receipt.outcome if receipt else None
 
@@ -381,6 +471,7 @@ class AgentMiddlewareClient:
             raise AuthorizationError(reason, status_code=403, payload=envelope)
         raise APIError(reason, payload=envelope)
 
+    @overload
     async def invoke_tool(
         self,
         name: str,
@@ -389,9 +480,49 @@ class AgentMiddlewareClient:
         wallet_id: str,
         permit_id: str,
         idempotency_key: str,
+    ) -> InvocationResult: ...
+
+    @overload
+    async def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
+    ) -> InvocationResult: ...
+
+    async def invoke_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        wallet_id: str,
+        permit_id: str,
+        idempotency_key: str,
+        business_id: str | None = None,
+        include: list[str] | tuple[str, ...] | None = None,
+        exclude: list[str] | tuple[str, ...] | None = None,
     ) -> InvocationResult:
         """Invoke one MCP tool through the governed permit and receipt loop."""
-        key = self._validate_idempotency_key(idempotency_key)
+        for label, value in (("tool", name), ("wallet_id", wallet_id), ("permit_id", permit_id)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label} must not be blank")
+        key = self._validate_idempotency_key(
+            request_key(
+                name,
+                arguments,
+                business_id=business_id,
+                include=include,
+                exclude=exclude,
+            )
+            if idempotency_key == "auto"
+            else idempotency_key
+        )
         request_payload = {
             "jsonrpc": "2.0",
             "id": key,
@@ -415,12 +546,25 @@ class AgentMiddlewareClient:
         )
         error = envelope.get("error")
         if isinstance(error, dict):
-            self._raise_mcp_error(error, wallet_id=wallet_id, envelope=envelope)
+            self._raise_mcp_error(
+                error,
+                tool=name,
+                permit_id=permit_id,
+                wallet_id=wallet_id,
+                envelope=envelope,
+            )
 
         result = envelope.get("result")
         if not isinstance(result, dict):
             raise APIError("invalid_mcp_result", payload=envelope)
         receipt = self._parse_receipt(result.get("receipt"), response_name="mcp")
+        self._assert_receipt_matches_request(
+            receipt,
+            tool=name,
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            payload=envelope,
+        )
         if receipt.outcome == "delivery_uncertain":
             raise DeliveryUncertainError(
                 receipt_id=receipt.receipt_id,
@@ -448,11 +592,16 @@ class AgentMiddlewareClient:
 
     async def get_receipt(self, receipt_id: str) -> Receipt:
         """Fetch a wallet-authorized signed receipt."""
-        payload = await self._request_json("GET", f"/v1/receipts/{receipt_id}")
-        return self._parse_receipt(payload, response_name="get")
+        safe_id = require_path_segment(receipt_id, "receipt_id")
+        payload = await self._request_json("GET", f"/v1/receipts/{safe_id}")
+        receipt = self._parse_receipt(payload, response_name="get")
+        if receipt.receipt_id != receipt_id:
+            raise APIError("receipt_id_mismatch", payload=payload)
+        return receipt
 
     async def verify_receipt(self, receipt_id: str) -> ReceiptVerification:
         """Ask the trust plane to verify a receipt signature and linkage."""
+        require_path_segment(receipt_id, "receipt_id")
         payload = await self._request_json(
             "POST",
             "/v1/receipts/verify",
@@ -464,6 +613,8 @@ class AgentMiddlewareClient:
             if receipt_data is not None
             else None
         )
+        if receipt is not None and receipt.receipt_id != receipt_id:
+            raise APIError("receipt_id_mismatch", payload=payload)
         valid = payload.get("valid")
         if not isinstance(valid, bool):
             raise APIError("invalid_receipt_verification", payload=payload)
@@ -476,8 +627,14 @@ class AgentMiddlewareClient:
 
     async def get_evidence(self, receipt_id: str) -> EvidenceBundle:
         """Fetch the buyer-facing verification bundle for a receipt."""
-        payload = await self._request_json("GET", f"/v1/evidence/{receipt_id}")
+        safe_id = require_path_segment(receipt_id, "receipt_id")
+        payload = await self._request_json("GET", f"/v1/evidence/{safe_id}")
         receipt = self._parse_receipt(payload.get("receipt"), response_name="evidence")
+        envelope_id = payload.get("receipt_id")
+        if receipt.receipt_id != receipt_id or (
+            envelope_id is not None and envelope_id != receipt.receipt_id
+        ):
+            raise APIError("evidence_receipt_id_mismatch", payload=payload)
         permit_data = payload.get("permit")
         permit: Permit | None = None
         if permit_data is not None:
@@ -497,7 +654,7 @@ class AgentMiddlewareClient:
         audit_event = payload.get("audit_event")
         dispatch = payload.get("dispatch")
         return EvidenceBundle(
-            receipt_id=str(payload.get("receipt_id") or receipt.receipt_id),
+            receipt_id=receipt.receipt_id,
             valid=valid,
             receipt=receipt,
             permit=permit,
@@ -538,9 +695,9 @@ class AgentMiddlewareClient:
             request_path: Optional API path for tracking
             description: Optional description of the charge
             idempotency_key: Optional caller-owned key sent as
-                ``Idempotency-Key``; must be nonblank and at most 128
-                characters. When omitted the SDK mints one fresh key for
-                this call (see :func:`new_idempotency_key`).
+                ``Idempotency-Key``; must be nonblank, at most 128 characters,
+                and free of control characters. When omitted the SDK mints one
+                fresh key for this call (see :func:`new_idempotency_key`).
             max_attempts: How many times to attempt the charge after a
                 transport-level failure (a timeout, a dropped connection)
                 before giving up. Every attempt reuses the same key; a new
@@ -553,8 +710,9 @@ class AgentMiddlewareClient:
             InsufficientFundsError: If wallet has insufficient balance
             IdempotencyConflictError: If the key was already used for a
                 different charge, or that charge is still in progress
-            ValueError: If ``idempotency_key`` is blank or too long, or
-                ``max_attempts`` is not a positive integer (nothing is sent)
+            ValueError: If ``idempotency_key`` is blank, too long, or contains
+                a control character, or ``max_attempts`` is not a positive
+                integer (nothing is sent)
         """
         if not isinstance(max_attempts, int) or max_attempts < 1:
             raise ValueError("max_attempts must be a positive integer")
@@ -567,6 +725,13 @@ class AgentMiddlewareClient:
             else new_idempotency_key()
         )
         headers = {"Idempotency-Key": key}
+        if idempotency_key is None:
+            warnings.warn(
+                "charge() without idempotency_key is not replay-safe across calls: "
+                "pass a caller-owned idempotency_key when retrying after an uncertain response.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         params: dict[str, str | float] = {
             "wallet_id": wallet_id,
@@ -592,11 +757,25 @@ class AgentMiddlewareClient:
             break
 
         if response.status_code == 402:
-            data = response.json().get("detail", {})
+            try:
+                body = response.json()
+            except ValueError as exc:
+                raise APIError("invalid_json_response", status_code=402) from exc
+            if not isinstance(body, dict):
+                raise APIError("invalid_object_response", status_code=402)
+            detail = body.get("detail")
+            detail_payload = detail if isinstance(detail, dict) else {}
+            detail_wallet = detail_payload.get("wallet_id")
             raise InsufficientFundsError(
-                wallet_id=wallet_id,
-                shortfall=data.get("shortfall", "unknown"),
-                top_up_url=f"{self.base_url}/dashboard/top-up?wallet={wallet_id}",
+                wallet_id=(
+                    detail_wallet
+                    if isinstance(detail_wallet, str) and detail_wallet.strip()
+                    else wallet_id
+                ),
+                shortfall=detail_payload.get("shortfall"),
+                shortfall_exact=detail_payload.get("shortfall_exact"),
+                top_up_url=_top_up_url(detail_payload.get("top_up_url")),
+                payload=body,
             )
         # Every charge now carries a key, so a 409 is always an idempotency
         # conflict (key reused with different terms, or charge in progress).
@@ -725,7 +904,8 @@ class AgentMiddlewareClient:
 
     async def get_wallet(self, wallet_id: str) -> dict[str, Any]:
         """Get wallet details by ID."""
-        response = await self._client.get(f"/v1/billing/wallets/{wallet_id}")
+        safe_id = require_path_segment(wallet_id, "wallet_id")
+        response = await self._client.get(f"/v1/billing/wallets/{safe_id}")
         response.raise_for_status()
         return response.json()
 

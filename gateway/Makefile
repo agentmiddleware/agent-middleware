@@ -1,4 +1,4 @@
-.PHONY: quickstart quickstart-check live-loop-proof demo-ambiguous-retry demo-ambiguous-retry-check failure-lab failure-lab-check test test-all test-proof coverage prove-trust-plane prove-trust-plane-postgres prove-crash-recovery demo-trust-plane demo-trust-plane-check dogfood-trust-plane dogfood-trust-plane-check red-team-trust-plane red-team-trust-plane-check agent-ops-war-room agent-ops-war-room-check check-doc-references trust-coverage-gate trust-release-gate trust-conformance-live adversarial-battery-live failure-lab-suite failure-lab-all failure-lab-evidence failure-lab-list failure-lab-explore failure-lab-integration-check failure-lab-diagnostic failure-lab-verify-bundle
+.PHONY: quickstart quickstart-check live-loop-proof demo-ambiguous-retry demo-ambiguous-retry-check failure-lab failure-lab-check test test-all test-proof coverage prove-trust-plane prove-trust-plane-postgres prove-crash-recovery demo-trust-plane demo-trust-plane-check dogfood-trust-plane dogfood-trust-plane-check red-team-trust-plane red-team-trust-plane-check agent-ops-war-room agent-ops-war-room-check check-doc-references check-railway-iac trust-coverage-gate trust-release-gate trust-conformance-live adversarial-battery-live failure-lab-suite failure-lab-all failure-lab-evidence failure-lab-list failure-lab-explore failure-lab-integration-check failure-lab-diagnostic failure-lab-verify-bundle
 
 
 
@@ -28,8 +28,9 @@ live-loop-proof:
 # are skipped here — run them with `make test-all` (what CI runs) or `make test-proof`.
 # `--with-requirements` makes these self-contained: uv installs the runtime +
 # test deps for the run, so `make test` works on a fresh checkout without a
-# separate `pip install -r requirements.txt` (deps live in requirements.txt,
-# not pyproject [project.dependencies]).
+# separate `pip install -r requirements.txt` (runtime floors are declared in
+# pyproject [project.dependencies]; requirements.txt mirrors them and stays
+# the install target for Docker/CI/`--with-requirements` runs).
 test:
 	uv run --with-requirements requirements.txt pytest tests/ -q -m "not proof"
 
@@ -57,15 +58,18 @@ prove-trust-plane-postgres: prove-crash-recovery
 # recovery, and fail-closed manual review after an ambiguous side effect
 # (never an automatic redispatch).
 #
-# Requires DATABASE_URL=postgresql+asyncpg://... pointing at a DEDICATED,
-# EMPTY database already migrated to head, STATE_BACKEND=postgres, a local/test
-# ENVIRONMENT, and explicit MCP_STRESS_DB_ISOLATED=1 acknowledgment. Provision
+# Requires DATABASE_URL=postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_*
+# pointing at a DEDICATED, EMPTY database already migrated to head,
+# STATE_BACKEND=postgres, ENVIRONMENT=test, and explicit
+# MCP_STRESS_DB_ISOLATED=1 acknowledgment. Provision
 # and migrate only the disposable database before invoking this target; this
 # target never migrates or overrides the caller's isolation settings.
 # The harness refuses to run otherwise: it fails closed on a
 # non-PostgreSQL URL, a production-like ENVIRONMENT, a stale Alembic revision,
 # or any application table that already holds rows, and it takes an advisory
-# lock so two runs cannot overlap. This is the same proof CI runs.
+# lock so two runs cannot overlap. CI runs this harness and the action crash
+# suite in the `postgres-proofs` job, alongside the lighter
+# `postgres-concurrency` job. See docs/TESTING_TIERS.md for test levels.
 prove-crash-recovery:
 	RUN_MCP_MULTIPROCESS_TESTS=1 \
 	uv run --with-requirements requirements.txt \
@@ -121,6 +125,16 @@ agent-ops-war-room-check:
 check-doc-references:
 	python scripts/check_doc_references.py
 
+# First step of scripts/trust_release_gate.sh. The supported deploy path in
+# this repo is `railway up` from the Dockerfile (WEDGE.md). The hosted
+# `.railway/railway.ts` graph is not in this tree, so the in-repo contract is
+# the files that build COPYs or executes. `.build_commit_sha` is gitignored
+# and stamped at release time, after this gate.
+check-railway-iac:
+	test -f Dockerfile
+	test -f requirements.txt
+	test -f scripts/docker_entrypoint.sh
+	test -x scripts/docker_entrypoint.sh
 
 trust-coverage-gate:
 	scripts/trust_coverage_gate.sh

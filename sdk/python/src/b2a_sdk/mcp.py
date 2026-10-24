@@ -15,14 +15,12 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import uuid
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlencode
 
-try:
-    import httpx
-except ImportError:
-    httpx = None
-
+import httpx
 
 DEFAULT_API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
 
@@ -45,12 +43,9 @@ def generate_manifest(
     """
     url = f"{api_url}/mcp/tools.json"
     if category:
-        url = f"{url}?category={category}"
+        url = f"{url}?{urlencode({'category': category})}"
 
-    if httpx is None:
-        raise RuntimeError("httpx required. Install: pip install httpx")
-
-    response = httpx.get(url, timeout=30.0)
+    response = httpx.get(url, timeout=30.0, follow_redirects=False)
     response.raise_for_status()
     manifest = response.json()
 
@@ -89,7 +84,8 @@ def list_tools(
     manifest = generate_manifest(api_url=api_url, category=category)
     tools = manifest.get("tools", [])
 
-    print(f"\\nAvailable MCP Tools ({len(tools)})")
+    print()
+    print(f"Available MCP Tools ({len(tools)})")
     print("=" * 60)
 
     for tool in tools:
@@ -99,12 +95,14 @@ def list_tools(
         unit = tool.get("annotations", {}).get("unitName", "call")
         cat = tool.get("annotations", {}).get("category", "custom")
 
-        print(f"\\n  {name}")
+        print()
+        print(f"  {name}")
         print(f"    Description: {desc[:60]}...")
         print(f"    Cost: {credits} credits/{unit}")
         print(f"    Category: {cat}")
 
-    print("\\n" + "=" * 60)
+    print()
+    print("=" * 60)
 
 
 async def invoke_service(
@@ -116,44 +114,45 @@ async def invoke_service(
     api_url: str = DEFAULT_API_URL,
     idempotency_key: str | None = None,
 ) -> dict:
-    """Invoke a marketplace service over the legacy billing path.
+    """Invoke a marketplace service over the MCP tool route.
 
     Sends an ``Idempotency-Key`` header: the caller key when given,
     otherwise one minted for this call. Callers that retry one logical
     invocation must reuse the key, or the retry is a second invocation.
-    Sending a key does not add the governed loop (no permit binding, no
-    signed receipt); it only lets the server deduplicate retries.
+    Reusing a key lets the server deduplicate retries.
 
     Raises:
-        ValueError: if a supplied key is blank or overlong (nothing is sent).
+        ValueError: if a supplied key is blank, overlong, or contains control
+            characters (nothing is sent).
     """
-    if httpx is None:
-        raise RuntimeError("httpx required. Install: pip install httpx")
     if idempotency_key is None:
         key = uuid.uuid4().hex
     else:
-        key = idempotency_key.strip() if isinstance(idempotency_key, str) else ""
-        if not key:
-            raise ValueError("idempotency_key must not be blank")
-        if len(key) > 128:
-            raise ValueError("idempotency_key must be at most 128 characters")
+        from .client import AgentMiddlewareClient
+
+        key = AgentMiddlewareClient._validate_idempotency_key(idempotency_key)
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{api_url}/v1/billing/services/{service_id}/invoke",
+            f"{api_url}/mcp/tools/{service_id}/invoke",
             headers={
                 "X-API-Key": api_key,
                 "Content-Type": "application/json",
                 "Idempotency-Key": key,
             },
-            json={"caller_wallet_id": wallet_id, "input_data": input_data},
+            json={
+                "name": service_id,
+                "arguments": input_data,
+                "mcp_context": {"wallet_id": wallet_id},
+            },
             timeout=30.0,
+            follow_redirects=False,
         )
         response.raise_for_status()
         return response.json()
 
 
 async def serve_async(
-    transport: str = "stdio",
+    transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
 ) -> None:
@@ -168,13 +167,13 @@ async def serve_async(
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError:
-        print('Error: mcp package required. Install: pip install "b2a-sdk[mcp]"')
+        print('Error: mcp package required. Install: pip install "amw-sdk[mcp]"')
         return
 
     manifest = generate_manifest(api_url=api_url)
     tools = manifest.get("tools", [])
 
-    mcp = FastMCP("B2A Marketplace")
+    mcp = FastMCP("B2A Marketplace", port=port)
 
     async def call_tool(
         service_id: str,
@@ -201,30 +200,37 @@ async def serve_async(
             async def handler(**kwargs) -> dict:
                 return await call_tool(
                     service_id=svc_id,
-                    input_data={"input_data": kwargs},
+                    input_data=kwargs,
                     wallet_id=os.getenv("B2A_WALLET_ID", ""),
                     api_key=os.getenv("B2A_API_KEY", ""),
                 )
 
             return handler
 
-        mcp.add_tool(name, desc, await create_handler(name, desc))
+        mcp.add_tool(await create_handler(name, desc), name=name, description=desc)
 
-    print(f"Starting MCP server with {len(tools)} tools...")
-    print(f"Transport: {transport}")
+    output = sys.stderr if transport == "stdio" else sys.stdout
+    print(f"Starting MCP server with {len(tools)} tools...", file=output)
+    print(f"Transport: {transport}", file=output)
     if transport == "sse":
-        print(f"Port: {port}")
-    print("\\nConfigure with:")
-    print("  export B2A_API_KEY=<your-key>")
-    print("  export B2A_WALLET_ID=<your-wallet>")
-    print(f"  export B2A_API_URL={api_url}")
-    print()
+        print(f"Port: {port}", file=output)
+    print(file=output)
+    print("Configure with:", file=output)
+    print("  export B2A_API_KEY=<your-key>", file=output)
+    print("  export B2A_WALLET_ID=<your-wallet>", file=output)
+    print(f"  export B2A_API_URL={api_url}", file=output)
+    print(file=output)
 
-    mcp.run(transport=transport, port=port)
+    if transport == "stdio":
+        await mcp.run_stdio_async()
+    elif transport == "sse":
+        await mcp.run_sse_async()
+    else:
+        raise ValueError(f"Unknown transport: {transport}")
 
 
 def serve(
-    transport: str = "stdio",
+    transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
 ) -> None:

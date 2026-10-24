@@ -124,7 +124,7 @@ class _FakeInvokeClient:
     async def __aexit__(self, *args) -> None:
         return None
 
-    async def post(self, url, *, headers=None, json=None, timeout=None):
+    async def post(self, url, *, headers=None, json=None, timeout=None, follow_redirects=False):
         self.posts.append({"url": url, "headers": dict(headers or {}), "json": json})
         return _FakeInvokeResponse()
 

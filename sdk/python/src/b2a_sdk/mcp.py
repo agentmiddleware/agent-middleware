@@ -165,7 +165,7 @@ async def serve_async(
         api_url: B2A API URL
     """
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import Context, FastMCP
     except ImportError:
         print('Error: mcp package required. Install: pip install "amw-sdk[mcp]"')
         return
@@ -197,7 +197,9 @@ async def serve_async(
         desc = tool.get("description", "")
 
         async def create_handler(svc_id: str, svc_name: str):
-            async def handler(idempotency_key: str | None = None, **kwargs) -> dict:
+            async def handler(ctx: Context, **kwargs) -> dict:
+                meta = ctx.request_context.meta
+                idempotency_key = getattr(meta, "idempotency_key", None)
                 return await call_tool(
                     service_id=svc_id,
                     input_data=kwargs,

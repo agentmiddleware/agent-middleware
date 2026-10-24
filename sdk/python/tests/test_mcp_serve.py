@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,27 +81,32 @@ def test_serve_async_tool_invokes_gateway_with_arguments(monkeypatch, tmp_path, 
 
     asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
     assert len(registered) == 1
+    context = SimpleNamespace(request_context=SimpleNamespace(meta=None))
     if status_code == 200:
-        assert asyncio.run(registered[0](query="sample")) == {
-            "content": [{"type": "text", "text": "ok"}]
-        }
+        assert asyncio.run(
+            registered[0](ctx=context, query="sample", idempotency_key="tool-input")
+        ) == {"content": [{"type": "text", "text": "ok"}]}
     else:
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            asyncio.run(registered[0](query="sample"))
+            asyncio.run(registered[0](ctx=context, query="sample", idempotency_key="tool-input"))
         assert exc_info.value.response.status_code == 403
     assert len(requests) == 1
     assert requests[0].method == "POST"
     assert str(requests[0].url) == "https://unused.invalid/mcp/tools/partner.search/invoke"
     assert requests[0].headers["X-API-Key"] == "test-key"
+    assert requests[0].headers["Idempotency-Key"] != "tool-input"
     assert json.loads(requests[0].content) == {
         "name": "partner.search",
-        "arguments": {"query": "sample"},
+        "arguments": {"query": "sample", "idempotency_key": "tool-input"},
         "mcp_context": {"wallet_id": "test-wallet"},
     }
 
 
-def test_registered_tool_forwards_caller_key_for_retries(monkeypatch, tmp_path):
-    fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
+def test_registered_tool_keeps_retry_metadata_separate_from_tool_inputs(monkeypatch, tmp_path):
+    fastmcp_module = pytest.importorskip("mcp.server.fastmcp")
+    fastmcp = fastmcp_module.FastMCP
+    request_context = pytest.importorskip("mcp.shared.context").RequestContext
+    request_meta = pytest.importorskip("mcp.types").RequestParams.Meta
     httpx = pytest.importorskip("httpx")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("B2A_WALLET_ID", "test-wallet")
@@ -122,20 +128,37 @@ def test_registered_tool_forwards_caller_key_for_retries(monkeypatch, tmp_path):
 
     client_type = httpx.AsyncClient
     transport = httpx.MockTransport(respond)
+    metadata = {"idempotency_key": "retry-1"}
+
+    def get_context(self):
+        return fastmcp_module.Context(
+            request_context=request_context(
+                request_id="call-1",
+                meta=request_meta.model_validate(metadata),
+                session=None,
+                lifespan_context=None,
+            ),
+            fastmcp=self,
+        )
+
     monkeypatch.setattr(httpx, "AsyncClient", lambda: client_type(transport=transport))
+    monkeypatch.setattr(fastmcp, "get_context", get_context)
     monkeypatch.setattr(fastmcp, "run_stdio_async", run_stdio)
 
     asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
     for _ in range(2):
         asyncio.run(
             servers[0].call_tool(
-                "partner.search", {"kwargs": "sample", "idempotency_key": "retry-1"}
+                "partner.search", {"kwargs": {"query": "sample", "idempotency_key": "tool-input"}}
             )
         )
     tool_error = pytest.importorskip("mcp.server.fastmcp.exceptions").ToolError
+    metadata["idempotency_key"] = " "
     with pytest.raises(tool_error, match="idempotency_key"):
         asyncio.run(
-            servers[0].call_tool("partner.search", {"kwargs": "sample", "idempotency_key": " "})
+            servers[0].call_tool(
+                "partner.search", {"kwargs": {"query": "sample", "idempotency_key": "tool-input"}}
+            )
         )
 
     assert len(requests) == 2
@@ -144,8 +167,8 @@ def test_registered_tool_forwards_caller_key_for_retries(monkeypatch, tmp_path):
         "retry-1",
     ]
     assert [json.loads(request.content)["arguments"] for request in requests] == [
-        {"kwargs": "sample"},
-        {"kwargs": "sample"},
+        {"kwargs": {"query": "sample", "idempotency_key": "tool-input"}},
+        {"kwargs": {"query": "sample", "idempotency_key": "tool-input"}},
     ]
 
 

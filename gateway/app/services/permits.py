@@ -1173,12 +1173,18 @@ class PermitService:
         predicates both see it, so a successful reservation absorbs the
         orphan instead of leaving a gap the next call can refill.
         """
-        charge: ColumnElement[Any] = PermitModel.spent_credits + amount
+        spent_col = cast(ColumnElement[Any], PermitModel.spent_credits)
+        charge: ColumnElement[Any] = spent_col + amount
         if not count_orphan_receipts:
             return charge
         receipt_sum = (
             select(func.coalesce(func.sum(ReceiptModel.credits_charged), 0))
-            .where(ReceiptModel.permit_id == PermitModel.permit_id)
+            .where(
+                cast(
+                    ColumnElement[bool],
+                    ReceiptModel.permit_id == PermitModel.permit_id,
+                )
+            )
             .correlate(PermitModel)
             .scalar_subquery()
         )

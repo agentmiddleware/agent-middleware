@@ -22,6 +22,7 @@ from app.db.database import get_session_factory
 from app.db.models import PermitModel, ReceiptModel
 from app.main import app
 from app.schemas.trust import PermitCreateRequest
+from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from app.services.receipts import get_receipt_service
 from tests.test_trust_helpers import provision_agent_wallet
@@ -61,6 +62,13 @@ async def _live_permit(
     return provisioned, permit
 
 
+def _caller(provisioned: dict) -> CallerIdentity:
+    """Bound subject-key caller, as in test_owner_enforcement.py."""
+    return CallerIdentity(
+        wallet_id=provisioned["agent_wallet_id"], key_id=provisioned["key_id"]
+    )
+
+
 async def _spent(permit_id: str) -> Decimal:
     factory = get_session_factory()
     async with factory() as session:
@@ -94,7 +102,8 @@ async def _orphan_receipt(
     """
     service = get_permit_service()
     credits = Decimal(amount)
-    await service.reserve_budget(permit_id, credits)
+    caller = CallerIdentity(wallet_id=wallet_id, key_id=key_id)
+    await service.reserve_budget(permit_id, credits, caller=caller)
     await get_receipt_service().create_receipt(
         permit_id=permit_id,
         wallet_id=wallet_id,
@@ -108,7 +117,7 @@ async def _orphan_receipt(
         outcome="failed_unrefunded",
         audit_event_id=None,
     )
-    await service.release_budget(permit_id, credits)
+    await service.release_budget(permit_id, credits, caller=caller)
     assert await _spent(permit_id) == Decimal("0")
 
 
@@ -117,7 +126,8 @@ async def test_negative_estimated_credits_cannot_mint_budget(client, clean_datab
     """A negative estimate must not lower spent_credits or read as allowed."""
     provisioned, permit = await _live_permit(client, tool_name="break-negative")
     service = get_permit_service()
-    await service.reserve_budget(permit.permit_id, Decimal("4"))
+    caller = _caller(provisioned)
+    await service.reserve_budget(permit.permit_id, Decimal("4"), caller=caller)
     assert await _spent(permit.permit_id) == Decimal("4")
 
     denied = await service.authorize_and_reserve(
@@ -132,7 +142,7 @@ async def test_negative_estimated_credits_cannot_mint_budget(client, clean_datab
     assert await _spent(permit.permit_id) == Decimal("4")
 
     with pytest.raises(PermitError) as reserved:
-        await service.reserve_budget(permit.permit_id, Decimal("-1"))
+        await service.reserve_budget(permit.permit_id, Decimal("-1"), caller=caller)
     assert reserved.value.reason == "permit_credits_invalid"
     assert await _spent(permit.permit_id) == Decimal("4")
 
@@ -153,6 +163,7 @@ async def test_non_finite_estimated_credits_cannot_reserve(client, clean_databas
     """NaN and Infinity must not pass the budget comparison or reach SQL."""
     provisioned, permit = await _live_permit(client, tool_name="break-nan")
     service = get_permit_service()
+    caller = _caller(provisioned)
     for bad in (Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")):
         denied = await service.authorize_and_reserve(
             permit_id=permit.permit_id,
@@ -164,7 +175,7 @@ async def test_non_finite_estimated_credits_cannot_reserve(client, clean_databas
         assert denied.allowed is False
         assert denied.reason == "permit_credits_invalid"
         with pytest.raises(PermitError) as reserved:
-            await service.reserve_budget(permit.permit_id, bad)
+            await service.reserve_budget(permit.permit_id, bad, caller=caller)
         assert reserved.value.reason == "permit_credits_invalid"
     assert await _spent(permit.permit_id) == Decimal("0")
 
@@ -201,21 +212,24 @@ async def test_release_budget_rejects_amounts_that_grow_or_wipe_spend(
     A storable release larger than the current reservation still clamps to zero:
     that is the existing drift behavior for a real refund amount.
     """
-    _provisioned, permit = await _live_permit(client, tool_name="break-release")
+    provisioned, permit = await _live_permit(client, tool_name="break-release")
     service = get_permit_service()
-    await service.reserve_budget(permit.permit_id, Decimal("2"))
+    caller = _caller(provisioned)
+    await service.reserve_budget(permit.permit_id, Decimal("2"), caller=caller)
 
     with pytest.raises(PermitError) as negative:
-        await service.release_budget(permit.permit_id, Decimal("-1"))
+        await service.release_budget(permit.permit_id, Decimal("-1"), caller=caller)
     assert negative.value.reason == "permit_credits_invalid"
     assert await _spent(permit.permit_id) == Decimal("2")
 
     with pytest.raises(PermitError) as huge:
-        await service.release_budget(permit.permit_id, Decimal("1000000000000"))
+        await service.release_budget(
+            permit.permit_id, Decimal("1000000000000"), caller=caller
+        )
     assert huge.value.reason == "permit_credits_invalid"
     assert await _spent(permit.permit_id) == Decimal("2")
 
-    await service.release_budget(permit.permit_id, Decimal("5"))
+    await service.release_budget(permit.permit_id, Decimal("5"), caller=caller)
     assert await _spent(permit.permit_id) == Decimal("0")
 
 
@@ -292,10 +306,11 @@ async def test_reserve_budget_absorbs_released_receipt_history(client, clean_dat
         tool_name="break-cap-reserve",
     )
     service = get_permit_service()
-    await service.reserve_budget(permit.permit_id, Decimal("2"))
+    caller = _caller(provisioned)
+    await service.reserve_budget(permit.permit_id, Decimal("2"), caller=caller)
     assert await _spent(permit.permit_id) == Decimal("4")
     with pytest.raises(PermitError) as denied:
-        await service.reserve_budget(permit.permit_id, Decimal("2"))
+        await service.reserve_budget(permit.permit_id, Decimal("2"), caller=caller)
     assert denied.value.reason == "permit_aggregate_value_cap_exceeded"
     assert await _spent(permit.permit_id) == Decimal("4")
 
@@ -371,7 +386,9 @@ async def test_absorption_cannot_push_spent_past_max_credits(client, clean_datab
     assert await _spent(permit.permit_id) == Decimal("0")
 
     with pytest.raises(PermitError) as reserved:
-        await service.reserve_budget(permit.permit_id, Decimal("2"))
+        await service.reserve_budget(
+            permit.permit_id, Decimal("2"), caller=_caller(provisioned)
+        )
     assert reserved.value.reason == "permit_budget_exceeded"
     assert await _spent(permit.permit_id) == Decimal("0")
 
@@ -395,7 +412,9 @@ async def test_expired_permit_cannot_be_reserved(client, clean_database):
     assert await _spent(permit.permit_id) == Decimal("0")
 
     with pytest.raises(PermitError) as reserved:
-        await service.reserve_budget(permit.permit_id, Decimal("1"))
+        await service.reserve_budget(
+            permit.permit_id, Decimal("1"), caller=_caller(provisioned)
+        )
     assert reserved.value.reason == "permit_expired"
     assert await _spent(permit.permit_id) == Decimal("0")
 

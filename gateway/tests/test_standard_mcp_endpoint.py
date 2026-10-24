@@ -68,6 +68,49 @@ def _initialize(protocol_version: str = "2025-06-18") -> dict:
     )
 
 
+def test_openapi_documents_distinct_jsonrpc_post_bodies():
+    schema = app.openapi()["paths"]["/mcp"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    assert schema["required"] == ["jsonrpc"]
+    variants = {variant["title"]: variant for variant in schema["oneOf"]}
+    assert set(variants) == {
+        "JSON-RPC request",
+        "JSON-RPC notification",
+        "JSON-RPC response",
+    }
+    request = variants["JSON-RPC request"]
+    assert request["required"] == ["method", "id"]
+    assert request["not"] == {
+        "anyOf": [{"required": ["result"]}, {"required": ["error"]}]
+    }
+    assert variants["JSON-RPC notification"]["required"] == ["method"]
+    assert variants["JSON-RPC notification"]["not"] == {
+        "anyOf": [
+            {"required": ["id"]},
+            {"required": ["result"]},
+            {"required": ["error"]},
+        ]
+    }
+    response = variants["JSON-RPC response"]
+    assert response["required"] == ["id"]
+    assert response["not"] == {"required": ["method"]}
+    assert response["oneOf"] == [
+        {"required": ["result"]},
+        {"required": ["error"]},
+    ]
+    assert "result" in response["properties"]
+    assert {item["type"] for item in request["properties"]["id"]["anyOf"]} == {
+        "integer",
+        "string",
+    }
+    assert {item["type"] for item in response["properties"]["id"]["anyOf"]} == {
+        "integer",
+        "string",
+        "null",
+    }
+
+
 @pytest.mark.anyio
 async def test_discovery_preserves_typed_tools_alongside_no_argument_tool(
     client, standard_mcp_enabled

@@ -854,13 +854,71 @@ class _SdkTransportResponse(Response):
                 "application/json": {
                     "schema": {
                         "type": "object",
-                        "required": ["jsonrpc", "method"],
+                        "required": ["jsonrpc"],
                         "properties": {
                             "jsonrpc": {"type": "string", "const": "2.0"},
-                            "method": {"type": "string"},
-                            "params": {"anyOf": [{"type": "object"}, {"type": "null"}]},
-                            "id": {"anyOf": [{"type": "integer"}, {"type": "string"}]},
                         },
+                        "oneOf": [
+                            {
+                                "title": "JSON-RPC request",
+                                "required": ["method", "id"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": ["result"]},
+                                        {"required": ["error"]},
+                                    ]
+                                },
+                                "properties": {
+                                    "method": {"type": "string"},
+                                    "params": {
+                                        "anyOf": [{"type": "object"}, {"type": "null"}]
+                                    },
+                                    "id": {
+                                        "anyOf": [
+                                            {"type": "integer"},
+                                            {"type": "string"},
+                                        ]
+                                    },
+                                },
+                            },
+                            {
+                                "title": "JSON-RPC notification",
+                                "required": ["method"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": ["id"]},
+                                        {"required": ["result"]},
+                                        {"required": ["error"]},
+                                    ]
+                                },
+                                "properties": {
+                                    "method": {"type": "string"},
+                                    "params": {
+                                        "anyOf": [{"type": "object"}, {"type": "null"}]
+                                    },
+                                },
+                            },
+                            {
+                                "title": "JSON-RPC response",
+                                "required": ["id"],
+                                "not": {"required": ["method"]},
+                                "oneOf": [
+                                    {"required": ["result"]},
+                                    {"required": ["error"]},
+                                ],
+                                "properties": {
+                                    "id": {
+                                        "anyOf": [
+                                            {"type": "integer"},
+                                            {"type": "string"},
+                                            {"type": "null"},
+                                        ]
+                                    },
+                                    "result": {},
+                                    "error": {"type": "object"},
+                                },
+                            },
+                        ],
                     }
                 }
             },

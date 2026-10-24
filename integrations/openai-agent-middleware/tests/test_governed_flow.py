@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from types import SimpleNamespace
 
 import httpx
@@ -995,7 +995,15 @@ def test_wallet_id_must_be_a_string():
 
 @pytest.mark.parametrize(
     "budget",
-    [Decimal(0), Decimal(-1), Decimal("0.000000001"), Decimal("NaN"), True],
+    [
+        Decimal(0),
+        Decimal(-1),
+        Decimal("0.000000001"),
+        Decimal("100000000000.12345678"),
+        Decimal("999999999999.99999999"),
+        Decimal("NaN"),
+        True,
+    ],
 )
 def test_permit_budget_must_be_an_issuable_amount(budget):
     with pytest.raises((TypeError, ValueError)):
@@ -1007,13 +1015,15 @@ def test_permit_budget_must_be_an_issuable_amount(budget):
         )
 
 
-def test_permit_budget_accepts_maximum_numeric_20_8_value():
-    GovernedToolRunner(
-        _client(FakeTrustPlane()),
-        wallet_id=WALLET,
-        run_id="run-1",
-        permit_budget=Decimal("999999999999.99999999"),
-    )
+def test_permit_budget_accepts_storable_amount_with_reduced_decimal_precision():
+    with localcontext() as context:
+        context.prec = 10
+        GovernedToolRunner(
+            _client(FakeTrustPlane()),
+            wallet_id=WALLET,
+            run_id="run-1",
+            permit_budget=Decimal(999_999_999_999),
+        )
 
 
 @pytest.mark.parametrize("ttl", [0, -1, True])

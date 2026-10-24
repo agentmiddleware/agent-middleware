@@ -75,7 +75,7 @@ def _credit_amount_is_issuable(amount: Decimal) -> bool:
     return (
         amount.is_finite()
         and Decimal(0) < amount < Decimal(1000000000000)
-        and amount == amount.quantize(Decimal("0.00000001"))
+        and Decimal(f"{float(amount):.8f}") == amount
     )
 
 

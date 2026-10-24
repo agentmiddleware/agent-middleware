@@ -456,6 +456,102 @@ async def test_receipt_evidence_detects_ledger_tampering(
     assert checks["ledger_linkage"]["reason"] == "ledger_amount_mismatch"
 
 
+async def _create_zero_charge_receipt_with_ledger_entry(
+    client,
+    *,
+    provisioned: dict,
+    tool_name: str,
+    entry_id: str,
+    entry_amount: Decimal,
+    idem_key: str,
+):
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key=f"{idem_key}-permit",
+    )
+    factory = get_session_factory()
+    async with factory() as session:
+        session.add(
+            LedgerEntryModel(
+                entry_id=entry_id,
+                wallet_id=provisioned["agent_wallet_id"],
+                action="debit",
+                amount=entry_amount,
+                balance_after=Decimal("10000"),
+            )
+        )
+        await session.commit()
+    return await get_receipt_service().create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool=tool_name,
+        request_payload={"message": "hello"},
+        response_payload={"message": "hello"},
+        ledger_entry_id=entry_id,
+        credits_authorized=Decimal("0"),
+        credits_charged=Decimal("0"),
+        outcome="success",
+        audit_event_id=None,
+    )
+
+
+@pytest.mark.anyio
+async def test_receipt_evidence_zero_charge_matches_zero_ledger_entry(
+    client,
+    clean_database,
+):
+    provisioned = await provision_agent_wallet(client)
+    receipt = await _create_zero_charge_receipt_with_ledger_entry(
+        client,
+        provisioned=provisioned,
+        tool_name="receipt-evidence-zero-match",
+        entry_id="zero-match-entry",
+        entry_amount=Decimal("0"),
+        idem_key="receipt-evidence-zero-match",
+    )
+
+    evidence_resp = await client.get(
+        f"/v1/receipts/{receipt.receipt_id}/evidence",
+        headers=provisioned["agent_headers"],
+    )
+
+    assert evidence_resp.status_code == 200
+    checks = {check["name"]: check for check in evidence_resp.json()["checks"]}
+    assert checks["ledger_linkage"]["status"] == "passed"
+
+
+@pytest.mark.anyio
+async def test_receipt_evidence_zero_charge_rejects_nonzero_ledger_entry(
+    client,
+    clean_database,
+):
+    provisioned = await provision_agent_wallet(client)
+    receipt = await _create_zero_charge_receipt_with_ledger_entry(
+        client,
+        provisioned=provisioned,
+        tool_name="receipt-evidence-zero-mismatch",
+        entry_id="zero-mismatch-entry",
+        entry_amount=Decimal("-2"),
+        idem_key="receipt-evidence-zero-mismatch",
+    )
+
+    evidence_resp = await client.get(
+        f"/v1/receipts/{receipt.receipt_id}/evidence",
+        headers=provisioned["agent_headers"],
+    )
+
+    assert evidence_resp.status_code == 200
+    evidence = evidence_resp.json()
+    assert evidence["valid"] is False
+    checks = {check["name"]: check for check in evidence["checks"]}
+    assert checks["ledger_linkage"]["status"] == "failed"
+    assert checks["ledger_linkage"]["reason"] == "ledger_amount_mismatch"
+
+
 @pytest.mark.anyio
 async def test_receipt_evidence_does_not_expose_cross_wallet_artifacts(
     client,

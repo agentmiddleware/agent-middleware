@@ -11,7 +11,7 @@ Local-only by three independent layers, mirroring STATIC_DEV_API_KEYS:
 
 - ``ENABLE_DEV_KEY_SELF_PROVISION`` defaults false and the route answers 404
   until an operator turns it on, so the surface is never advertised by
-  accident (same pattern as ``ENABLE_STANDARD_MCP_ENDPOINT``).
+  accident.
 - Production-like environments refuse to boot with the flag set
   (``validate_trust_mode_guardrails``), and the handler independently fails
   closed with 403 there, so the endpoint stays unreachable in production

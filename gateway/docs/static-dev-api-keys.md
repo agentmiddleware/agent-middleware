@@ -114,7 +114,7 @@ Scope and safety:
 - The minted key is **wallet-scoped, never bootstrap-admin**: a credential
   anyone can mint must not read the audit plane or touch other tenants.
 - The route answers **404 until the flag is set**, so the surface is never
-  available by accident (same pattern as `ENABLE_STANDARD_MCP_ENDPOINT`).
+  available by accident.
 - **Production-like environments refuse to boot** with the flag set, and
   the handler independently fails closed with 403 there — the same
   containment as `STATIC_DEV_API_KEYS`.

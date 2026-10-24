@@ -20,10 +20,11 @@ python -m pip install -e ./sdk/python
 python -m pip install -e integrations/autogen-agent-middleware
 ```
 
-`b2a_sdk` must be installed from the local path first: this package
-depends on `b2a-sdk>=0.4.0`, which is not on PyPI, so installing the
-wrapper on its own fails to resolve. That installs the `autogen_b2a`
-module used below.
+`b2a_sdk` remains an import package. The SDK distribution will be published
+as `amw-sdk` (`pip install amw-sdk`). Until then, install it from the local
+path first because this wrapper depends on `amw-sdk>=0.4.0` and cannot
+resolve that dependency from PyPI. Installing the wrapper provides the
+`autogen_b2a` module used below.
 
 The framework dependency is the `autogen` distribution on PyPI
 ([AG2 Classic](https://github.com/ag2ai/ag2classic)), which provides the

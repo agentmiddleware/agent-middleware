@@ -63,7 +63,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
-import attacklib as A
+import attacklib as A  # noqa: N812
 
 SCRATCH = os.environ.get("TP_WORKDIR", os.getcwd())
 PIDFILE = os.environ.get("TP_PIDFILE", f"{SCRATCH}/server.pid")
@@ -417,7 +417,7 @@ def main():
             )
         )
     for k in dedup_keys:
-        for j in range(DEDUP_FANOUT):
+        for _ in range(DEDUP_FANOUT):
             jobs.append(
                 (
                     "dedup",
@@ -571,7 +571,7 @@ def main():
                 with q_lock:
                     worker_errors[tag] += 1
 
-    WORKERS = 24
+    worker_count = 24
     pid_before = current_pid()
     killed = {"at_debits": None, "pid": pid_before}
 
@@ -599,8 +599,8 @@ def main():
 
     kt = threading.Thread(target=killer)
     kt.start()
-    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        futs = [ex.submit(worker) for _ in range(WORKERS)]
+    with ThreadPoolExecutor(max_workers=worker_count) as ex:
+        futs = [ex.submit(worker) for _ in range(worker_count)]
         for f in futs:
             try:
                 f.result(timeout=60)
@@ -630,14 +630,14 @@ def main():
 
     # REPLAY every load + budget key once, identical payload
     replay_hist = Counter()
-    for i, k in enumerate(load_keys):
+    for _i, k in enumerate(load_keys):
         r = A.invoke(
             victim["api_key"], wallet, p_load, k, f"load {k}", rpc_id=f"replay-{k}"
         )
         replay_hist[
             "receipt" if A.receipt_of(r) else (A.reason_of(r) or "conn_err")
         ] += 1
-    for i, k in enumerate(budget_keys):
+    for _i, k in enumerate(budget_keys):
         r = A.invoke(
             victim["api_key"], wallet, p_budget, k, f"budget {k}", rpc_id=f"replay-{k}"
         )

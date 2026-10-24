@@ -59,7 +59,7 @@ def public_documentation_dns(monkeypatch):
 class TestOutboundUrlGuard:
     @pytest.mark.anyio
     @pytest.mark.parametrize(
-        "url,reason",
+        ("url", "reason"),
         [
             ("file:///etc/passwd", "scheme_not_allowed"),
             ("javascript:alert(1)", "scheme_not_allowed"),
@@ -102,6 +102,104 @@ class TestOutboundUrlGuard:
         # These resolve to loopback/metadata despite not being dotted-quad
         # literals; the guard must still reject them.
         assert await check_outbound_url(url) == "private_address_blocked"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://[::169.254.169.254]/latest/meta-data/",
+            "http://[::10.0.0.1]/",
+            "http://[::127.0.0.1]/",
+            "http://[64:ff9b::169.254.169.254]/",
+            "http://[64:ff9b::10.0.0.1]/",
+            "http://[64:ff9b::7f00:1]/",
+            "http://[::ffff:0:169.254.169.254]/",
+            "http://[::ffff:0:10.0.0.1]/",
+            "http://[::ffff:0:7f00:1]/",
+            "http://[fec0::1]/",
+        ],
+    )
+    async def test_reserved_and_site_local_literals_are_blocked(self, monkeypatch, url):
+        """Addresses the stdlib marks global must still be blocked.
+
+        IPv4-compatible (::169.254.169.254), IPv4-translated
+        (::ffff:0:169.254.169.254), and well-known NAT64 (64:ff9b::/96)
+        are is_global, and stacks still deliver them to the embedded
+        private IPv4, including link-local metadata. Deprecated site-local
+        fec0::/10 is is_global too.
+        """
+        monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", False)
+        assert await check_outbound_url(url) == "private_address_blocked"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://2130706433/",
+            "http://0x7f000001/",
+            "http://0177.0.0.1/",
+            "http://127.1/",
+            "http://0/",
+        ],
+    )
+    async def test_ambiguous_numeric_host_blocked_when_dns_is_public(
+        self, monkeypatch, url
+    ):
+        """A numeric host libc may parse as IPv4 is blocked before DNS.
+
+        ipaddress rejects these forms, so a guard that only resolves them
+        accepts the URL when DNS returns a public address. Chromium and libc
+        can still dial the embedded private address (127.0.0.1 for the
+        examples above).
+        """
+
+        async def resolve(_host):
+            return [(None, None, None, None, ("93.184.216.34", 0))]
+
+        monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", False)
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        assert await check_outbound_url(url) == "private_address_blocked"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "::169.254.169.254",
+            "64:ff9b::10.0.0.1",
+            "fec0::1",
+            "::10.0.0.1",
+            "::ffff:0:169.254.169.254",
+        ],
+    )
+    async def test_dns_to_reserved_or_site_local_is_blocked(self, monkeypatch, address):
+        async def resolve(_host):
+            return [
+                (None, None, None, None, ("93.184.216.34", 0)),
+                (None, None, None, None, (address, 0)),
+            ]
+
+        monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", False)
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        assert (
+            await check_outbound_url("https://partner.example/page")
+            == "private_address_blocked"
+        )
+
+    @pytest.mark.anyio
+    async def test_public_nat64_and_compatible_embeddings_stay_allowed(
+        self, monkeypatch
+    ):
+        """DNS64 publishes public IPv4 inside 64:ff9b::/96. That stays allowed."""
+        monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", False)
+
+        async def resolve(_host):
+            return [(None, None, None, None, ("64:ff9b::8.8.8.8", 0))]
+
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        assert await check_outbound_url("https://[64:ff9b::8.8.8.8]/") is None
+        assert await check_outbound_url("https://[::8.8.8.8]/") is None
+        assert await check_outbound_url("https://[::ffff:0:8.8.8.8]/") is None
+        assert await check_outbound_url("https://ipv4-only.example/") is None
 
     @pytest.mark.anyio
     async def test_userinfo_does_not_mask_a_public_host(self, public_documentation_dns):
@@ -497,7 +595,7 @@ class TestAWIEvaluateSink:
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
-        "direction,amount,expected",
+        ("direction", "amount", "expected"),
         [
             ("up", 300, "window.scrollBy(0, -300)"),
             ("up", -5, "window.scrollBy(0, 5)"),

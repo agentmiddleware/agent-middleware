@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 
 import pytest
 
@@ -52,16 +53,29 @@ def test_serve_async_registers_tool_and_starts_transport(monkeypatch, tmp_path, 
 
 
 @pytest.mark.parametrize(
-    "status_code, detail, permit_id, idempotency_key",
+    "status_code, detail, permit_id, idempotency_key, legacy_result_format",
     [
-        (200, None, None, None),
-        (200, None, "permit-123", "invoke-123"),
-        (403, "other_denial", None, None),
-        (403, "permit_required", None, None),
+        (200, None, None, None, False),
+        (200, None, "permit-123", "invoke-123", False),
+        (200, None, None, None, True),
+        (403, "other_denial", None, None, False),
+        (403, "permit_required", None, None, False),
+        (403, {"error": "permit_required"}, None, None, False),
+        (400, "idempotency_key_required", "permit-123", None, False),
+        (
+            202,
+            {
+                "error": "human_approval_pending",
+                "approval": {"approval_id": "approval-123", "expires_at": "2026-10-24T00:00:00Z"},
+            },
+            "permit-123",
+            "invoke-123",
+            False,
+        ),
     ],
 )
 def test_serve_async_tool_invokes_gateway_with_arguments(
-    monkeypatch, tmp_path, status_code, detail, permit_id, idempotency_key
+    monkeypatch, tmp_path, status_code, detail, permit_id, idempotency_key, legacy_result_format
 ):
     fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
     httpx = pytest.importorskip("httpx")
@@ -98,7 +112,9 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
     monkeypatch.setattr(fastmcp, "add_tool", capture_tool)
     monkeypatch.setattr(fastmcp, "run_stdio_async", run_stdio)
 
-    asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
+    asyncio.run(
+        mcp.serve_async(api_url="https://unused.invalid", legacy_result_format=legacy_result_format)
+    )
     assert len(registered) == 1
     assert len(started) == 1
     caller_context = {}
@@ -110,15 +126,38 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
                 "partner.search", {"kwargs": {"query": "sample"}, **caller_context}
             )
         )
-        assert result.isError is False
-        assert result.content[0].text == "ok"
-    elif detail == "permit_required":
+        if legacy_result_format:
+            assert json.loads(result[0].text) == {"content": [{"type": "text", "text": "ok"}]}
+        else:
+            assert result.isError is False
+            assert result.content[0].text == "ok"
+    elif detail == "permit_required" or detail == {"error": "permit_required"}:
         result = asyncio.run(
             started[0].call_tool("partner.search", {"kwargs": {"query": "sample"}})
         )
         assert result.isError is True
         assert result.structuredContent["error"] == "permit_required"
         assert "permit_id" in result.content[0].text
+        assert "idempotency_key" in result.content[0].text
+        assert "idempotency_key" in result.structuredContent["guidance"]
+    elif status_code == 400:
+        result = asyncio.run(registered[0](query="sample", **caller_context))
+        assert result.isError is True
+        assert result.structuredContent["error"] == "idempotency_key_required"
+        assert "idempotency_key" in result.content[0].text
+        assert "idempotency_key" in result.structuredContent["guidance"]
+    elif status_code == 202:
+        result = asyncio.run(
+            started[0].call_tool(
+                "partner.search", {"kwargs": {"query": "sample"}, **caller_context}
+            )
+        )
+        assert result.isError is True
+        assert result.structuredContent["error"] == "human_approval_pending"
+        assert result.structuredContent["approval"] == detail["approval"]
+        assert "approval-123" in result.content[0].text
+        assert "invoke-123" not in result.content[0].text
+        assert "same permit_id and idempotency_key" in result.structuredContent["guidance"]
     else:
         with pytest.raises(httpx.HTTPStatusError) as exc_info:
             asyncio.run(registered[0](query="sample", **caller_context))
@@ -129,7 +168,9 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
     assert requests[0].headers["X-API-Key"] == "test-key"
     mcp_context = {"wallet_id": "test-wallet"}
     if permit_id is not None:
-        mcp_context.update({"permit_id": permit_id, "idempotency_key": idempotency_key})
+        mcp_context["permit_id"] = permit_id
+    if idempotency_key is not None:
+        mcp_context["idempotency_key"] = idempotency_key
     assert json.loads(requests[0].content) == {
         "name": "partner.search",
         "arguments": {"query": "sample"},
@@ -150,3 +191,20 @@ def test_serve_async_rejects_unknown_transport(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="Unknown transport: websocket"):
         asyncio.run(mcp.serve_async(transport="websocket", api_url="https://unused.invalid"))
+
+
+def test_serve_cli_enables_legacy_result_format(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["b2a-mcp", "serve", "--legacy-result-format"])
+    monkeypatch.setattr(mcp, "serve", lambda **kwargs: calls.append(kwargs))
+
+    mcp.main()
+
+    assert calls == [
+        {
+            "transport": "stdio",
+            "port": 8001,
+            "api_url": mcp.DEFAULT_API_URL,
+            "legacy_result_format": True,
+        }
+    ]

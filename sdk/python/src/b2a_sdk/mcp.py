@@ -108,6 +108,7 @@ async def serve_async(
     transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
+    legacy_result_format: bool = False,
 ) -> None:
     """
     Serve as an MCP server using the specified transport.
@@ -116,6 +117,7 @@ async def serve_async(
         transport: "stdio" or "sse"
         port: Port for SSE transport
         api_url: B2A API URL
+        legacy_result_format: Wrap successful gateway responses as JSON text
     """
     try:
         from mcp.server.fastmcp import FastMCP
@@ -136,7 +138,7 @@ async def serve_async(
         api_key: str,
         permit_id: str | None,
         idempotency_key: str | None,
-    ) -> CallToolResult:
+    ) -> Any:
         mcp_context = {"wallet_id": wallet_id}
         if permit_id is not None:
             mcp_context["permit_id"] = permit_id
@@ -154,20 +156,46 @@ async def serve_async(
                 timeout=30.0,
                 follow_redirects=False,
             )
-            if response.status_code == 403:
+            if response.status_code in {400, 403, 202}:
                 try:
                     detail = response.json().get("detail")
                 except (ValueError, AttributeError):
                     detail = None
-                if detail == "permit_required":
+                error = detail.get("error") if isinstance(detail, dict) else detail
+                if response.status_code == 403 and error == "permit_required":
                     guidance = "Supply permit_id and idempotency_key as MCP tool arguments."
                     return CallToolResult(
                         content=[TextContent(type="text", text=f"permit_required: {guidance}")],
                         isError=True,
                         structuredContent={"error": "permit_required", "guidance": guidance},
                     )
+                if response.status_code == 400 and error == "idempotency_key_required":
+                    guidance = "Supply idempotency_key with permit_id as MCP tool arguments."
+                    return CallToolResult(
+                        content=[TextContent(type="text", text=f"{error}: {guidance}")],
+                        isError=True,
+                        structuredContent={"error": error, "guidance": guidance},
+                    )
+                if response.status_code == 202 and error == "human_approval_pending":
+                    approval = detail.get("approval", {})
+                    guidance = "Retry with the same permit_id and idempotency_key after approval."
+                    return CallToolResult(
+                        content=[
+                            TextContent(
+                                type="text",
+                                text=f"{error}: {json.dumps(approval)}. {guidance}",
+                            )
+                        ],
+                        isError=True,
+                        structuredContent={
+                            "error": error,
+                            "approval": approval,
+                            "guidance": guidance,
+                        },
+                    )
             response.raise_for_status()
-            return CallToolResult.model_validate(response.json())
+            result = response.json()
+            return result if legacy_result_format else CallToolResult.model_validate(result)
 
     for tool in tools:
         name = tool.get("name", "unknown")
@@ -178,7 +206,7 @@ async def serve_async(
                 permit_id: str | None = None,
                 idempotency_key: str | None = None,
                 **kwargs: dict[str, Any],
-            ) -> CallToolResult:
+            ) -> Any:
                 return await call_tool(
                     service_id=svc_id,
                     input_data=kwargs.pop("kwargs", kwargs),
@@ -216,9 +244,17 @@ def serve(
     transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
+    legacy_result_format: bool = False,
 ) -> None:
     """Sync wrapper for serve_async."""
-    asyncio.run(serve_async(transport=transport, port=port, api_url=api_url))
+    asyncio.run(
+        serve_async(
+            transport=transport,
+            port=port,
+            api_url=api_url,
+            legacy_result_format=legacy_result_format,
+        )
+    )
 
 
 def main() -> None:
@@ -248,6 +284,11 @@ def main() -> None:
     )
     serve_parser.add_argument("--port", type=int, default=8001, help="Port for SSE")
     serve_parser.add_argument("--api-url", default=DEFAULT_API_URL, help="B2A API URL")
+    serve_parser.add_argument(
+        "--legacy-result-format",
+        action="store_true",
+        help="Wrap successful tool results as JSON text for older MCP clients",
+    )
 
     args = parser.parse_args()
 
@@ -273,7 +314,12 @@ def main() -> None:
         list_tools(api_url=args.api_url, category=args.category)
 
     elif args.command == "serve":
-        serve(transport=args.transport, port=args.port, api_url=args.api_url)
+        serve(
+            transport=args.transport,
+            port=args.port,
+            api_url=args.api_url,
+            legacy_result_format=args.legacy_result_format,
+        )
 
     else:
         parser.print_help()

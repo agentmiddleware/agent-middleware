@@ -1,11 +1,19 @@
 """Public identity metadata must never invent an escalation path."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import pytest
 
 from app.main import _public_contact_metadata, app
 from app.routers.well_known import _provider_manifest
+
+
+GATEWAY_ROOT = Path(__file__).resolve().parents[1]
+MONOREPO_ROOT = GATEWAY_ROOT.parent
+LICENSE_BLOB_PREFIX = "/agentmiddleware/agent-middleware/blob/main/"
 
 
 def _contact(**overrides):
@@ -21,6 +29,26 @@ def _contact(**overrides):
 def test_openapi_omits_contact_until_real_identity_is_configured() -> None:
     assert _public_contact_metadata(_contact()) is None
     assert "contact" not in app.openapi()["info"]
+
+
+def test_openapi_license_names_the_gateway_fsl_license_file() -> None:
+    # LICENSING.md puts gateway/ under FSL-1.1-ALv2 (gateway/LICENSE.md). The
+    # root LICENSE is Apache-2.0 and covers the other directories, so the
+    # advertised name and link must both point at the gateway's own file.
+    license_info = app.openapi()["info"]["license"]
+    assert "FSL-1.1-ALv2" in license_info["name"]
+    url = urlparse(license_info["url"])
+    assert (url.scheme, url.netloc) == ("https", "github.com")
+    assert url.path.startswith(LICENSE_BLOB_PREFIX)
+    relative = url.path.removeprefix(LICENSE_BLOB_PREFIX)
+    assert relative == "gateway/LICENSE.md"
+    license_file = MONOREPO_ROOT / relative
+    assert license_file.is_file()
+    assert "FSL-1.1-ALv2" in license_file.read_text(encoding="utf-8")
+    committed = json.loads(
+        (GATEWAY_ROOT / "docs" / "openapi.json").read_text(encoding="utf-8")
+    )
+    assert committed["info"]["license"] == license_info
 
 
 def test_openapi_contact_accepts_complete_non_placeholder_identity() -> None:

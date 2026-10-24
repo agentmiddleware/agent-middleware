@@ -250,6 +250,37 @@ async def test_unusable_budget_or_ttl_does_not_pin_a_permit_key():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_budget",
+    [Decimal("0.123456789"), Decimal(1000000000000), "0.000000001"],
+)
+async def test_unstorable_budget_does_not_pin_a_permit_key(invalid_budget):
+    bodies: list[dict] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/permits":
+            bodies.append(json.loads(request.content))
+            return httpx.Response(201, json=_permit_payload())
+        if request.url.path == "/mcp/messages":
+            return httpx.Response(200, json=_mcp_ok("invoke"))
+        return httpx.Response(404, json={"detail": "missing"})
+
+    bound = _BoundTool(handler)
+    try:
+        bound.tool.permit_budget = invalid_budget
+        with pytest.raises(ValueError, match="permit_budget"):
+            await bound.tool.call_mcp_tool(**_valid_call())
+        assert bodies == []
+
+        bound.tool.permit_budget = "25.5"
+        await bound.tool.call_mcp_tool(**_valid_call())
+        assert len(bodies) == 1
+        assert bodies[0]["max_credits"] == "25.5"
+    finally:
+        await bound.close()
+
+
+@pytest.mark.asyncio
 async def test_blank_tool_name_and_non_object_arguments_do_not_mint():
     calls: list[str] = []
 
@@ -274,13 +305,13 @@ async def test_blank_tool_name_and_non_object_arguments_do_not_mint():
 
 @pytest.mark.asyncio
 async def test_arguments_are_fixed_before_the_permit_request():
-    """The dict handed to the tool is what gets invoked, even if it changes later."""
+    """Nested caller data is fixed before the permit request awaits."""
     seen: list[dict] = []
-    arguments = {"query": "first"}
+    arguments = {"filters": {"documents": ["first"]}}
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/permits":
-            arguments["query"] = "changed-during-permit"
+            arguments["filters"]["documents"].append("changed-during-permit")
             return httpx.Response(201, json=_permit_payload())
         if request.url.path == "/mcp/messages":
             seen.append(json.loads(request.content)["params"]["arguments"])
@@ -290,7 +321,7 @@ async def test_arguments_are_fixed_before_the_permit_request():
     bound = _BoundTool(handler)
     try:
         await bound.tool.call_mcp_tool(**_valid_call(arguments=arguments))
-        assert seen == [{"query": "first"}]
+        assert seen == [{"filters": {"documents": ["first"]}}]
     finally:
         await bound.close()
 

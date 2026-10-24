@@ -1,5 +1,6 @@
 """AutoGen function tools for Agent Middleware API."""
 
+import copy
 import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -45,7 +46,7 @@ def _require_tool_name(value: object) -> str:
     return value
 
 
-def _require_permit_budget(value: object) -> None:
+def _require_permit_budget(value: object) -> Decimal:
     """Reject a budget the trust plane will not mint, before the key is pinned."""
     if isinstance(value, bool) or not isinstance(value, (Decimal, int, float, str)):
         raise TypeError("permit_budget must be a positive decimal")
@@ -55,6 +56,11 @@ def _require_permit_budget(value: object) -> None:
         raise ValueError("permit_budget must be a positive decimal") from exc
     if not amount.is_finite() or amount <= 0:
         raise ValueError("permit_budget must be a positive decimal")
+    # The trust plane stores Numeric(20, 8) through a float-backed SQLite
+    # path. Reject values that would change when stored before pinning a key.
+    if amount >= Decimal(1000000000000) or Decimal(f"{float(amount):.8f}") != amount:
+        raise ValueError("permit_budget cannot be stored exactly")
+    return amount
 
 
 def _require_positive_ttl(value: object) -> None:
@@ -132,7 +138,7 @@ class B2AFunctionTool:
             raise ValueError("arguments must be an object")
         # Freeze the mapping before the first await. A caller that reuses the
         # dict must not change the invocation that is already in flight.
-        arguments = dict(arguments)
+        arguments = copy.deepcopy(arguments)
 
         tool_name = _require_tool_name(tool_name)
         invoke_key = _normalize_idempotency_key(idempotency_key, "idempotency_key")
@@ -142,8 +148,7 @@ class B2AFunctionTool:
         # Read wallet, budget, and lifetime once. A later change to those
         # attributes belongs to the next call, not to the permit this call mints.
         wallet_id = self._current_wallet_id()
-        permit_budget = self.permit_budget
-        _require_permit_budget(permit_budget)
+        permit_budget = _require_permit_budget(self.permit_budget)
         permit_ttl_minutes = self.permit_ttl_minutes
         _require_positive_ttl(permit_ttl_minutes)
 

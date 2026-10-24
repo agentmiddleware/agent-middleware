@@ -23,6 +23,17 @@ make test                   # the test suite (excluding proof-surface tests)
 Walkthrough: [`docs/quickstart.md`](docs/quickstart.md) and the shorter
 [`../QUICKSTART.md`](../QUICKSTART.md).
 
+## Agent bootstrap
+
+Autonomous clients discover the gateway without human help. Fetch these in
+order: `GET /.well-known/agent.json`, then `GET /llms.txt`
+(`/llm.txt` serves identical content as a legacy alias). On production-like
+origins, obtain an operator-provisioned key and send it in `X-API-Key` when
+fetching `GET /mcp/tools.json`; local quickstart allows anonymous tool
+discovery. Then fetch `GET /openapi.json`. The manifest names the
+transport, authentication (`X-API-Key` header), and dependency-readiness
+rules; start the full loop at [`docs/quickstart.md`](docs/quickstart.md).
+
 ## Demo keys
 
 `GET /v1/demo/keys` explains the issuance request. When

@@ -6,6 +6,7 @@ import asyncio
 import threading
 
 import httpx
+import pytest
 
 from crewai_b2a import B2AClient, CrewAIB2ATool
 
@@ -55,6 +56,65 @@ def test_sync_run_from_a_worker_thread_calls_the_api():
         if hasattr(tool, "_sync_await"):
             tool._sync_await(client.close())
             tool._stop_sync_runner()
+
+
+@pytest.mark.parametrize("async_first", [False, True])
+def test_sync_and_async_calls_use_one_loop_and_close_borrowed_runner(async_first):
+    loops: list[asyncio.AbstractEventLoop] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        loops.append(asyncio.get_running_loop())
+        return httpx.Response(200, json={"balance": 3})
+
+    tool, client = _tool(handler)
+    if async_first:
+        assert asyncio.run(tool._arun("balance")) == "Balance: 3 credits"
+        assert tool._run("balance") == "Balance: 3 credits"
+    else:
+        assert tool._run("balance") == "Balance: 3 credits"
+        assert asyncio.run(tool._arun("balance")) == "Balance: 3 credits"
+    loop = tool._sync_runner_loop
+    thread = tool._sync_runner_thread
+    assert loops == [loop, loop]
+    assert thread is not None and thread.is_alive()
+    tool.close()
+    assert loop is not None and loop.is_closed()
+    assert not thread.is_alive()
+    assert not client._client.is_closed
+    asyncio.run(client.close())
+
+
+def test_context_manager_closes_owned_client_on_runner_loop(monkeypatch):
+    loops: list[asyncio.AbstractEventLoop] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        loops.append(asyncio.get_running_loop())
+        return httpx.Response(200, json={"balance": 3})
+
+    client = B2AClient(
+        api_key="test-key",
+        base_url="http://127.0.0.1:9",
+        transport=httpx.MockTransport(handler),
+    )
+    original_close = client.close
+
+    async def record_close() -> None:
+        loops.append(asyncio.get_running_loop())
+        await original_close()
+
+    monkeypatch.setattr(client, "close", record_close)
+    monkeypatch.setattr("crewai_b2a.tool.B2AClient", lambda **kwargs: client)
+    with CrewAIB2ATool(api_key="test-key", wallet_id="wallet-1") as tool:
+        assert tool._run("balance") == "Balance: 3 credits"
+        loop = tool._sync_runner_loop
+        thread = tool._sync_runner_thread
+        assert loops == [loop]
+    assert loops == [loop, loop]
+    assert loop is not None and loop.is_closed()
+    assert thread is not None and not thread.is_alive()
+    assert client._client.is_closed
+    assert tool.client is None
+    tool.close()
 
 
 def test_blank_tool_name_and_bad_arguments_do_not_mint_a_permit():

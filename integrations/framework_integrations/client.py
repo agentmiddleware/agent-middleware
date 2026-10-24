@@ -94,7 +94,7 @@ class B2AClient:
         if not isinstance(source, str) or not source.strip():
             source = "framework_integrations"
         severity = props.pop("severity", None)
-        if severity not in _TELEMETRY_SEVERITIES:
+        if not isinstance(severity, str) or severity not in _TELEMETRY_SEVERITIES:
             severity = "info"
         # Keep the caller's name when it is not already a gateway event type.
         if event not in _TELEMETRY_EVENT_TYPES and "event" not in props:

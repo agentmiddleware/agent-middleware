@@ -161,6 +161,29 @@ def test_emit_telemetry_posts_one_gateway_event(monkeypatch):
     assert seen[0].headers["x-api-key"] == "key-tenant-a"
 
 
+@pytest.mark.parametrize("severity", [["high"], {"level": "high"}])
+def test_emit_telemetry_defaults_non_string_severity(monkeypatch, severity):
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            202, json={"ingested": 1, "failed": 0, "batch_id": "b1", "errors": []}
+        )
+
+    client = _client(monkeypatch, handler)
+
+    async def run() -> None:
+        try:
+            await client.emit_telemetry("warning", {"severity": severity})
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert len(seen) == 1
+    assert json.loads(seen[0].content)["severity"] == "info"
+
+
 def test_send_message_matches_the_comms_contract(monkeypatch):
     seen: list[httpx.Request] = []
 

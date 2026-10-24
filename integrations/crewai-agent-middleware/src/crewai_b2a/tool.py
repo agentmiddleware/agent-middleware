@@ -4,7 +4,7 @@ import asyncio
 import threading
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Self
 
 from b2a_sdk.models import PermitRequest
 from crewai.tools import BaseTool
@@ -232,26 +232,32 @@ class CrewAIB2ATool(BaseTool):
         with self._sync_runner_lock:
             loop = self._sync_runner_loop
             thread = self._sync_runner_thread
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(loop.stop)
+            if thread is not None:
+                thread.join(timeout=2)
+                if thread.is_alive():
+                    raise RuntimeError("sync runner loop did not stop")
+            if loop is not None:
+                loop.close()
             self._sync_runner_loop = None
             self._sync_runner_thread = None
-        if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(loop.stop)
-        if thread is not None:
-            thread.join(timeout=2)
-        if loop is not None and not loop.is_running():
-            loop.close()
 
     def close(self) -> None:
         """Close the owned client and sync loop. Safe to call more than once."""
         client = self.client if self._owns_client else None
-        if client is not None and self._sync_runner_loop is not None:
-            try:
+        try:
+            if client is not None and self._sync_runner_loop is not None:
                 self._sync_await(client.close())
-            except Exception:  # noqa: BLE001, S110
-                # Cleanup must not hide the call that already finished.
-                pass
-            self.client = None
-        self._stop_sync_runner()
+                self.client = None
+        finally:
+            self._stop_sync_runner()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        self.close()
 
     async def _execute(self, operation: str, **kwargs: Any) -> str:
         try:
@@ -345,8 +351,8 @@ class CrewAIB2ATool(BaseTool):
         arguments: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> str:
-        """Asynchronous operation (preferred)."""
-        return await self._execute(
+        """Asynchronous operation on the same loop as synchronous calls."""
+        coro = self._execute(
             operation,
             tool_name=tool_name,
             idempotency_key=idempotency_key,
@@ -354,3 +360,9 @@ class CrewAIB2ATool(BaseTool):
             arguments=arguments,
             **kwargs,
         )
+        try:
+            loop = self._ensure_sync_runner()
+        except Exception:
+            coro.close()
+            raise
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, loop))

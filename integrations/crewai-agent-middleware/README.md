@@ -47,6 +47,10 @@ researcher = Agent(
 )
 ```
 
+Call `b2a_tool.close()` when the agent is finished to close its HTTP client
+and private event loop. The tool also supports `with CrewAIB2ATool(...) as tool`
+for scoped use.
+
 ## Operations
 
 ### Discover Tools

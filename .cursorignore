@@ -1,0 +1,73 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.private
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# Local data and dumps
+*.sql
+*.sql.gz
+*.dump
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+dump/
+dumps/
+gateway/data/
+
+# Build and test output
+dist/
+build/
+*.egg-info/
+coverage/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+coverage.json
+*.so
+*.log
+.build_commit_sha
+
+# Dependencies, environments, and caches
+node_modules/
+venv/
+.venv/
+.venv-local/
+.venv*/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.uv-cache/
+uv.lock
+
+# Local editor, OS, and example output
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+examples/retry-safe-refund/.sandbox-*/
+examples/retry-safe-refund/output/
+gateway/scripts/invariant_attacks/evidence_attack*.json
+
+# Retired local deployment files
+docker-compose.prod.yml
+railway.json
+railway.toml
+.railway/

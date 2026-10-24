@@ -21,8 +21,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from app.schemas.awi import AWIRepresentationType
-from app.services.awi_representation import ProgressiveRepresentationEngine
+# Imports follow the sys.path insert above.
+from app.schemas.awi import AWIRepresentationType  # noqa: E402
+from app.services.awi_representation import (  # noqa: E402
+    ProgressiveRepresentationEngine,
+)
 
 
 EXPECTED_TERMS = (

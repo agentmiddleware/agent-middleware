@@ -51,7 +51,7 @@ gate is entirely ours:
 Adopting a second rail does not outsource any of that. It means re-implementing
 and re-testing all of it against a different rail's semantics. For scale: the
 existing single rail carries roughly 900 lines of dedicated negative-path
-tests, and `AGENTS.md` designates billing as security-critical, requiring
+tests, and `app/services/AGENTS.md` designates billing as security-critical, requiring
 invalid-input, unauthorized-access, and negative-path coverage.
 
 So the accurate framing is: **partner for the rail, build the verification.**
@@ -110,10 +110,9 @@ enforces, generalized.
 **Authenticity**
 1. Settlement notifications are cryptographically verifiable against a secret
    or key the operator holds, and verification failure is a hard rejection.
-2. Verification is shared code, not re-implemented per consumer. (The
-   repository currently fails this: the KYC webhook handler and the settlement
-   handler verify the same signing secret with different exception handling and
-   no shared helper.)
+2. Verification is shared code, not re-implemented per consumer. (Met:
+   `app/core/webhook_auth.py`, used by the settlement and KYC
+   handlers, with `tests/test_webhook_auth.py`.)
 
 **Settlement validity — separate from authenticity**
 3. The credited amount is re-derivable from fields the *rail* controls, never
@@ -246,8 +245,8 @@ Against the checklist above, read the two surfaces this way:
 
 **This repository contains no settlement basis for either.** When this note
 was first written, the strings `x402`, `USDC`, `Payman`, and `stablecoin`
-appeared zero times outside it and its companion
-`PRODUCT_STRATEGY.md`. That has since changed for
+appeared zero times outside it and a companion strategy note that is not
+in this repository. That has since changed for
 `x402` and `USDC` — but only in the facilitation sense documented in the
 section above, where the trust plane authorizes and evidences a payment
 demand without executing it. There is still no rail dependency, no custody,
@@ -312,6 +311,8 @@ ever appears:
 
 - Share one webhook signature-verification helper between the settlement and
   KYC handlers so both catch signature-verification failures identically.
+  (Done: `app/core/webhook_auth.py`, used by both handlers and
+  covered by `tests/test_webhook_auth.py`.)
 - Make `_handle_payment_failed` use the safe field accessor the other handlers
   use, rather than raw dictionary access.
 - Replace string-matched prior-refund detection with a structured reference.

@@ -15,6 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from app.routers import mcp as mcp_router
+from app.services.ownership import CallerIdentity
 from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import (
@@ -286,10 +287,10 @@ async def test_remote_quote_consume_loss_preserves_legacy_denial_without_leaks(
                 headers=provisioned["agent_headers"],
             )
             assert denied.status_code == 200
-            assert denied.json()["error"] == {
-                "code": -32003,
-                "message": "quote_already_consumed",
-            }
+            error = denied.json()["error"]
+            assert error["code"] == -32003
+            assert error["message"] == "quote_already_consumed"
+            assert error["data"]["code"] == "quote_already_consumed"
         else:
             body = _rest_call_body(
                 tool_name=tool_name,
@@ -304,7 +305,8 @@ async def test_remote_quote_consume_loss_preserves_legacy_denial_without_leaks(
                 headers=provisioned["agent_headers"],
             )
             assert denied.status_code == 403
-            assert denied.json() == {"detail": "quote_already_consumed"}
+            assert denied.json()["detail"] == "quote_already_consumed"
+            assert denied.json()["code"] == "quote_already_consumed"
         assert executor.calls == []
 
         factory = get_session_factory()
@@ -344,7 +346,9 @@ async def test_remote_quote_consume_loss_preserves_legacy_denial_without_leaks(
         # A later, unrelated reservation must survive repeated sweeps. The
         # quote-loser left no attempt for reconciliation to refund twice or to
         # convert into a new receipt-bearing public response.
-        await get_permit_service().reserve_budget(permit["permit_id"], Decimal("2"))
+        await get_permit_service().reserve_budget(
+            permit["permit_id"], Decimal("2"), caller=CallerIdentity.admin()
+        )
         first = await get_mcp_dispatch_reconciliation_service().reconcile(
             idle_seconds=0,
             terminal_idle_seconds=0,
@@ -1150,10 +1154,10 @@ async def test_losing_dispatch_claim_does_not_compensate_or_send(
         )
 
         assert loser.status_code == 200
-        assert loser.json()["error"] == {
-            "code": -32005,
-            "message": "idempotency_in_progress",
-        }
+        error = loser.json()["error"]
+        assert error["code"] == -32005
+        assert error["message"] == "idempotency_in_progress"
+        assert error["data"]["code"] == "idempotency_in_progress"
         assert winner_claimed is True
         assert executor.dispatch_count == 0
         assert len(executor.calls) == 1
@@ -1271,10 +1275,10 @@ async def test_prepare_commit_uncertain_preserves_owner_state_and_public_contrac
                 headers=provisioned["agent_headers"],
             )
             assert uncertain.status_code == 200
-            assert uncertain.json()["error"] == {
-                "code": -32005,
-                "message": "idempotency_in_progress",
-            }
+            error = uncertain.json()["error"]
+            assert error["code"] == -32005
+            assert error["message"] == "idempotency_in_progress"
+            assert error["data"]["code"] == "idempotency_in_progress"
         else:
             uncertain = await client.post(
                 f"/mcp/tools/{tool_name}/invoke",
@@ -1801,7 +1805,7 @@ async def test_precanonical_alternate_transport_identity_fails_closed(
                 json=retry_body,
                 headers=provisioned["agent_headers"],
             )
-            assert response.status_code == 400
+            assert response.status_code == 409
             assert response.json()["detail"] == "idempotency_key_reused"
 
         assert executor.dispatch_count == 0
@@ -2108,10 +2112,10 @@ async def test_governed_upstream_replay_remains_bound_to_permit_api_key(
 
         assert first.status_code == 200
         assert denied_replay.status_code == 200
-        assert denied_replay.json()["error"] == {
-            "code": -32003,
-            "message": "permit_key_mismatch",
-        }
+        error = denied_replay.json()["error"]
+        assert error["code"] == -32003
+        assert error["message"] == "permit_key_mismatch"
+        assert error["data"]["code"] == "permit_key_mismatch"
         assert "result" not in denied_replay.json()
         assert executor.dispatch_count == 1
         assert len(executor.calls) == 1
@@ -2601,7 +2605,9 @@ async def test_upstream_permit_denials_never_charge_or_dispatch(
             idem_key=f"partner-upstream-denied-{denial}-permit",
         )
         if denial == "revoked":
-            await get_permit_service().revoke_permit(permit["permit_id"])
+            await get_permit_service().revoke_permit(
+                permit["permit_id"], caller=CallerIdentity.admin()
+            )
         elif denial == "expired":
             factory = get_session_factory()
             async with factory() as session:

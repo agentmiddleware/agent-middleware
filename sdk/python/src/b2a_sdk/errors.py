@@ -2,7 +2,31 @@
 
 from __future__ import annotations
 
+import math
+from decimal import Decimal, InvalidOperation
 from typing import Any
+
+
+def _finite_amount(value: Any) -> Decimal | None:
+    """Parse a credit amount without accepting booleans or non-finite values."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text == "unknown":
+            return None
+    elif isinstance(value, (int, float, Decimal)):
+        try:
+            text = str(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    try:
+        amount = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    return amount if amount.is_finite() else None
 
 
 class AgentMiddlewareError(Exception):
@@ -79,17 +103,34 @@ class InsufficientFundsError(APIError):
     def __init__(
         self,
         wallet_id: str,
-        shortfall: float | str | None = None,
+        shortfall: float | str | Decimal | None = None,
         top_up_url: str | None = None,
         *,
         receipt_id: str | None = None,
         payload: dict[str, Any] | None = None,
+        shortfall_exact: str | None = None,
     ) -> None:
         self.wallet_id = wallet_id
-        self.shortfall = None if shortfall is None or shortfall == "unknown" else float(shortfall)
         self.top_up_url = top_up_url
         self.receipt_id = receipt_id
-        message = f"Insufficient funds in wallet {wallet_id}. Shortfall: {self.shortfall} credits."
+        exact = _finite_amount(shortfall_exact) if isinstance(shortfall_exact, str) else None
+        amount = exact if exact is not None else _finite_amount(shortfall)
+        self.shortfall: float | None = None
+        self.shortfall_exact: str | None = None
+        if amount is not None:
+            try:
+                approximate = float(amount)
+            except (OverflowError, ValueError):
+                pass
+            else:
+                if math.isfinite(approximate):
+                    self.shortfall = approximate
+            if exact is not None and isinstance(shortfall_exact, str):
+                self.shortfall_exact = shortfall_exact.strip()
+            elif isinstance(shortfall, str):
+                self.shortfall_exact = shortfall.strip()
+        shown = self.shortfall_exact if self.shortfall_exact is not None else self.shortfall
+        message = f"Insufficient funds in wallet {wallet_id}. Shortfall: {shown} credits."
         if top_up_url:
             message = f"{message} Top up at: {top_up_url}"
         super().__init__(message, status_code=402, payload=payload)

@@ -43,6 +43,7 @@ from ..core.config import get_settings
 from ..core.trust_mode import is_production_like_environment
 from ..services.agent_money import get_agent_money
 from ..services.api_key_service import get_api_key_service
+from ..services.ownership import CallerIdentity
 
 router = APIRouter(
     prefix="/v1/dev-keys",
@@ -145,6 +146,7 @@ async def self_provision_dev_key(
         sponsor_wallet_id=sponsor.wallet_id,
         agent_id=agent_id,
         budget_credits=budget,
+        caller=CallerIdentity.for_wallet(sponsor.wallet_id),
     )
     key = await get_api_key_service().create_key(
         wallet_id=agent.wallet_id,

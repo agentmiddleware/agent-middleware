@@ -24,7 +24,7 @@ from app.core.trust_mode import (
 from app.main import app
 
 
-@pytest.fixture()
+@pytest.fixture
 def self_provision_settings():
     """Enable the endpoint locally; restore every mutated field afterwards."""
     settings = get_settings()
@@ -41,7 +41,7 @@ def self_provision_settings():
             setattr(settings, name, value)
 
 
-@pytest.fixture()
+@pytest.fixture
 async def client():
     """Client carrying the rate-limiter bypass header.
 

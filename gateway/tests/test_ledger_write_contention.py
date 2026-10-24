@@ -36,6 +36,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_session_factory
+from app.services.ownership import CallerIdentity
 from app.db.models import McpDispatchAttemptModel
 from app.main import app
 from app.schemas.billing import ServiceCategory
@@ -121,7 +122,7 @@ class _FlushFault:
         self._error = error or _lock_error()
         self._real = AsyncSession.flush
 
-    def patch(self, monkeypatch: Any) -> "_FlushFault":
+    def patch(self, monkeypatch: Any) -> _FlushFault:
         fault = self
 
         async def flush(session: AsyncSession, *args: Any, **kwargs: Any) -> Any:
@@ -414,6 +415,7 @@ async def test_invalid_units_are_refused_before_any_retry(
             service_category=ServiceCategory.AGENT_COMMS,
             units=Decimal("-1"),
             operation_key="never-used",
+            caller=CallerIdentity.admin(),
         )
     with pytest.raises(ValueError, match="finite"):
         await engine.charge(
@@ -421,6 +423,7 @@ async def test_invalid_units_are_refused_before_any_retry(
             service_category=ServiceCategory.AGENT_COMMS,
             units=Decimal("Infinity"),
             operation_key="never-used",
+            caller=CallerIdentity.admin(),
         )
     monkeypatch.undo()
     # Refused before a transaction was ever opened.

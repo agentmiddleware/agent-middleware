@@ -122,6 +122,20 @@ def test_positional_reserved_key_replays_and_is_not_sent_to_tool():
         asyncio.run(write_note("hi", "caller-key", idempotency_key="other-key"))
 
 
+def test_required_keyword_only_reserved_key_reaches_governed_loop():
+    session = FakeSession()
+
+    @governed_tool(session)
+    async def write_note(text: str, *, idempotency_key: str) -> dict:
+        raise AssertionError("stub body must never run")
+
+    asyncio.run(write_note("hi", idempotency_key="caller-key"))
+    assert session.calls[0]["idempotency_key"] == "caller-key"
+    assert session.calls[0]["arguments"] == {"text": "hi"}
+    with pytest.raises(TypeError, match="idempotency_key"):
+        asyncio.run(write_note("hi"))
+
+
 def test_conftest_moves_checkout_paths_ahead_of_other_paths():
     root = Path(__file__).resolve().parents[3]
     entries = [str(root / "integrations"), str(root / "sdk/python/src")]

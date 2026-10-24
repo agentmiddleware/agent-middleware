@@ -1,8 +1,7 @@
 """Make the checkout's own packages importable without install or env vars.
 
-CI only executes pytest inside directories containing pyproject.toml, so this
-directory (framework_integrations, no pyproject) is not a CI project. This
-conftest at least lets the tests run anywhere with a plain `pytest` by putting
+CI runs these tests in a dedicated job because this directory has no
+pyproject.toml. This conftest also lets the tests run from a checkout by putting
 the checkout's `integrations/` (for `framework_integrations`) and
 `sdk/python/src` (for `b2a_sdk`) first on `sys.path`, ahead of any other
 checkout's SDK that a shared interpreter may resolve.

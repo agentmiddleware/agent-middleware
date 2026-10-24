@@ -132,10 +132,23 @@ def governed_tool(
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             missing = object()
-            supplied = kwargs.pop("idempotency_key", missing)
+            declared = signature.parameters.get("idempotency_key")
+            accepts_keyword = declared is not None and declared.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+            supplied = (
+                kwargs.get("idempotency_key", missing)
+                if accepts_keyword
+                else kwargs.pop("idempotency_key", missing)
+            )
             bound = signature.bind(*args, **kwargs)
             positional = bound.arguments.get("idempotency_key", missing)
-            if supplied is not missing and positional is not missing:
+            if (
+                supplied is not missing
+                and positional is not missing
+                and not accepts_keyword
+            ):
                 raise TypeError("multiple values for idempotency_key")
             if supplied is missing:
                 supplied = positional

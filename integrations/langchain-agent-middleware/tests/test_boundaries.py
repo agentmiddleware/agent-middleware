@@ -236,7 +236,7 @@ async def test_arguments_must_be_an_object_before_any_request():
 async def test_permit_is_bound_to_the_given_wallet_and_tool():
     gateway = _Gateway()
     client = _client(gateway)
-    tool = get_mcp_tools(client, wallet_id="wallet-1", permit_budget=Decimal("40"))[0]
+    tool = get_mcp_tools(client, wallet_id="wallet-1", permit_budget=Decimal(40))[0]
 
     result = await tool.ainvoke(_call())
     body = gateway.permit_bodies[0]
@@ -550,7 +550,7 @@ async def test_zero_budget_and_ttl_are_refused_before_any_request():
     gateway = _Gateway()
     client = _client(gateway)
     with pytest.raises(ValueError, match="permit_budget"):
-        get_mcp_tools(client, wallet_id="wallet-1", permit_budget=Decimal("0"))
+        get_mcp_tools(client, wallet_id="wallet-1", permit_budget=Decimal(0))
     with pytest.raises(ValueError, match="permit_ttl"):
         get_mcp_tools(client, wallet_id="wallet-1", permit_ttl_minutes=0)
 

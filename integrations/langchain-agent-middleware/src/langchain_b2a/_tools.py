@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from math import isnan
 from typing import Any
 
 from b2a_sdk.models import PermitRequest
@@ -21,18 +22,20 @@ def _require_wallet_id(wallet_id: object) -> None:
 
 def _require_permit_budget(permit_budget: object) -> None:
     if isinstance(permit_budget, bool) or not isinstance(permit_budget, (Decimal, int, float)):
-        raise ValueError("permit_budget must be a positive amount")
+        raise ValueError("permit_budget must be a positive amount")  # noqa: TRY004 - caller contract
     if isinstance(permit_budget, Decimal):
         if not permit_budget.is_finite() or permit_budget <= 0:
             raise ValueError("permit_budget must be a positive amount")
         return
-    if permit_budget != permit_budget or permit_budget <= 0:
+    if (isinstance(permit_budget, float) and isnan(permit_budget)) or permit_budget <= 0:
         raise ValueError("permit_budget must be a positive amount")
 
 
 def _require_permit_ttl(permit_ttl_minutes: object) -> None:
     if isinstance(permit_ttl_minutes, bool) or not isinstance(permit_ttl_minutes, (int, float)):
-        raise ValueError("permit_ttl_minutes must be a positive number of minutes")
+        raise ValueError(  # noqa: TRY004 - caller contract
+            "permit_ttl_minutes must be a positive number of minutes"
+        )
     if permit_ttl_minutes <= 0:
         raise ValueError("permit_ttl_minutes must be a positive number of minutes")
 
@@ -49,7 +52,7 @@ def _caller_idempotency_key(value: object, field: str) -> str:
     refuses them, and a newline does not belong in a request header.
     """
     if not isinstance(value, str):
-        raise ValueError(f"{field} is required and must not be blank")
+        raise ValueError(f"{field} is required and must not be blank")  # noqa: TRY004 - caller contract
     key = value.strip()
     if not key:
         raise ValueError(f"{field} is required and must not be blank")

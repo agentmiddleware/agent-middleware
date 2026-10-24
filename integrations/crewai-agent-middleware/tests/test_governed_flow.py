@@ -13,6 +13,7 @@ from b2a_sdk.errors import (
     InsufficientFundsError,
     PermitDeniedError,
 )
+
 from crewai_b2a import B2AClient, CrewAIB2ATool
 
 

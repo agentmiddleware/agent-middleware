@@ -70,8 +70,10 @@ the choice is per-deployment.
 
 The receipt format does not change. `alg` stays `Ed25519` for Vault and GCP
 KMS. For AWS KMS until Ed25519 is native, the `alg` field becomes
-`ECDSA-P256-SHA256` and verification code must accept both algorithms keyed
-by the receipt's `alg` field.
+`ECDSA-P256-SHA256`. Offline verifiers can check that algorithm using the
+published key's `alg`, but receipt v0.1 still classifies a genuine P-256
+receipt as `unsupported`. Enabling that KMS signing path also requires an
+explicit receipt-format policy update.
 
 ### Concrete code changes
 

@@ -161,7 +161,7 @@ class HookDetector:
             ("retention_signal", "Strong opening hook with pattern interrupt"),
         ]
 
-        for i in range(num_hooks):
+        for _ in range(num_hooks):
             start = random.uniform(0, max(0, duration - self._max_hook_duration))
             hook_dur = random.uniform(self._min_hook_duration, self._max_hook_duration)
             trigger = random.choice(trigger_types)

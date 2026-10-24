@@ -107,7 +107,7 @@ class TestWebAuthnProvider:
     @pytest.mark.asyncio
     async def test_create_challenge_fails_for_low_risk_action(self, provider):
         """Test that challenge creation fails for low-risk actions."""
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="does not require passkey") as exc_info:
             await provider.create_challenge(
                 session_id="session1",
                 action="navigate_to",
@@ -118,7 +118,7 @@ class TestWebAuthnProvider:
     @pytest.mark.asyncio
     async def test_verify_response_invalid_challenge(self, provider):
         """Test verification with invalid challenge ID."""
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="Challenge not found") as exc_info:
             await provider.verify_response(
                 challenge_id="invalid-id",
                 credential={},
@@ -136,7 +136,7 @@ class TestWebAuthnProvider:
             action="checkout",
         )
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="(?i)expired") as exc_info:
             await provider.verify_response(
                 challenge_id=challenge["challenge_id"],
                 credential={},
@@ -274,21 +274,32 @@ class TestWebAuthnProvider:
         assert "payment" in actions
 
     def test_cleanup_expired(self, provider):
-        """Test cleanup of expired challenges."""
-        provider._challenge_expiry = 1
+        """Test cleanup of expired challenges.
+
+        The old version asserted only that the result dict had keys, so a
+        cleanup that removed nothing passed. This one expires the challenge
+        first, then asserts the exact removal counts and that the challenge
+        is actually gone (a later verify must fail as not-found).
+        """
+        provider._challenge_expiry = -1  # already expired at creation
 
         import asyncio
 
-        asyncio.run(provider.create_challenge("session1", "checkout"))
-
-        import time
-
-        time.sleep(0.1)
+        challenge = asyncio.run(provider.create_challenge("session1", "checkout"))
 
         result = provider.cleanup_expired()
 
-        assert "challenges_removed" in result
-        assert "verifications_removed" in result
+        assert result == {"challenges_removed": 1, "verifications_removed": 0}
+        assert challenge["challenge_id"] not in provider._challenges
+
+        async def _verify_gone() -> None:
+            await provider.verify_response(
+                challenge_id=challenge["challenge_id"],
+                credential={},
+            )
+
+        with pytest.raises(ValueError, match="Challenge not found"):
+            asyncio.run(_verify_gone())
 
 
 @pytest.mark.proof
@@ -476,7 +487,7 @@ class TestAWIPlaywrightBridge:
 
     def test_semantic_pattern_has_tags(self, bridge):
         """Test that semantic patterns have tags."""
-        for semantic_type, pattern in bridge.SEMANTIC_PATTERNS.items():
+        for pattern in bridge.SEMANTIC_PATTERNS.values():
             assert "tags" in pattern
             assert len(pattern["tags"]) > 0
 
@@ -561,7 +572,9 @@ class TestAWIPlaywrightBridge:
         """Test translating add_to_cart action."""
         session = await bridge.create_session("https://example.com")
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(
+            ValueError, match="No add-to-cart element found"
+        ) as exc_info:
             await bridge.translate_action(
                 session_id=session.session_id,
                 action="add_to_cart",
@@ -644,7 +657,7 @@ class TestAWIPlaywrightBridge:
         """Test translating unsupported action."""
         session = await bridge.create_session("https://example.com")
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="Unsupported AWI action") as exc_info:
             await bridge.translate_action(
                 session_id=session.session_id,
                 action="unsupported_action",
@@ -658,7 +671,9 @@ class TestAWIPlaywrightBridge:
     @pytest.mark.asyncio
     async def test_translate_invalid_session(self, bridge):
         """Test translating action with invalid session."""
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(
+            ValueError, match="Session invalid-session not found"
+        ) as exc_info:
             await bridge.translate_action(
                 session_id="invalid-session",
                 action="search_and_sort",
@@ -769,7 +784,7 @@ class TestDOMBridgeViewportBounds:
 
         monkeypatch.setattr(url_guard, "_resolve_host", resolve)
 
-    @pytest.mark.parametrize("width,height", OUT_OF_RANGE)
+    @pytest.mark.parametrize(("width", "height"), OUT_OF_RANGE)
     def test_schema_rejects_out_of_range_viewport(self, width, height):
         with pytest.raises(ValidationError):
             DOMBridgeSessionRequest(
@@ -778,7 +793,9 @@ class TestDOMBridgeViewportBounds:
                 viewport_height=height,
             )
 
-    @pytest.mark.parametrize("width,height", [(1280, 720), (320, 240), (3840, 2160)])
+    @pytest.mark.parametrize(
+        ("width", "height"), [(1280, 720), (320, 240), (3840, 2160)]
+    )
     def test_schema_accepts_supported_viewports(self, width, height):
         request = DOMBridgeSessionRequest(
             target_url="https://example.com",
@@ -865,8 +882,8 @@ class TestAWIRAGEngine:
 
         chromadb_module = ModuleType("chromadb")
         chromadb_config_module = ModuleType("chromadb.config")
-        setattr(chromadb_module, "PersistentClient", fake_persistent_client)
-        setattr(chromadb_config_module, "Settings", lambda **_kwargs: object())
+        chromadb_module.PersistentClient = fake_persistent_client
+        chromadb_config_module.Settings = lambda **_kwargs: object()
         monkeypatch.setitem(sys.modules, "chromadb", chromadb_module)
         monkeypatch.setitem(sys.modules, "chromadb.config", chromadb_config_module)
 

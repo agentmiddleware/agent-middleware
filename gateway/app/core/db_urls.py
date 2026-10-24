@@ -7,7 +7,12 @@ Railway and many hosts provide ``postgresql://...``. SQLAlchemy async needs
 
 from __future__ import annotations
 
+import re
 from urllib.parse import parse_qsl
+
+# ``sqlite://`` or any SQLAlchemy driver spelling (``sqlite+aiosqlite://``,
+# ``sqlite+pysqlite://``, ...). Matched case-insensitively on the scheme only.
+_SQLITE_SCHEME = re.compile(r"sqlite(\+[a-z0-9_]+)?://", re.IGNORECASE)
 
 
 def _split_scheme(url: str) -> tuple[str, str]:
@@ -63,24 +68,38 @@ def is_sqlite_url(url: str) -> bool:
 def sqlite_path_from_url(url: str) -> str:
     """Return the **durable** SQLite file path in ``url``, or "" otherwise.
 
-    Accepts the SQLAlchemy spellings (``sqlite://`` and ``sqlite+aiosqlite://``)
-    and returns what ``aiosqlite.connect`` expects.
+    Accepts ``sqlite://`` and every SQLAlchemy driver spelling
+    (``sqlite+aiosqlite://``, ``sqlite+pysqlite://``, ...) and returns what
+    ``aiosqlite.connect`` expects.
 
     In-memory URLs return "" on purpose. They are valid SQLite, but a state
     store pointed at one keeps nothing across a restart, so treating one as
     durable would reintroduce exactly the silent non-durability this function
-    exists to prevent. Callers get "" and fall through to their next option.
+    exists to prevent. Callers get "" and fall through to their next option;
+    a caller that must tell "in memory" from "not parseable" uses
+    ``is_in_memory_sqlite_url``.
     """
+    path = _sqlite_url_path(url)
+    if path is None or _is_in_memory_sqlite(path):
+        return ""
+    return path
+
+
+def is_in_memory_sqlite_url(url: str) -> bool:
+    """True only for a parseable SQLite URL whose database never touches disk."""
+    path = _sqlite_url_path(url)
+    return path is not None and _is_in_memory_sqlite(path)
+
+
+def _sqlite_url_path(url: str) -> str | None:
+    """Return the database part of a SQLite URL, or None if ``url`` is not one."""
     trimmed = (url or "").strip()
-    for prefix in ("sqlite+aiosqlite://", "sqlite://"):
-        if trimmed.lower().startswith(prefix):
-            remainder = trimmed[len(prefix) :]
-            # sqlite:///relative.db -> relative.db; sqlite:////abs.db -> /abs.db
-            path = remainder[1:] if remainder.startswith("/") else remainder
-            if _is_in_memory_sqlite(path):
-                return ""
-            return path
-    return ""
+    match = _SQLITE_SCHEME.match(trimmed)
+    if match is None:
+        return None
+    remainder = trimmed[match.end() :]
+    # sqlite:///relative.db -> relative.db; sqlite:////abs.db -> /abs.db
+    return remainder[1:] if remainder.startswith("/") else remainder
 
 
 def _is_in_memory_sqlite(path: str) -> bool:

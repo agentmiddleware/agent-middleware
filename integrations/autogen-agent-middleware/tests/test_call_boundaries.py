@@ -304,6 +304,34 @@ async def test_blank_tool_name_and_non_object_arguments_do_not_mint():
 
 
 @pytest.mark.asyncio
+async def test_unserializable_arguments_do_not_pin_a_permit_key():
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/v1/permits":
+            return httpx.Response(201, json=_permit_payload())
+        if request.url.path == "/mcp/messages":
+            return httpx.Response(200, json=_mcp_ok("invoke"))
+        return httpx.Response(404, json={"detail": "missing"})
+
+    circular: dict[str, object] = {}
+    circular["self"] = circular
+    bound = _BoundTool(handler)
+    try:
+        for arguments in ({"value": object()}, circular, {"value": float("nan")}):
+            with pytest.raises(ValueError, match="arguments must be JSON-serializable"):
+                await bound.tool.call_mcp_tool(**_valid_call(arguments=arguments))
+            assert calls == []
+            assert bound.tool._permit_requests == {}
+
+        await bound.tool.call_mcp_tool(**_valid_call())
+        assert calls == ["/v1/permits", "/mcp/messages"]
+    finally:
+        await bound.close()
+
+
+@pytest.mark.asyncio
 async def test_arguments_are_fixed_before_the_permit_request():
     """Nested caller data is fixed before the permit request awaits."""
     seen: list[dict] = []

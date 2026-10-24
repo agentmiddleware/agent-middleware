@@ -1,6 +1,7 @@
 """AutoGen function tools for Agent Middleware API."""
 
 import copy
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -139,6 +140,10 @@ class B2AFunctionTool:
         # Freeze the mapping before the first await. A caller that reuses the
         # dict must not change the invocation that is already in flight.
         arguments = copy.deepcopy(arguments)
+        try:
+            json.dumps(arguments, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("arguments must be JSON-serializable") from exc
 
         tool_name = _require_tool_name(tool_name)
         invoke_key = _normalize_idempotency_key(idempotency_key, "idempotency_key")

@@ -25,7 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .core.auth import AuthContext, get_auth_context
+from .core.auth import AuthContext, debug_open_auth_armed, get_auth_context
 from .core.build_metadata import get_build_commit_sha, get_build_provenance
 from .core.config import get_settings
 from .core.durable_state import (
@@ -196,6 +196,17 @@ async def lifespan(app: FastAPI):
     # configuration already fails the boot (validated_public_contact raises at
     # import); complete absence is legal for local instances, so production
     # only gets this loud nudge.
+    # DEBUG open mode (DEBUG=true with no keys configured) authenticates
+    # unknown local callers as bootstrap admin. It is now loopback-bound,
+    # but a shared demo should still boot with real keys instead, so say so
+    # loudly whenever this boot leaves it reachable.
+    if debug_open_auth_armed(settings):
+        logger.warning(
+            "debug_open_auth_armed: DEBUG=true with no VALID_API_KEYS or "
+            "STATIC_DEV_API_KEYS, so unknown callers from this machine "
+            "authenticate as bootstrap admin (remote peers are refused). "
+            "Set VALID_API_KEYS before any shared or buyer-visible demo."
+        )
     if public_contact is None and is_production_like_environment(settings.ENVIRONMENT):
         logger.warning(
             "public_contact_not_configured: /.well-known/agent.json is "

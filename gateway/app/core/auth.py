@@ -7,9 +7,10 @@ Agents pass credentials via:
 """
 
 import hmac
+import ipaddress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
@@ -171,6 +172,11 @@ async def get_auth_context(
     api_key: str | None = Security(api_key_header),
     authorization: Annotated[str | None, Header()] = None,
     _bearer: HTTPAuthorizationCredentials | None = Security(bearer_header),
+    # Bare `Request` (not Optional): FastAPI only injects the request for a
+    # plain Request annotation and rejects `Request | None` at route
+    # registration. The None default keeps direct non-HTTP callers working;
+    # on the HTTP path FastAPI always supplies the real request.
+    request: Request = None,  # type: ignore[assignment]
 ) -> AuthContext:
     """
     Validate credentials and return caller context.
@@ -183,19 +189,72 @@ async def get_auth_context(
     the Postgres CI job rebind VALID_API_KEYS and clear the settings cache after
     this module is already imported, and a captured `settings` would keep
     serving the stale key list.
+
+    ``request`` is injected by FastAPI on the HTTP path and bounds DEBUG
+    open mode to loopback callers; direct (non-HTTP) callers pass none and
+    keep the previous local behavior.
     """
     # HTTPBearer declares the OpenAPI alternative; raw Authorization stays
     # authoritative so malformed headers cannot fall back to an API key.
-    context = await _resolve_auth_context(api_key, authorization)
+    context = await _resolve_auth_context(api_key, authorization, request)
     acceptance = CREDENTIAL_ACCEPTANCE.get()
     if acceptance is not None:
         acceptance.accepted = True
     return context
 
 
+def _is_loopback_client(host: str | None) -> bool:
+    """Whether an HTTP peer address is loopback (or unknown).
+
+    Unknown (``None``) and non-IP test hosts (Starlette's ``testclient``)
+    are treated as loopback: direct in-process callers pass no request at
+    all, and the test client never represents a remote network peer. An
+    unparseable non-empty host fails closed to non-loopback.
+    """
+    if not host:
+        return True
+    lowered = host.strip().casefold()
+    if lowered in {"localhost"} or lowered.endswith(".localhost"):
+        return True
+    if lowered == "testclient":
+        return True
+    try:
+        address = ipaddress.ip_address(lowered)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
+
+
+def _require_debug_open_loopback(request: Request | None) -> None:
+    """Refuse DEBUG open-mode bootstrap auth to non-loopback HTTP peers.
+
+    DEBUG open mode (DEBUG=true with no keys configured) exists so a local
+    checkout boots to a usable shell with zero setup. Without this check any
+    host that can reach the port inherits bootstrap admin, which turns a
+    buyer-visible demo on a shared network into an open admin shell. The
+    check runs only on this last-resort path: every configured credential
+    still authenticates from anywhere, and production-like environments
+    already refuse DEBUG at boot.
+    """
+    peer = request.client.host if request is not None and request.client else None
+    if _is_loopback_client(peer):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "invalid_api_key",
+            "message": "The provided API key is not authorized.",
+        },
+        headers=dict(_CREDENTIAL_REJECTED),
+    )
+
+
 async def _resolve_auth_context(
     api_key: str | None,
     authorization: str | None,
+    request: Request | None = None,
 ) -> AuthContext:
     """Authenticate the caller; ``get_auth_context`` records the acceptance."""
     settings = get_settings()
@@ -221,7 +280,7 @@ async def _resolve_auth_context(
         # API key is not an API credential: it falls through to
         # _auth_from_jwt and fails with 401 exactly as before.
         if api_key and is_iga_issuer_token(token):
-            context = await _resolve_auth_context(api_key, None)
+            context = await _resolve_auth_context(api_key, None, request)
             return replace(context, enterprise_bearer_token=token)
         return await _auth_from_jwt(token)
 
@@ -356,6 +415,12 @@ async def _resolve_auth_context(
             headers=dict(_CREDENTIAL_REJECTED),
         )
 
+    # Last resort: DEBUG open mode (DEBUG=true, no keys configured) on a
+    # local-compatible environment. Bound to loopback HTTP peers so a demo
+    # bound to a shared interface does not hand bootstrap admin to the
+    # network. Direct in-process callers (no request) keep local behavior.
+    _require_debug_open_loopback(request)
+
     return AuthContext(
         source="env",
         raw_key=stripped,
@@ -380,6 +445,22 @@ async def reject_anonymous_production_catalog(request: Request) -> None:
         api_key=request.headers.get(settings.API_KEY_HEADER.lower())
         or request.headers.get("x-api-key"),
         authorization=request.headers.get("authorization"),
+    )
+
+
+def debug_open_auth_armed(settings: Any) -> bool:
+    """Whether this boot leaves DEBUG open mode reachable.
+
+    True when an unknown key would authenticate as bootstrap admin: DEBUG on,
+    no VALID_API_KEYS, no STATIC_DEV_API_KEYS, and a local-compatible
+    ENVIRONMENT (production-like boots refuse DEBUG before this matters).
+    Startup logs it loudly so a shared demo never runs open by accident.
+    """
+    return bool(
+        settings.DEBUG
+        and not settings.VALID_API_KEYS.strip()
+        and not settings.STATIC_DEV_API_KEYS.strip()
+        and not is_production_like_environment(settings.ENVIRONMENT)
     )
 
 

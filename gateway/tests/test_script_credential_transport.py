@@ -196,7 +196,9 @@ def test_constant_test_loop_keeps_keys_off_ambient_proxy(
         tools = [hit for hit in origin.hits if hit["path"].startswith("/mcp/tools")]
         assert tools[0]["key"] == "amw_dev_originissued"
         wallets = [
-            hit for hit in origin.hits if hit["path"].split("?", 1)[0] == "/v1/billing/wallets"
+            hit
+            for hit in origin.hits
+            if hit["path"].split("?", 1)[0] == "/v1/billing/wallets"
         ]
         assert wallets[0]["key"] == "amw_dev_suppliedkey"
 
@@ -272,7 +274,9 @@ async def test_stress_req_disables_proxy_and_redirects(
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-        async def request(self, method: str, path: str, headers: dict | None = None, **kwargs: object):
+        async def request(
+            self, method: str, path: str, headers: dict | None = None, **kwargs: object
+        ):
             seen["method"] = method
             seen["path"] = path
             seen["key"] = (headers or {}).get("X-API-Key")

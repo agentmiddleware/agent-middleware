@@ -217,7 +217,9 @@ def test_refuses_non_loopback_before_any_request(
 ) -> None:
     class Boom:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
-            raise AssertionError("HTTP client constructed before the target was checked")
+            raise AssertionError(
+                "HTTP client constructed before the target was checked"
+            )
 
     monkeypatch.setattr(proof.httpx, "AsyncClient", Boom)
     monkeypatch.setattr(

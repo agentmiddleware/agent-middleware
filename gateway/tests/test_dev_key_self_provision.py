@@ -206,6 +206,20 @@ async def test_public_url_rejects_rebound_host(
     assert "api_key" not in resp.text
 
 
+async def test_empty_public_url_rejects_rebound_host(
+    client, self_provision_settings, clean_database
+):
+    assert not self_provision_settings.PUBLIC_URL
+    resp = await client.post(
+        "/v1/dev-keys/self-provision",
+        json={},
+        headers={"Host": "rebind.evil", "Origin": "http://rebind.evil"},
+    )
+    assert resp.status_code == 421
+    assert resp.json()["detail"]["error"] == "host_not_allowed"
+    assert "api_key" not in resp.text
+
+
 async def test_public_url_rejects_remote_page_hitting_another_host(
     client, self_provision_settings, clean_database
 ):
@@ -265,12 +279,11 @@ async def test_public_url_accepts_exact_origin_and_rejects_http(
 async def test_same_origin_browser_request_allowed(
     client, self_provision_settings, clean_database
 ):
-    # Origin http://test against this client (http://test) is the same
-    # scheme, host, and port, so the call is allowed.
+    # A loopback Host and matching Origin are allowed without PUBLIC_URL.
     resp = await client.post(
         "/v1/dev-keys/self-provision",
         json={},
-        headers={"Origin": "http://test"},
+        headers={"Host": "localhost", "Origin": "http://localhost"},
     )
     assert resp.status_code == 201, resp.text
 

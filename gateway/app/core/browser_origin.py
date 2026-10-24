@@ -19,8 +19,8 @@ def validate_browser_origin(request: Request) -> None:
 
     Clients that send no Origin (CLIs, SDKs, curl) pass through. When
     PUBLIC_URL is set, the request Host must match it and a present Origin
-    must match it exactly. When it is unset, the request's own scheme, host,
-    and port are the only allowed origin.
+    must match it exactly. Without PUBLIC_URL, browser requests must target
+    a loopback Host and send its matching Origin.
     """
     public_url = get_settings().PUBLIC_URL.rstrip("/")
     request_origin = f"{request.url.scheme}://{request.url.netloc}"
@@ -33,7 +33,9 @@ def validate_browser_origin(request: Request) -> None:
     # A reverse proxy may expose its internal HTTP scheme through the ASGI
     # request even though the canonical browser origin is HTTPS. Once an
     # operator configures PUBLIC_URL, it is the only origin authority.
-    # Request-derived origin is a local fallback only.
+    # Request-derived origin only rejects mismatches until Host is checked.
     allowed = {public_url} if public_url else {request_origin}
     if origin.rstrip("/") not in allowed:
         raise HTTPException(status_code=403, detail={"error": "origin_not_allowed"})
+    if not public_url and request.url.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise HTTPException(status_code=421, detail={"error": "host_not_allowed"})

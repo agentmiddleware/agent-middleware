@@ -22,7 +22,8 @@ Local-only by three independent layers, mirroring STATIC_DEV_API_KEYS:
   visits could otherwise ``fetch`` this route against ``localhost`` and read
   the minted key. Real dev agents (CLIs, SDKs, curl) send no ``Origin`` and
   pass through. When ``PUBLIC_URL`` is set, the request Host must match it
-  too. This is the same check the standard MCP endpoint uses.
+  too. Otherwise browser requests require a loopback Host. This is the same
+  check the standard MCP endpoint uses.
 
 The minted key is wallet-scoped, never bootstrap-admin: a credential anyone
 can mint must not read the audit plane or touch other tenants' wallets. The
@@ -106,7 +107,8 @@ def _reject_cross_origin(request: Request) -> None:
 
     Scheme, host, and port all count. When PUBLIC_URL is set, the request
     Host must be that host and a present Origin must match it exactly.
-    Clients that send no Origin pass through. Same rule as
+    Without PUBLIC_URL, browser requests require a loopback Host. Clients
+    that send no Origin pass through. Same rule as
     ``app.core.browser_origin.validate_browser_origin``.
     """
     validate_browser_origin(request)

@@ -239,6 +239,23 @@ async def test_standard_mcp_rejects_same_host_different_origin(
 
 
 @pytest.mark.anyio
+async def test_standard_mcp_rejects_rebound_host_without_public_url(
+    client, standard_mcp_enabled
+):
+    assert not get_settings().PUBLIC_URL
+    resp = await client.post(
+        "/mcp",
+        json=_rpc("ping"),
+        headers={
+            **BOOTSTRAP_MCP_HEADERS,
+            "Host": "rebind.evil",
+            "Origin": "http://rebind.evil",
+        },
+    )
+    assert resp.status_code == 421
+
+
+@pytest.mark.anyio
 async def test_standard_mcp_uses_public_url_not_proxy_observed_scheme(
     client, standard_mcp_enabled, monkeypatch
 ):

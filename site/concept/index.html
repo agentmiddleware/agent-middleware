@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Landing concept | agentmiddleware.dev</title>
+    <meta
+      name="description"
+      content="Design concept: WebGL particle-wave landing treatment for agentmiddleware.dev. Not the production funnel."
+    />
+    <!-- Unlisted design study: reachable by URL, never by crawlers. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    @@FONT_PRELOADS@@
+    <link rel="stylesheet" href="/fonts.css?v=@@FONTS_CSS_VERSION@@" />
+    <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
+    <link rel="stylesheet" href="/concept/concept.css?v=@@CONCEPT_CSS_VERSION@@" />
+    <!-- Blocking on purpose: saved accessibility preferences must apply before
+         first paint. Same contract as every other page. -->
+    <script src="/a11y-preload.js?v=gateway-19"></script>
+    <script defer src="/wave.js?v=gateway-19"></script>
+    @@VERCEL_ANALYTICS_SCRIPTS@@
+    <script defer src="/analytics.js?v=gateway-19"></script>
+    <script defer src="/utm-capture.js?v=utm-1"></script>
+    <script defer src="/a11y.js?v=gateway-19"></script>
+  </head>
+  <body class="site-light">
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    @@SITE_NAV@@
+
+    <main id="main" class="hero concept-hero">
+      <!-- Static glow horizon: visible when WebGL is unavailable, painted over
+           by the canvas when it is. -->
+      <div class="wave-fallback" aria-hidden="true"></div>
+      <canvas id="wave-canvas" class="wave-canvas" aria-hidden="true"></canvas>
+      <div class="hero-copy">
+        <p class="eyebrow">
+          <span class="eyebrow-mark" aria-hidden="true"></span>
+          Archived design study
+        </p>
+        <h1>Unlock your future&nbsp;growth</h1>
+        <p class="hero-body concept-sub">
+          Through perpetual investment strategies that outperform the market
+        </p>
+        <div class="cta-row">
+          <a
+            class="button button-primary"
+            href="mailto:@@PUBLIC_CONTACT_EMAIL@@"
+            aria-label="Contact us by email (opens your mail app)"
+            data-analytics-event="email_click"
+            >Contact us</a
+          >
+        </div>
+        <p id="wave-stats" class="constraint-line" aria-hidden="true"></p>
+      </div>
+    </main>
+
+    @@SITE_FOOTER@@
+  </body>
+</html>

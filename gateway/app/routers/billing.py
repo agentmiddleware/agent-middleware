@@ -1101,7 +1101,7 @@ async def transfer_wallets(
     # The idempotency row's wallet_id references wallets. Beginning one for an
     # unknown source fails the foreign key and answers 500, where the unkeyed
     # path answers 404.
-    if await money.get_wallet(from_wallet_id) is None:
+    if idempotency_key is not None and await money.get_wallet(from_wallet_id) is None:
         raise HTTPException(
             status_code=404,
             detail=str(WalletNotFoundError(from_wallet_id)),

@@ -320,7 +320,8 @@ class PermitRequestService:
         """Continue a row whose terms already match this ask."""
         if self._is_unpaged(stored):
             if self._unpaged_is_fresh(stored):
-                return stored
+                # The paging worker may still fail and delete this claim.
+                raise HumanApprovalUnavailableError()
             return await self._page_saved_claim(stored)
         return await self.advance(stored)
 

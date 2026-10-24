@@ -16,6 +16,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.services.audit_log import list_audit_events
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
 EVM_PAY_TO = "0x1111111111111111111111111111111111111111"
@@ -339,6 +340,25 @@ async def test_keyed_transfer_from_unknown_wallet_is_not_a_server_error(
         headers={**api_headers, "Idempotency-Key": "xfer-missing-source"},
     )
     assert again.status_code == 404, again.text
+
+
+@pytest.mark.anyio
+async def test_unkeyed_transfer_from_unknown_wallet_records_governance_denial(
+    client, api_headers, clean_database
+):
+    source = "wal-missing-source"
+    request_id = "xfer-missing-source-unkeyed"
+    resp = await client.post(
+        f"/v1/billing/transfer?from_wallet_id={source}"
+        f"&to_wallet_id=wal-missing-dest&amount=1&correlation_id={request_id}",
+        headers=api_headers,
+    )
+    assert resp.status_code == 404, resp.text
+    events = await list_audit_events(wallet_id=source, request_id=request_id)
+    assert len(events) == 1
+    assert events[0].event == "billing.transfer"
+    assert events[0].ok is False
+    assert events[0].error == "wallet_not_found"
 
 
 @pytest.mark.anyio

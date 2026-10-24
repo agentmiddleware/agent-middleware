@@ -452,11 +452,44 @@ async def test_concurrent_same_terms_page_the_human_once(
         _request(client, agent, idem="preq-race-same"),
         timeout=5,
     )
+    assert second.status_code == 503, second.text
+    assert second.json()["detail"] == "human_approval_unavailable"
+    assert "request_id" not in second.json()
     gate.release.set()
     first = await asyncio.wait_for(first_task, timeout=5)
     assert first.status_code == 202, first.text
-    assert second.status_code == 202, second.text
-    assert first.json()["request_id"] == second.json()["request_id"]
+    retry = await _request(client, agent, idem="preq-race-same")
+    assert retry.status_code == 202, retry.text
+    assert retry.json()["request_id"] == first.json()["request_id"]
+    assert len(gate.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_terms_does_not_expose_failed_page_request_id(
+    client, clean_database, monkeypatch, fresh_service
+):
+    _sentinel_env(monkeypatch, simulated=False)
+    gate = _GateFirstSentinel()
+    monkeypatch.setattr(fresh_service, "_sentinel", lambda: gate)
+    agent = await provision_agent_wallet(client)
+
+    first_task = asyncio.create_task(_request(client, agent, idem="preq-race-fail"))
+    await asyncio.wait_for(gate.entered.wait(), timeout=5)
+    second = await asyncio.wait_for(
+        _request(client, agent, idem="preq-race-fail"), timeout=5
+    )
+    assert second.status_code == 503, second.text
+    assert "request_id" not in second.json()
+
+    gate.inner.fail_with = httpx.ConnectError("sentinel down")
+    gate.release.set()
+    first = await asyncio.wait_for(first_task, timeout=5)
+    assert first.status_code == 503, first.text
+    assert gate.created == []
+
+    gate.inner.fail_with = None
+    retry = await _request(client, agent, idem="preq-race-fail")
+    assert retry.status_code == 202, retry.text
     assert len(gate.created) == 1
 
 

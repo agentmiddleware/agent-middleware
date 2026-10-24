@@ -18,10 +18,10 @@ We welcome bug fixes, tests, documentation, examples, integrations, SDK improvem
 Python 3.11+, [`uv`](https://docs.astral.sh/uv/) (or pip), `make`, and Node 22.18+ for the TypeScript verifier.
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware
 cd agent-middleware
 python -m venv .venv && . .venv/bin/activate
-pip install -r gateway/requirements.txt -e "./sdk/python[verify]" pytest pytest-xdist pytest-timeout
+pip install -r gateway/requirements.txt -r gateway/requirements-dev.txt -e "./sdk/python[verify]" pytest pytest-xdist pytest-timeout
 
 # gateway (FSL): full suite, about a minute in parallel
 cd gateway && pytest tests -m "not production_trust" -n auto && cd ..
@@ -35,6 +35,24 @@ python verifier/check_vectors.py
 `make -C gateway prove-trust-plane` and `make -C gateway demo-ambiguous-retry`
 exercise the invariants end to end. Never commit `.env` files, keys, or local
 databases; `pre-commit install` enables the secret scan locally.
+
+## Lint and type-check versions
+
+Local lint and type-check must use the blessed versions in
+`gateway/requirements-dev.txt`. CI installs those same versions
+(`.github/workflows/ci.yml`):
+
+- ruff `0.17.1` (`RUFF_VERSION` in `.github/workflows/ci.yml` and `.github/workflows/lint.yml`)
+- mypy `2.4.0` (`MYPY_VERSION`)
+
+`gateway/requirements.txt` pins mypy to `2.4.0` as well, so an application
+install cannot float the type checker. Bump the dev lock, that requirements
+pin, and the workflow env vars in the same change. `gateway/scripts/core_quality_gate.sh`
+runs `ruff check .` and `mypy app/` with those pins.
+
+The pre-commit mypy hook needs `uv`. Its first run needs package registry access
+to build an isolated environment from the gateway requirements and this checkout's
+editable Python SDK; later runs can use the uv cache.
 
 ## Developer Certificate of Origin
 

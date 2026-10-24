@@ -6,18 +6,23 @@ generated fresh or read from the environment, never from arguments or code:
     # 1. Generate replacement keys for VALID_API_KEYS (prints to stdout only)
     python scripts/rotate_api_keys.py generate [--count 2]
 
-    # 2. Verify a completed rotation against a live deployment
+    # 2. Smoke-check after host configuration and rollout are confirmed
     export AGENT_MIDDLEWARE_API_URL=https://api.thisisatest.tech
-    export OLD_API_KEY=...   # the retired key — must now be rejected
-    export NEW_API_KEY=...   # the replacement key — must authenticate
+    export OLD_API_KEY=...   # exact old bootstrap key
+    export NEW_API_KEY=...   # exact intended replacement bootstrap key
     python scripts/rotate_api_keys.py verify
 
-`verify` exits non-zero unless BOTH hold:
-  - OLD_API_KEY is rejected (401/403) on a bootstrap-admin read endpoint
-  - NEW_API_KEY succeeds (200) on the same endpoint
+`verify` makes one request per key and exits non-zero unless BOTH sampled
+responses match:
+  - OLD_API_KEY receives 401/403 on GET /v1/audit/summary
+  - NEW_API_KEY receives 200 on the same route
 
-The check endpoint is GET /v1/audit/summary: read-only, admin-gated, and
-mutation-free, so verification never writes to production state.
+The requests may reach different load-balanced workers. This route also
+accepts wallet keys, so a 200 does not prove bootstrap authority or that the
+replacement is in VALID_API_KEYS. Use only intended bootstrap keys and host
+configuration/rollout evidence to establish rotation completion. GET makes no
+mutation request, but database-key authentication can update last_used_at or
+consume a bounded use.
 
 Rotation itself happens at the host's secret manager (Railway: service
 variables), not here — see docs/api-key-rotation.md for the full runbook.
@@ -77,7 +82,7 @@ def verify() -> int:
         return 2
 
     try:
-        # This read-only verifier supports an explicitly selected production
+        # This GET-only probe supports an explicitly selected production
         # origin, but credentials must never travel over remote plaintext HTTP.
         base_url = resolve_live_target(base_url, confirm_production=True, environ={})
     except LiveTargetError as exc:
@@ -114,7 +119,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     gen = sub.add_parser("generate", help="print fresh replacement keys")
     gen.add_argument("--count", type=int, default=2)
-    sub.add_parser("verify", help="assert old key dead, new key live")
+    sub.add_parser("verify", help="sample old-key rejection and new-key acceptance")
     args = parser.parse_args()
 
     if args.command == "generate":

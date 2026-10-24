@@ -70,7 +70,7 @@ async def _run_check(
     start = time.monotonic()
     try:
         result = await asyncio.wait_for(check(), timeout=CHECK_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         result = {
             "status": "down",
             "error": f"timeout after {CHECK_TIMEOUT_SECONDS}s",
@@ -272,6 +272,21 @@ async def _check_mqtt(simulation_modes: dict[str, bool]) -> dict[str, Any]:
         return {"status": "up", "host": host, "port": port}
 
 
+def _public_mqtt_probe(result: dict[str, Any]) -> dict[str, Any]:
+    """Project an MQTT probe onto the fields safe for unauthenticated output.
+
+    The broker host and port name internal infrastructure, and every endpoint
+    serving these reports (/health/ready always, /health/dependencies on
+    proof-surface hosts) is unauthenticated, so they stay server-side.
+    Status, reason, error, and latency are all a monitor needs.
+    """
+    return {
+        key: value
+        for key, value in result.items()
+        if key in {"status", "reason", "error", "latency_ms"}
+    }
+
+
 async def _check_stripe() -> dict[str, Any]:
     settings = get_settings()
     if not settings.STRIPE_SECRET_KEY:
@@ -450,7 +465,7 @@ async def check_mqtt_readiness() -> dict[str, Any]:
     touches.
     """
     sim_modes = get_simulation_modes()
-    return await _run_check("mqtt", lambda: _check_mqtt(sim_modes))
+    return _public_mqtt_probe(await _run_check("mqtt", lambda: _check_mqtt(sim_modes)))
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +547,9 @@ async def gather_dependency_report() -> dict[str, Any]:
     dependencies = {
         "postgres": postgres,
         "redis": redis_res,
-        "mqtt": mqtt,
+        # The full report is served unauthenticated wherever proof surfaces
+        # are mounted, so the broker address is projected out here too.
+        "mqtt": _public_mqtt_probe(mqtt),
         "stripe": stripe_res,
         "llm": llm,
         "upstream_mcp": upstream_mcp,

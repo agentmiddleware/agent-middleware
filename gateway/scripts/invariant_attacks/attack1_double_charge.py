@@ -15,7 +15,7 @@ Sub-tests:
 import json
 import sys
 
-import attacklib as A
+import attacklib as A  # noqa: N812
 
 N = 10
 MARKER = "atk1-parallel"
@@ -65,7 +65,7 @@ def main():
                 "error_or_reason": A.reason_of(r),
             }
         )
-    distinct_receipts = sorted(set(x for x in receipt_ids if x))
+    distinct_receipts = sorted({x for x in receipt_ids if x})
     winners = sum(1 for p in per_response if p["carried_receipt"])
     collapsed = sum(1 for p in per_response if not p["carried_receipt"])
 

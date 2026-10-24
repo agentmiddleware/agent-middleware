@@ -43,6 +43,22 @@ def _too_large(limit: int) -> JSONResponse:
     )
 
 
+def _malformed_body() -> JSONResponse:
+    """400 when an http.request frame carries something other than bytes."""
+    return JSONResponse(
+        status_code=400,
+        content={"detail": "Request body frame is not bytes."},
+    )
+
+
+def _frame_chunk(message: Message) -> bytes | bytearray | None:
+    """Return the optional bytes body, or None for an invalid ASGI frame."""
+    body = message.get("body", b"")
+    if isinstance(body, (bytes, bytearray)):
+        return body
+    return None
+
+
 class RequestBodyLimitMiddleware:
     """Reject request bodies larger than ``max_body_size`` with a 413."""
 
@@ -83,10 +99,18 @@ class RequestBodyLimitMiddleware:
                 break
 
             saw_body = True
-            buffered.extend(message.get("body", b""))
-            if len(buffered) > self.max_body_size:
+            chunk = _frame_chunk(message)
+            if chunk is None:
+                await _malformed_body()(scope, receive, send)
+                return
+            # Count the frame before copying it. One ASGI message can carry
+            # the whole body, so copying first would ignore the ceiling.
+            incoming = len(chunk)
+            if len(buffered) + incoming > self.max_body_size:
                 await _too_large(self.max_body_size)(scope, receive, send)
                 return
+            if incoming:
+                buffered.extend(chunk)
             if not message.get("more_body", False):
                 complete = True
                 break

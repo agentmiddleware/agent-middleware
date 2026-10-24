@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
+from urllib.parse import urlparse
 
 from sqlalchemy import case, func, or_, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +31,11 @@ from app.db.models import (
 )
 from app.schemas.billing import AlertType
 from app.schemas.trust import ActionPermitFields, PermitCreateRequest, PermitResponse
+from app.services.ownership import (
+    CallerIdentity,
+    require_permit_issuer,
+    require_permit_party,
+)
 from app.services.signing_keys import get_signing_key_service, sha256_hex
 
 logger = logging.getLogger(__name__)
@@ -37,6 +44,18 @@ logger = logging.getLogger(__name__)
 class PermitError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
+        super().__init__(reason)
+
+
+class PermitAccessDeniedError(PermitError):
+    """The caller owns neither side of the permit it tried to mutate.
+
+    A ``PermitError`` so existing handlers keep classifying it, with a
+    distinct reason so routers answer 403 instead of the 404/400 those
+    handlers give every other permit failure.
+    """
+
+    def __init__(self, reason: str = "permit_access_denied") -> None:
         super().__init__(reason)
 
 
@@ -207,6 +226,45 @@ def _find_forbidden_field(arguments: Any, forbidden: set[str]) -> str | None:
     return None
 
 
+def extract_recipient_identity(target: str) -> str:
+    """Reduce one recipient value to the identity the permit binds.
+
+    A URL contributes its hostname; a bare value with no host part (an
+    x402 pay_to chain address, a registered origin without a scheme) counts
+    as itself. This is the same reduction the upstream MCP path has always
+    applied before comparing against the permit's recipient constraint.
+    """
+    return urlparse(target).hostname or target
+
+
+_EVM_HEX_ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
+
+
+def recipient_binding_matches(recipient_domain: str | None, target: str) -> bool:
+    """Check one recipient value against a permit's recipient constraint.
+
+    An unset constraint allows everything. Otherwise the target is reduced
+    with extract_recipient_identity and must equal the bound value.
+    x402 callers pass the demand's pay_to address: x402 demands
+    name no resource host, so the payee address is the only recipient the
+    demand names, and a permit that binds x402 spending must carry that
+    address exactly as the demand presents it.
+
+    EVM addresses are 20-byte values: hex-letter casing (lowercase vs
+    EIP-55 checksum form) does not change the identity, so two EVM-shaped
+    values compare case-insensitively. Solana base58 addresses, hostnames,
+    and every other recipient form stay case-sensitive.
+    """
+    if not recipient_domain:
+        return True
+    candidate = extract_recipient_identity(target)
+    if _EVM_HEX_ADDRESS.fullmatch(recipient_domain) and _EVM_HEX_ADDRESS.fullmatch(
+        candidate
+    ):
+        return recipient_domain.lower() == candidate.lower()
+    return candidate == recipient_domain
+
+
 def permit_model_to_response(model: PermitModel) -> PermitResponse:
     return PermitResponse(
         **ActionPermitFields.model_validate(
@@ -326,6 +384,7 @@ class PermitService:
         request: PermitCreateRequest,
         subject_key_id: str | None = None,
         permit_id: str | None = None,
+        auth: Any | None = None,
     ) -> PermitResponse:
         """Mint a signed permit.
 
@@ -339,6 +398,16 @@ class PermitService:
             for field in ActionPermitFields.model_fields
         ):
             raise PermitCreationRejectedError("action_permit_requires_trusted_issuance")
+        from app.services.demo_tenant_boundary import (
+            DemoPermitDenied,
+            KeyAllowlistDenied,
+            enforce_permit_bounds,
+        )
+
+        try:
+            await enforce_permit_bounds(request, auth)
+        except (KeyAllowlistDenied, DemoPermitDenied) as exc:
+            raise PermitCreationRejectedError(exc.error) from exc
         return await self._persist_permit(request, subject_key_id, permit_id)
 
     async def _persist_permit(
@@ -453,17 +522,52 @@ class PermitService:
             await session.refresh(model)
         return permit_model_to_response(model)
 
-    async def revoke_permit(self, permit_id: str) -> PermitResponse:
+    async def revoke_permit(
+        self, permit_id: str, *, caller: CallerIdentity
+    ) -> PermitResponse:
+        """Revoke an active permit.
+
+        The write matches only ``status = 'active'``. A repeat call, or a call
+        against a permit that is already expired or exhausted, returns the
+        stored row and does not move ``revoked_at`` or change ``status``.
+        """
         factory = get_session_factory()
         async with factory() as session:
-            model = await session.get(PermitModel, permit_id)
-            if not model:
+            owner = await session.get(PermitModel, permit_id)
+            if owner is None:
                 raise PermitError("permit_not_found")
-            model.status = "revoked"
-            model.revoked_at = utc_now()
-            session.add(model)
+            require_permit_issuer(
+                caller,
+                issuer_wallet_id=owner.issuer_wallet_id,
+                error=PermitAccessDeniedError,
+            )
+            # Guarded write, same shape as the budget reservation: a second
+            # caller cannot overwrite revoked_at after the status has left
+            # active, including when the two calls overlap.
+            await session.execute(
+                sa_update(PermitModel)
+                .where(
+                    cast(ColumnElement[bool], PermitModel.permit_id == permit_id),
+                    cast(ColumnElement[bool], PermitModel.status == "active"),
+                )
+                .values(status="revoked", revoked_at=utc_now())
+                .execution_options(synchronize_session=False)
+            )
+            model = (
+                await session.execute(
+                    select(PermitModel)
+                    .where(
+                        cast(
+                            ColumnElement[bool],
+                            PermitModel.permit_id == permit_id,
+                        )
+                    )
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if model is None:
+                raise PermitError("permit_not_found")
             await session.commit()
-            await session.refresh(model)
             return permit_model_to_response(model)
 
     async def validate_for_action(
@@ -843,8 +947,13 @@ class PermitService:
             return PermitValidation(
                 False, "permit_key_mismatch", model, {"bound_to": "subject_key_id"}
             )
+        # An empty allowlist names no tool, so it admits none. The previous
+        # `if allowed_tools and ...` form skipped this check for empty lists
+        # and let the scope check below decide, so a permit carrying explicit
+        # scopes but no tool restriction could authorize tools it never
+        # named. Deny-all here makes the empty case explicit.
         allowed_tools = _loads_list(model.allowed_tools_json)
-        if allowed_tools and tool_name not in allowed_tools:
+        if tool_name not in allowed_tools:
             return PermitValidation(
                 False,
                 "permit_tool_not_allowed",
@@ -1047,7 +1156,9 @@ class PermitService:
             total = result.scalar()
             return Decimal(str(total)) if total is not None else Decimal("0")
 
-    async def reserve_budget(self, permit_id: str, amount: Decimal) -> None:
+    async def reserve_budget(
+        self, permit_id: str, amount: Decimal, *, caller: CallerIdentity
+    ) -> None:
         factory = get_session_factory()
 
         async def _once() -> None:
@@ -1063,6 +1174,13 @@ class PermitService:
                     )
                     if model is None:
                         raise PermitError("permit_not_found")
+                    require_permit_party(
+                        caller,
+                        issuer_wallet_id=model.issuer_wallet_id,
+                        subject_wallet_id=model.subject_wallet_id,
+                        subject_key_id=model.subject_key_id,
+                        error=PermitAccessDeniedError,
+                    )
                     # Atomic guarded reserve (see authorize_and_reserve): the cap
                     # *and the expiry* are enforced by the WHERE clause, not a
                     # read-then-write. The expiry term matters for the same
@@ -1173,12 +1291,30 @@ class PermitService:
 
         await self._run_with_write_retry(_once)
 
-    async def release_budget(self, permit_id: str, amount: Decimal) -> None:
+    async def release_budget(
+        self, permit_id: str, amount: Decimal, *, caller: CallerIdentity
+    ) -> None:
         factory = get_session_factory()
 
         async def _once() -> None:
             async with factory() as session:
                 async with session.begin():
+                    # Ownership is checked on a locked read before the guarded
+                    # decrement: the no-op-on-missing-permit below must not
+                    # become a silent success for a caller with no claim on
+                    # the permit.
+                    owner = await session.get(
+                        PermitModel, permit_id, with_for_update=True
+                    )
+                    if owner is None:
+                        return
+                    require_permit_party(
+                        caller,
+                        issuer_wallet_id=owner.issuer_wallet_id,
+                        subject_wallet_id=owner.subject_wallet_id,
+                        subject_key_id=owner.subject_key_id,
+                        error=PermitAccessDeniedError,
+                    )
                     # Atomic clamped decrement: a single UPDATE so a concurrent
                     # reservation on the same permit cannot be lost to a
                     # read-modify-write refund. A missing permit is a no-op.
@@ -1285,7 +1421,9 @@ class PermitService:
             )
             return False
 
-    async def release_tool_call(self, permit_id: str, tool_name: str) -> None:
+    async def release_tool_call(
+        self, permit_id: str, tool_name: str, *, caller: CallerIdentity
+    ) -> None:
         """Give back one ``max_calls_per_tool`` use consumed by a reservation.
 
         Compensation partner to :meth:`release_budget`: ``authorize_and_reserve``
@@ -1310,6 +1448,13 @@ class PermitService:
                         )
                         if model is None:
                             return
+                        require_permit_party(
+                            caller,
+                            issuer_wallet_id=model.issuer_wallet_id,
+                            subject_wallet_id=model.subject_wallet_id,
+                            subject_key_id=model.subject_key_id,
+                            error=PermitAccessDeniedError,
+                        )
                         original_counts_json = model.tool_call_counts_json
                         counts = _loads_dict(original_counts_json or "{}")
                         current = counts.get(tool_name, 0)
@@ -1357,7 +1502,9 @@ class PermitService:
 
         await self._run_with_write_retry(_once)
 
-    async def release_dispatch_budget_once(self, attempt_id: str) -> bool:
+    async def release_dispatch_budget_once(
+        self, attempt_id: str, *, caller: CallerIdentity
+    ) -> bool:
         """Release one remote attempt's reservation exactly once.
 
         The permit mutation and attempt checkpoint share one transaction. This
@@ -1373,6 +1520,19 @@ class PermitService:
                     attempt = await session.get(McpDispatchAttemptModel, attempt_id)
                     if attempt is None:
                         raise PermitError("dispatch_attempt_not_found")
+                    # Attempt-keyed, but the money it guards belongs to the
+                    # linked permit: a caller with no claim on that permit
+                    # must not drive its budget, even with the attempt id.
+                    permit_owner = await session.get(PermitModel, attempt.permit_id)
+                    if permit_owner is None:
+                        raise PermitError("permit_not_found")
+                    require_permit_party(
+                        caller,
+                        issuer_wallet_id=permit_owner.issuer_wallet_id,
+                        subject_wallet_id=permit_owner.subject_wallet_id,
+                        subject_key_id=permit_owner.subject_key_id,
+                        error=PermitAccessDeniedError,
+                    )
                     # Only a terminal returned_error attempt has a reservation
                     # to give back. Releasing budget for a prepared or
                     # dispatched attempt frees credits that attempt may still

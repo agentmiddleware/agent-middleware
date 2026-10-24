@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import inspect
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
+from types import FunctionType, SimpleNamespace
 from typing import Any, cast
 
+from mcp.client.session import ClientSession
+from mcp.types import CallToolResult
 from sqlalchemy import select
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -26,14 +33,21 @@ from app.schemas.trust import ReceiptResponse
 from app.services.agent_money import AgentMoney, get_agent_money
 from app.services.audit_log import AuditEvent, record_audit_event
 from app.services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
-from app.services.idempotency import IdempotencyService, get_idempotency_service
+from app.services.idempotency import (
+    ACTION_MCP_IDEMPOTENCY_ENDPOINT,
+    IdempotencyService,
+    get_idempotency_service,
+)
+from app.services.ownership import CallerIdentity
 from app.services.mcp_dispatch_attempts import (
+    DISPATCH_CLAIMED,
     DISPATCH_SENT_STATES,
     DISPATCH_PREPARED,
     DISPATCH_TERMINAL_STATES,
     DispatchAttemptContext,
     DispatchAttemptConflictError,
     DispatchAttemptError,
+    DispatchResultRejectedError,
     McpDispatchAttemptService,
     get_mcp_dispatch_attempt_service,
 )
@@ -43,9 +57,135 @@ from app.services.permits import (
     permit_constraints_snapshot,
 )
 from app.services.receipts import ReceiptError, ReceiptService, get_receipt_service
-from app.services.signing_keys import sha256_hex
+from app.services.service_registry import get_service_registry
+from app.services.signing_keys import canonical_json, sha256_hex
+from app.services.upstream_mcp import UpstreamMcpAdapter
 
 logger = logging.getLogger(__name__)
+_PERMIT_SNAPSHOT_KEYS = frozenset(
+    {
+        "max_calls_per_tool",
+        "aggregate_value_cap",
+        "forbidden_fields",
+        "recipient_domain",
+    }
+)
+_LEGACY_UNSNAPSHOTTED_OUTCOMES = frozenset(
+    {"success", "failed_refunded", "delivery_uncertain", "response_rejected"}
+)
+# Per-lookup bound on awaiting a status lookup. A hang falls back to
+# delivery_uncertain. Lookups run one after another, so a sweep can spend up
+# to limit * this value awaiting them. The bound cannot interrupt synchronous
+# work, which is why only coroutine functions are accepted as lookups.
+STATUS_LOOKUP_TIMEOUT_SECONDS = 5.0
+
+
+@dataclass(frozen=True)
+class UpstreamDispatchStatusQuery:
+    """Read-only identity of one stale claimed dispatch.
+
+    ``invocation_id`` is the value the gateway forwarded upstream as
+    ``io.agentmiddleware/invocation_id``. ``idempotency_key`` is the key stored
+    on the gateway's idempotency record. ``forwarded_idempotency_key`` is the
+    value actually sent as ``io.agentmiddleware/idempotency_key``. It is None
+    for action-permit calls: those forward a derived native key that the
+    attempt row does not record, so match on ``invocation_id`` instead.
+    """
+
+    attempt_id: str
+    invocation_id: str
+    idempotency_key: str
+    forwarded_idempotency_key: str | None
+    upstream_origin: str
+    upstream_tool_name: str
+    request_hash: str
+    dispatched_at: datetime | None
+
+
+@dataclass(frozen=True)
+class UpstreamDispatchStatus:
+    """Authoritative upstream answer for one stale claimed dispatch.
+
+    ``delivered`` must be a real ``bool``. ``delivered=True`` requires the raw
+    MCP ``CallToolResult`` payload, which goes through the live path's result
+    checks: a normal result finalizes as ``succeeded`` (the charge stands), and
+    an ``isError`` result finalizes as ``returned_error`` and is refunded,
+    exactly as on the live path. ``delivered=False`` is logged but does not
+    change the outcome: the attempt stays ``delivery_uncertain`` (see
+    ``_proven_outcome``).
+
+    The reflected-credential check compares against the binding's current
+    bearer token only. The attempt does not record which token was used at
+    dispatch, so a payload echoing an older, rotated token is not caught here.
+    A lookup must not return provider data that can contain credentials.
+    """
+
+    delivered: bool
+    result_payload: dict[str, Any] | None = None
+
+
+# A status lookup may only read upstream state. Returning None, raising,
+# timing out, or returning a malformed answer means "not proven either way"
+# and leaves the attempt delivery_uncertain.
+UpstreamDispatchStatusLookup = Callable[
+    [UpstreamDispatchStatusQuery], Awaitable[UpstreamDispatchStatus | None]
+]
+
+# Process-wide lookups keyed by upstream origin. The gateway registers none,
+# so this is inert until a deployment calls register_upstream_status_lookup()
+# from its own startup code. There is deliberately no environment setting.
+_REGISTERED_STATUS_LOOKUPS: dict[str, UpstreamDispatchStatusLookup] = {}
+
+
+def _require_async_lookup(lookup: object) -> None:
+    """Reject lookups whose body would run synchronously on the event loop.
+
+    ``asyncio.wait_for`` can only bound awaiting. A plain function runs to
+    completion before the timeout starts, so a blocking one stalls the loop.
+    Accepts ``async def`` functions, bound async methods, objects with an
+    ``async def __call__``, and ``functools.partial`` wrappers of these.
+    Checks the real code object's ``CO_COROUTINE`` flag instead of
+    ``inspect.iscoroutinefunction``, which trusts inspect.markcoroutinefunction
+    and so would accept a marked synchronous function.
+    """
+    target = lookup
+    # Bounded: builtins' type(x).__call__ chains never reach a FunctionType.
+    for _ in range(16):
+        if isinstance(target, functools.partial):
+            target = target.func
+        elif inspect.ismethod(target):
+            target = target.__func__
+        elif isinstance(target, FunctionType) or isinstance(target, type):
+            break
+        elif callable(target):
+            target = type(target).__call__
+        else:
+            break
+    if not (
+        isinstance(target, FunctionType)
+        and target.__code__.co_flags & inspect.CO_COROUTINE
+    ):
+        raise TypeError("status lookup must be an async callable")
+
+
+def register_upstream_status_lookup(
+    upstream_origin: str,
+    lookup: UpstreamDispatchStatusLookup,
+) -> None:
+    """Register the read-only status lookup for one upstream origin.
+
+    ``upstream_origin`` must equal the stored attempt origin exactly
+    (scheme://host[:port], no path). The reconciliation singleton reads this
+    registry on every sweep, so registering before or after it was created
+    both work. Registering an origin again replaces its lookup.
+
+    Token rotation: result redaction only compares against the bearer token
+    current at reconciliation time. A recorded result that echoes a token
+    from before a rotation is not caught, so rotate tokens only after any
+    attempts dispatched with the old token have been reconciled.
+    """
+    _require_async_lookup(lookup)
+    _REGISTERED_STATUS_LOOKUPS[upstream_origin] = lookup
 
 
 @dataclass(frozen=True)
@@ -58,6 +198,7 @@ class DispatchReconciliationResult:
     idempotency_recovered: int
     budget_released: int
     failed_attempt_ids: tuple[str, ...]
+    status_resolved: int = 0
 
     @property
     def repaired(self) -> int:
@@ -67,6 +208,7 @@ class DispatchReconciliationResult:
             + self.terminal_recovered
             + self.idempotency_recovered
             + self.budget_released
+            + self.status_resolved
         )
 
 
@@ -82,7 +224,18 @@ class McpDispatchReconciliationService:
         receipt_service: ReceiptService | None = None,
         idempotency_service: IdempotencyService | None = None,
         max_result_bytes: int | None = None,
+        status_lookups: Mapping[str, UpstreamDispatchStatusLookup] | None = None,
+        status_lookup_timeout_seconds: float = STATUS_LOOKUP_TIMEOUT_SECONDS,
     ) -> None:
+        # Optional, keyed by upstream_origin. None means "use the process-wide
+        # registry". An origin without a lookup keeps the conservative
+        # stale-claim -> delivery_uncertain behaviour.
+        for lookup in (status_lookups or {}).values():
+            _require_async_lookup(lookup)
+        self._status_lookups = (
+            dict(status_lookups) if status_lookups is not None else None
+        )
+        self._status_lookup_timeout = status_lookup_timeout_seconds
         self._dispatch = dispatch_service or get_mcp_dispatch_attempt_service()
         self._money = money or get_agent_money()
         self._permits = permit_service or get_permit_service()
@@ -115,6 +268,7 @@ class McpDispatchReconciliationService:
         terminal_recovered = 0
         idempotency_recovered = 0
         budget_released = 0
+        status_resolved = 0
         failed: list[str] = []
         processed: set[str] = set()
 
@@ -133,6 +287,8 @@ class McpDispatchReconciliationService:
                     dispatched_uncertain += 1
                 elif outcome == "terminal_recovered":
                     terminal_recovered += 1
+                elif outcome == "status_resolved":
+                    status_resolved += 1
             except Exception as exc:
                 failed.append(attempt_id)
                 logger.warning(
@@ -220,7 +376,10 @@ class McpDispatchReconciliationService:
                 if await self._find_operation_debit(attempt) is not None:
                     continue
             try:
-                if await self._permits.release_dispatch_budget_once(attempt.attempt_id):
+                if await self._permits.release_dispatch_budget_once(
+                    attempt.attempt_id,
+                    caller=CallerIdentity.for_wallet(attempt.wallet_id),
+                ):
                     budget_released += 1
             except Exception as exc:
                 failed.append(attempt.attempt_id)
@@ -238,6 +397,7 @@ class McpDispatchReconciliationService:
             idempotency_recovered=idempotency_recovered,
             budget_released=budget_released,
             failed_attempt_ids=tuple(dict.fromkeys(failed)),
+            status_resolved=status_resolved,
         )
 
     async def reconcile_attempt(
@@ -315,6 +475,30 @@ class McpDispatchReconciliationService:
             await self._finalize_terminal(terminal)
             return "prepared_finalized"
         elif attempt.state in DISPATCH_SENT_STATES:
+            resolved = await self._lookup_status(fresh)
+            if resolved is not None:
+                try:
+                    await self._dispatch.complete(
+                        attempt_id=attempt.attempt_id,
+                        max_result_bytes=self._max_result_bytes,
+                        **resolved,
+                    )
+                except DispatchResultRejectedError:
+                    # An unstorable answer is not proof; fall back below.
+                    logger.warning(
+                        "mcp_dispatch_status_lookup_result_rejected attempt_id=%s",
+                        attempt.attempt_id,
+                    )
+                except DispatchAttemptConflictError:
+                    raced = await self._required_context(attempt.attempt_id)
+                    if raced.attempt.state not in DISPATCH_TERMINAL_STATES:
+                        raise
+                    await self._finalize_terminal(raced)
+                    return "terminal_recovered"
+                else:
+                    terminal = await self._required_context(attempt.attempt_id)
+                    await self._finalize_terminal(terminal)
+                    return "status_resolved"
             try:
                 await self._dispatch.complete(
                     attempt_id=attempt.attempt_id,
@@ -334,6 +518,144 @@ class McpDispatchReconciliationService:
             return "dispatched_uncertain"
         else:
             raise DispatchAttemptError("dispatch_reconciliation_state_invalid")
+
+    async def _lookup_status(
+        self,
+        context: DispatchAttemptContext,
+    ) -> dict[str, Any] | None:
+        """Ask the optional per-upstream hook how a stale claim ended.
+
+        Returns ``complete()`` keyword arguments for a proven outcome, or None
+        when the attempt must stay delivery_uncertain. The gateway never
+        resends here and hands the hook only an immutable query, not the
+        executor. The hook itself is operator code, so what it calls is the
+        operator's responsibility. Legacy ``dispatched`` rows are skipped: ``complete()`` only lets them
+        become delivery_uncertain.
+        """
+        attempt = context.attempt
+        lookups = (
+            self._status_lookups
+            if self._status_lookups is not None
+            else _REGISTERED_STATUS_LOOKUPS
+        )
+        lookup = lookups.get(attempt.upstream_origin)
+        if lookup is None or attempt.state != DISPATCH_CLAIMED:
+            return None
+        # Non-action calls forward the stored key unchanged. Action calls
+        # forward a derived native key that is not persisted on the attempt.
+        forwarded_key = (
+            None
+            if context.endpoint == ACTION_MCP_IDEMPOTENCY_ENDPOINT
+            else context.idempotency_key
+        )
+        query = UpstreamDispatchStatusQuery(
+            attempt_id=attempt.attempt_id,
+            invocation_id=attempt.idempotency_record_id,
+            idempotency_key=context.idempotency_key,
+            forwarded_idempotency_key=forwarded_key,
+            upstream_origin=attempt.upstream_origin,
+            upstream_tool_name=attempt.upstream_tool_name,
+            request_hash=attempt.request_hash,
+            dispatched_at=attempt.dispatched_at,
+        )
+
+        async def _call_lookup() -> object:
+            # The call itself runs inside wait_for, so a sync function that
+            # only claims to be async (markcoroutinefunction) cannot run
+            # before the timeout scope or return a bare value as an answer.
+            pending = lookup(query)
+            if not inspect.isawaitable(pending):
+                raise DispatchAttemptError("dispatch_status_lookup_not_awaitable")
+            return await pending
+
+        try:
+            status = await asyncio.wait_for(
+                _call_lookup(), timeout=self._status_lookup_timeout
+            )
+            return await self._proven_outcome(attempt, status)
+        except Exception as exc:
+            # Includes TimeoutError and any malformed answer: not proof.
+            logger.warning(
+                "mcp_dispatch_status_lookup_failed attempt_id=%s error=%s",
+                attempt.attempt_id,
+                type(exc).__name__,
+            )
+            return None
+
+    @staticmethod
+    async def _proven_outcome(
+        attempt: McpDispatchAttemptModel,
+        status: object,
+    ) -> dict[str, Any] | None:
+        """Map a lookup answer to ``complete()`` kwargs, or None for uncertain.
+
+        Raises on a malformed answer; the caller treats that as not proven.
+        """
+        if status is None:
+            return None
+        if not isinstance(status, UpstreamDispatchStatus):
+            raise DispatchAttemptError("dispatch_status_lookup_answer_invalid")
+        if type(status.delivered) is not bool:
+            raise DispatchAttemptError("dispatch_status_lookup_answer_invalid")
+        if not status.delivered:
+            # Not proof of non-delivery. The claim is a one-shot hash with no
+            # lease or fence, so a paused worker that already holds it can
+            # still resume and call call_tool() after the provider answered.
+            # The guarded complete() would protect the row, not the send.
+            # Refunding here could pay back a call that then executes, so the
+            # attempt stays delivery_uncertain for manual reconciliation.
+            logger.warning(
+                "mcp_dispatch_status_lookup_not_delivered_unfenced attempt_id=%s",
+                attempt.attempt_id,
+            )
+            return None
+        if not isinstance(status.result_payload, dict):
+            raise DispatchAttemptError("dispatch_status_lookup_result_missing")
+        # Reuse the live path's own result gate (shape, isError, reflected
+        # bearer token, size bound) through the executor for this exact
+        # binding. Without it the answer cannot be checked, so stay uncertain.
+        executor = get_service_registry().get_executor(attempt.public_tool_id)
+        if (
+            not isinstance(executor, UpstreamMcpAdapter)
+            or executor.configuration.origin != attempt.upstream_origin
+            or executor.configuration.tool_name != attempt.upstream_tool_name
+        ):
+            raise DispatchAttemptError("dispatch_status_lookup_executor_unavailable")
+        # The live path refuses to call an undiscovered tool, so there is no
+        # output schema to check against: not proof.
+        discovered = executor.discovered_tool
+        if discovered is None:
+            raise DispatchAttemptError("dispatch_status_lookup_executor_unavailable")
+        call_result = CallToolResult.model_validate(status.result_payload)
+        if not call_result.isError:
+            # The live path seeds ClientSession._tool_output_schemas with the
+            # discovered schema and lets the SDK validate structuredContent
+            # inside call_tool(); a failure there ends delivery_uncertain.
+            # Run that same SDK validator on the same seed. The name is
+            # present, so it never lists tools; a None schema skips the
+            # check exactly as it does live.
+            seeded = SimpleNamespace(
+                _tool_output_schemas={
+                    attempt.upstream_tool_name: deepcopy(discovered.output_schema)
+                }
+            )
+            await ClientSession._validate_tool_result(
+                cast(ClientSession, seeded), attempt.upstream_tool_name, call_result
+            )
+        result = executor._canonicalize_result(call_result)
+        if result.is_error:
+            # Same terminal shape as the live UpstreamMcpReturnedError path,
+            # which _finalize_terminal refunds through compensation.
+            return {
+                "state": "returned_error",
+                "result_payload": result.payload,
+                "error_code": "upstream_returned_error",
+            }
+        return {
+            "state": "succeeded",
+            "result_payload": result.payload,
+            "error_code": None,
+        }
 
     async def _complete_prepared_failure(
         self,
@@ -447,6 +769,7 @@ class McpDispatchReconciliationService:
                     description=(
                         f"Reconcile refunded upstream MCP dispatch {attempt.attempt_id}"
                     ),
+                    caller=CallerIdentity.for_wallet(attempt.wallet_id),
                 )
                 await self._dispatch.mark_debit_refunded(
                     attempt_id=attempt.attempt_id,
@@ -477,7 +800,10 @@ class McpDispatchReconciliationService:
                 raise DispatchAttemptError("dispatch_receipt_outcome_conflict")
             if attempt.budget_released_at is not None:
                 return
-        await self._permits.release_dispatch_budget_once(attempt.attempt_id)
+        await self._permits.release_dispatch_budget_once(
+            attempt.attempt_id,
+            caller=CallerIdentity.for_wallet(attempt.wallet_id),
+        )
 
     async def _find_operation_debit(
         self,
@@ -724,21 +1050,31 @@ class McpDispatchReconciliationService:
         audit_event_id: str,
         constraints_evaluated: dict[str, Any] | None = None,
     ) -> ReceiptResponse:
-        existing = await self._receipts.get_receipt_by_idempotency_record_id(
-            attempt.idempotency_record_id
-        )
-        if existing is not None:
+        async def adopt_existing(existing: ReceiptResponse) -> ReceiptResponse:
             valid, _, _ = await self._receipts.verify_receipt(existing.receipt_id)
             if not valid:
                 raise DispatchAttemptError("dispatch_receipt_signature_invalid")
             await self._receipts.assert_action_receipt_binding(existing)
+            effective_constraints = await self._receipts.effective_constraints(
+                constraints_evaluated,
+                audit_event_id,
+                attempt.wallet_id,
+                include_jev="jev_risk_guard" in existing.constraints_evaluated,
+            )
             self._assert_receipt_match(
                 existing,
                 attempt=attempt,
                 outcome=outcome,
                 audit_event_id=audit_event_id,
+                constraints_evaluated=effective_constraints,
             )
             return existing
+
+        existing = await self._receipts.get_receipt_by_idempotency_record_id(
+            attempt.idempotency_record_id
+        )
+        if existing is not None:
+            return await adopt_existing(existing)
         credits_charged = (
             Decimal("0")
             if attempt.state == "returned_error"
@@ -776,14 +1112,7 @@ class McpDispatchReconciliationService:
             )
             if existing is None:
                 raise
-            await self._receipts.assert_action_receipt_binding(existing)
-            self._assert_receipt_match(
-                existing,
-                attempt=attempt,
-                outcome=outcome,
-                audit_event_id=audit_event_id,
-            )
-            return existing
+            return await adopt_existing(existing)
 
     @staticmethod
     def _assert_receipt_match(
@@ -792,6 +1121,7 @@ class McpDispatchReconciliationService:
         attempt: McpDispatchAttemptModel,
         outcome: str,
         audit_event_id: str,
+        constraints_evaluated: dict[str, Any] | None,
     ) -> None:
         expected_charged = (
             Decimal("0")
@@ -816,6 +1146,28 @@ class McpDispatchReconciliationService:
         }
         if any(getattr(receipt, key) != value for key, value in expected.items()):
             raise DispatchAttemptError("dispatch_receipt_linkage_conflict")
+        signed_constraints = receipt.constraints_evaluated
+        expected_constraints = constraints_evaluated or {}
+        if canonical_json(signed_constraints) != canonical_json(expected_constraints):
+            # Older direct finalization paths signed valid receipts before permit-v2
+            # snapshots were attached. Recover only that exact legacy shape;
+            # a receipt with any signed permit evidence must match in full.
+            legacy_omission = (
+                outcome in _LEGACY_UNSNAPSHOTTED_OUTCOMES
+                and set(signed_constraints) <= {"jev_risk_guard"}
+                and set(expected_constraints)
+                <= _PERMIT_SNAPSHOT_KEYS | {"jev_risk_guard"}
+                and canonical_json(signed_constraints)
+                == canonical_json(
+                    {
+                        key: value
+                        for key, value in expected_constraints.items()
+                        if key == "jev_risk_guard"
+                    }
+                )
+            )
+            if not legacy_omission:
+                raise DispatchAttemptError("dispatch_receipt_linkage_conflict")
         expected_reason_code = (
             None
             if attempt.state == "succeeded"

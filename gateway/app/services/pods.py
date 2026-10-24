@@ -46,6 +46,7 @@ from decimal import ROUND_DOWN, Decimal
 from ..db.database import get_session_factory
 from .agent_money import AgentMoney, WalletNotFoundError, get_agent_money
 from .api_key_service import APIKeyService, get_api_key_service
+from .ownership import CallerIdentity
 
 POD_METADATA_KIND = "pod"
 
@@ -199,7 +200,9 @@ class PodService:
                     )
 
                     provisioned: list[ProvisionedMember] = []
-                    for member, member_budget in zip(members, member_budgets):
+                    for member, member_budget in zip(
+                        members, member_budgets, strict=True
+                    ):
                         agent_id_in_flight = (
                             member.agent_id or f"pod-member-{len(provisioned)}"
                         )
@@ -208,6 +211,7 @@ class PodService:
                             agent_id=agent_id_in_flight,
                             budget_credits=member_budget,
                             session=session,
+                            caller=CallerIdentity.for_wallet(sponsor.wallet_id),
                         )
                         key = await self._keys.create_key(
                             wallet_id=agent_wallet.wallet_id,

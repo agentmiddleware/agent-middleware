@@ -12,6 +12,7 @@ from app.core.dependencies import get_autonomous_pm
 from app.db.database import get_session_factory
 from app.db.models import TelemetryEventModel
 from app.main import app
+from tests.support.quality import assert_exact_status, assert_exact_total
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
 
@@ -116,11 +117,16 @@ async def test_stats_endpoint(client, api_headers, sample_batch):
 
 
 @pytest.mark.anyio
-async def test_list_anomalies_empty(client, api_headers):
+async def test_list_anomalies_empty(client, api_headers, clean_database):
+    # clean_database makes the zero exact: without it, batches ingested by
+    # earlier tests in this worker could leave anomalies behind and the old
+    # `>= 0` would still pass.
     resp = await client.get("/v1/telemetry/anomalies", headers=api_headers)
-    assert resp.status_code == 200
+    assert_exact_status(resp, 200)
     data = resp.json()
-    assert data["total"] >= 0
+    # A fresh wallet has no anomalies. An exact zero (not `>= 0`) fails if
+    # the endpoint ever returns a placeholder total or a string count.
+    assert_exact_total(data, 0)
     assert isinstance(data["anomalies"], list)
 
 

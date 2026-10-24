@@ -11,8 +11,7 @@ and audit. That makes those individual examples governed proof workloads; it
 does not promote AWI, browser, passkey, DOM, or RAG capabilities into the
 supported product surface.
 
-Product wedge: [`WEDGE.md`](../WEDGE.md).  
-Remediation context: `tech-debt-remediation-plan.md` Phase 6.
+Product wedge: [`WEDGE.md`](../WEDGE.md).
 
 ## Mount gate
 
@@ -96,13 +95,15 @@ Product decision (2026-08 teardown follow-up): the public production surface
 is the wedge — sponsor/agent wallets, ledger, charge, permits, MCP invoke,
 receipts, evidence, audit, policies, discovery. Trust features beyond that
 are **dormant**: real code kept warm, unmounted and unadvertised until a
-named customer needs them (see AGENTS.md, "Current Company Phase").
+named customer needs them. Re-promotion needs the evidence bar stated
+later in this section.
 
 | Module / router | Surface |
 |-----------------|---------|
 | `app.routers.auth` (dormant) | JWT exchange (`/v1/auth/*`) — second auth story; wedge contract is `X-API-Key` |
 | `app.routers.kyc` (dormant) | Stripe Identity KYC |
 | `app.routers.planner` (dormant) | Budget optimizer |
+| `app.routers.pods` (dormant) | Shared-budget agent-key groups ([pods](pods.md)) |
 | `app.routers.billing.expansion_router` (dormant) | Child/swarm wallets, transfers, top-ups, marketplace, velocity status, dry-run sandbox |
 
 They mount via `app.main.mount_dormant_trust_surfaces` when
@@ -113,8 +114,8 @@ for those modules). The service layer underneath (transfers, velocity
 enforcement, KYC checks on charge paths) stays active — only the HTTP
 surface gates.
 
-Re-promoting one to `CORE_TRUST_ROUTERS` requires the unfreeze evidence bar
-in AGENTS.md: a named active prospect, a concrete tool, a documented
+Re-promoting one to `CORE_TRUST_ROUTERS` requires this evidence bar:
+a named active prospect, a concrete tool, a documented
 workflow blocker, a committed owner and date.
 
 ## Agent rules

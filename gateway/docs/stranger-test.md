@@ -1,10 +1,10 @@
 # The stranger test
 
-The stranger test is the milestone check for the trust plane: **can a person
-who has never seen this repository drive the whole governed loop and
-independently verify the five claims, using only the published discovery
-contract and an off-the-shelf MCP client, without asking the maintainers a
-single question?**
+The stranger test is the milestone check for the Agent Middleware (AMW) trust
+plane: **can a person who has never seen this repository drive the whole
+governed loop and independently verify the five claims, using only the published
+discovery contract and an off-the-shelf MCP client, without asking the
+maintainers a single question?**
 
 It is deliberately not automated. Its value is the fresh pair of eyes. The two
 credentialed HTTP batteries (`scripts/adversarial_battery.py`,
@@ -16,16 +16,16 @@ doc, an error message, or a discovery field — not a test.
 
 This is a usability and independent-verification test, not customer validation.
 A local tool, self-issued public proof, or friendly evaluator cannot satisfy the
-partner-owned pilot gate in
-`docs/30-day-customer-validation.md`.
+partner-owned pilot gate. The pass and fail rules for that gate are in
+[partner-first-tool-runbook.md](partner-first-tool-runbook.md) under Pass / fail.
 
 ## Ground rules
 
 - **Public docs only.** The stranger may read the published discovery contract
   and the offline verifier's README. No internal chat, no maintainer, no
   reading application source to figure out an argument.
-- **Off-the-shelf client.** A standard MCP client, `curl`, or the published
-  `b2a_sdk` — nothing bespoke to this run.
+- **Off-the-shelf client.** A standard MCP client, `curl`, or the `amw` import
+  package from a local SDK install. Nothing bespoke to this run.
 - **Deliberate misuse is part of the test.** The stranger *tries* to retry, to
   overspend, and to trust a receipt they did not sign.
 - **Zero questions asked.** The moment the stranger has to ask "what does this
@@ -81,7 +81,7 @@ enough.
    does not trust this plane, fetch the portable receipt
    (`GET /v1/receipts/{id}/portable`) and the unauthenticated key document
    (`GET /.well-known/trust-keys.json`), and verify the receipt **offline** with
-   `python -m b2a_sdk.verify_cli --bundle bundle.json --keys trust-keys.json`.
+   `amw verify --bundle bundle.json --keys trust-keys.json`.
    Expect `VERIFIED`. Then flip one byte of the signed input and expect the
    verifier to report the receipt as forged (exit 1), distinctly from a missing
    key (exit 2).

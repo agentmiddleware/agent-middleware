@@ -528,19 +528,19 @@ async def test_receipt_evidence_does_not_expose_cross_wallet_artifacts(
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "path",
-    (
+    [
         "/v1/receipts/rcpt-does-not-exist",
         "/v1/receipts/rcpt-does-not-exist/portable",
         "/v1/receipts/rcpt-does-not-exist/evidence",
-    ),
+    ],
 )
 @pytest.mark.parametrize(
-    "headers,expected_status",
-    (
+    ("headers", "expected_status"),
+    [
         ({}, 401),
         ({"X-API-Key": "short"}, 401),
         ({"X-API-Key": "not-a-real-key"}, 403),
-    ),
+    ],
 )
 async def test_receipt_read_surfaces_require_authentication(
     client, clean_database, path, headers, expected_status

@@ -38,7 +38,7 @@ def _reregister_phase9():
 @pytest.fixture(autouse=True)
 def _fresh_phase9_tools():
     _reregister_phase9()
-    yield
+    return
 
 
 def test_always_governed_tools_are_registered_with_require_permit():

@@ -35,6 +35,7 @@ from app.services.idempotency import (
     get_idempotency_service,
     resolve_client_idempotency_key,
 )
+from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from app.services.receipts import get_receipt_service
 
@@ -335,7 +336,11 @@ async def _admit_awi_http_governed(ctx: AwiHttpGovernedContext) -> None:
     permits = get_permit_service()
     idem = get_idempotency_service()
     try:
-        await permits.reserve_budget(ctx.permit_id, ctx.credits)
+        await permits.reserve_budget(
+            ctx.permit_id,
+            ctx.credits,
+            caller=CallerIdentity.for_wallet(ctx.wallet_id),
+        )
     except PermitError as exc:
         detail = {"error": exc.reason, "tool": ctx.tool_name}
         if exc.reason == "permit_write_contended":
@@ -363,6 +368,7 @@ async def _admit_awi_http_governed(ctx: AwiHttpGovernedContext) -> None:
             request_path=ctx.endpoint,
             description=f"AWI HTTP {ctx.tool_name}",
             operation_key=ctx.record_id,
+            caller=CallerIdentity.for_wallet(ctx.wallet_id),
         )
     except LedgerWriteContendedError as exc:
         # Billing's contract proves every attempt rolled back (including its
@@ -490,6 +496,7 @@ async def _refund_undispatched(ctx: AwiHttpGovernedContext) -> None:
         wallet_id=ctx.wallet_id,
         charge_entry_id=ctx.ledger_entry_id,
         description=f"AWI HTTP {ctx.tool_name}: not dispatched",
+        caller=CallerIdentity.for_wallet(ctx.wallet_id),
     )
     ctx.credits_charged = Decimal("0")
     await _release_reservation(get_permit_service(), ctx)
@@ -530,7 +537,11 @@ async def complete_awi_http_governed(
 
 async def _release_reservation(permits: Any, ctx: AwiHttpGovernedContext) -> bool:
     try:
-        await permits.release_budget(ctx.permit_id, ctx.credits)
+        await permits.release_budget(
+            ctx.permit_id,
+            ctx.credits,
+            caller=CallerIdentity.for_wallet(ctx.wallet_id),
+        )
         return True
     except Exception:
         logger.exception(

@@ -1,14 +1,14 @@
 """Repair legacy SQLite text booleans and replace their text defaults.
 
-Revision ID: 045_sqlite_boolean_defaults
-Revises: 044_receipt_resolutions
+Revision ID: 046_sqlite_boolean_defaults
+Revises: 045_api_key_usage_events
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "045_sqlite_boolean_defaults"
-down_revision: str = "044_receipt_resolutions"
+revision: str = "046_sqlite_boolean_defaults"
+down_revision: str = "045_api_key_usage_events"
 branch_labels = None
 depends_on = None
 

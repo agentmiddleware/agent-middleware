@@ -5,6 +5,7 @@ import sqlite3
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 
 _COLUMNS = (
@@ -32,6 +33,12 @@ def _defaults(connection):
 
 
 def test_upgrade_repairs_legacy_sqlite_defaults(tmp_path, monkeypatch):
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert script.get_heads() == ["046_sqlite_boolean_defaults"]
+    assert script.get_revision("046_sqlite_boolean_defaults").down_revision == (
+        "045_api_key_usage_events"
+    )
+
     db_path = tmp_path / "legacy-defaults.db"
     _upgrade(monkeypatch, db_path, "023_human_approval_gate")
 

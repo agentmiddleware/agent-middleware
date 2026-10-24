@@ -17,7 +17,7 @@ Sub-tests:
 import json
 import sys
 
-import attacklib as A
+import attacklib as A  # noqa: N812
 
 
 def sequential_boundary():
@@ -77,7 +77,7 @@ def sequential_boundary():
     }
 
 
-def concurrency_race(N=10, cap=7):
+def concurrency_race(N=10, cap=7):  # noqa: N803
     cred = A.provision("atk2b-budget-race")
     permit = A.issue_permit(
         cred,

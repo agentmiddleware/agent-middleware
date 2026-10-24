@@ -40,7 +40,7 @@ def test_golden_path_dogfood_arguments_bind_without_invoking_tool():
 def test_partner_install_has_verification_extra_for_source_and_wheel():
     doc = read("partner-first-tool-runbook.md")
     assert 'pip install "../sdk/python[verify]"' in doc
-    assert 'pip install "./b2a_sdk-<version>-py3-none-any.whl[verify]"' in doc
+    assert 'pip install "./amw_sdk-<version>-py3-none-any.whl[verify]"' in doc
 
 
 def test_partner_verification_uses_post_body_and_auth():

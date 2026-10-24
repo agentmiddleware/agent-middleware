@@ -702,7 +702,10 @@ _KYC_RETURN_URL_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 class CreateKYCSessionRequest(BaseModel):
     """Request to create a KYC verification session."""
 
-    wallet_id: str = Field(..., description="Wallet ID requiring KYC verification.")
+    wallet_id: str | None = Field(
+        None,
+        description="Wallet ID requiring KYC verification. Defaults to the key's wallet.",
+    )
     return_url: str = Field(
         ...,
         max_length=2048,
@@ -780,7 +783,9 @@ class KYCVerificationDetails(BaseModel):
 class CreateAPIKeyRequest(BaseModel):
     """Request to create a new API key for a wallet."""
 
-    wallet_id: str = Field(..., description="Wallet ID to create key for.")
+    wallet_id: str | None = Field(
+        None, description="Wallet ID to create key for. Defaults to the key's wallet."
+    )
     key_name: str = Field(
         default="default",
         max_length=50,
@@ -833,7 +838,9 @@ class APIKeyWithSecret(BaseModel):
 class RotateAPIKeyRequest(BaseModel):
     """Request to rotate an API key."""
 
-    wallet_id: str = Field(..., description="Wallet ID owning the key.")
+    wallet_id: str | None = Field(
+        None, description="Wallet ID owning the key. Defaults to the key's wallet."
+    )
     key_id: str | None = Field(
         default=None,
         description="Specific key ID to rotate. None = create new key only.",
@@ -887,7 +894,9 @@ class KeyRotationLogEntry(BaseModel):
 class EmergencyKeyRevocationRequest(BaseModel):
     """Request to immediately revoke all keys for a wallet."""
 
-    wallet_id: str = Field(..., description="Wallet ID to revoke keys for.")
+    wallet_id: str | None = Field(
+        None, description="Wallet ID to revoke keys for. Defaults to the key's wallet."
+    )
     reason: str = Field(
         default="security_incident",
         max_length=255,

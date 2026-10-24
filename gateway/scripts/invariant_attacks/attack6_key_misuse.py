@@ -12,7 +12,7 @@ Invariants under test: a credential only acts within its own authority.
 
 import json
 import sys
-import attacklib as A
+import attacklib as A  # noqa: N812
 
 MARK = "atk6"
 
@@ -25,18 +25,18 @@ def matches_response(resp, *, status, reason=None):
 
 
 def main():
-    A_cred = A.provision("atk6-alice")
-    B_cred = A.provision("atk6-bob")
+    A_cred = A.provision("atk6-alice")  # noqa: N806
+    B_cred = A.provision("atk6-bob")  # noqa: N806
 
     # A permit legitimately owned/bound by A
-    permitA = A.issue_permit(
+    permitA = A.issue_permit(  # noqa: N806
         A_cred,
         allowed_tools=["partner.notes.write"],
         scopes=["tool:partner.notes.write:invoke", "billing:charge"],
         max_credits=100,
         idem="atk6-permitA",
     )["json"]
-    pidA = permitA["permit_id"]
+    pidA = permitA["permit_id"]  # noqa: N806
 
     notes0 = A.notes_count_for(MARK)
 

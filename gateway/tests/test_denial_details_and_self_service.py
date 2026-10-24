@@ -275,11 +275,9 @@ async def test_verify_names_missing_action_context_instead_of_a_binding_reason(
 ):
     """An incomplete verify request must say what it left out.
 
-    ``verify`` decides an action, so it needs the action. Asked without a
-    wallet or a tool it used to be evaluated against empty strings and answer
-    ``permit_wallet_mismatch`` — which reads as "this permit is not yours" to
-    the permit's own subject, and sent at least one validation run chasing a
-    binding bug that did not exist.
+    ``verify`` decides an action, so it needs the action's tool. An omitted
+    wallet now comes from the authenticated wallet key. A missing tool must
+    still be reported as missing context, not checked against an empty string.
     """
     agent = await provision_agent_wallet(client)
     permit = await create_tool_permit(
@@ -302,7 +300,7 @@ async def test_verify_names_missing_action_context_instead_of_a_binding_reason(
     both_missing = await verify({})
     assert both_missing["valid"] is False
     assert both_missing["reason"] == "permit_verify_context_missing"
-    assert both_missing["details"] == {"missing": ["wallet_id", "tool"]}
+    assert both_missing["details"] == {"missing": ["tool"]}
 
     no_tool = await verify({"wallet_id": agent["agent_wallet_id"]})
     assert no_tool["valid"] is False
@@ -310,9 +308,7 @@ async def test_verify_names_missing_action_context_instead_of_a_binding_reason(
     assert no_tool["details"] == {"missing": ["tool"]}
 
     no_wallet = await verify({"tool": TOOL, "estimated_credits": 1})
-    assert no_wallet["valid"] is False
-    assert no_wallet["reason"] == "permit_verify_context_missing"
-    assert no_wallet["details"] == {"missing": ["wallet_id"]}
+    assert no_wallet["valid"] is True
 
     # The complete question still answers normally...
     complete = await verify(
@@ -373,7 +369,7 @@ async def test_verify_never_admits_an_action_it_was_not_told(client, clean_datab
     assert resp.status_code == 200
     assert resp.json()["valid"] is False
     assert resp.json()["reason"] == "permit_verify_context_missing"
-    assert resp.json()["details"] == {"missing": ["wallet_id", "tool"]}
+    assert resp.json()["details"] == {"missing": ["tool"]}
 
 
 @pytest.mark.asyncio

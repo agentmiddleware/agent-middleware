@@ -4,6 +4,7 @@ Tests for SQLite backend in durable state store.
 
 import os
 import tempfile
+from contextlib import contextmanager
 
 import pytest
 
@@ -27,6 +28,25 @@ def reset_settings():
     get_settings.cache_clear()
 
 
+@contextmanager
+def _cleared_database_url():
+    """Hide ``DATABASE_URL`` for one store, then put the suite URL back.
+
+    The session database fixture re-checks this variable before every later
+    test. Leaving it cleared looks like an inherited database and aborts the
+    worker.
+    """
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = ""
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+
+
 @pytest.fixture
 def sqlite_store():
     """Create a SQLite-based DurableStateStore for testing."""
@@ -35,20 +55,26 @@ def sqlite_store():
 
     os.environ["SQLITE_URL"] = db_path
     os.environ["STATE_BACKEND"] = "sqlite"
-    os.environ["DATABASE_URL"] = ""
     os.environ["REDIS_URL"] = ""
+    with _cleared_database_url():
+        store = DurableStateStore()
+        try:
+            yield store
+        finally:
+            import asyncio
 
-    store = DurableStateStore()
-    yield store
+            asyncio.run(store.close())
+            try:
+                os.unlink(db_path)
+            except FileNotFoundError:
+                pass
 
-    import asyncio
 
-    asyncio.run(store.close())
-
-    try:
-        os.unlink(db_path)
-    except FileNotFoundError:
-        pass
+def test_cleared_database_url_is_restored_before_later_tests():
+    original = os.environ["DATABASE_URL"]
+    with _cleared_database_url():
+        assert os.environ["DATABASE_URL"] == ""
+    assert os.environ["DATABASE_URL"] == original
 
 
 @pytest.mark.asyncio

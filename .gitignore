@@ -8,6 +8,8 @@ dist/
 build/
 venv/
 .venv/
+.venv-local/
+.venv*/
 env/
 uv.lock
 

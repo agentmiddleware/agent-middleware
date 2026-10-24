@@ -10,6 +10,8 @@ files or anchors.
 import pathlib
 import re
 
+import pytest
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATEWAY = REPO_ROOT / "gateway"
 
@@ -73,7 +75,7 @@ def test_relative_markdown_links_resolve():
         text = source.read_text()
         for match in LINK_RE.finditer(text):
             target = match.group(1)
-            if target.startswith(("http", "mailto:")):
+            if target.startswith(("http://", "https://", "mailto:")):
                 continue
             file_part, _, anchor = target.partition("#")
             resolved = source.parent / file_part if file_part else source
@@ -83,6 +85,15 @@ def test_relative_markdown_links_resolve():
                 if anchor not in _headings(resolved):
                     failures.append(f"{source.name}: missing anchor {target}")
     assert not failures, "\n".join(failures)
+
+
+def test_missing_relative_link_starting_with_http_fails(tmp_path, monkeypatch):
+    source = tmp_path / "links.md"
+    source.write_text("[missing](http-client.md)")
+    monkeypatch.setitem(globals(), "CHECKED_FILES", [source])
+
+    with pytest.raises(AssertionError, match=r"missing file http-client\.md"):
+        test_relative_markdown_links_resolve()
 
 
 def test_absent_doc_citations_are_qualified():

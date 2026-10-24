@@ -73,12 +73,16 @@ def upgrade() -> None:
         "api_key_usage_events",
         ["key_id", "created_at"],
     )
+    op.create_index(
+        "ix_api_key_usage_events_created", "api_key_usage_events", ["created_at"]
+    )
 
     op.execute(CREATE_API_KEY_USAGE_DAILY_VIEW_SQL)
 
 
 def downgrade() -> None:
     op.execute("DROP VIEW IF EXISTS api_key_usage_daily")
+    op.drop_index("ix_api_key_usage_events_created", table_name="api_key_usage_events")
     op.drop_index(
         "ix_api_key_usage_events_key_created", table_name="api_key_usage_events"
     )

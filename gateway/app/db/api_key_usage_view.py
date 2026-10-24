@@ -1,4 +1,4 @@
-"""Portable daily API-key usage view definition.
+"""Portable daily API-key usage view and bounded report query.
 
 Timestamps in this database are naive UTC. Percentiles use continuous linear
 interpolation, matching PostgreSQL's percentile_cont on both supported SQL
@@ -17,8 +17,8 @@ def _percentile_expression(percent: int) -> str:
     )
 
 
-CREATE_API_KEY_USAGE_DAILY_VIEW_SQL = f"""
-CREATE VIEW api_key_usage_daily AS
+def _daily_usage_select_sql(event_filter: str = "") -> str:
+    return f"""
 WITH ranked AS (
     SELECT
         key_id,
@@ -33,7 +33,7 @@ WITH ranked AS (
         COUNT(*) OVER (
             PARTITION BY key_id, DATE(created_at)
         ) AS call_count
-    FROM api_key_usage_events
+    FROM api_key_usage_events{event_filter}
 ), positioned AS (
     SELECT
         *,
@@ -56,3 +56,19 @@ SELECT
 FROM positioned
 GROUP BY key_id, day
 """
+
+
+CREATE_API_KEY_USAGE_DAILY_VIEW_SQL = (
+    "CREATE VIEW api_key_usage_daily AS" + _daily_usage_select_sql()
+)
+
+
+def bounded_daily_usage_sql(*, filter_key: bool) -> str:
+    """Aggregate only events in the requested UTC window, then cap result rows."""
+    event_filter = "\n    WHERE created_at >= :start_at AND created_at < :end_at"
+    if filter_key:
+        event_filter += " AND key_id = :key_id"
+    return (
+        _daily_usage_select_sql(event_filter)
+        + " ORDER BY day DESC, key_id LIMIT :limit"
+    )

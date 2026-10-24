@@ -5669,7 +5669,7 @@
           "API Key Management"
         ],
         "summary": "Admin: daily usage by API key",
-        "description": "Read daily call counts and latency from api_key_usage_daily.",
+        "description": "Read daily call counts and latency for a bounded UTC window.",
         "operationId": "admin_api_key_usage_daily_v1_admin_api_keys_usage_daily_get",
         "security": [
           {
@@ -5694,6 +5694,30 @@
                 }
               ],
               "title": "Key Id"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 30,
+              "title": "Days"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
             }
           },
           {

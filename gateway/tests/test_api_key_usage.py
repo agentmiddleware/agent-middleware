@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, time, timedelta
+from types import SimpleNamespace
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import text
 
 from app.core import api_key_usage
+from app.core.time import utc_now
 from app.db.database import get_session_factory
 from tests.test_demo_keys import (
     client as _client,
@@ -34,6 +36,21 @@ async def _events_for(key_id: str) -> list[dict]:
             {"key_id": key_id},
         )
         return [dict(row) for row in result.mappings()]
+
+
+async def _set_event_times(key_id: str, times: list[datetime]) -> None:
+    events = await _events_for(key_id)
+    assert len(events) == len(times)
+    async with get_session_factory()() as session:
+        for event, created_at in zip(events, times, strict=True):
+            await session.execute(
+                text(
+                    "UPDATE api_key_usage_events SET created_at = :created_at "
+                    "WHERE id = :id"
+                ),
+                {"id": event["id"], "created_at": created_at},
+            )
+        await session.commit()
 
 
 @pytest.mark.anyio
@@ -164,6 +181,111 @@ async def test_daily_usage_requires_bootstrap_admin_and_reports_key_calls(
             datetime.fromisoformat(row["first_call_at"]).date().isoformat()
             == row["day"]
         )
+
+
+@pytest.mark.anyio
+async def test_daily_usage_window_limit_and_invalid_bounds(
+    client: AsyncClient, clean_database: None
+) -> None:
+    wallet = await provision_agent_wallet(client)
+    for _ in range(4):
+        response = await client.get("/v1/me/authority", headers=wallet["agent_headers"])
+        assert response.status_code == 200
+
+    today = utc_now().date()
+    await _set_event_times(
+        wallet["key_id"],
+        [
+            datetime.combine(today, time.min),
+            datetime.combine(today - timedelta(days=1), time.min),
+            datetime.combine(today - timedelta(days=2), time.min),
+            datetime.combine(today - timedelta(days=90), time.min),
+        ],
+    )
+    response = await client.get(
+        DAILY, params={"key_id": wallet["key_id"]}, headers=BOOTSTRAP_HEADERS
+    )
+    assert response.status_code == 200, response.text
+    assert [row["day"] for row in response.json()["rows"]] == [
+        (today - timedelta(days=offset)).isoformat() for offset in range(3)
+    ]
+
+    response = await client.get(
+        DAILY,
+        params={"key_id": wallet["key_id"], "days": 2},
+        headers=BOOTSTRAP_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert [row["day"] for row in response.json()["rows"]] == [
+        today.isoformat(),
+        (today - timedelta(days=1)).isoformat(),
+    ]
+
+    response = await client.get(
+        DAILY,
+        params={"key_id": wallet["key_id"], "days": 90, "limit": 1},
+        headers=BOOTSTRAP_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert [row["day"] for row in response.json()["rows"]] == [today.isoformat()]
+
+    for params in ({"days": 0}, {"days": 91}, {"limit": 0}, {"limit": 201}):
+        response = await client.get(DAILY, params=params, headers=BOOTSTRAP_HEADERS)
+        assert response.status_code == 422, (params, response.text)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("retention_days", [None, 0])
+async def test_prune_usage_disabled_never_opens_session(
+    monkeypatch: pytest.MonkeyPatch, retention_days: int | None
+) -> None:
+    monkeypatch.setattr(
+        api_key_usage,
+        "get_settings",
+        lambda: SimpleNamespace(API_KEY_USAGE_RETENTION_DAYS=retention_days),
+    )
+
+    def fail_session_factory():
+        raise AssertionError("disabled pruning must not open a database session")
+
+    monkeypatch.setattr(api_key_usage, "get_session_factory", fail_session_factory)
+    assert await api_key_usage.prune_api_key_usage_events() == 0
+
+
+@pytest.mark.anyio
+async def test_prune_usage_cutoff_and_batch_cap(
+    client: AsyncClient, clean_database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wallet = await provision_agent_wallet(client)
+    for _ in range(4):
+        response = await client.get("/v1/me/authority", headers=wallet["agent_headers"])
+        assert response.status_code == 200
+
+    now = utc_now().replace(microsecond=0)
+    cutoff = now - timedelta(days=2)
+    await _set_event_times(
+        wallet["key_id"],
+        [
+            cutoff - timedelta(seconds=2),
+            cutoff - timedelta(seconds=1),
+            cutoff,
+            cutoff + timedelta(seconds=1),
+        ],
+    )
+    monkeypatch.setattr(
+        api_key_usage,
+        "get_settings",
+        lambda: SimpleNamespace(API_KEY_USAGE_RETENTION_DAYS=2),
+    )
+    with pytest.raises(ValueError, match="batch_size"):
+        await api_key_usage.prune_api_key_usage_events(batch_size=1_001, now=now)
+    assert await api_key_usage.prune_api_key_usage_events(batch_size=1, now=now) == 1
+    assert await api_key_usage.prune_api_key_usage_events(batch_size=1, now=now) == 1
+    assert await api_key_usage.prune_api_key_usage_events(batch_size=1, now=now) == 0
+    assert [event["created_at"] for event in await _events_for(wallet["key_id"])] == [
+        cutoff.isoformat(sep=" "),
+        (cutoff + timedelta(seconds=1)).isoformat(sep=" "),
+    ]
 
 
 @pytest.mark.anyio

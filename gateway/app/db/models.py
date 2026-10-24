@@ -320,6 +320,7 @@ class APIKeyUsageEventModel(SQLModel, table=True):
     __tablename__ = "api_key_usage_events"
     __table_args__ = (
         Index("ix_api_key_usage_events_key_created", "key_id", "created_at"),
+        Index("ix_api_key_usage_events_created", "created_at"),
     )
 
     id: str = Field(primary_key=True, max_length=36)

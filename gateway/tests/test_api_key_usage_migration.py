@@ -45,6 +45,11 @@ def test_045_revision_and_daily_view(tmp_path, monkeypatch) -> None:
         and index["column_names"] == ["key_id", "created_at"]
         for index in inspector.get_indexes("api_key_usage_events")
     )
+    assert any(
+        index["name"] == "ix_api_key_usage_events_created"
+        and index["column_names"] == ["created_at"]
+        for index in inspector.get_indexes("api_key_usage_events")
+    )
 
     insert = text(
         "INSERT INTO api_key_usage_events "

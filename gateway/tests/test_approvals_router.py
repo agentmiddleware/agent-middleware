@@ -62,6 +62,25 @@ def _fresh_id() -> str:
     return str(uuid.uuid4())
 
 
+def _random_port() -> int:
+    return 1024 + secrets.randbelow(65535 - 1024 + 1)
+
+
+def _random_10_host() -> str:
+    return (
+        f"10.{secrets.randbelow(256)}.{secrets.randbelow(256)}"
+        f".{1 + secrets.randbelow(254)}"
+    )
+
+
+def _random_192_168_host() -> str:
+    return f"192.168.{secrets.randbelow(256)}.{1 + secrets.randbelow(254)}"
+
+
+def _random_invalid_host() -> str:
+    return f"{uuid.uuid4().hex}.invalid"
+
+
 @pytest.fixture
 def app() -> FastAPI:
     set_approval_store_for_tests(InMemoryApprovalStore())
@@ -177,19 +196,27 @@ async def test_approve_through_http_decides_db_row(
     assert stored.status == "approved"
 
 
+# Protocol constants (loopback): the only client identities allowed through.
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
 def test_require_loopback_allows_loopback(host: str) -> None:
-    request = Request({"type": "http", "client": (host, 1234), "headers": []})
+    request = Request({"type": "http", "client": (host, _random_port()), "headers": []})
     assert require_loopback(request) is None
 
 
 @pytest.mark.parametrize(
-    "host", ["10.0.0.1", "192.168.1.2", "example.com", "testclient", ""]
+    "host",
+    [
+        _random_10_host(),
+        _random_192_168_host(),
+        _random_invalid_host(),
+        "testclient",
+        "",
+    ],
 )
 def test_require_loopback_rejects_remote(host: str) -> None:
-    scope = {"type": "http", "headers": []}
+    scope: dict[str, Any] = {"type": "http", "headers": []}
     if host:
-        scope["client"] = (host, 1234)
+        scope["client"] = (host, _random_port())
     else:
         scope["client"] = None
     with pytest.raises(HTTPException) as exc_info:

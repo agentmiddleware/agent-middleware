@@ -9,6 +9,8 @@ import json
 import secrets
 import sys
 import uuid
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,8 +61,20 @@ def _fresh_id() -> str:
     return str(uuid.uuid4())
 
 
+def _fixture_epoch(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    return datetime.fromisoformat(text).timestamp()
+
+
+FIXTURE_EPOCH = _fixture_epoch(W["ts"])
+
+
 class _Clock:
-    def __init__(self, now: float = 1_000_000.0) -> None:
+    def __init__(self, now: float = FIXTURE_EPOCH) -> None:
         self.now = now
 
     def __call__(self) -> float:
@@ -325,6 +339,41 @@ def test_key_mismatch_rejects(
     assert rejected.action == "REJECT"
     assert rejected.reason == "key_mismatch"
     assert [event for event, _ in receipts] == ["key_mismatch"]
+
+
+@pytest.mark.parametrize(
+    ("field", "reason"),
+    [
+        ("tool", "tool_mismatch"),
+        ("session_id", "session_mismatch"),
+        ("idempotency_key", "key_mismatch"),
+    ],
+)
+def test_stored_record_mismatch_rejects(
+    gate: ApprovalGate,
+    receipts: list[tuple[str, dict[str, Any]]],
+    field: str,
+    reason: str,
+) -> None:
+    """A stored record that drifts from the sealed state cannot execute."""
+    decision = _pause(gate)
+    assert decision.nonce is not None
+    assert decision.payload is not None
+    record = gate.store.get(decision.nonce)
+    assert record is not None
+    if field == "idempotency_key":
+        tampered = f"amw-fb-{secrets.token_hex(32)}"
+        while tampered == record.idempotency_key:
+            tampered = f"amw-fb-{secrets.token_hex(32)}"
+    else:
+        tampered = _fresh_id()
+        while tampered == getattr(record, field):
+            tampered = _fresh_id()
+    gate.store.save(replace(record, **{field: tampered}))
+    rejected = _retry(gate, decision.payload["requestState"])
+    assert rejected.action == "REJECT"
+    assert rejected.reason == reason
+    assert [event for event, _ in receipts] == [reason]
 
 
 def test_missing_secret_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -700,6 +700,19 @@ class ApprovalGate:
         if record is None:
             self._emit("tampered", nonce=nonce, tool=tool, principal=caller)
             return ApprovalDecision(action="REJECT", reason="tampered", nonce=nonce)
+        if record.tool != tool:
+            self._emit("tool_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="tool_mismatch", nonce=nonce
+            )
+        if record.session_id != session_id:
+            self._emit("session_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="session_mismatch", nonce=nonce
+            )
+        if record.idempotency_key != idempotency_key:
+            self._emit("key_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(action="REJECT", reason="key_mismatch", nonce=nonce)
         now = self.clock()
         sealed_deadline = sealed.get("deadline")
         if (

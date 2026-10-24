@@ -47,9 +47,9 @@ python -m pip install -e './sdk/python[mcp]'
 ### Historical release
 
 Version `0.4.0` was released under
-[`python-sdk-v0.4.0`](https://github.com/PetrefiedThunder/agent-middleware/releases/tag/python-sdk-v0.4.0)
+[`python-sdk-v0.4.0`](https://github.com/agentmiddleware/agent-middleware-api/releases/tag/python-sdk-v0.4.0)
 with the
-[`b2a_sdk-0.4.0-py3-none-any.whl`](https://github.com/PetrefiedThunder/agent-middleware/releases/download/python-sdk-v0.4.0/b2a_sdk-0.4.0-py3-none-any.whl)
+[`b2a_sdk-0.4.0-py3-none-any.whl`](https://github.com/agentmiddleware/agent-middleware-api/releases/download/python-sdk-v0.4.0/b2a_sdk-0.4.0-py3-none-any.whl)
 wheel.
 
 The linked 0.4.0 wheel predates the `amw` import and CLI. Install this checkout

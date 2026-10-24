@@ -30,7 +30,7 @@ automatically on first run.
 ## 1. Boot the trust plane (~2 minutes)
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware/gateway
 make quickstart
 ```
@@ -53,6 +53,12 @@ Three things worth knowing about what just started:
 - **The server binds loopback only**, because self-serve key minting is
   enabled. This posture is for a machine you control; production-like
   deployments refuse to boot with these flags set.
+- **The demo flags are on here and off everywhere else.** This server
+  boots with `ENABLE_STANDARD_MCP_ENDPOINT=true` (so step 10 can use
+  `POST /mcp`) and `ENABLE_DOGFOOD_TOOL=true` (so there is one real tool
+  to call). Both default to false, and the configured upstream
+  integration (`MCP_UPSTREAM_*`) stays disabled until an operator sets
+  it, so a stock deploy answers 404 on `POST /mcp` by design.
 
 Leave the server running and do the rest **in a second terminal**, from the
 gateway directory (the same directory where you ran `make quickstart`):

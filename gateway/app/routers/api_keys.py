@@ -4,11 +4,16 @@ API Key Management Router
 Handles API key creation, rotation, and revocation for wallet security.
 """
 
+from datetime import date, datetime
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import BaseModel
+from sqlalchemy import text
 
 from ..core.dependencies import get_agent_money
 
 from ..core.auth import AuthContext, get_auth_context
+from ..db.database import get_session_factory
 from ..core.wallet_resolution import resolve_wallet_id
 from ..services.api_key_service import (
     get_api_key_service,
@@ -37,6 +42,57 @@ router = APIRouter(
         403: {"description": "Insufficient permissions"},
     },
 )
+
+admin_router = APIRouter(
+    prefix="/v1/admin/api-keys",
+    tags=["API Key Management"],
+)
+
+
+class APIKeyUsageDailyRow(BaseModel):
+    key_id: str
+    day: date
+    calls: int
+    calls_4xx: int
+    calls_5xx: int
+    p50_latency_ms: float
+    p95_latency_ms: float
+    first_call_at: datetime
+    last_call_at: datetime
+
+
+class APIKeyUsageDailyResponse(BaseModel):
+    rows: list[APIKeyUsageDailyRow]
+
+
+@admin_router.get(
+    "/usage/daily",
+    response_model=APIKeyUsageDailyResponse,
+    summary="Admin: daily usage by API key",
+    description="Read daily call counts and latency from api_key_usage_daily.",
+)
+async def admin_api_key_usage_daily(
+    key_id: str | None = None,
+    auth: AuthContext = Depends(get_auth_context),
+) -> APIKeyUsageDailyResponse:
+    auth.require_bootstrap_admin()
+    query = (
+        "SELECT key_id, day, calls, calls_4xx, calls_5xx, p50_latency_ms, "
+        "p95_latency_ms, first_call_at, last_call_at FROM api_key_usage_daily"
+    )
+    parameters = {}
+    if key_id is not None:
+        query += " WHERE key_id = :key_id"
+        parameters["key_id"] = key_id
+    query += " ORDER BY day DESC, key_id"
+    async with get_session_factory()() as session:
+        result = await session.execute(text(query), parameters)
+        return APIKeyUsageDailyResponse(
+            rows=[
+                APIKeyUsageDailyRow.model_validate(dict(row))
+                for row in result.mappings()
+            ]
+        )
 
 
 def _not_found(error: str, message: str) -> dict:

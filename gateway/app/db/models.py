@@ -290,9 +290,9 @@ class APIKeyModel(SQLModel, table=True):
     )
     expires_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
 
-    # Bounded-use keys: None = unlimited. use_count only advances through the
-    # guarded UPDATE in APIKeyService.validate_key so the cap cannot be
-    # overshot by concurrent requests.
+    # Bounded-use keys: None = unlimited. use_count tracks capped-key budget
+    # consumption, not total calls. api_key_usage_events is the call source
+    # of truth; it also includes unbounded keys and response outcomes.
     max_uses: Optional[int] = Field(default=None)
     use_count: int = Field(default=0)
 
@@ -312,6 +312,25 @@ class APIKeyModel(SQLModel, table=True):
     metadata_json: Optional[str] = Field(default=None)
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+class APIKeyUsageEventModel(SQLModel, table=True):
+    """One metadata-only HTTP outcome for a resolved database API key."""
+
+    __tablename__ = "api_key_usage_events"
+    __table_args__ = (
+        Index("ix_api_key_usage_events_key_created", "key_id", "created_at"),
+    )
+
+    id: str = Field(primary_key=True, max_length=36)
+    # Historical events survive key revocation or deletion.
+    key_id: str = Field(max_length=50)
+    tenant: Optional[str] = Field(default=None, max_length=32)
+    method: str = Field(max_length=16)
+    endpoint: str = Field(max_length=512)
+    status_code: int
+    latency_ms: int
+    created_at: datetime = Field(sa_type=NaiveUTCDateTime, default_factory=utc_now)
 
 
 class TelemetryEventModel(SQLModel, table=True):

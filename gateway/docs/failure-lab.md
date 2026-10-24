@@ -94,6 +94,61 @@ Every expectation is asserted. A broken one is recorded in `config.json` and
 and the process exits non-zero. `tests/test_failure_lab.py` runs the lab in
 CI and pins the same numbers, so the report cannot drift from the code.
 
+## The target safety fuse
+
+One arm, `native.key_conflict`, is different in kind from the others. It
+reuses a spent idempotency key with `$9500.00` in place of the `$250.00` that
+key was issued for — a 38x larger payload the operator never authorized — and
+it sends that **straight to the tool**, with no gateway in the path to refuse
+it. It is safe here only because the simulated rail refuses a key reused with
+different parameters. Pointed at a real tool that does not implement that
+refusal, the arm would execute an action nobody authorized.
+
+So the arm is fused. Before either call,
+``require_in_process_rail`` asks the caller whether its bytes terminate in the
+lab's own rail, and raises ``UnsafeTargetError`` instead of calling if they do
+not. The arm runs against that rail or it does not run.
+
+The fuse compares **identity, not configuration**. A URL constant, an
+environment variable, or a settings field can all be edited without changing
+where the bytes actually go, so ``_terminates_in_asgi_app`` walks the object
+graph the request will travel through — unwrapping each ``LossyTransport`` via
+its ``inner`` property — and compares the leaf ``ASGITransport``'s app by
+``is``. A real network transport at the leaf reads as foreign, which is the
+case that matters: it is what a real partner tool would sit behind.
+
+A refusal exits **2**, deliberately distinct from the **1** the lab exits when
+an expectation merely broke. A safety refusal is not a failed measurement, and
+an operator reading exit codes should not have to tell them apart by eye. The
+refusal is raised inside the MCP server's task group, so `main` unwraps the
+`BaseExceptionGroup` it arrives in and prints the message alone rather than a
+traceback.
+
+`gateway.key_conflict` sends the same oversized payload and is deliberately
+**not** fused. It routes through the gateway, which refuses a reused key
+*before* dispatch, so the payload never reaches the downstream at all. That
+refusal is our code and the thing under test, and verifying it in front of a
+real tool is both safe and worth doing.
+
+The fuse has its own test button, which runs no scenarios, makes no calls and
+causes no effects:
+
+```bash
+python scripts/failure_lab.py --self-check-guards
+```
+
+It builds six transport chains and asserts the fuse admits only the two that
+terminate in the rail's own app, printing one line per case.
+
+**What the fuse does not cover.** It addresses the unauthorized-payload hazard
+only. The arms that deliberately cause a *duplicate* of an action the operator
+did authorize — `existing.lost_response` and both agent-restart arms — are not
+fused: a duplicate costs nothing against the simulated rail, and each would
+need its own authorization before this lab was pointed anywhere real. The
+fuse is also local to this script: the larger `failure_lab/` package linked at
+the top of this document carries its own equivalent scenario, and this fuse
+does not cover it.
+
 ## What one run shows
 
 Recorded 2026-09-19 on the commit that added the lab. The numbers are

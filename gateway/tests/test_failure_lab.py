@@ -302,3 +302,181 @@ def test_reusing_a_run_directory_is_refused(tmp_path: Path) -> None:
     # and no report was written beside it.
     assert (run_dir / "effects.jsonl").read_text() == '{"seq": 1}\n'
     assert not (run_dir / "report.json").exists()
+
+
+# --------------------------------------------------------------------------- #
+# The target safety fuse                                                        #
+# --------------------------------------------------------------------------- #
+
+FUSE_CASES = (
+    "lossy(ASGITransport(app=rail_app))",
+    "ASGITransport(app=rail_app)",
+    "lossy(ASGITransport(app=other_app))",
+    "lossy(httpx.AsyncHTTPTransport())",
+    "httpx.AsyncHTTPTransport()",
+    "lossy(lossy(httpx.AsyncHTTPTransport()))",
+)
+
+# Repoints DirectCaller at a real network transport, which is what a real
+# partner tool would sit behind. Nothing listens on the lab's upstream port, so
+# the arms before the fused one fail their checks against a dead socket — which
+# is fine, because checks record rather than raise, so the run still reaches
+# `native.key_conflict`.
+FOREIGN_DIRECT_CALLER = """
+def _foreign_init(self, rail, injector, events):
+    self._transport = fl.LossyTransport(
+        httpx.AsyncHTTPTransport(),
+        hop=fl.HOP_AGENT_DOWNSTREAM,
+        injector=injector,
+    )
+    self._client = httpx.AsyncClient(
+        transport=self._transport, follow_redirects=False
+    )
+    self._events = events
+
+
+fl.DirectCaller.__init__ = _foreign_init
+"""
+
+
+def _driver(tmp_path: Path, name: str, body: str, *, json_mode: bool) -> Path:
+    """Write a script that drives the lab in-process with a controlled argv.
+
+    `scripts/failure_lab.py` parses argv and configures the environment at
+    import time, so argv has to be in place before the import — which is why
+    these tests drive it from a generated script rather than importing it here.
+    """
+    argv = ["failure_lab.py"]
+    if json_mode:
+        argv.append("--json")
+    argv += ["--output-dir", str(tmp_path / f"{name}-out"), "--latency-samples", "0"]
+    path = tmp_path / f"{name}.py"
+    path.write_text(
+        "import json\n"
+        "import sys\n"
+        f"sys.argv = {argv!r}\n"
+        f"sys.path.insert(0, {str(ROOT / 'scripts')!r})\n"
+        "import httpx\n"
+        "import failure_lab as fl\n"
+        f"{FOREIGN_DIRECT_CALLER}\n"
+        f"{body}\n"
+    )
+    return path
+
+
+def _run_driver(path: Path, *, timeout: int = 300) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(path)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def test_guard_self_check_reports_every_fuse_case_holding() -> None:
+    """The fuse has a test button that runs no scenarios and makes no calls."""
+    result = subprocess.run(
+        [sys.executable, "scripts/failure_lab.py", "--self-check-guards"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr[-4000:]
+    assert "fuse cases hold" in result.stdout
+    assert "FAIL" not in result.stdout
+    for case in FUSE_CASES:
+        assert case in result.stdout, f"the self-check does not name {case}"
+
+
+def test_fuse_refuses_the_conflict_arm_against_a_foreign_target(
+    tmp_path: Path,
+) -> None:
+    """The arm sends an unauthorized payload, so a foreign target stops it.
+
+    This is the property the fuse exists for: with no gateway in the path, the
+    38x payload is safe only because the lab's own rail refuses it. Pointed
+    anywhere else, the arm must not make the call at all.
+    """
+    driver = _driver(
+        tmp_path,
+        "refusal",
+        """
+import asyncio
+
+
+async def go():
+    lab = fl.Lab(latency_samples=0)
+    raised = ""
+    async with lab.rail.lifespan():
+        try:
+            await lab.native_key_conflict()
+        except BaseException as exc:
+            refused = [
+                member
+                for member in fl._flatten_exceptions(exc)
+                if isinstance(member, fl.UnsafeTargetError)
+            ]
+            if not refused:
+                raise
+            raised = str(refused[0])
+    return {"raised": raised, "effects": len(lab.rail.effects)}
+
+
+print("RESULT " + json.dumps(asyncio.run(go())))
+""",
+        json_mode=True,
+    )
+
+    result = _run_driver(driver)
+    assert result.returncode == 0, result.stderr[-4000:]
+    payload = json.loads(
+        next(
+            line for line in result.stdout.splitlines() if line.startswith("RESULT ")
+        ).removeprefix("RESULT ")
+    )
+
+    assert payload["raised"], "the fuse admitted a foreign target"
+    # Refused before any call, so the rail executed nothing at all.
+    assert payload["effects"] == 0
+    assert "refused before any call" in payload["raised"]
+    assert "no gateway" in payload["raised"]
+
+
+def test_fuse_refusal_exits_two_without_a_traceback(tmp_path: Path) -> None:
+    """A safety refusal is not a failed measurement, so it gets its own code.
+
+    The refusal is raised inside the MCP server's task group and arrives at
+    `main` wrapped in a `BaseExceptionGroup`. If that is not unwrapped the
+    operator gets a traceback and the distinct exit code is lost.
+    """
+    driver = _driver(tmp_path, "exitcode", "fl.main()", json_mode=True)
+
+    result = _run_driver(driver)
+
+    assert result.returncode == 2, (result.returncode, result.stderr[-4000:])
+    assert "native.key_conflict refused before any call" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "UnsafeTargetError" not in result.stderr
+
+
+def test_conflict_arm_records_the_fuse_in_its_evidence(
+    lab_run: dict[str, Any],
+) -> None:
+    """The fuse is observable in the run's evidence, not only in the source.
+
+    `report.txt` renders notes only for the six scenarios in its fixed layout,
+    which does not include this arm, so the structured summary is where this
+    has to be asserted.
+    """
+    notes = " ".join(_scenario(lab_run, "native.key_conflict")["notes"])
+    assert "target safety fuse" in notes
+    assert "in-process rail" in notes
+
+    saved = json.loads(Path(lab_run["artifacts"]["summary"]).read_text())
+    saved_notes = " ".join(_scenario(saved, "native.key_conflict")["notes"])
+    assert saved_notes == notes

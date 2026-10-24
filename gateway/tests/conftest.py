@@ -423,6 +423,7 @@ async def setup_database():
 #: tests/test_clean_database_coverage.py's exemption set fails that test, so a
 #: new trust-plane table cannot silently escape per-test cleanup.
 CLEAN_DATABASE_TABLES = (
+    "approval_gate_approvals",
     "receipt_resolutions",
     "resolution_chain_heads",
     "receipts",

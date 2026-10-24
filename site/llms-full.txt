@@ -1,0 +1,153 @@
+# Agent Middleware: full machine brief
+
+The long-form companion to /llms.txt on this host. Read /llms.txt first for the
+bootstrap sequence; read this when you need the product boundary, the
+vocabulary, and the claims that are deliberately NOT made.
+
+Origin roles:
+
+- https://www.agentmiddleware.dev: human site and published proof. Its homepage
+  issues free sandbox demo keys inline with no account needed. It executes no
+  tools and holds no customer data.
+- https://api.thisisatest.tech: the gateway itself. All protected actions live
+  here.
+
+Do not treat the marketing origin as an API base URL.
+
+## What the product is
+
+A transaction-integrity boundary for one consequential, autonomous,
+retry-sensitive action on the configured upstream-MCP path. One logical action
+binds delegated authority and configured consumption to at most one gateway
+dispatch and debit, preserves `delivery_uncertain`, and links gateway evidence
+for required external reconciliation.
+
+It is not an agent runtime, an LLM provider, an IAM replacement, a marketplace,
+one distributed ACID transaction, or proof of the downstream effect.
+
+Protected calls use `X-API-Key`. Free sandbox demo keys are available inline at
+https://www.agentmiddleware.dev/ with no account needed. The /demo-key/ page is
+the fallback without JavaScript. Production keys are issued to design partners.
+
+The homepage's single quickstart uses https://github.com/agentmiddleware/amw-demo
+and Python 3.10+. It needs both api_key and wallet_id from the demo key
+response. The script issues a permit, calls partner.echo, retries with the
+same request key, and verifies the receipt offline. The curl invoke tab is
+marked Coming soon because the shorter server path is not deployed yet.
+
+## Transaction loop
+
+logical action -> authorize -> reserve allowance -> debit -> claim dispatch
+-> confirmed outcome | delivery_uncertain -> receipt/audit
+-> authoritative external reconciliation required
+
+- logical action: an accepted idempotency key is bound to one immutable payload.
+- authorize: a signed permit binds wallet, tool, budget, expiry, and nonce.
+- reserve/debit: configured credit or call allowance is consumed at most once.
+- credits: a closed-loop metering unit for the pilot, not payment rails.
+- claim dispatch: the supported upstream path permits at most one gateway send.
+- outcome: confirmed results are recorded; ambiguous delivery becomes durable
+  `delivery_uncertain` and is not automatically redispatched.
+- evidence: receipt and audit linkage support external reconciliation.
+- reconcile: the partner's authoritative system determines downstream effect
+  truth; gateway evidence does not prove that effect.
+
+## Vocabulary
+
+- permit: a signed, scoped, expiring grant for one tool and one wallet.
+- wallet: the budget an action is charged against. Sponsor and agent wallets
+  are distinct.
+- receipt: the signed record of a terminal gateway outcome.
+- b2a_sdk: the repository's client SDK package, short for business-to-agent.
+  It ships the offline verifier, `b2a-verify-receipt`.
+- transaction-integrity boundary: the product category. Legacy identifiers that
+  contain "trust plane" remain compatibility aliases, not current positioning.
+
+## Published proof
+
+https://www.agentmiddleware.dev/proof/
+
+Two files are published there: the portable receipt and the exact public-key
+snapshot that matches it. `b2a-verify-receipt --bundle receipt.json --keys
+trust-keys.json --expect-issuer https://api.thisisatest.tech` checks the
+signature with no API credential and no callback to the issuer. Exit 0 verified,
+1 invalid, 2 undetermined.
+
+Exit 0 proves the receipt matches the supplied key snapshot. It does not
+independently authenticate who supplied that snapshot; pin the key through a
+trusted channel before relying on issuer identity.
+
+## Check it today, no access needed
+
+The standalone verifier is published next to the receipt, so no repository
+access is needed: download receipt.json, trust-keys.json, and verify_receipt.py
+from https://www.agentmiddleware.dev/proof/, run `python3 -m pip install
+cryptography`, then `python3 verify_receipt.py --bundle receipt.json --keys
+trust-keys.json --expect-issuer https://api.thisisatest.tech`. Keyless live
+calls: https://api.thisisatest.tech/health and
+https://api.thisisatest.tech/.well-known/trust-keys.json. Public API contract:
+https://api.thisisatest.tech/openapi.json and https://api.thisisatest.tech/docs.
+The free sandbox demo key can run the demo tool. Production tool calls need a
+design partner key.
+
+## Run the whole loop yourself (public source)
+
+No live API credentials required. Clone
+https://github.com/agentmiddleware/agent-middleware. Install Python 3.11+,
+git, make, curl, and uv first; see docs/quickstart.md. Then from the repository
+root:
+
+- `make quickstart` then docs/quickstart.md: mint a wallet-scoped key, issue a
+  permit, invoke one governed tool, replay it, overspend it, verify the receipt.
+- `make prove-trust-plane`: one command, no server, asserts the full loop.
+- `make red-team-trust-plane`: drives one valid permit and attacks it ten ways
+  (no permit, unknown permit, out-of-scope tool, missing scope, over-budget,
+  wrong wallet, wrong key, expired, revoked, tampered signature), asserting each
+  is denied with a concrete reason code and produces no ledger debit.
+
+Both use a throwaway local SQLite database and the real FastAPI routes. These
+are reproducible local proofs, not a partner-owned consequential action,
+customer validation, production settlement, or compliance evidence.
+
+## Runtime honesty
+
+GET https://api.thisisatest.tech/health/dependencies
+
+HTTP 200 alone does not mean every dependency is ready. Inspect `status` and
+the selected tool's dependencies. Health never replaces authentication or
+permit checks.
+
+## What is NOT established
+
+State these limits rather than inferring past them:
+
+- No customer traction or production adoption.
+- No production settlement or payment rails.
+- No compliance-grade ledger storage.
+- No proof that the downstream effect occurred or matched the authorized request;
+  that requires the partner's authoritative lookup or receiver-side evidence.
+- The gateway cannot prove whether the upstream tool repeated its own side
+  effect. For a finalized request, a retry with the same accepted key and
+  payload returns the original receipt instead of dispatching again. A new key
+  is a new request.
+  The gateway cannot control what an upstream tool does with a request it
+  already received.
+- No universal governance across every agent framework.
+- The published receipt is a self-issued sample issued on
+  @@PROOF_RECEIPT_ISSUED@@, not customer evidence and not a test of the
+  deployment running today.
+
+## Buyers and contact
+
+Buyers are platform engineering, AI infrastructure, and security teams that
+operate consequential autonomous actions. The engagement is one tool, one
+operator, one retry-sensitive action, scoped privately. Production rollout is
+limited to design partners.
+
+Human site: https://www.agentmiddleware.dev/
+Pilot details: https://www.agentmiddleware.dev/pilot/
+Offline receipt verification: https://www.agentmiddleware.dev/proof/
+Comparison with named alternatives, including the rows this loses:
+https://www.agentmiddleware.dev/compare/
+Source repository: https://github.com/agentmiddleware/agent-middleware (public)
+Security contact: https://www.agentmiddleware.dev/.well-known/security.txt

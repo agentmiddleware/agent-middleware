@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Verify this receipt yourself | Agent Middleware API</title>
+    <meta
+      name="description"
+      content="Download a portable Agent Middleware API receipt and verify its Ed25519 signature offline."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="canonical" href="https://www.agentmiddleware.dev/proof/" />
+    <link
+      rel="alternate"
+      hreflang="en"
+      href="https://www.agentmiddleware.dev/proof/"
+    />
+    <link
+      rel="alternate"
+      hreflang="x-default"
+      href="https://www.agentmiddleware.dev/proof/"
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link
+      rel="alternate"
+      type="application/json"
+      title="Agent manifest"
+      href="/.well-known/agent.json"
+    />
+    <link
+      rel="alternate"
+      type="text/plain"
+      title="Instructions for autonomous agents"
+      href="/llms.txt"
+    />
+    <link
+      rel="alternate"
+      type="text/plain"
+      title="Extended briefing for autonomous agents"
+      href="/llms-full.txt"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="Agent Middleware API" />
+    <meta property="og:title" content="Verify an agent-action receipt yourself" />
+    <meta
+      property="og:description"
+      content="Download the receipt and public-key snapshot, then verify the signature offline."
+    />
+    <meta property="og:url" content="https://www.agentmiddleware.dev/proof/" />
+    <meta
+      property="og:image"
+      content="https://www.agentmiddleware.dev/social-card.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Agent Middleware API portable receipt verification"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Verify an agent-action receipt yourself" />
+    <meta
+      name="twitter:description"
+      content="Download the receipt and public-key snapshot, then verify the signature offline."
+    />
+    <meta
+      name="twitter:image"
+      content="https://www.agentmiddleware.dev/social-card.png"
+    />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebPage",
+            "@id": "https://www.agentmiddleware.dev/proof/#webpage",
+            "name": "Verify an agent-action receipt yourself",
+            "url": "https://www.agentmiddleware.dev/proof/",
+            "description": "Download a portable Agent Middleware API receipt and verify its Ed25519 signature offline.",
+            "inLanguage": "en",
+            "isPartOf": { "@id": "https://www.agentmiddleware.dev/#website" },
+            "about": { "@id": "https://www.agentmiddleware.dev/#software" },
+            "primaryImageOfPage": { "@id": "https://www.agentmiddleware.dev/#logo" },
+            "breadcrumb": {
+              "@id": "https://www.agentmiddleware.dev/proof/#breadcrumb"
+            },
+            "mainEntity": { "@id": "https://www.agentmiddleware.dev/proof/#howto" }
+          },
+          {
+            "@type": "BreadcrumbList",
+            "@id": "https://www.agentmiddleware.dev/proof/#breadcrumb",
+            "itemListElement": [
+              {
+                "@type": "ListItem",
+                "position": 1,
+                "name": "Agent Middleware API",
+                "item": "https://www.agentmiddleware.dev/"
+              },
+              {
+                "@type": "ListItem",
+                "position": 2,
+                "name": "Verify this receipt",
+                "item": "https://www.agentmiddleware.dev/proof/"
+              }
+            ]
+          },
+          {
+            "@type": "HowTo",
+            "@id": "https://www.agentmiddleware.dev/proof/#howto",
+            "name": "Verify an agent-action receipt offline",
+            "description": "Check an Ed25519-signed Agent Middleware API receipt against a published key snapshot with networking disabled. Exit 0 means verified, 1 means the signature is invalid, and 2 means the verifier cannot determine.",
+            "inLanguage": "en",
+            "totalTime": "PT5M",
+            "tool": [
+              { "@type": "HowToTool", "name": "Python 3.9 or newer" },
+              { "@type": "HowToTool", "name": "curl" }
+            ],
+            "supply": [
+              {
+                "@type": "HowToSupply",
+                "name": "receipt.json",
+                "url": "https://www.agentmiddleware.dev/proof/receipt.json"
+              },
+              {
+                "@type": "HowToSupply",
+                "name": "trust-keys.json",
+                "url": "https://www.agentmiddleware.dev/proof/trust-keys.json"
+              },
+              {
+                "@type": "HowToSupply",
+                "name": "verify_receipt.py",
+                "url": "https://www.agentmiddleware.dev/proof/verify_receipt.py"
+              }
+            ],
+            "step": [
+              {
+                "@type": "HowToStep",
+                "position": 1,
+                "name": "Download the signed bundle and the key snapshot",
+                "text": "Save receipt.json, trust-keys.json, and verify_receipt.py from this page with curl. All three stay downloadable by anyone, with no account and no key.",
+                "url": "https://www.agentmiddleware.dev/proof/#artifact-title"
+              },
+              {
+                "@type": "HowToStep",
+                "position": 2,
+                "name": "Install the verifier dependency",
+                "text": "Install only the cryptography package with pip. The verifier itself is the standalone script downloaded in step 1.",
+                "url": "https://www.agentmiddleware.dev/proof/#verify-title"
+              },
+              {
+                "@type": "HowToStep",
+                "position": 3,
+                "name": "Verify the signed bytes with networking disabled",
+                "text": "Run python3 verify_receipt.py with the bundle, the key snapshot, and the expected issuer. Exit 0 proves the receipt matches the supplied key snapshot; it does not independently authenticate who supplied that snapshot, so pin the key through a trusted channel first.",
+                "url": "https://www.agentmiddleware.dev/proof/#verify-title"
+              }
+            ]
+          }
+        ]
+      }
+    </script>
+    @@FONT_PRELOADS@@
+    <link rel="stylesheet" href="/fonts.css?v=@@FONTS_CSS_VERSION@@" />
+    <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
+    <!-- Blocking on purpose: saved accessibility preferences must apply before
+         first paint. Kept in a file rather than inline so the Content-Security-
+         Policy can be script-src 'self' with no 'unsafe-inline'. -->
+    <script src="/a11y-preload.js?v=gateway-19"></script>
+    @@VERCEL_ANALYTICS_SCRIPTS@@
+    <script defer src="/analytics.js?v=gateway-19"></script>
+    <script defer src="/utm-capture.js?v=utm-1"></script>
+    <script defer src="/proof/proof.js?v=gateway-19"></script>
+    <script defer src="/a11y.js?v=gateway-19"></script>
+  </head>
+  <body class="site-light">
+    <a class="skip-link" href="#main">Skip to content</a>
+    @@SITE_NAV@@
+
+    <main id="main" class="proof-page">
+      <header class="section proof-page-header">
+        <p class="section-kicker">Portable receipt / Public evidence</p>
+        <h1>Verify this receipt yourself.</h1>
+        <p class="proof-page-lead">
+          This receipt is self-issued from a non-sensitive
+          <code>partner.echo</code> call and was issued on
+          <time datetime="@@PROOF_RECEIPT_ISSUED@@">@@PROOF_RECEIPT_ISSUED@@</time>.
+          It is a published historical sample: verifying it proves the gateway
+          path signed this receipt with the published key. It is not customer
+          evidence, and it is not a test of the deployment running today.
+        </p>
+      </header>
+
+      <section class="section proof-artifact-section" aria-labelledby="artifact-title">
+        <div class="proof-heading">
+          <div>
+            <p class="section-kicker">01 / Published artifact</p>
+            <h2 id="artifact-title">Signed claims from the portable bundle.</h2>
+          </div>
+          <p data-proof-message>
+            Loading the published receipt and matching public-key snapshot…
+          </p>
+        </div>
+        <div class="proof-grid artifact-grid" aria-live="polite">
+          <article class="proof-col">
+            <div class="proof-label">
+              <span>Receipt</span>
+              <span class="badge" data-proof-status>loading artifact</span>
+            </div>
+            <dl>
+              <div class="row"><dt>receipt</dt><dd data-proof-field="receipt_id">loading…</dd></div>
+              <div class="row"><dt>tool</dt><dd data-proof-field="tool">loading…</dd></div>
+              <div class="row"><dt>outcome</dt><dd data-proof-field="outcome">loading…</dd></div>
+              <div class="row"><dt>charged</dt><dd data-proof-field="credits_charged">loading…</dd></div>
+              <div class="row"><dt>permit</dt><dd data-proof-field="permit_id">loading…</dd></div>
+              <div class="row"><dt>idempotency</dt><dd data-proof-field="idempotency_record_id">loading…</dd></div>
+              <div class="row"><dt>issued</dt><dd data-proof-field="created_at">loading…</dd></div>
+              <div class="row"><dt>key</dt><dd data-proof-field="kid">loading…</dd></div>
+            </dl>
+          </article>
+          <article class="proof-col replay artifact-downloads">
+            <div class="proof-label">
+              <span>Downloads</span>
+              <span class="badge">exact files</span>
+            </div>
+            <p>
+              Keep both files together. The receipt contains the signed bytes;
+              the snapshot contains the matching Ed25519 public key.
+            </p>
+            <a
+              class="button button-primary"
+              href="/proof/receipt.json"
+              download
+              data-analytics-event="proof_click"
+              aria-label="Download receipt.json: sample Ed25519 receipt"
+              >Download receipt.json</a
+            >
+            <a
+              class="button button-secondary"
+              href="/proof/trust-keys.json"
+              download
+              data-analytics-event="proof_click"
+              aria-label="Download trust-keys.json: Ed25519 public keys"
+              >Download trust-keys.json</a
+            >
+            <a
+              class="button button-secondary"
+              href="/proof/verify_receipt.py"
+              download
+              data-analytics-event="proof_click"
+              aria-label="Download verify_receipt.py: standalone offline verifier"
+              >Download verify_receipt.py</a
+            >
+          </article>
+        </div>
+      </section>
+
+      <section class="protocol-section verify-section" aria-labelledby="verify-title">
+        <div class="section protocol-heading">
+          <p class="section-kicker section-kicker-inverse">02 / Offline verification</p>
+          <h2 id="verify-title">Check the signed bytes fully offline.</h2>
+          <p>
+            Download the receipt, the key snapshot, and the standalone
+            verifier below. The downloads need no account and no key. After
+            the downloads, run the verification with networking disabled.
+            Exit 0 means verified, 1 means the signature is invalid, and 2
+            means the verifier cannot determine. Exit 0 proves that the
+            receipt matches the supplied key snapshot; it does not
+            independently authenticate who supplied that snapshot. Pin the
+            key through a trusted channel before relying on issuer identity.
+            <code>--expect-issuer</code> checks the claimed origin as an
+            additional consistency guard.
+          </p>
+          <pre tabindex="0"><code>curl -fsSLO https://www.agentmiddleware.dev/proof/receipt.json
+curl -fsSLO https://www.agentmiddleware.dev/proof/trust-keys.json
+curl -fsSLO https://www.agentmiddleware.dev/proof/verify_receipt.py
+python3 -m pip install cryptography
+python3 verify_receipt.py \
+  --bundle receipt.json \
+  --keys trust-keys.json \
+  --expect-issuer https://api.thisisatest.tech</code></pre>
+          <p>
+            The verifier is a standalone script published on this page: it
+            checks the signature over the receipt's hashes using the supplied
+            key snapshot, with no account and no call back to the gateway.
+            Anyone with a source checkout can use the SDK CLI
+            <code>b2a-verify-receipt</code> instead. The same public key set
+            is also served live, with no key needed, at
+            <code>https://api.thisisatest.tech/.well-known/trust-keys.json</code>
+            (and
+            <code>https://api.thisisatest.tech/.well-known/jwks.json</code>).
+          </p>
+        </div>
+      </section>
+
+      <section class="section proof-live-section" aria-labelledby="live-title">
+        <div>
+          <p class="section-kicker">Try the API</p>
+          <h2 id="live-title">Two calls that need no key.</h2>
+        </div>
+        <p>
+          These read-only calls work with no account and no key. Get a free
+          sandbox demo key at <a href="/demo-key/">/demo-key/</a> with no account
+          needed to try permits and the demo tool. Production keys are issued
+          to design partners through the pilot contact below.
+        </p>
+        <pre tabindex="0"><code>curl -sS https://api.thisisatest.tech/health
+curl -sS https://api.thisisatest.tech/.well-known/trust-keys.json</code></pre>
+      </section>
+
+      <section class="section pilot-section proof-contact" aria-labelledby="proof-contact-title">
+        <div>
+          <p class="section-kicker">03 / Bring your own action</p>
+          <h2 id="proof-contact-title">Test the same loop on one MCP tool.</h2>
+        </div>
+        <div class="pilot-copy">
+          <p>
+            If this evidence shape maps to a real authorization, retry, or
+            audit problem in your stack, email the tool scenario: the tool or
+            action, what goes wrong when it is retried, and how you currently
+            check whether it ran. Include the cost of one duplicate or unproven
+            call, the budget owner, and a decision date. Synthetic or redacted
+            examples only. The pilot is paid, bounded to one tool, and priced
+            after fit is established, with setup and recurring service quoted
+            separately in writing. A call happens only when a scenario needs
+            one. <a href="/pilot/">Read the pilot scope</a> and
+            <a href="/pilot/#economic-fit">estimate economic fit</a>.
+          </p>
+          <div class="pilot-links">
+            <a
+              class="button button-primary"
+              href="@@PILOT_EMAIL_HREF@@"
+              data-analytics-event="email_click"
+              aria-label="Start a pilot by email (opens your mail app)"
+              >Start a pilot by email</a
+            >
+            <a
+              href="mailto:@@PUBLIC_CONTACT_EMAIL@@"
+              data-analytics-event="email_click"
+              aria-label="Email @@PUBLIC_CONTACT_EMAIL@@"
+              >Email @@PUBLIC_CONTACT_EMAIL@@</a
+            >
+            <!-- booking:start -->
+            <a
+              href="@@PUBLIC_BOOKING_URL@@"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-analytics-event="booking_click"
+              aria-label="Book a call if your scenario needs one (opens in a new tab)"
+              >Book a call if your scenario needs one <span aria-hidden="true">↗</span></a
+            >
+            <span class="booking-context">@@BOOKING_CONTEXT@@</span>
+            <!-- booking:end -->
+          </div>
+        </div>
+      </section>
+    </main>
+
+    @@SITE_FOOTER@@
+  </body>
+</html>

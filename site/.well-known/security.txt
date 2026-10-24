@@ -1,0 +1,22 @@
+# Rendered by site/build_site.py. The contact address comes from
+# PUBLIC_CONTACT_EMAIL and Expires is set one year past each build, so a
+# deployed site never serves a lapsed file.
+
+Contact: mailto:@@PUBLIC_CONTACT_EMAIL@@
+Expires: @@SECURITY_TXT_EXPIRES@@
+Preferred-Languages: en
+Canonical: https://www.agentmiddleware.dev/.well-known/security.txt
+
+# The source repository is public. The canonical API also serves product
+# boundary and limitation documents at the URLs below.
+#
+# Scope
+#   www.agentmiddleware.dev: this static marketing and proof site
+#   api.thisisatest.tech  — the governed gateway
+#
+# Known and already-published limitations are listed in
+# https://api.thisisatest.tech/SECURITY_LIMITATIONS.md
+# Please read that first; anything it already covers is not a new finding.
+#
+# This site is operated by a single accountable person, not a staffed security
+# team. Expect a human acknowledgement rather than an automated triage SLA.

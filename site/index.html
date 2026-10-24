@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Let agents retry safely | Agent Middleware</title>
+    <meta
+      name="description"
+      content="Put Agent Middleware in front of a risky tool. A retry with the same key returns the original receipt instead of dispatching again."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="canonical" href="https://www.agentmiddleware.dev/" />
+    <!-- One language, stated rather than guessed: hreflang plus x-default keeps
+         a search engine from inventing a regional variant of a single-locale
+         site. -->
+    <link rel="alternate" hreflang="en" href="https://www.agentmiddleware.dev/" />
+    <link
+      rel="alternate"
+      hreflang="x-default"
+      href="https://www.agentmiddleware.dev/"
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="Agent Middleware" />
+    <meta
+      property="og:title"
+      content="Let agents retry safely."
+    />
+    <meta
+      property="og:description"
+      content="Put Agent Middleware in front of a risky tool. A retry with the same key returns the original receipt instead of dispatching again."
+    />
+    <meta property="og:url" content="https://www.agentmiddleware.dev/" />
+    <meta
+      property="og:image"
+      content="https://www.agentmiddleware.dev/social-card.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Agent Middleware API: authorize one agent action and retry with the same key"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="Let agents retry safely."
+    />
+    <meta
+      name="twitter:description"
+      content="Put Agent Middleware in front of a risky tool. A retry with the same key returns the original receipt instead of dispatching again."
+    />
+    <meta
+      name="twitter:image"
+      content="https://www.agentmiddleware.dev/social-card.png"
+    />
+    <!-- One @graph per page rather than several disconnected blocks: the
+         organization, site, page, and product nodes carry stable @ids, so the
+         subpages reference these definitions instead of restating them and
+         drifting. No offers, prices, or ratings are declared, because none
+         exist to declare. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://www.agentmiddleware.dev/#organization",
+            "name": "Agent Middleware",
+            "url": "https://www.agentmiddleware.dev/",
+            "sameAs": [
+              "https://github.com/agentmiddleware"
+            ],
+            "description": "A single accountable operator building transaction integrity for consequential autonomous actions.",
+            "logo": {
+              "@type": "ImageObject",
+              "@id": "https://www.agentmiddleware.dev/#logo",
+              "url": "https://www.agentmiddleware.dev/social-card.png",
+              "contentUrl": "https://www.agentmiddleware.dev/social-card.png",
+              "width": 1200,
+              "height": 630,
+              "caption": "Agent Middleware"
+            },
+            "image": { "@id": "https://www.agentmiddleware.dev/#logo" },
+            "knowsLanguage": "en"
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://www.agentmiddleware.dev/#website",
+            "name": "Agent Middleware",
+            "url": "https://www.agentmiddleware.dev/",
+            "description": "A gateway for risky agent tools with permits, safe retries, and receipts that can be checked offline.",
+            "inLanguage": "en",
+            "publisher": { "@id": "https://www.agentmiddleware.dev/#organization" }
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://www.agentmiddleware.dev/#software",
+            "name": "Agent Middleware",
+            "applicationCategory": "DeveloperApplication",
+            "applicationSubCategory": "Transaction integrity for consequential autonomous actions",
+            "operatingSystem": "Linux, macOS, Windows (Docker or Python 3.11+)",
+            "url": "https://www.agentmiddleware.dev/",
+            "description": "On the configured upstream-MCP path, a durable gateway state machine binds scoped authority and configured consumption to one logical action, permits at most one gateway dispatch and debit, and preserves ambiguous delivery for required external reconciliation.",
+            "featureList": [
+              "Stable logical-action identity bound to an immutable payload",
+              "Bounded delegated-authority consumption",
+              "At most one configured-upstream gateway dispatch and debit per accepted idempotency key",
+              "Durable delivery_uncertain with no automatic redispatch",
+              "Linked gateway receipt and audit evidence for reconciliation",
+              "Explicit boundary: no claim to prove the downstream effect"
+            ],
+            "keywords": "agent transaction integrity, consequential autonomous actions, Model Context Protocol, delegated authority, idempotency, delivery uncertainty, replay protection, gateway evidence",
+            "publisher": { "@id": "https://www.agentmiddleware.dev/#organization" },
+            "softwareHelp": {
+              "@type": "CreativeWork",
+              "url": "https://www.agentmiddleware.dev/proof/",
+              "name": "Verify an agent-action receipt yourself"
+            }
+          },
+          {
+            "@type": "WebPage",
+            "@id": "https://www.agentmiddleware.dev/#webpage",
+            "url": "https://www.agentmiddleware.dev/",
+            "name": "Let agents retry safely.",
+            "description": "Put Agent Middleware in front of a risky tool. A retry with the same key returns the original receipt instead of dispatching again.",
+            "inLanguage": "en",
+            "isPartOf": { "@id": "https://www.agentmiddleware.dev/#website" },
+            "about": { "@id": "https://www.agentmiddleware.dev/#software" },
+            "primaryImageOfPage": { "@id": "https://www.agentmiddleware.dev/#logo" },
+            "significantLink": [
+              "https://www.agentmiddleware.dev/proof/",
+              "https://www.agentmiddleware.dev/compare/"
+            ]
+          }
+        ]
+      }
+    </script>
+    <link
+      rel="alternate"
+      type="application/json"
+      title="Agent manifest"
+      href="/.well-known/agent.json"
+    />
+    <link
+      rel="alternate"
+      type="text/plain"
+      title="Instructions for autonomous agents"
+      href="/llms.txt"
+    />
+    <link
+      rel="alternate"
+      type="text/plain"
+      title="Extended briefing for autonomous agents"
+      href="/llms-full.txt"
+    />
+    @@FONT_PRELOADS@@
+    <link rel="stylesheet" href="/fonts.css?v=@@FONTS_CSS_VERSION@@" />
+    <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
+    <!-- Blocking on purpose: saved accessibility preferences must apply before
+         first paint. Kept in a file rather than inline so the Content-Security-
+         Policy can be script-src 'self' with no 'unsafe-inline'. -->
+    <script src="/a11y-preload.js?v=home-light-1"></script>
+    @@VERCEL_ANALYTICS_SCRIPTS@@
+    <script defer src="/wave.js?v=home-light-1"></script>
+    <!-- The arcade is fetched on demand by this bootstrap (on PRESS START,
+         on hover/focus, or on a ?arcade= deep link); /arcade.js and
+         /arcade.css are named on the launcher below, not loaded here. -->
+    <script defer src="/arcade-boot.js?v=home-light-1"></script>
+    <script defer src="/analytics.js?v=home-light-1"></script>
+    <script defer src="/utm-capture.js?v=home-light-1"></script>
+    <script defer src="/home-key.js?v=home-light-2"></script>
+    <script defer src="/a11y.js?v=home-light-1"></script>
+  </head>
+  <body class="home-light site-light">
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <!-- One persistent particle field behind the whole page. /wave.js
+         renders it and lerps its state between the sections' data-wave
+         presets as they cross the viewport; the static backdrop stands in
+         without JavaScript or WebGL. -->
+    <div class="wave-fallback" aria-hidden="true"></div>
+    <canvas
+        id="wave-canvas"
+        class="wave-canvas"
+        data-pixel-width="960"
+        aria-hidden="true"
+      ></canvas>
+
+    @@SITE_NAV@@
+
+    <main id="main">
+      <header class="hero-v2" id="top" data-wave="sea">
+        <div class="hero-v2-inner">
+          <div class="hero-v2-intro">
+            <h1>Let agents retry safely.</h1>
+            <p>One accepted request key permits at most one gateway dispatch to the configured upstream tool and at most one debit. Each finalized or reconciled path has a receipt.</p>
+            <div class="hero-v2-actions">
+              <button class="hero-v2-action hero-v2-action-primary" id="home-key-trigger" type="button" aria-controls="home-key-panel" hidden>Get a demo key</button>
+              <noscript><a class="hero-v2-action hero-v2-action-primary" href="/demo-key/">Get a demo key</a></noscript>
+              <a class="hero-v2-action hero-v2-action-secondary" href="https://github.com/agentmiddleware/amw-demo" rel="noopener noreferrer">Run the quickstart: amw-demo <span aria-hidden="true">→</span></a>
+            </div>
+          </div>
+          <section class="hero-v2-code" aria-label="Quickstart commands">
+            <div class="hero-v2-tabs">
+              <span class="hero-v2-tab hero-v2-tab-active">Python</span>
+              <span class="hero-v2-tab hero-v2-tab-disabled"><code>curl</code><span>coming soon</span></span>
+            </div>
+            <div class="hero-v2-command-row">
+              <pre id="home-hero-python" tabindex="0"><code>git clone https://github.com/agentmiddleware/amw-demo.git
+cd amw-demo
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+export AMW_API_KEY='YOUR_DEMO_KEY'
+export AMW_WALLET_ID='YOUR_WALLET_ID'
+python examples/permit_echo_retry.py</code></pre>
+              <button id="home-hero-python-copy" type="button" aria-label="Copy Python commands" disabled>Copy</button>
+            </div>
+            <div class="hero-v2-command-row hero-v2-curl-row">
+              <pre id="home-hero-curl" tabindex="0"><code>curl -s -X POST https://api.thisisatest.tech/v1/demo/keys</code></pre>
+              <button id="home-hero-curl-copy" type="button" aria-label="Copy curl command">Copy</button>
+            </div>
+            <p class="hero-v2-code-note">The button above fills these Python commands with a demo key. With curl, replace both export placeholders using <code>api_key</code> and <code>wallet_id</code> from the response.</p>
+            <p class="hero-v2-copy-status" id="home-hero-copy-status" role="status" aria-live="polite"></p>
+          </section>
+          <section class="hero-v2-flow" aria-label="Four step request flow">
+            <article class="hero-v2-step">
+              <div class="hero-v2-step-heading"><span>1</span><h2>Permit</h2></div>
+              <p>tool <code>partner.echo</code>, budget, expiry.</p>
+            </article>
+            <article class="hero-v2-step">
+              <div class="hero-v2-step-heading"><span>2</span><h2>Call</h2></div>
+              <p>accepted request key <code>order-123</code>, at most one gateway dispatch and debit; the gateway returns receipt <code>rcpt_7Kq2mX9</code></p>
+            </article>
+            <article class="hero-v2-step hero-v2-step-retry">
+              <div class="hero-v2-step-heading"><span>3</span><h2>Retry</h2></div>
+              <p>same request key <code>order-123</code> returns its linked receipt <code>rcpt_7Kq2mX9</code></p>
+              <div class="hero-v2-retry-confirm"><span aria-hidden="true">✓</span>The gateway does not dispatch again.</div>
+            </article>
+            <article class="hero-v2-step">
+              <div class="hero-v2-step-heading"><span>4</span><h2>Receipt</h2></div>
+              <p>signed, can be checked offline.</p>
+              <span class="hero-v2-signed" role="img" aria-label="signed">✓</span>
+            </article>
+          </section>
+          <p class="hero-v2-license">Apache 2.0 (gateway is Fair Source, FSL-1.1)</p>
+        </div>
+      </header>
+
+      <aside class="home-key-drawer" id="home-key-panel" aria-labelledby="home-key-title" tabindex="-1" hidden>
+        <div class="home-key-drawer-head">
+          <h2 id="home-key-title">Get your demo key</h2>
+          <button class="home-icon-button" id="home-key-close" type="button" aria-label="Close demo key panel">×</button>
+        </div>
+        <p id="home-key-status" role="status" aria-live="polite"></p>
+        <div id="home-key-result" hidden>
+          <div class="home-key-field">
+            <label for="home-key-value">API key</label>
+            <div class="home-key-field-row">
+              <input id="home-key-value" type="password" readonly autocomplete="off" autocapitalize="off" spellcheck="false" />
+              <button id="home-key-reveal" type="button" aria-label="Reveal key" aria-pressed="false">Reveal</button>
+              <button id="home-key-copy" type="button">Copy</button>
+            </div>
+          </div>
+          <div class="home-key-field">
+            <label for="home-wallet-value"><code>wallet_id</code></label>
+            <div class="home-key-field-row">
+              <input id="home-wallet-value" type="password" readonly autocomplete="off" autocapitalize="off" spellcheck="false" />
+              <button id="home-wallet-reveal" type="button" aria-label="Reveal wallet" aria-pressed="false">Reveal</button>
+              <button id="home-wallet-copy" type="button">Copy</button>
+            </div>
+          </div>
+          <p><span id="home-key-budget"></span> demo credits. This key only works in the demo sandbox.</p>
+          <p class="home-key-warning">Save the key now. We show it only once.</p>
+          <button class="button button-primary" id="home-key-copy-both" type="button">Copy both as shell commands</button>
+        </div>
+        <div class="home-key-error" id="home-key-error" hidden>
+          <p id="home-key-error-message"></p>
+          <button class="button button-secondary" id="home-key-retry" type="button" hidden>Try again</button>
+          <a class="button button-secondary" id="home-key-email" href="mailto:@@PUBLIC_CONTACT_EMAIL@@?subject=Demo%20key%20request" hidden>Email us</a>
+        </div>
+      </aside>
+
+      <section class="home-v2-glossary" aria-label="Glossary">
+        <article><h2>Permit</h2><p>A permit says which tool an agent may use, how much it may spend, and when that ends.</p></article>
+        <article><h2>Request key</h2><p>A request key is a name you give one action so a retry is recognized as the same action.</p></article>
+        <article><h2>Receipt</h2><p>A receipt records the gateway decision and linked outcome. You can check its signature offline. It does not prove the downstream effect.</p></article>
+      </section>
+
+      <section class="home-v2-section home-v2-how" id="how-it-works" aria-labelledby="how-title" data-wave="order">
+        <div class="home-v2-section-heading"><p>How it works</p><h2 id="how-title">From demo key to checked receipt</h2></div>
+        <div class="home-v2-steps">
+          <article class="home-v2-guide-step"><span class="home-v2-guide-number">1</span><div><h3>Get a demo key</h3><p>Use the button above. Save both <code>api_key</code> and <code>wallet_id</code> for the demo call.</p></div></article>
+          <article class="home-v2-guide-step" id="quickstart"><span class="home-v2-guide-number">2</span><div><h3>Set up</h3><p>Run the Python example with your demo key and wallet. It needs Python 3.10 or newer.</p>
+            <div class="home-code-panel">
+              <div class="home-code-toolbar"><span>Python</span><button id="home-copy-quickstart" type="button" disabled>Copy setup</button></div>
+              <pre class="home-code-scroll" tabindex="0"><code id="home-quickstart-code" tabindex="-1">git clone https://github.com/agentmiddleware/amw-demo.git
+cd amw-demo
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+export AMW_API_KEY='YOUR_DEMO_KEY'
+export AMW_WALLET_ID='YOUR_WALLET_ID'
+python examples/permit_echo_retry.py</code></pre>
+              <p class="home-code-help" id="home-copy-status" role="status" aria-live="polite">Get a demo key to fill in the two export lines.</p>
+            </div>
+          </div></article>
+          <article class="home-v2-guide-step"><span class="home-v2-guide-number">3</span><div><h3>First call returns a receipt</h3><p>The example creates a permit and calls <code>partner.echo</code> through the gateway. It prints a receipt ID for the result.</p></div></article>
+          <article class="home-v2-guide-step"><span class="home-v2-guide-number">4</span><div><h3>Retry with the same request key</h3><p>For an accepted request key on the configured upstream tool, a retry with the same key returns the original receipt instead of dispatching again. The receipt does not prove what happened inside the tool.</p></div></article>
+          <article class="home-v2-guide-step"><span class="home-v2-guide-number">5</span><div><h3>Check the receipt offline</h3><p>The example fetches the receipt and public keys, then checks the signature on your machine. <a href="/proof/">See a published sample and verifier.</a></p></div></article>
+        </div>
+      </section>
+
+      <section class="home-v2-section home-v2-limits" id="limits" aria-labelledby="limits-title" data-wave="quiet">
+        <div class="home-v2-section-heading"><p>Limits</p><h2 id="limits-title">Know where the boundary ends</h2></div>
+        <p>AMW is not exactly once. For a configured upstream tool, one accepted request key permits at most one gateway dispatch and one debit.</p>
+        <p><code>delivery_uncertain</code> means we charged this call but do not know if the tool finished. Check the tool directly before you try again. We never resend it on our own.</p>
+        <p>Receipts sign hashes of the request and response, not the content, and do not prove the tool was right. <a href="https://api.thisisatest.tech/SECURITY_LIMITATIONS.md" rel="noopener noreferrer">Read the limits.</a></p>
+      </section>
+
+      <section class="home-v2-section home-v2-source" aria-labelledby="source-title" data-wave="order">
+        <div class="home-v2-section-heading"><p>Source</p><h2 id="source-title">Read the code</h2></div>
+        <p><a href="https://github.com/agentmiddleware" rel="noopener noreferrer">github.com/agentmiddleware</a></p>
+        <p>Apache 2.0 (gateway is Fair Source, FSL-1.1)</p>
+      </section>
+
+      <div class="waiting-room">
+        <div class="footer-arcade" hidden>
+          <button type="button" id="arcade-launch" class="arcade-launch" data-arcade-script="/arcade.js?v=home-light-1" data-arcade-style="/arcade.css?v=home-light-1" hidden>
+            <span aria-hidden="true">▶</span> HUMANS: PRESS START
+          </button>
+          <p class="footer-arcade-note">Built for agents. The human has nothing to do. Nothing in there is billed, metered, or real.</p>
+        </div>
+      </div>
+    </main>
+
+    @@SITE_FOOTER@@
+  </body>
+</html>

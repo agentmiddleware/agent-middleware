@@ -238,25 +238,33 @@ class AWISessionManager:
                 error=f"Preconditions not met: {unmet}",
             )
 
-        # Phase 9: Check passkey requirement for high-risk actions
-        from .webauthn_provider import get_webauthn_provider
+        # Phase 9: Check passkey requirement for high-risk actions. Proof
+        # surfaces only: the provider is dev-gated (in-memory credentials, not
+        # a production login path), so outside ENABLE_PROOF_SURFACES there is
+        # no passkey surface to enforce and the singleton must not be built.
+        from ..core.config import get_settings
 
-        webauthn = get_webauthn_provider()
+        if get_settings().ENABLE_PROOF_SURFACES:
+            from .webauthn_provider import get_webauthn_provider
 
-        if await webauthn.requires_passkey(request.session_id, request.action.value):
-            if not await webauthn.is_action_verified(
+            webauthn = get_webauthn_provider()
+
+            if await webauthn.requires_passkey(
                 request.session_id, request.action.value
             ):
-                return AWIExecutionResponse(
-                    execution_id=execution_id,
-                    session_id=request.session_id,
-                    action=request.action,
-                    status="passkey_required",
-                    parameters=response_parameters,
-                    effect_status="not_dispatched",
-                    error="This action requires biometric verification. "
-                    "Call POST /v1/awi/passkey/challenge first.",
-                )
+                if not await webauthn.is_action_verified(
+                    request.session_id, request.action.value
+                ):
+                    return AWIExecutionResponse(
+                        execution_id=execution_id,
+                        session_id=request.session_id,
+                        action=request.action,
+                        status="passkey_required",
+                        parameters=response_parameters,
+                        effect_status="not_dispatched",
+                        error="This action requires biometric verification. "
+                        "Call POST /v1/awi/passkey/challenge first.",
+                    )
 
         # Phase 9: Route to Playwright DOM bridge if attached
         dom_session_id = self._dom_sessions.get(request.session_id)

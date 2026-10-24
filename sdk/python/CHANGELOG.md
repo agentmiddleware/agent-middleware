@@ -10,7 +10,28 @@ everything here is additive, with one bounded exception: `settle_402()` now
 prefers `amount_usd` over the legacy `amount` alias when a requirement carries
 both with different values (see below). `parse_402_response()` always sets the
 two equal, so the normal path is unchanged. The tag is not cut by this
-change — `python-sdk-v0.5.0` is still a release decision.
+change. `python-v0.5.0` is still a release decision.
+
+### Distribution name
+
+The Python distribution is now `amw-sdk`. After publication, install it with
+`pip install amw-sdk`.
+Both `amw` and `b2a_sdk` remain available as import packages.
+
+### Migrating from b2a-sdk
+
+`b2a-sdk` was never published to PyPI. For a local install or the 0.4.0 wheel,
+run `pip uninstall b2a-sdk` before `pip install amw-sdk`. Existing imports
+remain unchanged.
+
+### Receipt verifier
+
+- An edited `alg` or `canonicalization` inside `signing_input` is `invalid`
+  when the signature does not verify and the key is available. Those claims
+  are `unsupported` only after the signature over the exact bytes checks out.
+  Reporting them first let a tampered receipt look like a verifier limitation
+  (`unsupported`), including on the public `verify_receipt` preflight, which
+  then skipped the published keys.
 
 ### Audit follow-up (2026-10-01)
 

@@ -461,6 +461,56 @@ async def test_concurrent_same_terms_page_the_human_once(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "new_request_error",
+    ["permit_expired_at_request", "human_approval_not_configured"],
+)
+async def test_approved_request_replays_after_creation_becomes_unavailable(
+    client, clean_database, monkeypatch, sentinel, new_request_error
+):
+    _sentinel_env(monkeypatch, simulated=False)
+    agent = await provision_agent_wallet(client)
+    created = await _request(client, agent, idem="preq-settled")
+    assert created.status_code == 202
+
+    sentinel.status = "approved"
+    approved = await client.get(
+        f"/v1/permit-requests/{created.json()['request_id']}",
+        headers=agent["agent_headers"],
+    )
+    assert approved.status_code == 200
+    permit_id = approved.json()["permit_id"]
+    assert permit_id
+
+    if new_request_error == "permit_expired_at_request":
+        monkeypatch.setattr(
+            permit_requests_module, "utc_now", lambda: datetime(2035, 1, 2)
+        )
+    else:
+        _sentinel_env(monkeypatch, simulated=False, configured=False)
+
+    replay = await _request(client, agent, idem="preq-settled")
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["request_id"] == created.json()["request_id"]
+    assert replay.json()["status"] == "approved"
+    assert replay.json()["permit_id"] == permit_id
+
+    changed = await _request(client, agent, idem="preq-settled", max_credits=21)
+    assert changed.status_code == 409
+    assert changed.json()["detail"] == "permit_request_terms_conflict"
+
+    fresh = await _request(client, agent, idem="preq-new")
+    assert fresh.status_code == 400
+    assert fresh.json()["detail"] == new_request_error
+
+    assert len(sentinel.created) == 1
+    factory = get_session_factory()
+    async with factory() as session:
+        permits = (await session.execute(select(PermitModel))).scalars().all()
+    assert len(permits) == 1
+
+
+@pytest.mark.asyncio
 async def test_approved_request_mints_stored_terms_not_polled_terms(
     client, clean_database, monkeypatch, sentinel
 ):

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.core.auth import AuthContext, get_auth_context
 from app.core.config import get_settings
+from app.core.wallet_resolution import resolve_wallet_id
 from app.schemas.trust import (
     ActionPermitFields,
     ActionPermitCreateRequest,
@@ -19,11 +20,18 @@ from app.schemas.trust import (
     ReceiptListResponse,
 )
 from app.routers.http_idempotency import resolve_idempotency_key_lines
+from app.services.ownership import CallerIdentity
+from app.services.demo_tenant_boundary import (
+    DemoPermitDenied,
+    KeyAllowlistDenied,
+    enforce_permit_bounds,
+)
 from app.trust import (
     AgentMoney,
     IdempotencyConflictError,
     IdempotencyCreationDisabledError,
     IdempotencyInProgressError,
+    PermitAccessDeniedError,
     PermitCreationRejectedError,
     PermitError,
     get_agent_money,
@@ -105,6 +113,13 @@ async def create_permit(
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ) -> PermitResponse:
+    try:
+        await enforce_permit_bounds(request, auth)
+    except (KeyAllowlistDenied, DemoPermitDenied) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": exc.error, "message": exc.message},
+        ) from exc
     if request.action_contract_version is not None:
         raise HTTPException(
             status_code=400, detail="action_permit_requires_trusted_issuance"
@@ -164,7 +179,7 @@ async def create_permit(
 
     try:
         permit = await get_permit_service().create_permit(
-            request, subject_key_id=auth.key_id
+            request, subject_key_id=auth.key_id, auth=auth
         )
     except PermitCreationRejectedError as exc:
         if not await idem.abandon(
@@ -250,7 +265,11 @@ async def revoke_permit(
         raise HTTPException(status_code=404, detail="permit_not_found")
     auth.require_wallet_access(existing.issuer_wallet_id)
     try:
-        permit = await service.revoke_permit(permit_id)
+        permit = await service.revoke_permit(
+            permit_id, caller=CallerIdentity.from_auth(auth)
+        )
+    except PermitAccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.reason)
     except PermitError as exc:
         raise HTTPException(status_code=404, detail=exc.reason)
     return permit
@@ -261,12 +280,11 @@ async def verify_permit(
     request: PermitVerifyRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitVerifyResponse:
-    if request.wallet_id:
-        auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
     estimated = request.estimated_credits or Decimal("0")
     validation = await get_permit_service().validate_for_action(
         permit_id=request.permit_id,
-        wallet_id=request.wallet_id or "",
+        wallet_id=wallet_id,
         tool_name=request.tool or "",
         estimated_credits=estimated,
         key_id=auth.key_id,
@@ -278,26 +296,15 @@ async def verify_permit(
     if permit is not None and not auth.is_bootstrap_admin:
         if auth.wallet_id not in {permit.issuer_wallet_id, permit.subject_wallet_id}:
             raise HTTPException(status_code=403, detail="permit_access_denied")
-    # ``verify`` answers "would this exact action be admitted?", so it needs
-    # the action: which wallet acts, and which tool it calls. Evaluated against
-    # an empty string, an omitted field produces a verdict about a call nobody
-    # meant to make — a binding reason that reads as "this permit is not yours"
-    # to the permit's own subject, or, for a permit with an empty allowlist and
-    # a matching empty-tool scope, an outright ``valid: true``. Neither is an
-    # answer, so name the missing context instead of returning one.
+    # ``verify`` answers "would this exact action be admitted?" The wallet
+    # comes from the authenticated key when omitted, but an omitted tool still
+    # cannot produce a verdict about a real action.
     #
     # Lifecycle reasons are exempt: a permit that is expired or no longer
     # active is refused whatever action you name, so that verdict is real even
     # from an incomplete request. ``permit_not_found`` (no permit at all) is
     # likewise left to speak for itself below.
-    missing = [
-        field
-        for field, value in (
-            ("wallet_id", request.wallet_id),
-            ("tool", request.tool),
-        )
-        if not value
-    ]
+    missing = ["tool"] if not request.tool else []
     lifecycle_denial = validation.reason == "permit_expired" or (
         permit is not None and permit.status != "active"
     )

@@ -375,14 +375,14 @@ def test_attack2_mechanism_flags_lost_update_without_overspend(
 
 
 def test_combined_requires_every_storm_variant_to_start() -> None:
-    started = Counter({tag: 1 for tag in combined.REQUIRED_STORM_VECTOR_TAGS})
+    started = Counter(dict.fromkeys(combined.REQUIRED_STORM_VECTOR_TAGS, 1))
 
     assert combined.all_required_storm_vectors_started(started)
 
 
 @pytest.mark.parametrize("missing", combined.REQUIRED_STORM_VECTOR_TAGS)
 def test_combined_fails_closed_when_storm_variant_did_not_start(missing: str) -> None:
-    started = Counter({tag: 1 for tag in combined.REQUIRED_STORM_VECTOR_TAGS})
+    started = Counter(dict.fromkeys(combined.REQUIRED_STORM_VECTOR_TAGS, 1))
     del started[missing]
 
     assert not combined.all_required_storm_vectors_started(started)

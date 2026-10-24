@@ -476,11 +476,15 @@ class TestBrowserNavigationGuard:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 requested_paths.append(self.path)
-                if self.path == "/entry":
+                if self.path in {"/entry", "/entry-chain", "/allowed-hop"}:
                     self.send_response(302)
                     self.send_header(
                         "Location",
-                        f"http://127.0.0.1:{self.server.server_port}/blocked",
+                        (
+                            "/allowed-hop"
+                            if self.path == "/entry-chain"
+                            else f"http://127.0.0.1:{self.server.server_port}/blocked"
+                        ),
                     )
                 else:
                     self.send_response(200)
@@ -493,11 +497,13 @@ class TestBrowserNavigationGuard:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         entry_url = f"http://localhost:{server.server_port}/entry"
+        chain_url = f"http://localhost:{server.server_port}/entry-chain"
+        hop_url = f"http://localhost:{server.server_port}/allowed-hop"
         plain_url = f"http://localhost:{server.server_port}/plain"
         original_guard = awi_playwright_bridge.browser_request_block_reason
 
         async def allow_test_entry(url):
-            if url in {entry_url, plain_url}:
+            if url in {entry_url, chain_url, hop_url, plain_url}:
                 return None
             return await original_guard(url)
 
@@ -518,13 +524,101 @@ class TestBrowserNavigationGuard:
                     assert response.status == 200
                     with pytest.raises(playwright_api.Error):
                         await session._page.goto(entry_url, timeout=5000)
-                    assert requested_paths == ["/plain", "/entry"]
+                    with pytest.raises(playwright_api.Error):
+                        await session._page.goto(chain_url, timeout=5000)
+                    assert requested_paths == [
+                        "/plain",
+                        "/entry",
+                        "/entry-chain",
+                        "/allowed-hop",
+                    ]
                 finally:
                     await browser.close()
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    @pytest.mark.anyio
+    async def test_chromium_follows_allowed_redirects(self, bridge, monkeypatch):
+        playwright_api = pytest.importorskip("playwright.async_api")
+        requested_paths = []
+
+        class FirstHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requested_paths.append(("first", self.path))
+                if self.path == "/entry":
+                    self.send_response(302)
+                    self.send_header("Location", second_url)
+                else:
+                    self.send_response(200)
+                self.end_headers()
+                if self.path == "/landed":
+                    self.wfile.write(b"allowed destination")
+
+            def log_message(self, *_args):
+                pass
+
+        class SecondHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requested_paths.append(("second", self.path))
+                self.send_response(302)
+                self.send_header("Location", landing_url)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        first = ThreadingHTTPServer(("127.0.0.1", 0), FirstHandler)
+        second = ThreadingHTTPServer(("127.0.0.1", 0), SecondHandler)
+        threads = [
+            threading.Thread(target=server.serve_forever, daemon=True)
+            for server in (first, second)
+        ]
+        for thread in threads:
+            thread.start()
+        entry_url = f"http://localhost:{first.server_port}/entry"
+        second_url = f"http://localhost:{second.server_port}/hop"
+        landing_url = f"http://localhost:{first.server_port}/landed"
+        original_guard = awi_playwright_bridge.browser_request_block_reason
+
+        async def allow_test_urls(url):
+            if url in {entry_url, second_url, landing_url}:
+                return None
+            return await original_guard(url)
+
+        monkeypatch.setattr(
+            awi_playwright_bridge, "browser_request_block_reason", allow_test_urls
+        )
+        try:
+            async with playwright_api.async_playwright() as playwright:
+                if not Path(playwright.chromium.executable_path).exists():
+                    pytest.skip("Chromium is not installed")
+                browser = await playwright.chromium.launch(headless=True)
+                try:
+                    bridge._browser = browser
+                    bridge._playwright_initialized = True
+                    session = BridgeSession(session_id="allowed-redirect")
+                    await bridge._create_browser_context(session, None, None)
+                    response = await session._page.goto(entry_url, timeout=5000)
+                    assert response.status == 200
+                    assert session._page.url == landing_url
+                    assert await session._page.locator("body").inner_text() == (
+                        "allowed destination"
+                    )
+                    assert requested_paths == [
+                        ("first", "/entry"),
+                        ("second", "/hop"),
+                        ("first", "/landed"),
+                    ]
+                finally:
+                    await browser.close()
+        finally:
+            for server in (first, second):
+                server.shutdown()
+                server.server_close()
+            for thread in threads:
+                thread.join(timeout=2)
 
     @pytest.mark.anyio
     async def test_chromium_refuses_websocket_connection(self, bridge):

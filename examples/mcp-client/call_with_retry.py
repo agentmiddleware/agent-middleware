@@ -49,7 +49,9 @@ RECEIPT_META_KEY = "io.agentmiddleware/receipt"
 
 def receipt_id(result: dict) -> str | None:
     """The gateway returns the signed receipt in the tool result's _meta."""
-    receipt = (result.get("meta") or result.get("_meta") or {}).get(RECEIPT_META_KEY) or {}
+    receipt = (result.get("meta") or result.get("_meta") or {}).get(
+        RECEIPT_META_KEY
+    ) or {}
     return receipt.get("receipt_id")
 
 
@@ -62,14 +64,21 @@ async def main() -> int:
     retry_id = receipt_id(retry)
     print("first receipt:", first_id, "outcome:", _outcome(first))
     print("retry receipt:", retry_id, "outcome:", _outcome(retry))
-    if not first_id or first_id != retry_id:
-        print("retry did not return the same receipt")
+    if (
+        first.get("isError") is True
+        or retry.get("isError") is True
+        or not first_id
+        or first_id != retry_id
+    ):
+        print("tool call failed or retry did not return the same receipt")
         return 1
     return 0
 
 
 def _outcome(result: dict) -> str | None:
-    receipt = (result.get("meta") or result.get("_meta") or {}).get(RECEIPT_META_KEY) or {}
+    receipt = (result.get("meta") or result.get("_meta") or {}).get(
+        RECEIPT_META_KEY
+    ) or {}
     return receipt.get("outcome")
 
 

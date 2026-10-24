@@ -35,7 +35,9 @@ def test_scripts_insert_the_repo_sdk_source() -> None:
     assert str(missing) not in sys.path
 
 
-def test_register_replays_tools_through_the_callback(capsys: pytest.CaptureFixture[str]) -> None:
+def test_register_replays_tools_through_the_callback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """--register must show the callback output. Decoration already ran at import."""
     asyncio.run(mcp_tool_example.register_tools())
     out = capsys.readouterr().out
@@ -109,3 +111,23 @@ def test_retry_same_receipt_returns_zero(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("AGENT_API_KEY", "local-test-key")
     monkeypatch.setattr(call_with_retry, "call_once", fake)
     assert asyncio.run(call_with_retry.main()) == 0
+
+
+@pytest.mark.parametrize("error_call", [1, 2])
+def test_retry_tool_error_returns_nonzero(
+    monkeypatch: pytest.MonkeyPatch, error_call: int
+) -> None:
+    """A matching receipt does not make a failed tool call successful."""
+    calls = 0
+
+    async def fake(_api_key: str, _key: str) -> dict:
+        nonlocal calls
+        calls += 1
+        return {
+            "isError": calls == error_call,
+            "meta": {call_with_retry.RECEIPT_META_KEY: {"receipt_id": "rcpt-same"}},
+        }
+
+    monkeypatch.setenv("AGENT_API_KEY", "local-test-key")
+    monkeypatch.setattr(call_with_retry, "call_once", fake)
+    assert asyncio.run(call_with_retry.main()) == 1

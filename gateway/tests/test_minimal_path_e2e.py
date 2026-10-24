@@ -124,7 +124,9 @@ def wallet(live_server):
 async def test_minimal_viable_path(live_server, wallet):
     headers = {**wallet["agent_headers"], "Idempotency-Key": f"e2e-{uuid.uuid4().hex}"}
     async with (
-        httpx.AsyncClient(headers=headers) as http_client,
+        httpx.AsyncClient(
+            headers=headers, timeout=httpx.Timeout(30, read=300)
+        ) as http_client,
         streamable_http_client(f"{live_server}/mcp", http_client=http_client) as (
             read,
             write,

@@ -3305,7 +3305,7 @@
           "MCP"
         ],
         "summary": "Mcp Tools Manifest",
-        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned JSON-RPC subset. Clients can obtain the same list by\nsending ``tools/list`` to ``/mcp/messages``; that endpoint does not\nimplement the complete MCP initialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
+        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned tool surfaces. New integrations should invoke tools through\nthe standard Streamable HTTP endpoint at POST /mcp and can obtain the\nsame list via its ``tools/list`` method. Clients can also obtain the\nlist by sending ``tools/list`` to the legacy ``/mcp/messages``\nendpoint; that endpoint does not implement the complete MCP\ninitialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
         "operationId": "MCP_Tools_Manifest_mcp_tools_json_get",
         "parameters": [
           {

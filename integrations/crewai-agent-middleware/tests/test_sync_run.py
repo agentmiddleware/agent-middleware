@@ -117,6 +117,84 @@ def test_context_manager_closes_owned_client_on_runner_loop(monkeypatch):
     tool.close()
 
 
+def test_close_cancels_in_flight_sync_call_within_timeout(monkeypatch):
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    client = B2AClient(
+        api_key="test-key",
+        base_url="http://127.0.0.1:9",
+        transport=httpx.MockTransport(handler),
+    )
+    monkeypatch.setattr("crewai_b2a.tool.B2AClient", lambda **kwargs: client)
+    tool = CrewAIB2ATool(api_key="test-key", wallet_id="wallet-1")
+    calls: list[str] = []
+    caller = threading.Thread(
+        target=lambda: calls.append(tool._run("balance")), daemon=True
+    )
+    caller.start()
+    assert started.wait(timeout=2)
+    loop = tool._sync_runner_loop
+    runner = tool._sync_runner_thread
+
+    close_errors: list[Exception] = []
+
+    def close_tool() -> None:
+        try:
+            tool.close()
+        except Exception as exc:  # noqa: BLE001
+            close_errors.append(exc)
+
+    closer = threading.Thread(target=close_tool, daemon=True)
+    closer.start()
+    closer.join(timeout=5)
+    assert not closer.is_alive(), "close() waited indefinitely for the active call"
+    assert not close_errors
+    caller.join(timeout=2)
+    assert not caller.is_alive()
+    assert cancelled.wait(timeout=1)
+    assert calls and calls[0].startswith("Error:")
+    assert loop is not None and loop.is_closed()
+    assert runner is not None and not runner.is_alive()
+    assert client._client.is_closed
+
+
+def test_sync_call_inside_running_loop_does_not_block_it():
+    seen = threading.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.set()
+        await asyncio.Event().wait()
+        return httpx.Response(200, json={"balance": 3})
+
+    tool, client = _tool(handler)
+    result: list[str] = []
+
+    def run_loop() -> None:
+        async def run() -> None:
+            result.append(tool._run("balance"))
+
+        asyncio.run(run())
+
+    caller = threading.Thread(target=run_loop, daemon=True)
+    caller.start()
+    caller.join(timeout=2)
+    try:
+        assert not caller.is_alive(), "sync call blocked its caller's event loop"
+        assert result and "running event loop" in result[0]
+        assert not seen.is_set()
+    finally:
+        tool.close()
+        asyncio.run(client.close())
+
+
 def test_blank_tool_name_and_bad_arguments_do_not_mint_a_permit():
     seen: list[str] = []
 

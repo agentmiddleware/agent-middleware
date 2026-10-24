@@ -121,6 +121,7 @@ class CrewAIB2ATool(BaseTool):
     _sync_runner_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
     _sync_runner_thread: threading.Thread | None = PrivateAttr(default=None)
     _owns_client: bool = PrivateAttr(default=False)
+    _closing: bool = PrivateAttr(default=False)
 
     def __init__(
         self,
@@ -146,19 +147,23 @@ class CrewAIB2ATool(BaseTool):
         self._permit_ttls = {}
         self._active_permit_calls = {}
         self._permit_lock = threading.Lock()
-        self._sync_runner_lock = threading.Lock()
+        self._sync_runner_lock = threading.RLock()
         self._sync_runner_loop = None
         self._sync_runner_thread = None
         self._owns_client = False
+        self._closing = False
 
     def _get_client(self) -> B2AClient:
-        if self.client is None:
-            self.client = B2AClient(
-                api_key=self.api_key,
-                base_url=self.base_url,
-            )
-            self._owns_client = True
-        return self.client
+        with self._sync_runner_lock:
+            if self._closing:
+                raise RuntimeError("CrewAI tool is closed")
+            if self.client is None:
+                self.client = B2AClient(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                )
+                self._owns_client = True
+            return self.client
 
     def _permit_request(self, tool_name: str, permit_key: str) -> PermitRequest:
         # Both sync and async entry points retain the body before sending it.
@@ -215,6 +220,8 @@ class CrewAIB2ATool(BaseTool):
     def _ensure_sync_runner(self) -> asyncio.AbstractEventLoop:
         """Keep sync calls on one private loop, including calls from worker threads."""
         with self._sync_runner_lock:
+            if self._closing:
+                raise RuntimeError("CrewAI tool is closed")
             loop = self._sync_runner_loop
             thread = self._sync_runner_thread
             if (
@@ -244,10 +251,20 @@ class CrewAIB2ATool(BaseTool):
                 raise RuntimeError("sync runner loop did not start")
             return loop
 
+    def _submit(self, coro: Any) -> Any:
+        loop = self._ensure_sync_runner()
+        with self._sync_runner_lock:
+            if (
+                self._closing
+                or loop is not self._sync_runner_loop
+                or not loop.is_running()
+            ):
+                raise RuntimeError("CrewAI tool is closed")
+            return asyncio.run_coroutine_threadsafe(coro, loop)
+
     def _sync_await(self, coro: Any) -> Any:
         """Run a coroutine on the private loop and wait for its result."""
-        loop = self._ensure_sync_runner()
-        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+        return self._submit(coro).result()
 
     def _stop_sync_runner(self) -> None:
         """Stop the private loop after its HTTP client has been closed."""
@@ -257,20 +274,41 @@ class CrewAIB2ATool(BaseTool):
             if loop is not None and loop.is_running():
                 loop.call_soon_threadsafe(loop.stop)
             if thread is not None:
-                thread.join(timeout=2)
+                thread.join(timeout=1)
                 if thread.is_alive():
                     raise RuntimeError("sync runner loop did not stop")
             if loop is not None:
+                if asyncio.all_tasks(loop):
+                    raise RuntimeError("sync runner still has pending tasks")
                 loop.close()
             self._sync_runner_loop = None
             self._sync_runner_thread = None
 
     def close(self) -> None:
         """Close the owned client and sync loop. Safe to call more than once."""
-        client = self.client if self._owns_client else None
+        with self._sync_runner_lock:
+            if self._closing:
+                return
+            self._closing = True
+            client = self.client if self._owns_client else None
+            loop = self._sync_runner_loop
+
+        async def shutdown() -> None:
+            current = asyncio.current_task()
+            pending = [task for task in asyncio.all_tasks() if task is not current]
+            for task in pending:
+                task.cancel()
+            if pending:
+                _, still_pending = await asyncio.wait(pending, timeout=1)
+                if still_pending:
+                    raise RuntimeError("sync runner tasks did not cancel")
+            if client is not None:
+                await asyncio.wait_for(client.close(), timeout=1)
+
         try:
-            if client is not None and self._sync_runner_loop is not None:
-                self._sync_await(client.close())
+            if loop is not None and loop.is_running():
+                asyncio.run_coroutine_threadsafe(shutdown(), loop).result(timeout=2)
+            if client is not None:
                 self.client = None
         finally:
             self._stop_sync_runner()
@@ -348,6 +386,12 @@ class CrewAIB2ATool(BaseTool):
         **kwargs: Any,
     ) -> str:
         """Synchronous operation (for CrewAI compatibility)."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            return "Error: sync CrewAI call inside a running event loop; use _arun"
         replay_permit = self._begin_permit_call(operation, permit_idempotency_key)
         coro = self._execute(
             operation,
@@ -392,12 +436,10 @@ class CrewAIB2ATool(BaseTool):
         )
         try:
             try:
-                loop = self._ensure_sync_runner()
+                future = self._submit(coro)
             except Exception:
                 coro.close()
                 raise
-            return await asyncio.wrap_future(
-                asyncio.run_coroutine_threadsafe(coro, loop)
-            )
+            return await asyncio.wrap_future(future)
         finally:
             self._finish_permit_call(operation, permit_idempotency_key)

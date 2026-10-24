@@ -197,6 +197,30 @@ async def _prepare(monkeypatch, framework, client):
     return prepared[:2]
 
 
+@pytest.mark.asyncio
+async def test_one_caller_client_is_reused_across_calls_and_wrappers(monkeypatch):
+    gateway = Gateway(lose_first=False)
+    async with AgentMiddlewareClient(
+        "synthetic",
+        base_url="http://local.invalid",
+        transport=httpx.MockTransport(gateway),
+    ) as client:
+        for framework in ("autogen", "crewai", "langchain"):
+            tool, call = await _prepare(monkeypatch, framework, client)
+            try:
+                assert "receipt-original" in str(await call(**CALL))
+                assert "receipt-original" in str(await call(**CALL))
+                if framework != "langchain":
+                    assert tool.client is client
+            finally:
+                if framework == "crewai":
+                    tool.close()
+
+    assert len(gateway.permit_bodies) == 3
+    assert gateway.invoke_keys == ["logical-action"] * 6
+    assert len(gateway.charges) == 1
+
+
 CALL = dict(
     tool_name="partner.search",
     idempotency_key="logical-action",

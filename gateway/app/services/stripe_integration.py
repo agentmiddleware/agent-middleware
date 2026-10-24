@@ -30,7 +30,12 @@ from ..core.time import utc_now
 from ..core.resilience import run_with_write_conflict_retry
 from ..schemas.billing import AlertSeverity, AlertType, WalletStatus
 from .agent_money import WalletNotFoundError
-from .idempotency import IDEMPOTENCY_KEY_HEADER_SOURCE, validate_client_idempotency_key
+from .idempotency import (
+    IDEMPOTENCY_KEY_HEADER_SOURCE,
+    get_idempotency_service,
+    validate_client_idempotency_key,
+)
+from .signing_keys import sha256_hex
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -100,8 +105,8 @@ class StripeIntegration:
             wallet_id: The wallet to credit after successful payment
             amount_fiat: Amount in fiat currency (e.g., 50.00 for $50)
             currency: ISO 4217 currency code (default: usd)
-            idempotency_key: Optional client replay key, sent to Stripe
-                unchanged so a retry asks for the same intent.
+            idempotency_key: Optional client replay key, scoped to this wallet
+                for durable replay and the Stripe request.
 
         Returns:
             {
@@ -154,6 +159,24 @@ class StripeIntegration:
                 idempotency_key, source=IDEMPOTENCY_KEY_HEADER_SOURCE
             )
 
+        replay_service = (
+            get_idempotency_service() if validated_key is not None else None
+        )
+        replay_endpoint = "/v1/billing/top-up/prepare"
+        if replay_service is not None and validated_key is not None:
+            begun = await replay_service.begin_with_record(
+                wallet_id=wallet_id,
+                endpoint=replay_endpoint,
+                idempotency_key=validated_key,
+                request_payload={
+                    "amount_cents": amount_cents,
+                    "currency": SUPPORTED_TOP_UP_CURRENCY,
+                },
+            )
+            if begun.replay is not None:
+                assert begun.replay.response_json is not None
+                return begun.replay.response_json
+
         def _create_top_up_payment_intent() -> Any:
             metadata = {
                 "wallet_id": wallet_id,
@@ -167,7 +190,8 @@ class StripeIntegration:
                     amount=amount_cents,
                     currency=SUPPORTED_TOP_UP_CURRENCY,
                     metadata=metadata,
-                    idempotency_key=validated_key,
+                    idempotency_key="top-up:"
+                    + sha256_hex({"wallet_id": wallet_id, "client_key": validated_key}),
                 )
             return stripe.PaymentIntent.create(
                 amount=amount_cents,
@@ -185,13 +209,22 @@ class StripeIntegration:
             f"${amount_fiat} -> {credits} credits"
         )
 
-        return {
+        response = {
             "client_secret": intent.client_secret,
             "payment_intent_id": intent.id,
             "amount_credits": credits_response,
             "amount_fiat": float(amount_fiat),
             "currency": SUPPORTED_TOP_UP_CURRENCY.upper(),
         }
+        if replay_service is not None and validated_key is not None:
+            await replay_service.complete(
+                wallet_id=wallet_id,
+                endpoint=replay_endpoint,
+                idempotency_key=validated_key,
+                response_reference=intent.id,
+                response_json=response,
+            )
+        return response
 
     async def charge_shared_payment_token(
         self,

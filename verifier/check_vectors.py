@@ -23,6 +23,7 @@ VECTORS = Path(__file__).resolve().parent.parent / "spec" / "test-vectors"
 
 SUITES = (
     ("receipts.json", verify_bundle),
+    ("rotation.json", verify_bundle),
     ("permits.json", verify_permit_bundle),
 )
 

@@ -53,20 +53,20 @@ def test_every_status_is_exercised_in_both_suites():
         assert ALL_STATUSES <= seen, (filename, ALL_STATUSES - seen)
 
 
-def test_rotation_successor_key_verifies_under_default_keys():
-    keys = key_set_from_document(_load("keys.json"))
-    case = _by_name(_load("receipts.json")["cases"], "rotation.successor_key_valid")
+def test_rotation_successor_key_verifies_under_published_keys():
+    case = _by_name(_load("rotation.json")["cases"], "rotation.successor_key_valid")
+    keys = key_set_from_document(case["keys"])
     result = verify_bundle(case["bundle"], keys)
     assert result.status is VerificationStatus.VERIFIED
     assert result.key_id == "sk_golden_0002"
 
 
 def test_disabled_key_resolves_to_unknown_key_not_verified():
-    document = _load("keys.json")
+    case = _by_name(_load("receipts.json")["cases"], "rotation.disabled_key_unknown")
+    document = case["keys"]
     assert any(entry.get("status") == "disabled" for entry in document["keys"])
     keys = key_set_from_document(document)
     assert "sk_golden_0000" not in keys
-    case = _by_name(_load("receipts.json")["cases"], "rotation.disabled_key_unknown")
     assert verify_bundle(case["bundle"], keys).status is VerificationStatus.UNKNOWN_KEY
 
 

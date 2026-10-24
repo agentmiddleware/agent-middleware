@@ -27,14 +27,13 @@ Typical use::
 The only dependency beyond the standard library is ``cryptography``, installed
 via the ``verify`` extra::
 
-    pip install "b2a-sdk[verify]"
+    pip install "amw-sdk[verify]"
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
-import hashlib
 import json
 from dataclasses import dataclass, field
 from enum import Enum
@@ -43,6 +42,7 @@ from typing import Any
 __all__ = [
     "CANONICALIZATION",
     "VerificationError",
+    "VerificationKey",
     "VerificationResult",
     "VerificationStatus",
     "canonical_json",
@@ -59,6 +59,7 @@ CANONICALIZATION = "awi-canonical-json/1"
 
 _ED25519_RAW_LEN = 32
 _ED25519_SIGNATURE_LEN = 64
+_P256_ALGORITHM = "ECDSA-P256-SHA256"
 
 
 class VerificationStatus(str, Enum):
@@ -84,6 +85,14 @@ class VerificationStatus(str, Enum):
 
 class VerificationError(Exception):
     """Raised only for programming errors, never for a failed verification."""
+
+
+@dataclass(frozen=True)
+class VerificationKey:
+    """A non-Ed25519 public key with its published signing algorithm."""
+
+    alg: str
+    public_key: bytes
 
 
 @dataclass(frozen=True)
@@ -143,9 +152,10 @@ def canonical_json(payload: Any) -> str:
     """Serialize already-decoded JSON the way the trust plane signs it.
 
     The rules are: keys sorted at every level, no insignificant whitespace,
-    and non-ASCII escaped. Numbers and timestamps are already strings by the
-    time they reach a signed payload, so no numeric formatting rules are
-    needed here — which is what makes this reimplementable in any language.
+    and non-ASCII escaped. Signed payloads may carry JSON numbers (floats,
+    exponents, large integers), whose rendering differs between languages,
+    so this helper is for *signing* new payloads only. Verification never
+    re-serializes the signed bytes: the signature covers them verbatim.
     """
     return json.dumps(
         payload,
@@ -187,13 +197,12 @@ def _contains_invalid_unicode(value: Any) -> bool:
     return False
 
 
-def key_set_from_document(document: Any) -> dict[str, bytes]:
-    """Extract usable Ed25519 public keys from a ``trust-keys.json`` document.
+def key_set_from_document(document: Any) -> dict[str, bytes | VerificationKey]:
+    """Extract verification keys from a ``trust-keys.json`` document.
 
-    Accepts either the ``public_key_b64`` form or the JWK mirror. Keys the
-    issuing plane marks ``disabled`` are dropped, matching the plane's own
-    refusal to verify against them — a revoked key must not keep validating
-    receipts just because a cached copy of the document still lists it.
+    Ed25519 keys retain their legacy raw-byte representation. P-256 keys use
+    DER SubjectPublicKeyInfo bytes and retain their algorithm tag. Keys the
+    issuing plane marks ``disabled`` are dropped.
     """
     if not isinstance(document, dict):
         raise VerificationError("key set document must be a JSON object")
@@ -202,7 +211,7 @@ def key_set_from_document(document: Any) -> dict[str, bytes]:
     if not isinstance(entries, list):
         raise VerificationError("key set document has no 'keys' list")
 
-    keys: dict[str, bytes] = {}
+    keys: dict[str, bytes | VerificationKey] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -211,7 +220,13 @@ def key_set_from_document(document: Any) -> dict[str, bytes]:
             continue
         if entry.get("status") == "disabled":
             continue
-        if entry.get("alg") not in (None, "Ed25519"):
+        alg = entry.get("alg")
+        if alg == _P256_ALGORITHM:
+            raw = _b64decode(entry.get("public_key_b64", ""))
+            # A published kid with unusable material is malformed, not absent.
+            keys[kid] = VerificationKey(alg, raw or b"")
+            continue
+        if alg not in (None, "Ed25519"):
             continue
 
         # Fall through to the JWK mirror whenever the raw form is absent,
@@ -236,7 +251,7 @@ def _load_verifier(raw_public_key: bytes):
     except ImportError as exc:  # pragma: no cover - depends on install extras
         raise VerificationError(
             "Ed25519 verification requires the 'cryptography' package. "
-            'Install it with: pip install "b2a-sdk[verify]"'
+            'Install it with: pip install "amw-sdk[verify]"'
         ) from exc
     return Ed25519PublicKey.from_public_bytes(raw_public_key)
 
@@ -252,7 +267,7 @@ def _verify_ed25519_signature(
     except ImportError as exc:  # pragma: no cover - depends on install extras
         raise VerificationError(
             "Ed25519 verification requires the 'cryptography' package. "
-            'Install it with: pip install "b2a-sdk[verify]"'
+            'Install it with: pip install "amw-sdk[verify]"'
         ) from exc
 
     try:
@@ -267,6 +282,55 @@ def _verify_ed25519_signature(
         # forged.
         raise VerificationError("Ed25519 verifier failed unexpectedly") from exc
     return True
+
+
+def _verify_p256_signature(
+    der_public_key: bytes,
+    signature: bytes,
+    signing_bytes: bytes,
+) -> bool | None:
+    """Return None for malformed P-256 key/signature material."""
+    try:
+        from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+    except ImportError as exc:  # pragma: no cover - depends on install extras
+        raise VerificationError(
+            "P-256 verification requires the 'cryptography' package. "
+            'Install it with: pip install "amw-sdk[verify]"'
+        ) from exc
+
+    try:
+        public_key = serialization.load_der_public_key(der_public_key)
+        decode_dss_signature(signature)
+    except (ValueError, UnsupportedAlgorithm):
+        return None
+    if not isinstance(public_key, ec.EllipticCurvePublicKey) or not isinstance(
+        public_key.curve, ec.SECP256R1
+    ):
+        return None
+    try:
+        public_key.verify(signature, signing_bytes, ec.ECDSA(hashes.SHA256()))
+    except InvalidSignature:
+        return False
+    except Exception as exc:
+        raise VerificationError("P-256 verifier failed unexpectedly") from exc
+    return True
+
+
+def _verify_signature_for_key(
+    key: bytes | VerificationKey,
+    signature: bytes,
+    signing_bytes: bytes,
+) -> bool | None:
+    if isinstance(key, bytes):
+        if len(key) != _ED25519_RAW_LEN or len(signature) != _ED25519_SIGNATURE_LEN:
+            return None
+        return _verify_ed25519_signature(key, signature, signing_bytes)
+    if isinstance(key, VerificationKey) and key.alg == _P256_ALGORITHM:
+        return _verify_p256_signature(key.public_key, signature, signing_bytes)
+    return None
 
 
 def verify_ed25519(
@@ -307,7 +371,7 @@ def _fail(
 
 def _verify_signed_bundle(
     bundle: Any,
-    key_set: dict[str, bytes],
+    key_set: dict[str, bytes | VerificationKey],
     *,
     id_field: str,
     expected_issuer: str | None = None,
@@ -317,6 +381,20 @@ def _verify_signed_bundle(
     Receipts and permits are the same signed-envelope shape; only the id
     member differs (``receipt_id`` vs ``permit_id``). Every other rule,
     including the status taxonomy, is identical.
+
+    Args:
+        bundle: The portable receipt or permit bundle, as a dict or JSON string.
+        key_set: Mapping of key id to raw Ed25519 bytes or a tagged P-256
+            public key, as produced by :func:`key_set_from_document`.
+        id_field: The signed object id to verify against the envelope.
+        expected_issuer: When given, the unauthenticated envelope's ``issuer``
+            label must match. This catches accidental relabeling but does not
+            authenticate the issuer; that requires a trusted public key.
+
+    Returns:
+        A :class:`VerificationResult`. Inspect ``status`` rather than only
+        ``ok`` when the difference between "invalid" and "cannot tell"
+        matters.
     """
     if isinstance(bundle, str | bytes):
         try:
@@ -345,17 +423,13 @@ def _verify_signed_bundle(
 
     # Parse the signed bytes before anything else that can decide an outcome.
     #
-    # Ordering is the whole security property here. The envelope is
-    # unauthenticated: anyone in the transport path can edit it. So the
-    # capability gates below (algorithm, canonicalization) and the key
-    # selection must read the *signed* payload, never the envelope. An earlier
-    # version read `alg` and `canonicalization` from the envelope and
-    # short-circuited to UNSUPPORTED before the signature was ever checked,
-    # which let one edited byte turn a genuine receipt into "your verifier is
-    # too old" -- an attacker-chosen status, and the exact integrity/capability
-    # inversion this taxonomy exists to prevent. Envelope values are still
-    # checked, but afterwards, and disagreement is MISMATCH (a finding about
-    # the bundle) rather than UNSUPPORTED (a statement about this verifier).
+    # The envelope is unauthenticated: anyone on the path can edit it. Key
+    # selection, algorithm, and canonicalization are therefore read from
+    # signing_input, never from the envelope. Those claims are still just
+    # bytes until the signature over those exact bytes holds. Judging them
+    # first reported a tampered receipt as UNSUPPORTED ("this verifier is too
+    # old") instead of INVALID. Envelope values are checked after the
+    # signature verifies, and disagreement is MISMATCH.
     try:
         payload = json.loads(signing_input)
     except (json.JSONDecodeError, UnicodeDecodeError, RecursionError, ValueError):
@@ -388,40 +462,15 @@ def _verify_signed_bundle(
             key_id=envelope_key_id,
         )
 
+    # Held for the check after the signature. Not authenticated yet.
     algorithm = payload.get("alg", "Ed25519")
-    if algorithm != "Ed25519":
-        # Signer-declared, and therefore a genuine statement about what this
-        # verifier can do.
-        return _fail(
-            VerificationStatus.UNSUPPORTED,
-            f"unsupported signature algorithm: {algorithm!r}",
-            key_id=key_id,
-        )
-
     signed_canonicalization = payload.get("canonicalization")
-    if isinstance(signed_canonicalization, str) and signed_canonicalization != CANONICALIZATION:
-        # Verifying under rules the payload was not signed with would produce a
-        # confident answer to the wrong question. Only trusted because it is
-        # signed; receipts predating this field carry no counterpart and are
-        # handled by the envelope cross-check after verification.
-        return _fail(
-            VerificationStatus.UNSUPPORTED,
-            f"unsupported canonicalization: {signed_canonicalization!r} (this "
-            f"verifier implements {CANONICALIZATION!r})",
-            key_id=key_id,
-        )
 
     signature = _b64decode(signature_b64)
     if signature is None:
         return _fail(
             VerificationStatus.MALFORMED,
             "signature is not valid base64",
-            key_id=key_id,
-        )
-    if len(signature) != _ED25519_SIGNATURE_LEN:
-        return _fail(
-            VerificationStatus.MALFORMED,
-            "signature is not a 64-byte Ed25519 signature",
             key_id=key_id,
         )
 
@@ -435,13 +484,14 @@ def _verify_signed_bundle(
         # would let a forger name a nonexistent kid to downgrade a detectable
         # inconsistency into "refresh your key set and try again".
         envelope_key = key_set.get(envelope_key_id) if envelope_key_id != key_id else None
-        if envelope_key is not None and len(envelope_key) == _ED25519_RAW_LEN:
+        if envelope_key is not None:
             try:
                 probe_bytes = signing_input.encode("utf-8")
             except UnicodeEncodeError:
                 probe_bytes = None
-            if probe_bytes is not None and _verify_ed25519_signature(
-                envelope_key, signature, probe_bytes
+            if (
+                probe_bytes is not None
+                and _verify_signature_for_key(envelope_key, signature, probe_bytes) is True
             ):
                 return _fail(
                     VerificationStatus.MISMATCH,
@@ -456,10 +506,16 @@ def _verify_signed_bundle(
             f"no published key for kid {key_id!r}",
             key_id=key_id,
         )
-    if len(raw_public_key) != _ED25519_RAW_LEN:
+    if isinstance(raw_public_key, bytes) and len(raw_public_key) != _ED25519_RAW_LEN:
         return _fail(
             VerificationStatus.MALFORMED,
             f"public key for kid {key_id!r} is not a 32-byte Ed25519 key",
+            key_id=key_id,
+        )
+    if isinstance(raw_public_key, bytes) and len(signature) != _ED25519_SIGNATURE_LEN:
+        return _fail(
+            VerificationStatus.MALFORMED,
+            "signature is not a 64-byte Ed25519 signature",
             key_id=key_id,
         )
 
@@ -475,10 +531,40 @@ def _verify_signed_bundle(
     # The signature covers signing_input verbatim. Re-serializing the parsed
     # object here would silently "fix" a payload whose bytes were altered in a
     # way that survives a JSON round trip, so the original string is used.
-    if not _verify_ed25519_signature(raw_public_key, signature, signing_bytes):
+    signature_valid = _verify_signature_for_key(raw_public_key, signature, signing_bytes)
+    if signature_valid is None:
+        return _fail(
+            VerificationStatus.MALFORMED,
+            "public key or signature is not valid for its published algorithm",
+            key_id=key_id,
+        )
+    if not signature_valid:
         return _fail(
             VerificationStatus.INVALID,
             "signature does not verify over signing_input",
+            key_id=key_id,
+        )
+
+    # The signature held under the published key's algorithm. Receipt v0.1
+    # accepts Ed25519 only; a genuine P-256 signature can now be identified
+    # as unsupported without mistaking it for a malformed Ed25519 signature.
+    if algorithm != "Ed25519":
+        return _fail(
+            VerificationStatus.UNSUPPORTED,
+            f"unsupported signature algorithm: {algorithm!r}",
+            key_id=key_id,
+        )
+    if isinstance(raw_public_key, VerificationKey):
+        return _fail(
+            VerificationStatus.UNSUPPORTED,
+            f"unsupported verification key algorithm: {raw_public_key.alg!r}",
+            key_id=key_id,
+        )
+    if isinstance(signed_canonicalization, str) and signed_canonicalization != CANONICALIZATION:
+        return _fail(
+            VerificationStatus.UNSUPPORTED,
+            f"unsupported canonicalization: {signed_canonicalization!r} (this "
+            f"verifier implements {CANONICALIZATION!r})",
             key_id=key_id,
         )
 
@@ -515,25 +601,12 @@ def _verify_signed_bundle(
             key_id=key_id,
         )
 
-    stated_hash = payload.get("payload_hash")
-    if isinstance(stated_hash, str):
-        inner = {k: v for k, v in payload.items() if k != "payload_hash"}
-        try:
-            canonical = canonical_json(inner)
-        except (RecursionError, ValueError):
-            return _fail(
-                VerificationStatus.MALFORMED,
-                "signed payload exceeds the supported JSON nesting depth",
-                key_id=key_id,
-            )
-        computed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        if computed != stated_hash:
-            return _fail(
-                VerificationStatus.MISMATCH,
-                "payload_hash does not match the signed payload",
-                key_id=key_id,
-            )
-
+    # payload_hash is advisory and never recomputed here. The signature check
+    # above already covers signing_input verbatim, payload_hash included, so
+    # any edit to the signed bytes is INVALID. Re-serializing the parsed
+    # payload would reject genuine receipts: JSON numbers do not round-trip
+    # across languages (the gateway signs floats such as 1.0 and 4e-05, and
+    # integers above 2^53 lose precision in some parsers).
     object_id = payload.get(id_field)
     if not isinstance(object_id, str) or not object_id:
         return _fail(
@@ -579,7 +652,7 @@ def _verify_signed_bundle(
 
 def verify_bundle(
     bundle: Any,
-    key_set: dict[str, bytes],
+    key_set: dict[str, bytes | VerificationKey],
     *,
     expected_issuer: str | None = None,
 ) -> VerificationResult:
@@ -588,7 +661,8 @@ def verify_bundle(
     Args:
         bundle: The object returned by ``GET /v1/receipts/{id}/portable``,
             either as a dict or a JSON string.
-        key_set: Mapping of key id to raw 32-byte Ed25519 public key, as
+        key_set: Mapping of key id to raw Ed25519 bytes or a tagged P-256
+            public key, as
             produced by :func:`key_set_from_document`.
         expected_issuer: When given, the unauthenticated envelope's ``issuer``
             label must match. This catches accidental relabeling but does not
@@ -606,7 +680,7 @@ def verify_bundle(
 
 def verify_permit_bundle(
     bundle: Any,
-    key_set: dict[str, bytes],
+    key_set: dict[str, bytes | VerificationKey],
     *,
     expected_issuer: str | None = None,
 ) -> VerificationResult:

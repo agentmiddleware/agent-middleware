@@ -1,5 +1,5 @@
 {
-  "_comment": "Permit verification vectors, built the same way as receipts.json from the gateway's permit golden fixtures. Each case is checked against keys.json unless it carries its own 'keys'.",
+  "_comment": "Permit verification vectors from the gateway's golden permit fixtures. Each case uses keys.json unless it carries its own 'keys'.",
   "cases": [
     {
       "name": "active_approval.valid",

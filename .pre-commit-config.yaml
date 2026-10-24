@@ -20,3 +20,25 @@ repos:
       - id: check-toml
       - id: end-of-file-fixer
       - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 38bfb07c0c64c304f47eb52090f8288150c77730 # frozen: v0.17.1
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+        args: ["--check"]
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: >-
+          uv run --directory gateway --no-project --isolated --no-env-file
+          --with-requirements requirements.txt
+          --with-requirements requirements-dev.txt
+          --with-editable "../sdk/python[verify]"
+          python -m mypy --config-file mypy.ini .
+        language: system
+        files: ^(gateway/(app|typecheck)/.*\.py|gateway/(mypy\.ini|requirements(-dev)?\.txt|pyproject\.toml)|sdk/python/(src/.*|pyproject\.toml)|\.pre-commit-config\.yaml)$
+        pass_filenames: false
+        require_serial: true

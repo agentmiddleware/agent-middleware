@@ -158,9 +158,10 @@ manual reconciliation instead of fanning out retries.
 
 **Posture: contained.** A human never has to take the agent's (or the
 operator's) word for what happened: any third party can verify a receipt
-offline against the published keys (`/.well-known/trust-keys.json`,
-`b2a-verify-receipt` / `verify_bundle` in `b2a_sdk`). High-risk calls can be
-paused on an explicit human decision ([human-approval-gate.md](human-approval-gate.md)).
+offline against the published keys at `/.well-known/trust-keys.json` using
+`amw verify` or `verify_bundle` from the Agent Middleware (AMW) Python SDK.
+High-risk calls can be paused on an explicit human decision
+([human-approval-gate.md](human-approval-gate.md)).
 
 - Gap: a receipt proves what happened, never what did not; offline
   verification trusts the issuing origin for key distribution (no out-of-band
@@ -169,10 +170,19 @@ paused on an explicit human decision ([human-approval-gate.md](human-approval-ga
 ## ASI10 — Rogue Agents
 
 **Posture: contained.** A rogue or runaway agent exhausts its permit and
-stops: spend caps and use counts bound total damage, expiry bounds duration,
-and every action — allowed or refused — is metered and receipted. Revocation
-is operational today via key retirement and rotation
-(`scripts/retire_owner_keys.py`, `scripts/rotate_api_keys.py`).
+stops: spend caps and use counts bound total damage, and expiry bounds duration.
+Terminalized or reconcilable governed calls have signed terminal accounting.
+Requests rejected before usable authority and an executable tool have no
+receipt; local post-effect failures held for manual review may also have no
+receipt ([failure semantics](failure-semantics.md)). API-key revocation and
+rotation are operational today. Env bootstrap keys use
+`scripts/rotate_api_keys.py` plus a worker restart
+([api-key-rotation.md](api-key-rotation.md)). Wallet keys use
+`DELETE /v1/api-keys/{wallet_id}/{key_id}`,
+`POST /v1/api-keys/rotate` with `revoke_old` true, and
+`POST /v1/api-keys/emergency-revoke`. There is no separate retirement
+script in `scripts/`. Signing-key retirement is not operational: see
+[key-management.md](key-management.md).
 
 - Proof: the ASI02 budget-race fix (HELD on both engines);
   `tests/test_constant_loop_permit_budget.py`.

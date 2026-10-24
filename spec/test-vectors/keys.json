@@ -1,5 +1,5 @@
 {
-  "_comment": "Public halves of fixed test seeds bytes(range(32)) (active), bytes(range(32, 64)) (active rotation successor), and bytes(range(64, 96)) (disabled). Test use only.",
+  "_comment": "Public half of the fixed test seed bytes(range(32)). Test use only.",
   "keys": [
     {
       "kid": "sk_golden_0001",
@@ -10,28 +10,6 @@
         "kty": "OKP",
         "crv": "Ed25519",
         "x": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
-      }
-    },
-    {
-      "kid": "sk_golden_0002",
-      "alg": "Ed25519",
-      "status": "active",
-      "public_key_b64": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
-      "jwk": {
-        "kty": "OKP",
-        "crv": "Ed25519",
-        "x": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc"
-      }
-    },
-    {
-      "kid": "sk_golden_0000",
-      "alg": "Ed25519",
-      "status": "disabled",
-      "public_key_b64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
-      "jwk": {
-        "kty": "OKP",
-        "crv": "Ed25519",
-        "x": "JUO5L_EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0"
       }
     }
   ]

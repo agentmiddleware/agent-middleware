@@ -1,23 +1,19 @@
 # Test vectors
 
-- `keys.json`: key set holding the public halves of the fixed test seeds.
-  **Test use only.** It carries two active keys (the original plus its
-  rotation successor) and one `disabled` key, so rotation and revocation
-  handling are exercised, not just described.
-- `receipts.json`: receipt cases with a `bundle`, optional `keys` override,
-  and the `expect`ed verifier status. Built from the gateway's golden receipt
-  fixtures plus tampered variants, a rotation case, a disabled-key case, and
-  future-algorithm and future-canonicalization cases.
-- `permits.json`: the same treatment for permits, built from the gateway's
-  permit golden fixtures (`gateway/tests/fixtures/permit_signing_golden`)
-  plus tampered variants and a future-algorithm case.
-- `generate.py`: regenerates all three files from `gateway/tests/fixtures/`.
-  It asserts every re-signed payload still matches its golden fixture, and
-  self-verifies each derived signature before writing it.
+- `keys.json`: public half of the fixed receipt and permit test seed. Test use only.
+- `receipts.json`: receipt bundles from the gateway's golden fixtures, their
+  tampered variants, and the existing lifecycle, envelope, advisory hash,
+  float, P-256, and malformed cases.
+- `rotation.json`: the existing rotated receipt case, with both active public
+  keys supplied for that case. The default receipt corpus keeps its single-key
+  shape used by the gateway fixture tests.
+- `permits.json`: permit bundles from the gateway's golden fixtures, their
+  tampered variants, and an unsupported algorithm case.
+- `generate.py`: regenerates the JSON files from the golden fixtures. It checks
+  fixture signatures before writing any file.
 
-Every verifier status (`verified`, `invalid`, `mismatch`, `unknown_key`,
-`malformed`, `unsupported`) has at least one exercising case in each of
-`receipts.json` and `permits.json`.
+The receipt and permit suites each exercise `verified`, `invalid`, `mismatch`,
+`unknown_key`, `malformed`, and `unsupported`.
 
 Check an implementation:
 

@@ -415,6 +415,8 @@ async def evaluate_wallet_policy(
                     policy.policy_id,
                     {"evaluated": evaluated},
                 )
+        elif risk_tier is None and policy.risk_tier is not None:
+            constraints["risk_tier_unevaluated"] = ["requested_risk_tier"]
 
     return PolicyEvaluation(
         True, "allowed", models[0].policy_id, {"evaluated": evaluated}

@@ -131,7 +131,7 @@ All monetary comparisons are done in `Decimal` end-to-end (thresholds stored as
 | A daily spend cap is set but past spending cannot be determined | `daily_spend_unknown` (fail-closed: the cap cannot be shown to hold, so the action is denied) |
 | A daily spend cap is set but `estimated_cost` is unknown | Allowed with `daily_spend_unevaluated` naming the missing estimate in evaluated constraints; the cap is checked once cost is known |
 | Bundle requires real effects but the call is in simulation mode | `real_effects_required` |
-| Requested risk tier exceeds the bundle's tier ceiling, or a supplied tier is unrecognized (low < medium < high; the bundle's `risk_tier` is the highest tier it permits) | `risk_tier_not_allowed` (requested tier recorded; a missing tier is not denied) |
+| Requested risk tier exceeds the bundle's tier ceiling, or a supplied tier is unrecognized (low < medium < high; the bundle's `risk_tier` is the highest tier it permits) | `risk_tier_not_allowed` (supplied tier recorded; a missing tier is allowed and marked `risk_tier_unevaluated`) |
 
 Layer B (permit) and Layer C (wallet policy) are complementary: the permit is a
 per-delegation capability issued to one agent for one job; policy bundles are
@@ -285,7 +285,7 @@ authorization guarantee.
 | `max_cost_per_action_exceeded` | C | Per-action cost cap hit |
 | `daily_spend_limit_exceeded` | C | Daily spend cap hit |
 | `daily_spend_unknown` | C | Past daily spend is unknown, so a cap cannot be shown to hold |
-| `risk_tier_not_allowed` | C | Task tier above the bundle's risk-tier ceiling |
+| `risk_tier_not_allowed` | C | Task tier above the bundle's risk-tier ceiling, or an unrecognized supplied tier |
 | `real_effects_required` | C | Real-effects policy vs simulation mode |
 | `policy_cost_invalid` | C | Non-finite estimated cost or daily spend cannot be compared against caps |
 | `human_approval_unavailable` | D | Approval service unreachable (**retryable**) |

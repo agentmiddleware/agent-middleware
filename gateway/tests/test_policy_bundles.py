@@ -1036,9 +1036,10 @@ async def test_policy_risk_tier_missing_allows_unknown_denies_and_records(
     wallet_id = await _wallet(client, "policy-ceiling-unknown")
     await _ceiling_policy(client, wallet_id, "low")
 
-    assert (
-        await evaluate_wallet_policy(wallet_id=wallet_id, tool_name="policy-echo")
-    ).allowed is True
+    missing = await evaluate_wallet_policy(wallet_id=wallet_id, tool_name="policy-echo")
+    assert missing.allowed is True
+    missing_constraints = missing.evaluated_constraints["evaluated"][0]
+    assert missing_constraints["risk_tier_unevaluated"] == ["requested_risk_tier"]
 
     evaluation = await evaluate_wallet_policy(
         wallet_id=wallet_id,

@@ -1,5 +1,6 @@
 """Metadata-only HTTP usage events for database-backed API keys."""
 
+import asyncio
 import logging
 import time
 from uuid import uuid4
@@ -11,6 +12,7 @@ from ..db.database import get_session_factory
 from ..db.models import APIKeyUsageEventModel
 
 logger = logging.getLogger(__name__)
+_USAGE_WRITE_TIMEOUT_SECONDS = 2.0
 
 
 async def record_api_key_usage_event(
@@ -74,13 +76,16 @@ class APIKeyUsageMiddleware:
             if acceptance.key_id and endpoint:
                 latency_ms = max(0, int((time.perf_counter() - started) * 1000))
                 try:
-                    await record_api_key_usage_event(
-                        key_id=acceptance.key_id,
-                        tenant=acceptance.tenant,
-                        method=scope.get("amw_original_method", scope["method"]),
-                        endpoint=endpoint,
-                        status_code=status_code,
-                        latency_ms=latency_ms,
+                    await asyncio.wait_for(
+                        record_api_key_usage_event(
+                            key_id=acceptance.key_id,
+                            tenant=acceptance.tenant,
+                            method=scope.get("amw_original_method", scope["method"]),
+                            endpoint=endpoint,
+                            status_code=status_code,
+                            latency_ms=latency_ms,
+                        ),
+                        timeout=_USAGE_WRITE_TIMEOUT_SECONDS,
                     )
                 except Exception as exc:  # noqa: BLE001 - usage cannot fail API calls
                     logger.warning(

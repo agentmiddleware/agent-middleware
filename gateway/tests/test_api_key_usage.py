@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 import pytest
@@ -177,4 +178,26 @@ async def test_failed_usage_insert_does_not_fail_authenticated_request(
     monkeypatch.setattr(api_key_usage, "record_api_key_usage_event", fail_insert)
     response = await client.get("/v1/me/authority", headers=wallet["agent_headers"])
     assert response.status_code == 200, response.text
+    assert await _events_for(wallet["key_id"]) == []
+
+
+@pytest.mark.anyio
+async def test_slow_usage_insert_is_cancelled_without_failing_request(
+    client: AsyncClient, clean_database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wallet = await provision_agent_wallet(client)
+    cancelled = asyncio.Event()
+
+    async def stalled_insert(*_args, **_kwargs) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(api_key_usage, "record_api_key_usage_event", stalled_insert)
+    monkeypatch.setattr(api_key_usage, "_USAGE_WRITE_TIMEOUT_SECONDS", 0.01)
+    response = await client.get("/v1/me/authority", headers=wallet["agent_headers"])
+    assert response.status_code == 200, response.text
+    assert cancelled.is_set()
     assert await _events_for(wallet["key_id"]) == []

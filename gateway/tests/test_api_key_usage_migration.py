@@ -5,6 +5,8 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
+from app.db.database import CREATE_API_KEY_USAGE_DAILY_VIEW_SQL
+
 
 def test_045_revision_and_daily_view(tmp_path, monkeypatch) -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
@@ -23,6 +25,9 @@ def test_045_revision_and_daily_view(tmp_path, monkeypatch) -> None:
     inspector = inspect(engine)
     assert "api_key_usage_events" in inspector.get_table_names()
     assert "api_key_usage_daily" in inspector.get_view_names()
+    assert inspector.get_view_definition("api_key_usage_daily").split() == (
+        CREATE_API_KEY_USAGE_DAILY_VIEW_SQL.split()
+    )
     assert {
         column["name"] for column in inspector.get_columns("api_key_usage_events")
     } == {

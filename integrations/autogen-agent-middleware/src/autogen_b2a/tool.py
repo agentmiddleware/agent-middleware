@@ -26,7 +26,7 @@ def _normalize_idempotency_key(value: object, label: str) -> str:
     under that key is a conflict, not a replay.
     """
     if not isinstance(value, str):
-        raise ValueError(f"{label} is required and must be a string")
+        raise TypeError(f"{label} is required and must be a string")
     key = value.strip()
     if not key:
         raise ValueError(f"{label} is required and must not be blank")
@@ -48,7 +48,7 @@ def _require_tool_name(value: object) -> str:
 def _require_permit_budget(value: object) -> None:
     """Reject a budget the trust plane will not mint, before the key is pinned."""
     if isinstance(value, bool) or not isinstance(value, (Decimal, int, float, str)):
-        raise ValueError("permit_budget must be a positive decimal")
+        raise TypeError("permit_budget must be a positive decimal")
     try:
         amount = value if isinstance(value, Decimal) else Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:

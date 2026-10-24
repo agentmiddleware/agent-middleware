@@ -160,7 +160,7 @@ async def test_invalid_invoke_key_does_not_mint_a_permit():
             await bound.tool.call_mcp_tool(**_valid_call(idempotency_key="k" * 129))
         with pytest.raises(ValueError, match="control characters"):
             await bound.tool.call_mcp_tool(**_valid_call(idempotency_key="bad\nkey"))
-        with pytest.raises(ValueError, match="must be a string"):
+        with pytest.raises(TypeError, match="must be a string"):
             await bound.tool.call_mcp_tool(**_valid_call(idempotency_key=15))
         assert calls == []
     finally:
@@ -181,7 +181,7 @@ async def test_invalid_permit_key_does_not_reach_the_api():
             await bound.tool.call_mcp_tool(
                 **_valid_call(permit_idempotency_key="permit\nbad")
             )
-        with pytest.raises(ValueError, match="must be a string"):
+        with pytest.raises(TypeError, match="must be a string"):
             await bound.tool.call_mcp_tool(**_valid_call(permit_idempotency_key=9))
         assert calls == []
     finally:
@@ -234,10 +234,10 @@ async def test_unusable_budget_or_ttl_does_not_pin_a_permit_key():
 
     bound = _BoundTool(handler)
     try:
-        bound.tool.permit_budget = Decimal("0")
+        bound.tool.permit_budget = Decimal(0)
         with pytest.raises(ValueError, match="permit_budget"):
             await bound.tool.call_mcp_tool(**_valid_call())
-        bound.tool.permit_budget = Decimal("25")
+        bound.tool.permit_budget = Decimal(25)
         bound.tool.permit_ttl_minutes = 0
         with pytest.raises(ValueError, match="permit_ttl_minutes"):
             await bound.tool.call_mcp_tool(**_valid_call())

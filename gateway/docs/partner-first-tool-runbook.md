@@ -114,8 +114,8 @@ exactly-once side effects.
    - `max_credits: MAX_CREDITS`
    - `Idempotency-Key` on permit create
 4. Governed invoke via `POST /mcp/messages`. `mcpContext` carrying `wallet_id`,
-   `permit_id`, and `idempotency_key` goes directly in `params` — not in
-   `_meta`. A misplaced context returns `Missing wallet_id in mcpContext`.
+   `permit_id`, and `idempotency_key` goes directly in `params` rather than
+   `_meta`.
 5. Show ledger debit + `POST /v1/receipts/verify` with the receipt ID and the
    authorized agent credential:
 
@@ -125,8 +125,7 @@ exactly-once side effects.
      -H "Content-Type: application/json" \
      -d "{\"receipt_id\": \"$RECEIPT_ID\"}"
    ```
-6. Replay same idempotency key → same `receipt_id`, no second gateway dispatch
-   or debit.
+6. Verify that a retry with the same key returns the original receipt instead of dispatching again. Confirm that the ledger shows exactly one debit for that request key after the retry.
 7. Call the out-of-scope tool under the same permit → deny (`permit_tool_not_allowed`).
 8. Call `YOUR_TOOL_ID` with no permit → deny (`permit_required`).
 9. Force a post-dispatch timeout → signed `delivery_uncertain`, charge retained,
@@ -140,10 +139,10 @@ exactly-once side effects.
       -H "X-API-Key: $AGENT_API_KEY" > receipt-bundle.json
     curl -s "$API_URL/.well-known/trust-keys.json" > trust-keys.json
 
-    # The verifier is not on PyPI. Install the wheel attached to the Python
-    # SDK GitHub release, or run it from a copy of sdk/python/:
-    pip install "../sdk/python[verify]"  # or: pip install "./b2a_sdk-<version>-py3-none-any.whl[verify]"
-    python -m b2a_sdk.verify_cli --bundle receipt-bundle.json --keys trust-keys.json
+    # Install the Agent Middleware (AMW) Python SDK from this checkout
+    # or a built SDK wheel:
+    pip install "../sdk/python[verify]"  # or: pip install "./amw_sdk-<version>-py3-none-any.whl[verify]"
+    amw verify --bundle receipt-bundle.json --keys trust-keys.json
     ```
 
     Expect `VERIFIED` with the permit, tool, outcome, and credits. Exit code 0
@@ -164,9 +163,9 @@ measured integration burden is recorded.
 
 **Commercial signal:** the partner says what unacceptable risk would return if
 the boundary were removed and commits an owner, next action, and decision date.
-A follow-up meeting or "cool demo" response alone is not validation. Apply the
-full gate in
-`docs/30-day-customer-validation.md`.
+A follow-up meeting or "cool demo" response alone is not validation. The
+pass and fail rules in this section are the gate. There is no separate
+validation document in this repository.
 
 **Fail / stop:** partner asks for settlement, KMS, multi-framework policy, or
 broad migration before the single-tool loop is trusted. Point to

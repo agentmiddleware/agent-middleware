@@ -1,0 +1,17 @@
+# Dev-tool lock for local lint, type-check, and the test suite.
+# These exact versions are the blessed local tools. CI installs the same
+# versions via RUFF_VERSION and MYPY_VERSION in .github/workflows/ci.yml.
+# mypy is also pinned in requirements.txt. Bump all of them in one change.
+# See CONTRIBUTING.md.
+#
+# Full local test environment (matches the CI gateway install):
+#   uv pip install -r requirements-dev.txt -e "../sdk/python[verify]"
+# The SDK editable is not listed here because pip/uv resolve `-e` paths
+# against the working directory, not this file.
+-r requirements.txt
+ruff==0.17.1
+mypy==2.4.0
+# requirements.txt already carries pytest, pytest-asyncio, and pytest-cov.
+# CI runs the gateway suite with `-n auto --timeout 300`.
+pytest-xdist>=3.8.0
+pytest-timeout>=2.4.0

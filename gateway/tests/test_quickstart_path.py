@@ -386,17 +386,17 @@ def test_live_loop_proof_ignores_ambient_proxy(quickstart_server, tmp_path):
     property.
     """
     dead_proxy = f"http://127.0.0.1:{_free_port()}"
-    proxy_env = {
-        var: dead_proxy
-        for var in (
+    proxy_env = dict.fromkeys(
+        (
             "HTTP_PROXY",
             "HTTPS_PROXY",
             "ALL_PROXY",
             "http_proxy",
             "https_proxy",
             "all_proxy",
-        )
-    }
+        ),
+        dead_proxy,
+    )
     # Clear any ambient loopback exclusion so the proxy vars would otherwise bite.
     proxy_env["NO_PROXY"] = ""
     proxy_env["no_proxy"] = ""

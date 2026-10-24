@@ -22,6 +22,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.services.ownership import CallerIdentity
 from app.services.audit_log import list_audit_events
 from app.services.receipts import (
     ReceiptService,
@@ -1047,13 +1048,17 @@ async def test_release_tool_call_compensation_semantics(client, clean_database):
             return counts.get("x402.payment")
 
     # Missing permit and absent counter are silent no-ops.
-    await permits.release_tool_call("permit-does-not-exist", "x402.payment")
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        "permit-does-not-exist", "x402.payment", caller=CallerIdentity.admin()
+    )
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() is None
 
     # Two concurrent-style reservations, one release: the surviving count is
     # exactly one — the release never clobbers the other reservation.
-    for idx in range(2):
+    for _ in range(2):
         validation = await permits.authorize_and_reserve(
             permit_id=permit_id,
             wallet_id=wallet_id,
@@ -1063,13 +1068,19 @@ async def test_release_tool_call_compensation_semantics(client, clean_database):
         )
         assert validation.allowed, validation.reason
     assert await counter() == 2
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() == 1
 
     # Clamp at zero: releasing past the floor stops at 0, never negative.
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() == 0
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() == 0
 
     # A malformed boolean counter is rejected, not coerced and decremented.
@@ -1085,7 +1096,9 @@ async def test_release_tool_call_compensation_semantics(client, clean_database):
         model.tool_call_counts_json = _json.dumps({"x402.payment": True})
         session.add(model)
         await session.commit()
-    await permits.release_tool_call(permit_id, "x402.payment")
+    await permits.release_tool_call(
+        permit_id, "x402.payment", caller=CallerIdentity.admin()
+    )
     assert await counter() is True
 
 
@@ -1511,7 +1524,7 @@ async def test_x402_incomplete_compensation_preserves_original_owner(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "receipt_committed,lookup_fails", [(False, False), (True, False), (True, True)]
+    ("receipt_committed", "lookup_fails"), [(False, False), (True, False), (True, True)]
 )
 async def test_x402_uncertain_receipt_write_never_releases_authority_or_owner(
     client, clean_database, monkeypatch, receipt_committed, lookup_fails
@@ -1590,3 +1603,232 @@ async def test_x402_uncertain_receipt_write_never_releases_authority_or_owner(
         idempotency_key="uncertain-receipt",
     )
     assert retained.record_id == original.record_id
+
+
+# ---------------------------------------------------------------------------
+# Permit recipient binding on the x402 path
+# ---------------------------------------------------------------------------
+
+OTHER_EVM_PAY_TO = "0x3333333333333333333333333333333333333333"
+
+
+async def _create_recipient_permit(
+    client,
+    *,
+    wallet_id: str,
+    key_id: str | None,
+    recipient: str,
+    idem_key: str,
+) -> dict:
+    """Mint an x402.payment permit bound to one recipient address."""
+    resp = await client.post(
+        "/v1/permits",
+        json={
+            "issuer_wallet_id": wallet_id,
+            "subject_wallet_id": wallet_id,
+            "subject_key_id": key_id,
+            "allowed_tools": ["x402.payment"],
+            "scopes": ["tool:x402.payment:invoke", "billing:charge"],
+            "max_credits": 100,
+            "recipient_domain": recipient,
+            "expires_at": (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            ).isoformat(),
+        },
+        headers={**BOOTSTRAP_HEADERS, "Idempotency-Key": idem_key},
+    )
+    assert resp.status_code == 201
+    return resp.json()
+
+
+@pytest.mark.anyio
+async def test_x402_settle_recipient_match_allowed(client, clean_database):
+    """A demand paying the permit's bound address settles normally."""
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    permit = await _create_recipient_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        recipient=EVM_PAY_TO,
+        idem_key="x402-recipient-allow-permit",
+    )
+    resp = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=permit["permit_id"],
+            wallet_id=wallet_id,
+            amount="0.03",
+            pay_to=EVM_PAY_TO,
+        ),
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": "x402-recipient-allow-1",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["receipt_id"].startswith("rcpt-")
+    assert await _permit_spent(client, permit["permit_id"]) == Decimal("30")
+
+
+@pytest.mark.anyio
+async def test_x402_settle_recipient_mismatch_denied_no_reserve(client, clean_database):
+    """A demand paying any other address is denied before budget moves.
+
+    No reservation is held, no receipt exists, and the refused idempotency
+    key stays reusable for a corrected demand.
+    """
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    permit = await _create_recipient_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        recipient=EVM_PAY_TO,
+        idem_key="x402-recipient-deny-permit",
+    )
+    permit_id = permit["permit_id"]
+    headers = {
+        **provisioned["agent_headers"],
+        "Idempotency-Key": "x402-recipient-deny-1",
+    }
+
+    denied = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            amount="0.03",
+            pay_to=OTHER_EVM_PAY_TO,
+        ),
+        headers=headers,
+    )
+    assert denied.status_code == 400
+    assert denied.json()["detail"] == "permit_recipient_domain_mismatch"
+    assert await _permit_spent(client, permit_id) == Decimal("0")
+    _, total = await get_receipt_service().list_receipts(permit_id=permit_id)
+    assert total == 0
+
+    # The refused key was abandoned, so the corrected demand reuses it.
+    ok = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            amount="0.03",
+            pay_to=EVM_PAY_TO,
+        ),
+        headers=headers,
+    )
+    assert ok.status_code == 200
+    assert await _permit_spent(client, permit_id) == Decimal("30")
+
+
+@pytest.mark.anyio
+async def test_x402_settle_recipient_evm_checksum_case_allowed(client, clean_database):
+    """EVM casing is not identity: a checksum-case demand pays a lowercase binding."""
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    # Letters make casing observable; EVM_PAY_TO is all digits.
+    hex_address = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    permit = await _create_recipient_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        recipient="0x" + hex_address,
+        idem_key="x402-recipient-case-permit",
+    )
+    checksummed = "0x" + "".join(
+        c.upper() if i % 2 else c for i, c in enumerate(hex_address)
+    )
+    resp = await client.post(
+        "/v1/x402/settle",
+        json=_settle_body(
+            permit_id=permit["permit_id"],
+            wallet_id=wallet_id,
+            amount="0.03",
+            pay_to=checksummed,
+        ),
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": "x402-recipient-case-1",
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_x402_settle_foreign_permit_gives_no_recipient_oracle(
+    client, clean_database
+):
+    """A foreign wallet gets permit_wallet_mismatch for any pay_to.
+
+    If the recipient check ran before ownership, varying pay_to would
+    reveal the bound address through differing denial reasons.
+    """
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    permit = await _create_recipient_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        recipient=EVM_PAY_TO,
+        idem_key="x402-recipient-oracle-permit",
+    )
+    other = await provision_agent_wallet(client)
+    for i, pay_to in enumerate((EVM_PAY_TO, OTHER_EVM_PAY_TO)):
+        resp = await client.post(
+            "/v1/x402/settle",
+            json=_settle_body(
+                permit_id=permit["permit_id"],
+                wallet_id=other["agent_wallet_id"],
+                amount="0.03",
+                pay_to=pay_to,
+            ),
+            headers={
+                **other["agent_headers"],
+                "Idempotency-Key": f"x402-recipient-oracle-{i}",
+            },
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "permit_wallet_mismatch"
+
+
+def test_x402_settle_requires_idempotency_record_id():
+    """Settle without a record id is a type error: no caller can skip dedupe.
+
+    The permit id does not exist, so without the required argument the old
+    code would fall through to permit_not_found instead of raising here.
+    """
+    handler = get_x402_handler()
+    requirement = handler.build_requirement(
+        amount="0.01", pay_to=EVM_PAY_TO, network="base"
+    )
+    with pytest.raises(TypeError):
+        handler.settle(
+            permit_id="permit-does-not-exist",
+            wallet_id="wallet-does-not-exist",
+            key_id=None,
+            requirement=requirement,
+            idempotency_key="x402-no-record-1",
+            payer=EVM_PAYER,
+        )
+
+
+def test_recipient_binding_matches_addresses_and_hosts():
+    """The shared comparison the MCP and x402 paths both enforce."""
+    from app.services.permits import recipient_binding_matches
+
+    assert recipient_binding_matches(None, EVM_PAY_TO) is True
+    assert recipient_binding_matches(EVM_PAY_TO, EVM_PAY_TO) is True
+    assert recipient_binding_matches(EVM_PAY_TO, OTHER_EVM_PAY_TO) is False
+    assert (
+        recipient_binding_matches(
+            "partner.example", "https://partner.example/tools/call"
+        )
+        is True
+    )
+    assert (
+        recipient_binding_matches("allowed.example.com", "https://other.example")
+        is False
+    )

@@ -98,7 +98,7 @@ async def verify_receipts(cl: httpx.AsyncClient, receipt_ids: list[str]) -> None
         pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(keys[p["kid"]]))
         sig = base64.b64decode(p["signature"])
 
-        def verifies(message: bytes) -> bool:
+        def verifies(message: bytes, pub=pub, sig=sig) -> bool:
             try:
                 pub.verify(sig, message)
             except InvalidSignature:

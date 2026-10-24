@@ -32,6 +32,19 @@ def api_headers():
     return {"X-API-Key": "test-key"}
 
 
+@pytest.fixture(autouse=True)
+def _configured_webhook_secret(monkeypatch):
+    """Opt into webhook verification for this module's mocked-signature tests.
+
+    The shared helper refuses to verify with no secret configured, so tests
+    that mock stripe.Webhook.construct_event set a dummy secret here; the
+    fail-closed behavior itself is pinned in test_webhook_auth.py.
+    """
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "STRIPE_WEBHOOK_SECRET", "whsec_test_stripe")
+
+
 @pytest.fixture
 async def sponsor_wallet(client, api_headers):
     """Create a sponsor wallet for testing."""
@@ -310,7 +323,7 @@ async def test_prepare_top_up_wallet_not_found(client, api_headers):
 
 @pytest.mark.anyio
 async def test_webhook_signature_verification(client):
-    """Test that invalid Stripe signatures are rejected."""
+    """Test that invalid Stripe signatures are rejected with 401."""
     with (
         patch(
             "app.services.stripe_integration.stripe.Webhook.construct_event",
@@ -328,18 +341,18 @@ async def test_webhook_signature_verification(client):
             headers={"stripe-signature": "invalid_sig"},
         )
 
-    assert resp.status_code == 400
+    assert resp.status_code == 401
     mock_mint.assert_not_awaited()
 
 
 @pytest.mark.anyio
 async def test_webhook_missing_signature(client):
-    """Test that missing Stripe signatures are rejected."""
+    """Test that missing Stripe signatures are rejected with 401."""
     resp = await client.post(
         "/v1/webhooks/stripe",
         content=b"some_payload",
     )
-    assert resp.status_code == 400  # Missing signature header
+    assert resp.status_code == 401  # Missing signature header
 
 
 @pytest.mark.anyio

@@ -564,6 +564,8 @@ async def create_dom_session(
         get_playwright_bridge,
     )
 
+    if request.wallet_id is None:
+        request.wallet_id = auth.wallet_id
     if request.wallet_id:
         auth.require_wallet_access(request.wallet_id)
     else:

@@ -1069,6 +1069,18 @@ async def transfer_wallets(
     # unknown source fails the foreign key and answers 500, while the same
     # call without a key answers 404.
     if await money.get_wallet(from_wallet_id) is None:
+        await _record_billing_governance(
+            event="billing.transfer",
+            auth=auth,
+            wallet_id=from_wallet_id,
+            service_category="transfer",
+            endpoint=endpoint,
+            request_id=correlation_id,
+            estimated_cost=amount,
+            ok=False,
+            error="wallet_not_found",
+            metadata={"to_wallet_id": to_wallet_id},
+        )
         raise HTTPException(
             status_code=404,
             detail=str(WalletNotFoundError(from_wallet_id)),

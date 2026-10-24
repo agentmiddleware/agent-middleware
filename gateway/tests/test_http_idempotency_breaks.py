@@ -19,6 +19,7 @@ from app.db.database import get_session_factory
 from app.db.models import IdempotencyRecordModel, LedgerEntryModel
 from app.main import app
 from app.services.agent_money import get_agent_money
+from app.services.audit_log import list_audit_events
 from app.services.idempotency import MAX_CLIENT_IDEMPOTENCY_KEY_LENGTH
 from app.services.signing_keys import sha256_hex
 from sqlalchemy import func, select
@@ -446,6 +447,7 @@ async def test_transfer_unknown_source_with_key_is_404(
         "from_wallet_id": "wlt-missing-source",
         "to_wallet_id": "wlt-missing-dest",
         "amount": 10,
+        "correlation_id": "xfer-missing-source-keyed",
     }
 
     first = await client.post("/v1/billing/transfer", params=params, headers=headers)
@@ -455,6 +457,44 @@ async def test_transfer_unknown_source_with_key_is_404(
     assert second.status_code == 404, second.text
     assert second.json() == first.json()
     assert "wlt-missing-source" in first.json()["detail"]
+    events = await list_audit_events(
+        event="billing.transfer",
+        wallet_id=params["from_wallet_id"],
+        request_id=params["correlation_id"],
+    )
+    assert len(events) == 2
+    for event in events:
+        assert event.ok is False
+        assert event.error == "wallet_not_found"
+        assert event.endpoint == "/v1/billing/transfer"
+        assert event.metadata["to_wallet_id"] == params["to_wallet_id"]
+        assert event.metadata["service_category"] == "transfer"
+
+
+async def test_transfer_unknown_source_without_key_records_governance(
+    client, api_headers, clean_database
+):
+    params = {
+        "from_wallet_id": "wlt-missing-source",
+        "to_wallet_id": "wlt-missing-dest",
+        "amount": 10,
+        "correlation_id": "xfer-missing-source-unkeyed",
+    }
+
+    response = await client.post(
+        "/v1/billing/transfer", params=params, headers=api_headers
+    )
+
+    assert response.status_code == 404, response.text
+    events = await list_audit_events(
+        event="billing.transfer",
+        wallet_id=params["from_wallet_id"],
+        request_id=params["correlation_id"],
+    )
+    assert len(events) == 1
+    assert events[0].ok is False
+    assert events[0].error == "wallet_not_found"
+    assert events[0].metadata["to_wallet_id"] == params["to_wallet_id"]
 
 
 async def test_agent_wallet_replay_returns_the_original_json(

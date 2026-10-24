@@ -219,9 +219,12 @@ def _is_loopback_client(host: str | None) -> bool:
     if lowered == "testclient":
         return True
     try:
-        return ipaddress.ip_address(lowered).is_loopback
+        address = ipaddress.ip_address(lowered)
     except ValueError:
         return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
 
 
 def _require_debug_open_loopback(request: Request | None) -> None:

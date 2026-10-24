@@ -19,7 +19,12 @@ import os
 import uuid
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
+
+try:  # mcp 2.x ships its own httpx fork
+    import httpx2 as httpx
+except ImportError:  # mcp 1.x
+    import httpx
 
 URL = os.environ.get("AMW_MCP_URL", "http://127.0.0.1:8000/mcp")
 TOOL = os.environ.get("AMW_TOOL", "partner.notes.write")
@@ -27,11 +32,16 @@ TOOL = os.environ.get("AMW_TOOL", "partner.notes.write")
 
 async def call_once(api_key: str, idempotency_key: str) -> dict:
     headers = {"X-API-Key": api_key, "Idempotency-Key": idempotency_key}
-    async with streamablehttp_client(URL, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(TOOL, {"text": "hello from an MCP client"})
-            return result.model_dump(mode="json")
+    async with (
+        httpx.AsyncClient(
+            headers=headers, timeout=httpx.Timeout(30, read=300)
+        ) as http_client,
+        streamable_http_client(URL, http_client=http_client) as (read, write, *_),
+        ClientSession(read, write) as session,
+    ):
+        await session.initialize()
+        result = await session.call_tool(TOOL, {"text": "hello from an MCP client"})
+        return result.model_dump(mode="json")
 
 
 RECEIPT_META_KEY = "io.agentmiddleware/receipt"
@@ -39,23 +49,38 @@ RECEIPT_META_KEY = "io.agentmiddleware/receipt"
 
 def receipt_id(result: dict) -> str | None:
     """The gateway returns the signed receipt in the tool result's _meta."""
-    receipt = (result.get("meta") or result.get("_meta") or {}).get(RECEIPT_META_KEY) or {}
+    receipt = (result.get("meta") or result.get("_meta") or {}).get(
+        RECEIPT_META_KEY
+    ) or {}
     return receipt.get("receipt_id")
 
 
-async def main() -> None:
+async def main() -> int:
     api_key = os.environ["AGENT_API_KEY"]
     key = f"mcp-example-{uuid.uuid4()}"
     first = await call_once(api_key, key)
     retry = await call_once(api_key, key)  # same key: same receipt, no second charge
-    print("first receipt:", receipt_id(first), "outcome:", _outcome(first))
-    print("retry receipt:", receipt_id(retry), "outcome:", _outcome(retry))
+    first_id = receipt_id(first)
+    retry_id = receipt_id(retry)
+    print("first receipt:", first_id, "outcome:", _outcome(first))
+    print("retry receipt:", retry_id, "outcome:", _outcome(retry))
+    if (
+        first.get("isError") is True
+        or retry.get("isError") is True
+        or not first_id
+        or first_id != retry_id
+    ):
+        print("tool call failed or retry did not return the same receipt")
+        return 1
+    return 0
 
 
 def _outcome(result: dict) -> str | None:
-    receipt = (result.get("meta") or result.get("_meta") or {}).get(RECEIPT_META_KEY) or {}
+    receipt = (result.get("meta") or result.get("_meta") or {}).get(
+        RECEIPT_META_KEY
+    ) or {}
     return receipt.get("outcome")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

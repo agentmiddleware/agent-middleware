@@ -1,4 +1,4 @@
-"""``amw replay --bundle <bundle.json> --calls <recorded receipts>``."""
+"""``amw-replay`` / ``python -m app.replay`` ``--bundle <bundle.json> --calls <recorded receipts>``."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from app.replay.policy_replay import (
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="amw replay",
+        prog="amw-replay",
         description=(
             "Re-decide recorded gateway calls under a new policy bundle. "
             "Never executes a tool or contacts any server."
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         bundle = load_policy_bundle(args.bundle)
         result = replay_calls(calls, bundle)
     except (ReplayError, OSError, json.JSONDecodeError) as exc:
-        print(f"amw replay: {exc}", file=sys.stderr)
+        print(f"amw-replay: {exc}", file=sys.stderr)
         return 2
 
     out = Path(args.out)

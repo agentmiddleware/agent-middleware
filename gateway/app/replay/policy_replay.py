@@ -1,6 +1,6 @@
 """Replay recorded gateway calls against a new policy bundle, offline.
 
-``amw replay --bundle <bundle.json> --calls <recorded receipts>`` re-runs the
+``amw-replay --bundle <bundle.json> --calls <recorded receipts>`` re-runs the
 gateway's own policy decision core (:func:`evaluate_policy_models`) for every
 recorded call and writes one signed replay receipt per call.
 
@@ -131,7 +131,7 @@ def network_sealed() -> Iterator[None]:
     """Refuse every outbound connection and DNS lookup for the block."""
 
     def _refuse(*_: Any, **__: Any) -> Any:
-        raise NetworkSealedError("amw replay never opens network connections")
+        raise NetworkSealedError("amw-replay never opens network connections")
 
     saved = (
         socket.socket.connect,

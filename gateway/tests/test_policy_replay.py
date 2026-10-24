@@ -1,4 +1,4 @@
-"""``amw replay``: offline policy replay over recorded gateway receipts.
+"""``amw-replay``: offline policy replay over recorded gateway receipts.
 
 Input corpus: the gateway's existing receipt signing goldens
 (``tests/fixtures/receipt_signing_golden``), each a receipt the gateway's
@@ -23,7 +23,7 @@ import sys
 import httpx
 import pytest
 
-from amw.cli import main as amw_main
+from app.replay.cli import main as replay_main
 from app.replay.policy_replay import (
     NetworkSealedError,
     ReplayError,
@@ -130,9 +130,8 @@ def test_replay_forwards_nothing_library(tmp_path, tripwire):
 
 
 def test_replay_forwards_nothing_cli(tmp_path, tripwire, capsys):
-    code = amw_main(
+    code = replay_main(
         [
-            "replay",
             "--bundle",
             str(_approval_rule(tmp_path)),
             "--calls",
@@ -255,9 +254,8 @@ def test_only_targeted_calls_flip_recorded_non_policy_denial_stays(tmp_path):
 def test_summary_counts_match_receipts(tmp_path):
     out = tmp_path / "out"
     assert (
-        amw_main(
+        replay_main(
             [
-                "replay",
                 "--bundle",
                 str(_approval_rule(tmp_path)),
                 "--calls",

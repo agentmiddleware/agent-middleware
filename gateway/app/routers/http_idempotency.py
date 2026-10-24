@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, overload
 
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
@@ -99,6 +99,14 @@ async def begin_http_idempotency(
     return guard, None
 
 
+@overload
+def resolve_idempotency_key_lines(
+    lines: Sequence[str] | None, *, required: Literal[True]
+) -> str: ...
+@overload
+def resolve_idempotency_key_lines(
+    lines: Sequence[str] | None, *, required: Literal[False] = ...
+) -> str | None: ...
 def resolve_idempotency_key_lines(
     lines: Sequence[str] | None,
     *,

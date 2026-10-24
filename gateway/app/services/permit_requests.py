@@ -49,6 +49,7 @@ import httpx
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.elements import ColumnElement
+from sqlmodel import col
 
 from app.core.config import get_settings, public_api_origin
 from app.core.credits import credit_amount_fits_storage
@@ -279,7 +280,7 @@ class PermitRequestService:
                     ),
                     cast(
                         ColumnElement[bool],
-                        PermitRequestModel.sentinel_action_id.is_(None),
+                        col(PermitRequestModel.sentinel_action_id).is_(None),
                     ),
                 )
             )

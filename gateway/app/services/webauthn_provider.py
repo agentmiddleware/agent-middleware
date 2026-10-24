@@ -574,12 +574,8 @@ class WebAuthnProvider:
         """
         existing = self._credentials.get(credential_id)
         if existing is not None and existing.user_id != user_id:
-            logger.warning(
-                "refusing credential re-registration for a different user"
-            )
-            raise ValueError(
-                "credential ID is already registered to another user"
-            )
+            logger.warning("refusing credential re-registration for a different user")
+            raise ValueError("credential ID is already registered to another user")
         self._credentials[credential_id] = CredentialRecord(
             credential_id=credential_id,
             user_id=user_id,

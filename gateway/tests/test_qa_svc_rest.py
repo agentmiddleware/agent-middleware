@@ -5,13 +5,21 @@ handling, auth-adjacent behavior and scoring integrity. Bug-repro tests are
 marked with the fix they prove.
 """
 
+from datetime import timedelta
+from types import SimpleNamespace
+
+import httpx
 import pytest
 
+from app.core.time import utc_now
+from app.services import webauthn_provider as wmod
+from app.services.llm import LLMService
 from app.services.sandbox import (
     Difficulty,
     EnvironmentType,
     SandboxEngine,
 )
+from app.services.webauthn_provider import WebAuthnProvider
 
 
 @pytest.fixture
@@ -26,11 +34,11 @@ def engine() -> SandboxEngine:
 
 class TestSandboxCreation:
     async def test_create_invalid_env_type_raises(self, engine):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="not a valid EnvironmentType"):
             await engine.create_environment(env_type="nope", difficulty="easy")
 
     async def test_create_invalid_difficulty_raises(self, engine):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="not a valid Difficulty"):
             await engine.create_environment(env_type="pattern", difficulty="nope")
 
     async def test_create_all_types_all_difficulties(self, engine):
@@ -50,6 +58,7 @@ class TestSandboxCreation:
     async def test_evaluate_unknown_env_raises(self, engine):
         with pytest.raises(ValueError, match="not found"):
             await engine.evaluate("env-missing")
+
 
 # --------------------------------------------------------------------------
 # SandboxEngine: pattern evaluation integrity
@@ -205,12 +214,11 @@ class TestNavigationEvaluation:
         env = await engine.create_environment(
             env_type="navigation", difficulty="easy", seed=5
         )
-        result = await engine.submit_action(
-            env.env_id, {"type": "move", "value": 9999}
-        )
+        result = await engine.submit_action(env.env_id, {"type": "move", "value": 9999})
         assert result.reward == -0.5
         assert result.done is False
         assert env.state.metadata["current_node"] == 0
+
 
 class TestApiMockEvaluation:
     async def test_schema_shifts_every_fifth_interaction(self, engine):
@@ -232,6 +240,7 @@ class TestApiMockEvaluation:
         assert env.state.metadata["endpoints_discovered"] == 4
         assert fifth.done is False
 
+
 class TestAdversarialEvaluation:
     async def test_trap_costs_and_careful_solves(self, engine):
         env = await engine.create_environment(
@@ -251,15 +260,10 @@ class TestAdversarialEvaluation:
         assert result.done is True
         assert result.reward == 10.0
 
+
 # --------------------------------------------------------------------------
 # LLMService: payload building, parsing, failure handling (no network)
 # --------------------------------------------------------------------------
-
-from types import SimpleNamespace
-
-import httpx
-
-from app.services.llm import LLMService
 
 
 def _openai_settings(**overrides):
@@ -280,9 +284,7 @@ def _chat_success_response(content: str):
         return httpx.Response(
             200,
             json={
-                "choices": [
-                    {"message": {"content": content}, "finish_reason": "stop"}
-                ],
+                "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
                 "model": "synthetic",
                 "usage": {},
             },
@@ -334,6 +336,7 @@ class TestLLMPayloads:
         headers = service._build_headers()
         assert headers["Authorization"] == "Bearer synthetic"
 
+
 class TestLLMParsing:
     def test_parse_openai_tool_calls(self):
         service = LLMService()
@@ -362,9 +365,7 @@ class TestLLMParsing:
 
     def test_parse_ollama(self):
         service = LLMService()
-        service.settings = SimpleNamespace(
-            LLM_PROVIDER="ollama", OLLAMA_MODEL="tiny"
-        )
+        service.settings = SimpleNamespace(LLM_PROVIDER="ollama", OLLAMA_MODEL="tiny")
         parsed = service._parse_response(
             {"response": "r", "model": "m", "usage": {}, "done_reason": "stop"},
             "ollama",
@@ -413,15 +414,10 @@ class TestLLMFailureHandling:
         finally:
             await service.close()
 
+
 # --------------------------------------------------------------------------
 # WebAuthnProvider (no network, no sleeps; time travel by expiry mutation)
 # --------------------------------------------------------------------------
-
-from datetime import timedelta
-
-from app.core.time import utc_now
-from app.services import webauthn_provider as wmod
-from app.services.webauthn_provider import WebAuthnProvider
 
 
 @pytest.fixture
@@ -458,14 +454,12 @@ def fake_py_webauthn(monkeypatch):
     monkeypatch.setattr(
         wmod, "verify_authentication_response", fake_verify, raising=False
     )
+    monkeypatch.setattr(wmod, "parse_credential_id", lambda value: value, raising=False)
+    monkeypatch.setattr(wmod, "generate_challenge", lambda: b"\x01" * 64, raising=False)
     monkeypatch.setattr(
-        wmod, "parse_credential_id", lambda value: value, raising=False
-    )
-    monkeypatch.setattr(
-        wmod, "generate_challenge", lambda: b"\x01" * 64, raising=False
-    )
-    monkeypatch.setattr(
-        wmod, "base64url_to_bytes", lambda value: value.encode("ascii"),
+        wmod,
+        "base64url_to_bytes",
+        lambda value: value.encode("ascii"),
         raising=False,
     )
     monkeypatch.setenv("WEBAUTHN_ALLOW_MOCK", "false")
@@ -495,9 +489,12 @@ class TestWebAuthnRegistration:
         await wa_provider.register_credential(
             user_id="user-a", credential_id="cred-1", public_key=b"key-1"
         )
-        assert await wa_provider.register_credential(
-            user_id="user-a", credential_id="cred-1", public_key=b"key-2"
-        ) is True
+        assert (
+            await wa_provider.register_credential(
+                user_id="user-a", credential_id="cred-1", public_key=b"key-2"
+            )
+            is True
+        )
         assert len(wa_provider.get_registered_credentials("user-a")) == 1
 
 
@@ -548,9 +545,7 @@ class TestWebAuthnChallengeLifecycle:
 
     async def test_double_verify_raises(self, wa_provider, mock_webauthn):
         challenge = await wa_provider.create_challenge("sess-1", "checkout")
-        await wa_provider.verify_response(
-            challenge["challenge_id"], {"id": "cred-1"}
-        )
+        await wa_provider.verify_response(challenge["challenge_id"], {"id": "cred-1"})
         with pytest.raises(ValueError, match="already verified"):
             await wa_provider.verify_response(
                 challenge["challenge_id"], {"id": "cred-1"}
@@ -561,9 +556,7 @@ class TestWebAuthnChallengeLifecycle:
         with pytest.raises(ValueError, match="Missing credential ID"):
             await wa_provider.verify_response(challenge["challenge_id"], {})
 
-    async def test_expired_challenge_marks_and_raises(
-        self, wa_provider, mock_webauthn
-    ):
+    async def test_expired_challenge_marks_and_raises(self, wa_provider, mock_webauthn):
         challenge = await wa_provider.create_challenge("sess-1", "checkout")
         stored = wa_provider.get_challenge(challenge["challenge_id"])
         stored.expires_at = utc_now() - timedelta(seconds=1)
@@ -576,9 +569,7 @@ class TestWebAuthnChallengeLifecycle:
                 challenge["challenge_id"], {"id": "cred-1"}
             )
 
-    async def test_fail_closed_without_library_or_mock(
-        self, wa_provider, monkeypatch
-    ):
+    async def test_fail_closed_without_library_or_mock(self, wa_provider, monkeypatch):
         monkeypatch.setattr(wmod, "PY_WEBAUTHN_AVAILABLE", False)
         monkeypatch.setenv("WEBAUTHN_ALLOW_MOCK", "false")
         challenge = await wa_provider.create_challenge("sess-1", "checkout")
@@ -604,9 +595,7 @@ class TestWebAuthnChallengeLifecycle:
 
     async def test_verification_expiry_enforced(self, wa_provider, mock_webauthn):
         challenge = await wa_provider.create_challenge("sess-1", "checkout")
-        await wa_provider.verify_response(
-            challenge["challenge_id"], {"id": "cred-1"}
-        )
+        await wa_provider.verify_response(challenge["challenge_id"], {"id": "cred-1"})
         assert await wa_provider.is_action_verified("sess-1", "checkout") is True
         record = next(iter(wa_provider._verifications.values()))
         record.expires_at = utc_now() - timedelta(seconds=1)
@@ -625,10 +614,9 @@ class TestWebAuthnChallengeLifecycle:
 
     async def test_cleanup_expired(self, wa_provider, mock_webauthn):
         challenge = await wa_provider.create_challenge("sess-1", "checkout")
-        wa_provider.get_challenge(
-            challenge["challenge_id"]
-        ).expires_at = utc_now() - timedelta(seconds=1)
+        wa_provider.get_challenge(challenge["challenge_id"]).expires_at = (
+            utc_now() - timedelta(seconds=1)
+        )
         removed = wa_provider.cleanup_expired()
         assert removed["challenges_removed"] == 1
         assert wa_provider.get_challenge(challenge["challenge_id"]) is None
-

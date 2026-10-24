@@ -13,10 +13,6 @@
   const budget = byId("home-key-budget");
   const retry = byId("home-key-retry");
   const email = byId("home-key-email");
-  const quickstart = byId("home-quickstart-code");
-  const copyQuickstart = byId("home-copy-quickstart");
-  const copyStatus = byId("home-copy-status");
-  const quickstartTemplate = quickstart.textContent;
   const heroQuickstart = byId("home-hero-python");
   const heroQuickstartTemplate = heroQuickstart.textContent;
   const copyHeroQuickstart = byId("home-hero-python-copy");
@@ -82,9 +78,7 @@
     key.type = "password";
     wallet.type = "password";
     budget.textContent = String(data.budget_credits);
-    quickstart.textContent = fillQuickstart(quickstartTemplate, data);
     heroQuickstart.textContent = fillQuickstart(heroQuickstartTemplate, data);
-    copyQuickstart.disabled = false;
     copyHeroQuickstart.disabled = false;
     title.textContent = "Your demo key is ready";
     status.textContent = "Your demo key is ready";
@@ -188,17 +182,7 @@
     copy(`export AMW_API_KEY=${shellQuote(key.value)}\nexport AMW_WALLET_ID=${shellQuote(wallet.value)}`,
       "Key and wallet commands copied.", key, status,
       "Copy was unavailable. Copy Key and Wallet separately."));
-  copyQuickstart.addEventListener("click", () =>
-    copy(quickstart.textContent, "Quickstart copied.", quickstart, copyStatus));
-  for (const [buttonId, codeId] of [
-    ["home-hero-python-copy", "home-hero-python"],
-    ["home-hero-curl-copy", "home-hero-curl"],
-  ]) {
-    const button = byId(buttonId);
-    const code = byId(codeId);
-    if (button && code) {
-      button.addEventListener("click", () =>
-        copy(code.textContent, "Commands copied.", code, byId("home-hero-copy-status")));
-    }
-  }
+  copyHeroQuickstart.addEventListener("click", () =>
+    copy(heroQuickstart.textContent, "Commands copied.", heroQuickstart,
+      byId("home-hero-copy-status")));
 })();

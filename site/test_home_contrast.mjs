@@ -56,13 +56,14 @@ test("homepage surfaces and controls use the contrast aware palette", () => {
     ["body.home-light .hero-v2-action-primary,\nbody.home-light #main .hero-v2-action-primary", "color", "var(--home-primary-text)"],
     ["body.home-light .hero-v2-code", "background", "var(--home-soft)"],
     ["body.home-light .hero-v2-command-row button", "border", "1px solid var(--home-line)"],
+    ["body.home-light .hero-v2-tab-disabled span", "border", "1px solid #6b7280"],
     ["body.home-light .hero-v2-step", "background", "var(--home-bg)"],
     ["body.home-light .hero-v2-intro > p", "color", "var(--home-muted)"],
+    ["body.home-light .hero-v2-intro > .hero-v2-boundary", "font-size", "0.875rem"],
     ["body.home-light .home-key-drawer", "background", "var(--home-bg)"],
     ["body.home-light .home-key-field-row", "border", "1px solid var(--home-line)"],
     ["body.home-light .home-key-field-row button", "color", "var(--home-muted)"],
     ["body.home-light .home-v2-glossary", "background", "var(--home-soft)"],
-    ["body.home-light .home-code-toolbar button", "background", "var(--home-bg)"],
   ]) {
     assert.equal(rule(selector)[property], value, `${selector} ${property}`);
   }

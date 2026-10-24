@@ -5,6 +5,7 @@
   // configured at build time; email_click is the primary intake path.
   const allowedEvents = new Set([
     "booking_click",
+    "demo_key_click",
     "email_click",
     "proof_click",
   ]);

@@ -2669,6 +2669,12 @@ body.home-light .hero-v2-intro > p {
   font-size: 1.1875rem;
   letter-spacing: -0.018em;
 }
+body.home-light .hero-v2-intro > .hero-v2-boundary {
+  margin-top: 5px;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
 body.home-light .hero-v2-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2744,7 +2750,7 @@ body.home-light .hero-v2-tab-disabled {
 }
 body.home-light .hero-v2-tab-disabled span {
   padding: 3px 6px;
-  border: 1px solid var(--home-line);
+  border: 1px solid #6b7280;
   border-radius: 4px;
   font-size: 0.625rem;
 }
@@ -2771,12 +2777,20 @@ body.home-light .hero-v2-command-row button {
   cursor: pointer;
 }
 body.home-light .hero-v2-command-row button:disabled { cursor: not-allowed; opacity: 0.55; }
-body.home-light .hero-v2-curl-row {
-  margin: 18px 23px 0;
+body.home-light .hero-v2-output {
+  margin: 16px 23px 0;
   border-top: 1px solid var(--home-line);
 }
-body.home-light .hero-v2-curl-row pre { padding: 14px 64px 0 0; line-height: 1.375rem; }
-body.home-light .hero-v2-curl-row button { top: 6px; right: -8px; }
+body.home-light .hero-v2-output p {
+  margin: 12px 0 0;
+  color: var(--home-muted);
+  font-size: 0.75rem;
+}
+body.home-light .hero-v2-command-row.hero-v2-output pre {
+  padding: 8px 0 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
 body.home-light .hero-v2-code-note {
   margin: 16px 23px 0;
   max-width: none;
@@ -2784,10 +2798,8 @@ body.home-light .hero-v2-code-note {
   font-size: 0.75rem;
 }
 body.home-light .hero-v2-copy-status {
-  position: absolute;
-  right: 23px;
-  bottom: 7px;
-  margin: 0;
+  margin: 6px 23px 0;
+  min-height: 1rem;
   color: var(--home-muted);
   font-size: 0.6875rem;
 }
@@ -3031,77 +3043,32 @@ body.home-light .home-v2-section-heading > p {
   font-weight: 600;
 }
 body.home-light .home-v2-section-heading h2 { margin: 0 0 30px; font-size: 2.375rem; }
-body.home-light .home-v2-guide-step {
+body.home-light .home-v2-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+body.home-light .home-v2-steps li {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  gap: 18px;
-  padding: 20px 0;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 0;
   border-top: 1px solid var(--home-line);
-}
-body.home-light .home-v2-guide-number {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--home-line);
-  border-radius: 6px;
   color: var(--home-muted);
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-size: 0.9375rem;
+  line-height: 1.6;
 }
-body.home-light .home-v2-guide-step h3 { margin: 2px 0 8px; font-size: 1.125rem; }
-body.home-light .home-v2-guide-step p,
+body.home-light .home-v2-steps li::before {
+  content: "✓";
+  color: var(--home-blue);
+  font-weight: 700;
+}
 body.home-light .home-v2-limits > p,
 body.home-light .home-v2-source > p {
   max-width: 76ch;
   color: var(--home-muted);
   font-size: 0.9375rem;
   line-height: 1.6;
-}
-body.home-light .home-code-panel {
-  max-width: 850px;
-  margin-top: 18px;
-  overflow: hidden;
-  border: 1px solid var(--home-line);
-  border-radius: 10px;
-  background: var(--home-soft);
-  box-shadow: none;
-}
-body.home-light .home-code-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  min-height: 46px;
-  padding: 0 18px;
-  border-bottom: 1px solid var(--home-line);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-body.home-light .home-code-toolbar button {
-  padding: 5px 9px;
-  border: 1px solid var(--home-line);
-  border-radius: 5px;
-  background: var(--home-bg);
-  color: var(--home-muted);
-  font: 600 0.6875rem "Public Sans", sans-serif;
-  cursor: pointer;
-}
-body.home-light .home-code-toolbar button:disabled { cursor: not-allowed; opacity: 0.55; }
-body.home-light .home-code-scroll {
-  margin: 0;
-  overflow-x: auto;
-  padding: 18px 23px;
-  color: var(--home-text);
-  font-size: 0.8125rem;
-  line-height: 1.55;
-}
-body.home-light .home-code-help {
-  margin: 0;
-  padding: 0.55rem 1.4rem;
-  border-top: 1px solid var(--home-line);
-  color: var(--home-muted);
-  font-size: 0.75rem;
 }
 body.home-light .home-v2-section a { text-decoration: underline; }
 body.home-light .home-v2-source { padding-bottom: 90px; }
@@ -3130,15 +3097,12 @@ body.home-light .home-v2-source a { overflow-wrap: anywhere; }
     align-self: flex-end;
     margin: 8px 14px 0;
   }
-  body.home-light .hero-v2-curl-row { margin-top: 12px; }
   body.home-light .hero-v2-code-note { margin-top: 12px; }
-  body.home-light .hero-v2-copy-status { position: static; margin: 6px 23px 0; }
   body.home-light .hero-v2-flow { grid-template-columns: minmax(0, 1fr); }
   body.home-light .hero-v2-step { min-height: 0; }
   body.home-light .home-v2-glossary { grid-template-columns: minmax(0, 1fr); min-height: 0; }
   body.home-light .home-v2-glossary article { min-height: 0; }
   body.home-light .home-v2-section { padding-top: 50px; padding-bottom: 50px; }
-  body.home-light .home-v2-guide-step { gap: 12px; }
   body.home-light .home-key-drawer { padding: 84px 24px 24px; }
 }
 

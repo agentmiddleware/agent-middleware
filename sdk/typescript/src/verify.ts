@@ -198,12 +198,27 @@ function parseJsonPreservingUnsafeIntegers(text: string): unknown {
 }
 
 function edOk(raw: Buffer, sig: Buffer, msg: Buffer): boolean {
-  try {
-    const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: raw.toString("base64url") }, format: "jwk" });
-    return cryptoVerify(null, msg, key, sig);
-  } catch {
-    return false;
-  }
+  // A crypto backend failure is not evidence of a bad signature.
+  const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: raw.toString("base64url") }, format: "jwk" });
+  return cryptoVerify(null, msg, key, sig);
+}
+
+function rawKeyBytes(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  return null;
+}
+
+function textFromBytes(value: Uint8Array): string | null {
+  const buf = Buffer.from(value);
+  const text = buf.toString("utf8");
+  // Invalid UTF-8 is replaced during the decode, so the bytes no longer match.
+  if (hasLoneSurrogate(text) || !Buffer.from(text, "utf8").equals(buf)) return null;
+  return text;
+}
+
+function p256Key(value: unknown): value is P256VerificationKey {
+  return value !== null && typeof value === "object" && "alg" in value && value.alg === P256_ALGORITHM;
 }
 
 function p256PublicKey(key: P256VerificationKey): ReturnType<typeof createPublicKey> | null {
@@ -253,17 +268,20 @@ function p256Ok(key: ReturnType<typeof createPublicKey>, sig: Buffer, msg: Buffe
   }
 }
 
-function signatureValid(key: Buffer | P256VerificationKey, sig: Buffer, msg: Buffer): boolean {
-  if (Buffer.isBuffer(key)) return key.length === RAW_KEY_LEN && sig.length === SIG_LEN && edOk(key, sig, msg);
-  const publicKey = key.alg === P256_ALGORITHM ? p256PublicKey(key) : null;
+function signatureValid(key: unknown, sig: Buffer, msg: Buffer): boolean {
+  const raw = rawKeyBytes(key);
+  if (raw) return raw.length === RAW_KEY_LEN && sig.length === SIG_LEN && edOk(raw, sig, msg);
+  const publicKey = p256Key(key) ? p256PublicKey(key) : null;
   return publicKey !== null && isDerEcdsaSignature(sig) && p256Ok(publicKey, sig, msg);
 }
 
 /** Verify one portable receipt bundle against a caller-supplied key set. */
-export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: string): VerificationResult {
-  if (typeof bundle === "string") {
+export function verifyBundle(bundle: unknown, keySet: { get(kid: string): unknown }, expectedIssuer?: string): VerificationResult {
+  if (typeof bundle === "string" || bundle instanceof Uint8Array) {
+    const text = typeof bundle === "string" ? bundle : textFromBytes(bundle);
+    if (text === null) return fail("malformed", "bundle is not valid JSON");
     try {
-      bundle = JSON.parse(bundle);
+      bundle = JSON.parse(text);
     } catch {
       return fail("malformed", "bundle is not valid JSON");
     }
@@ -304,29 +322,32 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
 
   const sig = b64(sigB64);
   if (!sig) return fail("malformed", "signature is not valid base64", kid);
+  if (hasLoneSurrogate(signingInput)) return fail("malformed", "signing_input is not valid UTF-8 text", kid);
   const msg = Buffer.from(signingInput, "utf8");
 
-  const raw = keySet.get(kid);
-  if (!raw) {
+  const stored = keySet.get(kid);
+  if (stored === undefined) {
     const envKey = envKid !== kid ? keySet.get(envKid) : undefined;
     if (envKey && signatureValid(envKey, sig, msg)) {
       return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);
     }
     return fail("unknown_key", `no published key for kid ${kid}`, kid);
   }
-  if (Buffer.isBuffer(raw)) {
+  const raw = rawKeyBytes(stored);
+  if (raw) {
     if (sig.length !== SIG_LEN) return fail("malformed", "signature is not a 64-byte Ed25519 signature", kid);
     if (raw.length !== RAW_KEY_LEN) return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);
     if (!edOk(raw, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
   } else {
-    const publicKey = raw.alg === P256_ALGORITHM ? p256PublicKey(raw) : null;
+    if (!p256Key(stored)) return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 or P-256 DER SPKI key`, kid);
+    const publicKey = p256PublicKey(stored);
     if (!publicKey) return fail("malformed", `public key for kid ${kid} is not a P-256 DER SPKI key`, kid);
     if (!isDerEcdsaSignature(sig)) return fail("malformed", "signature is not a DER ECDSA signature", kid);
     if (!p256Ok(publicKey, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
   }
 
   if (alg !== "Ed25519") return fail("unsupported", `unsupported signature algorithm: ${String(alg)}`, kid);
-  if (!Buffer.isBuffer(raw)) return fail("unsupported", `unsupported verification key algorithm: ${raw.alg}`, kid);
+  if (!raw) return fail("unsupported", `unsupported verification key algorithm: ${P256_ALGORITHM}`, kid);
   if (typeof signedCanon === "string" && signedCanon !== CANONICALIZATION) {
     return fail("unsupported", `unsupported canonicalization: ${signedCanon}`, kid);
   }

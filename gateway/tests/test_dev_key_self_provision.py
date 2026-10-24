@@ -152,7 +152,7 @@ async def test_cross_origin_browser_request_rejected(client, self_provision_sett
     # A browser making a cross-origin fetch sends an Origin whose host is not
     # the request host. Because this endpoint returns a live secret and runs
     # under wildcard CORS, that request must be refused before anything is
-    # minted — otherwise attacker page JS reads the key cross-origin.
+    # minted. Otherwise attacker page JS reads the key cross-origin.
     resp = await client.post(
         "/v1/dev-keys/self-provision",
         json={},
@@ -160,17 +160,130 @@ async def test_cross_origin_browser_request_rejected(client, self_provision_sett
     )
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "origin_not_allowed"
+    assert "api_key" not in resp.text
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["https://test", "http://test:444"],
+    ids=["different_scheme", "different_port"],
+)
+async def test_same_hostname_different_origin_is_refused(
+    client, self_provision_settings, clean_database, origin
+):
+    # Scheme and port are part of the browser origin. A page on another port
+    # of the same host, or on https while this server is http, is cross-origin
+    # and must not be able to read a newly minted key.
+    resp = await client.post(
+        "/v1/dev-keys/self-provision",
+        json={},
+        headers={"Origin": origin},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["error"] == "origin_not_allowed"
+    assert "api_key" not in resp.text
+
+
+async def test_public_url_rejects_rebound_host(
+    client, self_provision_settings, clean_database
+):
+    # DNS rebinding sends a Host and an Origin the attacker controls, and
+    # those two match each other. With PUBLIC_URL set, the Host has to be
+    # that origin. Matching the attacker to himself is not enough.
+    settings = self_provision_settings
+    saved = settings.PUBLIC_URL
+    settings.PUBLIC_URL = "https://api.example.com"
+    try:
+        resp = await client.post(
+            "/v1/dev-keys/self-provision",
+            json={},
+            headers={"Host": "rebind.evil", "Origin": "https://rebind.evil"},
+        )
+    finally:
+        settings.PUBLIC_URL = saved
+    assert resp.status_code == 421, resp.text
+    assert resp.json()["detail"]["error"] == "host_not_allowed"
+    assert "api_key" not in resp.text
+
+
+async def test_empty_public_url_rejects_rebound_host(
+    client, self_provision_settings, clean_database
+):
+    assert not self_provision_settings.PUBLIC_URL
+    resp = await client.post(
+        "/v1/dev-keys/self-provision",
+        json={},
+        headers={"Host": "rebind.evil", "Origin": "http://rebind.evil"},
+    )
+    assert resp.status_code == 421
+    assert resp.json()["detail"]["error"] == "host_not_allowed"
+    assert "api_key" not in resp.text
+
+
+async def test_public_url_rejects_remote_page_hitting_another_host(
+    client, self_provision_settings, clean_database
+):
+    # A page served from the configured public origin must not mint a key
+    # by calling a different host, such as a gateway on the developer's
+    # machine. Sharing a hostname with PUBLIC_URL is not same-origin.
+    settings = self_provision_settings
+    saved = settings.PUBLIC_URL
+    settings.PUBLIC_URL = "https://api.example.com"
+    try:
+        resp = await client.post(
+            "/v1/dev-keys/self-provision",
+            json={},
+            headers={"Origin": "https://api.example.com"},
+        )
+    finally:
+        settings.PUBLIC_URL = saved
+    assert resp.status_code == 421, resp.text
+    assert resp.json()["detail"]["error"] == "host_not_allowed"
+    assert "api_key" not in resp.text
+
+
+async def test_public_url_accepts_exact_origin_and_rejects_http(
+    client, self_provision_settings, clean_database
+):
+    # Once PUBLIC_URL is set it is the only origin authority, including
+    # scheme. A proxy that reports http must not widen the allow.
+    settings = self_provision_settings
+    saved = settings.PUBLIC_URL
+    settings.PUBLIC_URL = "https://api.example.com"
+    try:
+        insecure = await client.post(
+            "/v1/dev-keys/self-provision",
+            json={},
+            headers={
+                "Host": "api.example.com",
+                "Origin": "http://api.example.com",
+            },
+        )
+        canonical = await client.post(
+            "/v1/dev-keys/self-provision",
+            json={},
+            headers={
+                "Host": "api.example.com",
+                "Origin": "https://api.example.com",
+            },
+        )
+    finally:
+        settings.PUBLIC_URL = saved
+    assert insecure.status_code == 403, insecure.text
+    assert insecure.json()["detail"]["error"] == "origin_not_allowed"
+    assert "api_key" not in insecure.text
+    assert canonical.status_code == 201, canonical.text
+    assert canonical.json()["api_key"]
 
 
 async def test_same_origin_browser_request_allowed(
     client, self_provision_settings, clean_database
 ):
-    # An Origin whose host matches the request host is a same-origin call and
-    # must pass — the guard targets foreign origins only.
+    # A loopback Host and matching Origin are allowed without PUBLIC_URL.
     resp = await client.post(
         "/v1/dev-keys/self-provision",
         json={},
-        headers={"Origin": "http://test"},
+        headers={"Host": "localhost", "Origin": "http://localhost"},
     )
     assert resp.status_code == 201, resp.text
 

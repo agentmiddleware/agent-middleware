@@ -26,6 +26,7 @@ def _verifier():
 
     return key_set_from_document, verify_bundle
 
+
 # Cases the suite already published before this pass. Their expected status
 # must stay put when new cases are added.
 ORIGINAL_EXPECTATIONS = {
@@ -188,6 +189,7 @@ def test_signed_payload_hash_lie_still_verifies(generated):
         by_name["synthetic.float_payload_verifies"]["bundle"], active
     )
     assert floats.status.value == "verified"
+
 
 def test_outcome_tamper_only_prefixes_the_signed_outcome(generated):
     module, receipts, _keys = generated

@@ -18,8 +18,12 @@ page.evaluate only runs fixed server-defined scripts.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -463,6 +467,106 @@ class TestBrowserNavigationGuard:
         await bridge._guard_browser_route(failed)
         assert failed.aborted is True
         assert failed.continued is False
+
+    @pytest.mark.anyio
+    async def test_chromium_refuses_redirect_to_blocked_host(self, bridge, monkeypatch):
+        playwright_api = pytest.importorskip("playwright.async_api")
+        requested_paths = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requested_paths.append(self.path)
+                if self.path == "/entry":
+                    self.send_response(302)
+                    self.send_header(
+                        "Location",
+                        f"http://127.0.0.1:{self.server.server_port}/blocked",
+                    )
+                else:
+                    self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        entry_url = f"http://localhost:{server.server_port}/entry"
+        plain_url = f"http://localhost:{server.server_port}/plain"
+        original_guard = awi_playwright_bridge.browser_request_block_reason
+
+        async def allow_test_entry(url):
+            if url in {entry_url, plain_url}:
+                return None
+            return await original_guard(url)
+
+        monkeypatch.setattr(
+            awi_playwright_bridge, "browser_request_block_reason", allow_test_entry
+        )
+        try:
+            async with playwright_api.async_playwright() as playwright:
+                if not Path(playwright.chromium.executable_path).exists():
+                    pytest.skip("Chromium is not installed")
+                browser = await playwright.chromium.launch(headless=True)
+                try:
+                    bridge._browser = browser
+                    bridge._playwright_initialized = True
+                    session = BridgeSession(session_id="real-redirect")
+                    await bridge._create_browser_context(session, None, None)
+                    response = await session._page.goto(plain_url, timeout=5000)
+                    assert response.status == 200
+                    with pytest.raises(playwright_api.Error):
+                        await session._page.goto(entry_url, timeout=5000)
+                    assert requested_paths == ["/plain", "/entry"]
+                finally:
+                    await browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    @pytest.mark.anyio
+    async def test_chromium_refuses_websocket_connection(self, bridge):
+        playwright_api = pytest.importorskip("playwright.async_api")
+        connections = []
+
+        async def connected(reader, writer):
+            connections.append(True)
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_server(connected, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            async with playwright_api.async_playwright() as playwright:
+                if not Path(playwright.chromium.executable_path).exists():
+                    pytest.skip("Chromium is not installed")
+                browser = await playwright.chromium.launch(headless=True)
+                try:
+                    bridge._browser = browser
+                    bridge._playwright_initialized = True
+                    session = BridgeSession(session_id="real-websocket")
+                    await bridge._create_browser_context(session, None, None)
+                    result = await asyncio.wait_for(
+                        session._page.evaluate(
+                            "url => new Promise(resolve => {"
+                            "const socket = new WebSocket(url);"
+                            "socket.onopen = () => resolve('open');"
+                            "socket.onerror = () => resolve('error');"
+                            "socket.onclose = () => resolve('closed');"
+                            "})",
+                            f"ws://127.0.0.1:{port}/socket",
+                        ),
+                        timeout=5,
+                    )
+                    assert result in {"error", "closed"}
+                    assert connections == []
+                finally:
+                    await browser.close()
+        finally:
+            server.close()
+            await server.wait_closed()
 
 
 class TestAWIScrollInjection:

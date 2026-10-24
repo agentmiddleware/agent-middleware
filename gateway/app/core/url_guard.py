@@ -274,11 +274,10 @@ async def check_outbound_url(url: str) -> str | None:
 
 
 async def browser_request_block_reason(url: str) -> str | None:
-    """Block reason for one browser request, including a redirect hop.
+    """Block reason for one browser request or proposed redirect target.
 
     about, data, and blob URLs stay inside the page and do not open a
-    socket. Every other URL uses ``check_outbound_url``, so a public page
-    that redirects to a metadata address is refused on that hop.
+    socket. Every other URL uses ``check_outbound_url``.
     """
     try:
         scheme = urlsplit(url).scheme.lower()

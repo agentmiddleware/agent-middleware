@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
+from urllib.parse import urljoin, urlsplit
 from uuid import uuid4
 
 from app.core.time import utc_now
@@ -2012,9 +2013,14 @@ class AWIPlaywrightBridge:
             user_agent="Mozilla/5.0 (compatible; AWI-Client/1.0; +https://agent-middleware.dev)",
             service_workers="block",
         )
-        # Guard initial requests and subresources. Playwright does not route
-        # redirect hops, so this is not a complete browser egress boundary.
+        # Route every HTTP request through a no-redirect fetch. Chromium does
+        # not invoke context routes for redirect hops.
         await context.route("**/*", self._guard_browser_route)
+        if self._playwright_initialized:
+            if not hasattr(context, "route_web_socket"):
+                await context.close()
+                raise RuntimeError("Playwright WebSocket routing is required")
+            await context.route_web_socket("**/*", self._guard_browser_websocket)
 
         page = await context.new_page()
 
@@ -2029,19 +2035,35 @@ class AWIPlaywrightBridge:
         )
 
     async def _guard_browser_route(self, route: Any) -> None:
-        """Refuse a browser request the URL guard does not allow."""
+        """Refuse unapproved requests and redirects before Chromium can follow them."""
         url = getattr(getattr(route, "request", None), "url", "")
         try:
             reason = await browser_request_block_reason(str(url))
+            if reason:
+                logger.info("Blocked browser request (%s).", reason)
+                await route.abort("blockedbyclient")
+                return
+            if urlsplit(str(url)).scheme in {"about", "data", "blob"}:
+                await route.continue_()
+                return
+            response = await route.fetch(max_redirects=0)
+            location = response.headers.get("location")
+            if 300 <= response.status < 400 and location:
+                redirect_url = urljoin(str(url), location)
+                reason = await browser_request_block_reason(redirect_url)
+                logger.info(
+                    "Blocked browser redirect (%s).", reason or "redirect_refused"
+                )
+                await route.abort("blockedbyclient")
+                return
+            await route.fulfill(response=response)
         except Exception:
             logger.warning("Browser URL guard failed closed.", exc_info=True)
             await route.abort("blockedbyclient")
-            return
-        if reason:
-            logger.info("Blocked browser request (%s).", reason)
-            await route.abort("blockedbyclient")
-            return
-        await route.continue_()
+
+    async def _guard_browser_websocket(self, route: Any) -> None:
+        """Refuse WebSockets, which HTTP context routes cannot intercept."""
+        await route.close(code=1008, reason="Browser WebSockets are blocked")
 
     async def _navigate_to(self, session: BridgeSession, url: str) -> None:
         """Navigate to a URL."""

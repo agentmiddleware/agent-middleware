@@ -3609,6 +3609,211 @@
         }
       }
     },
+    "/mcp": {
+      "post": {
+        "tags": [
+          "MCP Standard Endpoint"
+        ],
+        "summary": "Standard MCP endpoint (official MCP SDK, stateless Streamable HTTP, JSON responses)",
+        "description": "Hand one standard MCP message to the official SDK's transport.\n\nAuthentication and origin validation happen here at the HTTP layer; the\nSDK owns the protocol. The governed ``tools/call`` handler reads the\nauthenticated caller back from ``request.state``.",
+        "operationId": "MCP_Streamable_HTTP_Endpoint_mcp_post",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "jsonrpc"
+                ],
+                "properties": {
+                  "jsonrpc": {
+                    "type": "string",
+                    "const": "2.0"
+                  }
+                },
+                "oneOf": [
+                  {
+                    "title": "JSON-RPC request",
+                    "required": [
+                      "method",
+                      "id"
+                    ],
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "result"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "error"
+                          ]
+                        }
+                      ]
+                    },
+                    "properties": {
+                      "method": {
+                        "type": "string"
+                      },
+                      "params": {
+                        "anyOf": [
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "id": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "title": "JSON-RPC notification",
+                    "required": [
+                      "method"
+                    ],
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "id"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "result"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "error"
+                          ]
+                        }
+                      ]
+                    },
+                    "properties": {
+                      "method": {
+                        "type": "string"
+                      },
+                      "params": {
+                        "anyOf": [
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "title": "JSON-RPC response",
+                    "required": [
+                      "id"
+                    ],
+                    "not": {
+                      "required": [
+                        "method"
+                      ]
+                    },
+                    "oneOf": [
+                      {
+                        "required": [
+                          "result"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "error"
+                        ]
+                      }
+                    ],
+                    "properties": {
+                      "id": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "result": {},
+                      "error": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/mcp/public": {
       "post": {
         "tags": [

@@ -115,6 +115,7 @@ class CrewAIB2ATool(BaseTool):
     _permit_cache: dict[str, str] = PrivateAttr(default_factory=dict)
     _permit_requests: dict[str, PermitRequest] = PrivateAttr(default_factory=dict)
     _permit_ttls: dict[str, int] = PrivateAttr(default_factory=dict)
+    _active_permit_calls: dict[str, int] = PrivateAttr(default_factory=dict)
     _permit_lock: Any = PrivateAttr(default=None)
     _sync_runner_lock: Any = PrivateAttr(default=None)
     _sync_runner_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
@@ -143,6 +144,7 @@ class CrewAIB2ATool(BaseTool):
         self._permit_cache = {}
         self._permit_requests = {}
         self._permit_ttls = {}
+        self._active_permit_calls = {}
         self._permit_lock = threading.Lock()
         self._sync_runner_lock = threading.Lock()
         self._sync_runner_loop = None
@@ -189,6 +191,26 @@ class CrewAIB2ATool(BaseTool):
                     "permit_idempotency_key reused with different permit terms"
                 )
             return request
+
+    def _begin_permit_call(self, operation: str, permit_key: str) -> bool:
+        if operation != "call_tool" or not isinstance(permit_key, str):
+            return False
+        permit_key = permit_key.strip()
+        with self._permit_lock:
+            active = self._active_permit_calls.get(permit_key, 0)
+            self._active_permit_calls[permit_key] = active + 1
+            return active > 0
+
+    def _finish_permit_call(self, operation: str, permit_key: str) -> None:
+        if operation != "call_tool" or not isinstance(permit_key, str):
+            return
+        permit_key = permit_key.strip()
+        with self._permit_lock:
+            active = self._active_permit_calls[permit_key]
+            if active == 1:
+                del self._active_permit_calls[permit_key]
+            else:
+                self._active_permit_calls[permit_key] = active - 1
 
     def _ensure_sync_runner(self) -> asyncio.AbstractEventLoop:
         """Keep sync calls on one private loop, including calls from worker threads."""
@@ -259,7 +281,9 @@ class CrewAIB2ATool(BaseTool):
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         self.close()
 
-    async def _execute(self, operation: str, **kwargs: Any) -> str:
+    async def _execute(
+        self, operation: str, *, replay_permit: bool = False, **kwargs: Any
+    ) -> str:
         try:
             client = self._get_client()
             if operation == "discover_tools":
@@ -279,7 +303,7 @@ class CrewAIB2ATool(BaseTool):
                 )
                 arguments = _tool_arguments(kwargs.get("arguments", {}))
                 request = self._permit_request(tool_name, permit_key)
-                if permit_key in self._permit_cache:
+                if permit_key in self._permit_cache and not replay_permit:
                     permit_id = self._permit_cache[permit_key]
                 else:
                     permit = await client.create_permit(
@@ -324,8 +348,10 @@ class CrewAIB2ATool(BaseTool):
         **kwargs: Any,
     ) -> str:
         """Synchronous operation (for CrewAI compatibility)."""
+        replay_permit = self._begin_permit_call(operation, permit_idempotency_key)
         coro = self._execute(
             operation,
+            replay_permit=replay_permit,
             tool_name=tool_name,
             idempotency_key=idempotency_key,
             permit_idempotency_key=permit_idempotency_key,
@@ -341,6 +367,8 @@ class CrewAIB2ATool(BaseTool):
             except RuntimeError:
                 pass
             return _error_text(exc)
+        finally:
+            self._finish_permit_call(operation, permit_idempotency_key)
 
     async def _arun(
         self,
@@ -352,8 +380,10 @@ class CrewAIB2ATool(BaseTool):
         **kwargs: Any,
     ) -> str:
         """Asynchronous operation on the same loop as synchronous calls."""
+        replay_permit = self._begin_permit_call(operation, permit_idempotency_key)
         coro = self._execute(
             operation,
+            replay_permit=replay_permit,
             tool_name=tool_name,
             idempotency_key=idempotency_key,
             permit_idempotency_key=permit_idempotency_key,
@@ -361,8 +391,13 @@ class CrewAIB2ATool(BaseTool):
             **kwargs,
         )
         try:
-            loop = self._ensure_sync_runner()
-        except Exception:
-            coro.close()
-            raise
-        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, loop))
+            try:
+                loop = self._ensure_sync_runner()
+            except Exception:
+                coro.close()
+                raise
+            return await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(coro, loop)
+            )
+        finally:
+            self._finish_permit_call(operation, permit_idempotency_key)

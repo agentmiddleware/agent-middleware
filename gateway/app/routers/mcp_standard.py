@@ -51,10 +51,9 @@ The endpoint is stateless: each POST gets a fresh SDK transport in JSON mode
 server-initiated stream and GET/DELETE answer 405. The signed receipt is
 returned on every ``tools/call`` result both under
 ``_meta["io.agentmiddleware/receipt"]`` (the spec's extension point) and as a
-top-level ``receipt`` field (the pre-SDK contract). Disabled by default —
-``ENABLE_STANDARD_MCP_ENDPOINT`` must be set explicitly, so the surface cannot
-be advertised (or preflighted by the registry publish gate) before an operator
-turns it on.
+top-level ``receipt`` field (the pre-SDK contract). Enabled by default and
+always authenticated; set ``ENABLE_STANDARD_MCP_ENDPOINT=false`` to answer 404
+and stop advertising it.
 """
 
 from __future__ import annotations
@@ -66,7 +65,6 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlsplit
 
 import anyio
 import mcp.types as mcp_types
@@ -80,6 +78,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import Message, Receive, Scope, Send
 
 from app.core.auth import AuthContext, get_auth_context
+from app.core.browser_origin import validate_browser_origin
 from app.services.audit_chain import AuditChainContendedError
 from app.services.receipts import ReceiptWriteContendedError
 from app.services.billing_engine import LedgerWriteContendedError
@@ -682,21 +681,7 @@ def _validate_origin(request: Request) -> None:
 
     Non-browser MCP clients send no Origin header and pass through.
     """
-    public_url = get_settings().PUBLIC_URL.rstrip("/")
-    request_origin = f"{request.url.scheme}://{request.url.netloc}"
-    if public_url and request.url.netloc != urlsplit(public_url).netloc:
-        raise HTTPException(status_code=421, detail={"error": "host_not_allowed"})
-
-    origin = request.headers.get("origin")
-    if not origin:
-        return
-    # A reverse proxy may expose its internal HTTP scheme through the ASGI
-    # request even though the canonical browser origin is HTTPS. Once an
-    # operator configures PUBLIC_URL, it is the only origin authority;
-    # request-derived origin is a local/unconfigured fallback only.
-    allowed = {public_url} if public_url else {request_origin}
-    if origin.rstrip("/") not in allowed:
-        raise HTTPException(status_code=403, detail={"error": "origin_not_allowed"})
+    validate_browser_origin(request)
 
 
 class _SdkTransportResponse(Response):
@@ -848,6 +833,83 @@ class _SdkTransportResponse(Response):
         "Standard MCP endpoint (official MCP SDK, stateless Streamable HTTP, "
         "JSON responses)"
     ),
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["jsonrpc"],
+                        "properties": {
+                            "jsonrpc": {"type": "string", "const": "2.0"},
+                        },
+                        "oneOf": [
+                            {
+                                "title": "JSON-RPC request",
+                                "required": ["method", "id"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": ["result"]},
+                                        {"required": ["error"]},
+                                    ]
+                                },
+                                "properties": {
+                                    "method": {"type": "string"},
+                                    "params": {
+                                        "anyOf": [{"type": "object"}, {"type": "null"}]
+                                    },
+                                    "id": {
+                                        "anyOf": [
+                                            {"type": "integer"},
+                                            {"type": "string"},
+                                        ]
+                                    },
+                                },
+                            },
+                            {
+                                "title": "JSON-RPC notification",
+                                "required": ["method"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": ["id"]},
+                                        {"required": ["result"]},
+                                        {"required": ["error"]},
+                                    ]
+                                },
+                                "properties": {
+                                    "method": {"type": "string"},
+                                    "params": {
+                                        "anyOf": [{"type": "object"}, {"type": "null"}]
+                                    },
+                                },
+                            },
+                            {
+                                "title": "JSON-RPC response",
+                                "required": ["id"],
+                                "not": {"required": ["method"]},
+                                "oneOf": [
+                                    {"required": ["result"]},
+                                    {"required": ["error"]},
+                                ],
+                                "properties": {
+                                    "id": {
+                                        "anyOf": [
+                                            {"type": "integer"},
+                                            {"type": "string"},
+                                            {"type": "null"},
+                                        ]
+                                    },
+                                    "result": {},
+                                    "error": {"type": "object"},
+                                },
+                            },
+                        ],
+                    }
+                }
+            },
+        }
+    },
 )
 async def handle_standard_mcp(
     request: Request,

@@ -24,8 +24,10 @@ through permits and receipts.
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
 try:
     from b2a_sdk.edge_client import GovernedEdgeSession
@@ -75,6 +77,31 @@ def as_langgraph_tool(
     target = (
         wrapped.governed_call if isinstance(wrapped, GovernedToolWrapper) else wrapped
     )
+    # LangChain derives the public input schema from this signature. Include
+    # the caller-owned key so ainvoke does not discard it before dispatch.
+    signature = inspect.signature(target)
+    if "idempotency_key" not in signature.parameters:
+        parameters = list(signature.parameters.values())
+        key = inspect.Parameter(
+            "idempotency_key",
+            kind=inspect.Parameter.KEYWORD_ONLY,
+            default=None,
+            annotation=str | None,
+        )
+        insert_at = next(
+            (
+                i
+                for i, parameter in enumerate(parameters)
+                if parameter.kind == inspect.Parameter.VAR_KEYWORD
+            ),
+            len(parameters),
+        )
+        parameters.insert(insert_at, key)
+        target.__signature__ = signature.replace(parameters=parameters)
+        target.__annotations__ = {
+            **target.__annotations__,
+            "idempotency_key": str | None,
+        }
     return tool(name)(target)
 
 

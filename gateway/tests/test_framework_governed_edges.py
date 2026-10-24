@@ -126,3 +126,27 @@ async def test_langgraph_adapter_publishes_the_server_tool_name(monkeypatch):
     await recorded["fn"](query="caps", idempotency_key="lg-key")
     assert session.calls[0]["name"] == "server_lookup"
     assert session.calls[0]["arguments"] == {"query": "caps"}
+
+
+@pytest.mark.anyio
+async def test_langgraph_tool_ainvoke_preserves_idempotency_key():
+    pytest.importorskip("langchain_core")
+    from framework_integrations.langgraph_middleware import as_langgraph_tool
+
+    session = _Session()
+
+    async def lookup(query: str) -> dict[str, Any]:
+        """Look something up."""
+        raise AssertionError("stub body must never run")
+
+    tool = as_langgraph_tool(session, lookup, tool_name="server_lookup")
+    await tool.ainvoke({"query": "caps", "idempotency_key": "lg-key"})
+
+    assert session.calls[0]["name"] == "server_lookup"
+    assert session.calls[0]["arguments"] == {"query": "caps"}
+    assert session.calls[0]["idempotency_key"] == "lg-key"
+    assert "idempotency_key" in tool.args
+
+    with pytest.raises(ValueError, match="idempotency_key"):
+        await tool.ainvoke({"query": "caps", "idempotency_key": ""})
+    assert len(session.calls) == 1

@@ -133,6 +133,46 @@ async def test_send_message_uses_the_comms_query_and_body():
 
 
 @pytest.mark.anyio
+async def test_send_message_uses_registered_sender_id_when_wallet_differs():
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        if request.url.path.startswith("/v1/billing/wallets/"):
+            return httpx.Response(200, json={"balance": 1})
+        return httpx.Response(202, json={"message_id": "msg-1"})
+
+    client = _client(handler, sender_agent_id="agent-1")
+    try:
+        await client.send_message("agent-2", {"hello": "world"})
+        await client.get_balance()
+    finally:
+        await client.close()
+
+    assert sent[0].url.params["from_agent"] == "agent-1"
+    assert sent[1].url.path == "/v1/billing/wallets/wal-1"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("sender_agent_id", ["", "agent\r\nbad", 123])
+async def test_send_message_rejects_invalid_sender_id_before_send(sender_agent_id):
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(202, json={"message_id": "msg-1"})
+
+    client = _client(handler, sender_agent_id=sender_agent_id)
+    try:
+        with pytest.raises(ValueError, match="sender_agent_id"):
+            await client.send_message("agent-2", {"hello": "world"})
+    finally:
+        await client.close()
+
+    assert sent == []
+
+
+@pytest.mark.anyio
 async def test_create_awi_session_sends_the_configured_wallet():
     sent: list[httpx.Request] = []
 
@@ -175,6 +215,32 @@ async def test_get_balance_rejects_a_boolean_balance():
     try:
         with pytest.raises(ValueError, match="balance"):
             await client.get_balance()
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_get_balance_rejects_an_integer_too_large_for_float():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"balance": 10**400})
+
+    client = _client(handler)
+    try:
+        with pytest.raises(ValueError, match="balance is not a number"):
+            await client.get_balance()
+    finally:
+        await client.close()
+
+
+@pytest.mark.anyio
+async def test_get_mcp_tools_rejects_missing_tools_key():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": "manifest unavailable"})
+
+    client = _client(handler)
+    try:
+        with pytest.raises(ValueError, match="tools manifest"):
+            await client.get_mcp_tools()
     finally:
         await client.close()
 

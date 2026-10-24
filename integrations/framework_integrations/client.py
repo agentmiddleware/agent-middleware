@@ -4,11 +4,15 @@ B2A Client — Framework Integration Core
 HTTP client for Agent Middleware API.
 """
 
-from dataclasses import dataclass
-import re
-from typing import Any, Optional
-import httpx
+# Public client validation uses ValueError for malformed responses and inputs.
+# ruff: noqa: TRY004
 
+import re
+from dataclasses import dataclass
+from math import isfinite
+from typing import Any
+
+import httpx
 
 _ILLEGAL_HEADER_CHARS = ("\r", "\n", "\x00")
 # Wallet ids are a single URL path segment (agt-/spn-/chd- plus the ids the
@@ -70,9 +74,9 @@ def _balance_value(data: object) -> float:
         raise ValueError("wallet balance is not a number")
     try:
         value = float(raw)
-    except ValueError as exc:
+    except (ValueError, OverflowError) as exc:
         raise ValueError("wallet balance is not a number") from exc
-    if value != value or value == float("inf") or value == float("-inf"):
+    if not isfinite(value):
         raise ValueError("wallet balance is not a finite number")
     return value
 
@@ -85,6 +89,7 @@ class B2AConfig:
     api_key: str = ""
     wallet_id: str = ""
     timeout: int = 30
+    sender_agent_id: str | None = None
 
 
 class B2AClient:
@@ -100,7 +105,7 @@ class B2AClient:
     - AWI session management
     """
 
-    def __init__(self, config: Optional[B2AConfig] = None, **kwargs):
+    def __init__(self, config: B2AConfig | None = None, **kwargs):
         if config is None:
             config = B2AConfig(**kwargs)
         self.config = config
@@ -129,7 +134,7 @@ class B2AClient:
     async def emit_telemetry(
         self,
         event: str,
-        properties: Optional[dict[str, Any]] = None,
+        properties: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Emit one telemetry event as a batch the ingest route accepts.
 
@@ -145,9 +150,7 @@ class B2AClient:
         if not isinstance(properties, dict):
             raise ValueError("properties must be a dict")
         event_name = event.strip()
-        event_type = (
-            event_name if event_name in _TELEMETRY_EVENT_TYPES else "custom"
-        )
+        event_type = event_name if event_name in _TELEMETRY_EVENT_TYPES else "custom"
         metadata = dict(properties)
         metadata.setdefault("event", event_name)
         payload = {
@@ -180,10 +183,14 @@ class B2AClient:
 
         ``POST /v1/comms/messages`` takes the sender as the ``from_agent``
         query parameter and requires ``to_agent``, ``subject``, and ``body``.
-        The configured wallet id is sent as ``from_agent``; it must be an
-        agent id this API key owns.
+        ``sender_agent_id`` identifies the registered sender. If omitted,
+        the wallet id is used for legacy configurations where the IDs match.
         """
-        sender = _path_wallet_id(self.config.wallet_id)
+        sender = self.config.sender_agent_id
+        if sender is None:
+            sender = _path_wallet_id(self.config.wallet_id)
+        elif not isinstance(sender, str) or _WALLET_ID.fullmatch(sender) is None:
+            raise ValueError("sender_agent_id must be a single agent ID token")
         if not isinstance(to_agent_id, str) or not to_agent_id.strip():
             raise ValueError("to_agent_id must not be blank")
         if not isinstance(content, dict):
@@ -191,14 +198,10 @@ class B2AClient:
         if not isinstance(subject, str) or not subject.strip():
             raise ValueError("subject must not be blank")
         if not isinstance(priority, str):
-            raise ValueError(
-                "priority must be one of: critical, high, normal, low"
-            )
+            raise ValueError("priority must be one of: critical, high, normal, low")
         priority_value = priority.strip().lower()
         if priority_value not in _MESSAGE_PRIORITIES:
-            raise ValueError(
-                "priority must be one of: critical, high, normal, low"
-            )
+            raise ValueError("priority must be one of: critical, high, normal, low")
         payload = {
             "to_agent": to_agent_id,
             "message_type": "request",
@@ -340,7 +343,7 @@ class B2AClient:
         )
         response.raise_for_status()
         data = response.json()
-        tools = data.get("tools", []) if isinstance(data, dict) else None
+        tools = data.get("tools") if isinstance(data, dict) else None
         if not isinstance(tools, list):
             raise ValueError("tools manifest did not include a list of tools")
         return tools
@@ -361,7 +364,7 @@ class B2AClient:
         description: str = "",
         *,
         idempotency_key: str,
-        request_path: Optional[str] = None,
+        request_path: str | None = None,
     ) -> dict[str, Any]:
         """Charge the configured wallet for metered usage.
 

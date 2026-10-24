@@ -1361,6 +1361,7 @@ async def _execute_registered_tool_inner(
                         wallet_id=wallet_id,
                         tool_name=tool_name,
                         key_id=auth.key_id,
+                        replay=replay,
                     )
                 await _raise_replayed_error(replay)
                 return replay.response_json
@@ -1632,6 +1633,7 @@ async def _execute_registered_tool_inner(
                 wallet_id=wallet_id,
                 tool_name=tool_name,
                 key_id=auth.key_id,
+                replay=replay,
             )
             await _raise_replayed_error(replay)
             return replay.response_json
@@ -1685,6 +1687,11 @@ async def _execute_registered_tool_inner(
                     reason_code=reason,
                     outcome="denied",
                     status_code=403,
+                    response_extra_data=(
+                        {"details": permit_validation.details}
+                        if permit_validation.details
+                        else None
+                    ),
                 )
             elif permit_validation.reason:
                 await _complete_governed_denial_idempotency(
@@ -1697,6 +1704,11 @@ async def _execute_registered_tool_inner(
                     endpoint=idempotency_endpoint,
                     idempotency_key=idempotency_key,
                     reason=permit_validation.reason,
+                    extra_data=(
+                        {"details": permit_validation.details}
+                        if permit_validation.details
+                        else None
+                    ),
                 )
             raise ToolPermissionDenied(
                 reason,
@@ -2234,6 +2246,11 @@ async def _execute_registered_tool_inner(
                     reason_code=reason,
                     outcome="denied",
                     status_code=403,
+                    response_extra_data=(
+                        {"details": permit_validation.details}
+                        if permit_validation.details
+                        else None
+                    ),
                     approval_id=(
                         approval_check.approval_id if approval_check else None
                     ),
@@ -2251,6 +2268,11 @@ async def _execute_registered_tool_inner(
                     endpoint=idempotency_endpoint,
                     idempotency_key=idempotency_key,
                     reason=permit_validation.reason,
+                    extra_data=(
+                        {"details": permit_validation.details}
+                        if permit_validation.details
+                        else None
+                    ),
                 )
             raise ToolPermissionDenied(
                 reason,
@@ -3721,6 +3743,7 @@ async def _complete_governed_denial_idempotency(
     reason: str,
     status_code: int = 403,
     tool_name: str = "",
+    extra_data: dict[str, Any] | None = None,
 ) -> None:
     if not idem_started or not idempotency_key:
         return
@@ -3739,7 +3762,7 @@ async def _complete_governed_denial_idempotency(
         endpoint=endpoint,
         idempotency_key=idempotency_key,
         response_reference=None,
-        response_json=_governed_error_payload(reason, None),
+        response_json=_governed_error_payload(reason, None, extra_data=extra_data),
         status_code=status_code,
     )
 
@@ -4061,8 +4084,18 @@ async def _assert_governed_replay_access(
     wallet_id: str,
     tool_name: str,
     key_id: str | None,
+    replay: Any = None,
 ) -> None:
-    """Keep terminal replay bound to the permit's stable caller identity."""
+    """Keep terminal replay bound to the permit's stable caller identity.
+
+    A stored refusal is the exception (SEL-482). Idempotency records are
+    scoped to the caller's own wallet, so a stored 403 is exactly the body
+    this caller was already sent: replaying it verbatim -- original signed
+    receipt and ``details`` included -- discloses nothing new and runs
+    nothing. Re-deriving a bare denial here instead dropped both, so a
+    retry with the same key no longer matched the first response as the
+    idempotency contract (PR #209) requires.
+    """
     validation = await get_permit_service().validate_replay_access(
         permit_id=permit_id or "",
         wallet_id=wallet_id,
@@ -4070,6 +4103,12 @@ async def _assert_governed_replay_access(
         key_id=key_id,
     )
     if not validation.allowed:
+        if (
+            replay is not None
+            and replay.status_code == 403
+            and isinstance(replay.response_json, dict)
+        ):
+            await _raise_replayed_error(replay)
         raise ToolPermissionDenied(validation.reason or "permit_denied")
 
 
@@ -4255,7 +4294,12 @@ async def _raise_replayed_error(replay: Any) -> None:
     if isinstance(dispatch, dict):
         extra_data["dispatch"] = dispatch
     if replay.status_code == 403:
-        raise ToolPermissionDenied(reason, receipt=receipt)
+        details = replay.response_json.get("details")
+        raise ToolPermissionDenied(
+            reason,
+            receipt=receipt,
+            details=details if isinstance(details, dict) else None,
+        )
     raise GovernedToolError(
         reason,
         receipt=receipt,

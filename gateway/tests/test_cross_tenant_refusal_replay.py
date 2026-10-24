@@ -16,10 +16,8 @@ key, in two shapes:
   so the replay is re-evaluated and must be byte-identical.
 * B names its own wallet but A's permit. The gateway stores the refusal under
   B's key, so the replay is served from that record. The guide says a replay
-  returns the original result; today the replay drops the denial receipt and
-  ``details`` that the first answer carried. That case is marked
-  ``xfail(strict=True)`` against the documented behavior so it flips to a
-  failure, and gets un-marked, once the gateway replays the full body.
+  returns the original result: the replay carries the same signed denial
+  receipt and ``details`` the first answer did, byte for byte (SEL-482).
 """
 
 from __future__ import annotations
@@ -208,14 +206,6 @@ async def test_foreign_permit_refusal_replay_has_no_side_effects(
     assert await _state(client, tenant_b, permit_a["permit_id"]) == before_b
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "SEL-475 doc/behavior mismatch: PR #209 says a retry with the same "
-        "key returns the original result, but the stored-refusal replay "
-        "drops detail.receipt and detail.details from the first 403."
-    ),
-)
 async def test_foreign_permit_refusal_replays_identically_per_docs(
     client,
     tenants,

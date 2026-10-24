@@ -152,7 +152,7 @@ class Gateway:
     async def handle(self, tool: str, arguments: dict[str, Any], ctx: Context, *, write: bool):
         meta = _meta(ctx)
         request_id = meta.get(REQUEST_ID_KEY)
-        session_id = meta.get(SESSION_ID_KEY) or ""
+        session_id = meta.get(SESSION_ID_KEY) or None
         ahash = args_hash(arguments)
         base = {"protocol": ctx.protocol_version, "agent_tool_call_request_id": request_id}
         caller = verify_caller(ctx.headers, self.config.callers)
@@ -170,10 +170,26 @@ class Gateway:
             )
             raise ToolError(f"AMW permit denied: {decision.reason}")
 
-        key = idempotency_key(caller=caller, tool=tool, arguments=arguments, session_id=session_id)
-        base["idempotency_key"] = key
         if not write:
             return await self._run(tool, arguments, ahash, base, key=None)
+
+        if not session_id:
+            reason = (
+                f"{tool} needs _meta['{SESSION_ID_KEY}'] to be deduplicated safely; "
+                "the client sent none, so the write was not run"
+            )
+            self.signer.issue(
+                tool=tool,
+                args_hash=ahash,
+                decision="refuse",
+                outcome="not_run",
+                reason=reason,
+                **base,
+            )
+            raise ToolError(f"AMW refused: {reason}")
+
+        key = idempotency_key(caller=caller, tool=tool, arguments=arguments, session_id=session_id)
+        base["idempotency_key"] = key
 
         claim = self.ledger.claim(key, tool=tool, args_hash=ahash, request_id=request_id)
         if claim.action == "replay":

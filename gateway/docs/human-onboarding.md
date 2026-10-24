@@ -141,7 +141,7 @@ settlement, or public arbitrary-code execution without strong isolation.
 
 ## Preflight script
 
-From the repository root, with the API running:
+From the gateway directory (the directory that contains `scripts/human_preflight.sh`), with the API running:
 
 ```bash
 export API_URL=http://127.0.0.1:8000   # or your deployed URL
@@ -169,7 +169,7 @@ when the selected deployment exposes the full proof-surface report. It does
 | What is simulated right now? | Proof-surface deployment: `GET /health/dependencies` → `simulation_modes`; supported production: startup `runtime_posture` log + deployed configuration |
 | Can I trust sandbox isolation? | README + `docs/threat-model.md` |
 | End-to-end wallet + key + tool flow | `docs/golden-path.md` |
-| What “beta” still means | `docs/production-beta-roadmap.md` |
+| What the supported pilot still is | [Supported pilot boundary](README.md#supported-pilot-boundary) |
 | Env flags | `.env.example` |
 | Railway deploy (single path) | the hosted-service deploy runbook (not in this repository) — `railway up`; never Redeploy from GitHub source |
 | Database migrations | This section §7 + `scripts/docker_entrypoint.sh` |

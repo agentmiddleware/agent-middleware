@@ -1,9 +1,9 @@
-"""Regenerate the receipt test vectors in this directory.
+"""Regenerate the receipt and permit test vectors in this directory.
 
 The signing key is derived from the fixed, public test seed bytes(range(32)).
 It is NOT a production key and must never be used as one. The signed payloads
 come from the gateway's golden fixtures (gateway/tests/fixtures), so a change to
-the receipt signing input shows up here as a diff.
+a signed payload shows up here as a diff.
 
 The generator refuses to write a suite when the golden directory is empty, when
 a fixture signature does not match the test seed, or when an outcome tamper
@@ -29,11 +29,15 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 GOLDEN = ROOT / "gateway" / "tests" / "fixtures" / "receipt_signing_golden"
+PERMIT_GOLDEN = ROOT / "gateway" / "tests" / "fixtures" / "permit_signing_golden"
 TEST_SEED = bytes(range(32))
 # Second fixed seed, used only so one vector can carry a well formed raw key
 # that is not the key that signed the receipt.
 OTHER_SEED = bytes(range(32, 64))
+DISABLED_SEED = bytes(range(64, 96))
 KID = "sk_golden_0001"
+ROTATION_KID = "sk_golden_0002"
+DISABLED_KID = "sk_golden_0000"
 # Envelope member the gateway's portable receipt endpoint also emits
 # (PortableReceiptResponse.canonicalization). The signature covers only
 # signing_input, so this member is unauthenticated envelope data.
@@ -69,11 +73,20 @@ def _jwk(public_raw: bytes) -> dict[str, str]:
     }
 
 
+def _public_entry(key: Ed25519PrivateKey, kid: str, status: str) -> dict:
+    raw = _public_raw(key)
+    return {
+        "kid": kid,
+        "alg": "Ed25519",
+        "status": status,
+        "public_key_b64": b64(raw),
+        "jwk": _jwk(raw),
+    }
+
+
 def key_document(public_raw: bytes) -> dict:
     return {
-        "_comment": (
-            "Public half of the fixed test seed bytes(range(32)). Test use only."
-        ),
+        "_comment": "Public half of the fixed test seed bytes(range(32)). Test use only.",
         "keys": [
             {
                 "kid": KID,
@@ -157,6 +170,28 @@ def sign_bundle(key: Ed25519PrivateKey, payload: dict, **envelope: object) -> di
     }
     bundle.update(envelope)
     return bundle
+
+
+def rekeyed_signing_input(
+    signing_input: str,
+    key: Ed25519PrivateKey,
+    *,
+    kid: str | None = None,
+    alg: str | None = None,
+    canonicalization: str | None = None,
+) -> tuple[str, str]:
+    """Re-sign an existing golden payload with one changed signed field."""
+    payload = json.loads(signing_input)
+    if kid is not None:
+        payload["kid"] = kid
+    if alg is not None:
+        payload["alg"] = alg
+    if canonicalization is not None:
+        payload["canonicalization"] = canonicalization
+    revised = canonical_json(_with_hash(payload))
+    signature = key.sign(revised.encode("utf-8"))
+    key.public_key().verify(signature, revised.encode("utf-8"))
+    return revised, b64(signature)
 
 
 def _key_entry(
@@ -442,10 +477,13 @@ def _p256_cases(base_bundle: dict) -> list[dict]:
     key = ec.derive_private_key(1, ec.SECP256R1())
     kid = "sk_p256_test"
     algorithm = "ECDSA-P256-SHA256"
-    payload = _with_hash(dict(json.loads(base_bundle["signing_input"]), kid=kid, alg=algorithm))
+    payload = _with_hash(
+        dict(json.loads(base_bundle["signing_input"]), kid=kid, alg=algorithm)
+    )
     signing_input = canonical_json(payload)
     signature = key.sign(
-        signing_input.encode("utf-8"), ec.ECDSA(hashes.SHA256(), deterministic_signing=True)
+        signing_input.encode("utf-8"),
+        ec.ECDSA(hashes.SHA256(), deterministic_signing=True),
     )
     bundle = {
         "receipt_id": payload["receipt_id"],
@@ -462,7 +500,9 @@ def _p256_cases(base_bundle: dict) -> list[dict]:
                 "alg": algorithm,
                 "status": "active",
                 "public_key_b64": b64(
-                    key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+                    key.public_key().public_bytes(
+                        Encoding.DER, PublicFormat.SubjectPublicKeyInfo
+                    )
                 ),
             }
         ]
@@ -499,6 +539,45 @@ def build_cases(
         )
     cases.extend(_synthetic_cases(base_bundle, signing, _public_raw(signing)))
     cases.extend(_p256_cases(base_bundle))
+    disabled_key = Ed25519PrivateKey.from_private_bytes(DISABLED_SEED)
+    revised, signature = rekeyed_signing_input(
+        base_bundle["signing_input"], disabled_key, kid=DISABLED_KID
+    )
+    cases.append(
+        {
+            "name": "rotation.disabled_key_unknown",
+            "bundle": dict(
+                base_bundle,
+                kid=DISABLED_KID,
+                signing_input=revised,
+                signature=signature,
+            ),
+            "keys": {
+                "keys": [
+                    _public_entry(signing, KID, "active"),
+                    _public_entry(disabled_key, DISABLED_KID, "disabled"),
+                ]
+            },
+            "expect": "unknown_key",
+        }
+    )
+    for name, changes in (
+        ("unsupported.future_alg", {"alg": "Ed448"}),
+        (
+            "unsupported.future_canonicalization",
+            {"canonicalization": "awi-canonical-json/99"},
+        ),
+    ):
+        revised, signature = rekeyed_signing_input(
+            base_bundle["signing_input"], signing, **changes
+        )
+        cases.append(
+            {
+                "name": name,
+                "bundle": dict(base_bundle, signing_input=revised, signature=signature),
+                "expect": "unsupported",
+            }
+        )
     cases.append(
         {
             "name": "malformed.no_signature",
@@ -527,15 +606,164 @@ def render_receipts(key: Ed25519PrivateKey | None = None) -> str:
     return json.dumps(document, indent=2) + "\n"
 
 
+def render_rotation() -> str:
+    """Keep the existing rotated receipt case outside the single-key corpus."""
+    fixture = json.loads((GOLDEN / f"{BASE_FIXTURE}.json").read_text())
+    original_signature = b64(
+        signing_key().sign(fixture["signing_input"].encode("utf-8"))
+    )
+    if original_signature != fixture.get("signature_b64_over_test_seed"):
+        raise VectorError(
+            f"{BASE_FIXTURE} signature does not match the fixed test seed"
+        )
+    rotation_key = Ed25519PrivateKey.from_private_bytes(OTHER_SEED)
+    revised, signature = rekeyed_signing_input(
+        fixture["signing_input"], rotation_key, kid=ROTATION_KID
+    )
+    receipt_id = json.loads(revised)["receipt_id"]
+    document = {
+        "_comment": "Rotated receipt case from a golden receipt fixture; test use only.",
+        "cases": [
+            {
+                "name": "rotation.successor_key_valid",
+                "bundle": {
+                    "receipt_id": receipt_id,
+                    "kid": ROTATION_KID,
+                    "alg": "Ed25519",
+                    "canonicalization": CANONICALIZATION,
+                    "signing_input": revised,
+                    "signature": signature,
+                },
+                "keys": {
+                    "keys": [
+                        _public_entry(signing_key(), KID, "active"),
+                        _public_entry(rotation_key, ROTATION_KID, "active"),
+                    ]
+                },
+                "expect": "verified",
+            }
+        ],
+    }
+    return json.dumps(document, indent=2) + "\n"
+
+
+def build_permit_cases(
+    golden_dir: Path | None = None, key: Ed25519PrivateKey | None = None
+) -> list[dict]:
+    directory = PERMIT_GOLDEN if golden_dir is None else Path(golden_dir)
+    paths = sorted(directory.glob("*.json"))
+    if not paths:
+        raise VectorError(f"no golden permit fixtures in {directory}")
+    signing = signing_key() if key is None else key
+    cases: list[dict] = []
+    for path in paths:
+        fixture = json.loads(path.read_text())
+        signing_input = fixture["signing_input"]
+        signature = signing.sign(signing_input.encode("utf-8"))
+        if b64(signature) != fixture.get("signature_b64_over_test_seed"):
+            raise VectorError(
+                f"{path.name} signature does not match the fixed test seed"
+            )
+        payload = json.loads(signing_input)
+        if not isinstance(payload, dict) or canonical_json(payload) != signing_input:
+            raise VectorError(f"{path.name} signing_input is not canonical JSON")
+        bundle = {
+            "permit_id": payload["permit_id"],
+            "kid": payload["kid"],
+            "alg": "Ed25519",
+            "signing_input": signing_input,
+            "signature": b64(signature),
+        }
+        flipped = bytearray(signature)
+        flipped[0] ^= 0x01
+        tampered = signing_input.replace('"status":"active"', '"status":"suspended"', 1)
+        if tampered == signing_input:
+            raise VectorError(f"{path.name} has no active status to tamper")
+        cases.extend(
+            [
+                {"name": f"{path.stem}.valid", "bundle": bundle, "expect": "verified"},
+                {
+                    "name": f"{path.stem}.bad_signature",
+                    "bundle": dict(bundle, signature=b64(bytes(flipped))),
+                    "expect": "invalid",
+                },
+                {
+                    "name": f"{path.stem}.tampered_payload",
+                    "bundle": dict(bundle, signing_input=tampered),
+                    "expect": "invalid",
+                },
+                {
+                    "name": f"{path.stem}.envelope_permit_id_mismatch",
+                    "bundle": dict(bundle, permit_id="pmt_not_the_signed_one"),
+                    "expect": "mismatch",
+                },
+                {
+                    "name": f"{path.stem}.unknown_key",
+                    "bundle": dict(bundle),
+                    "keys": {"keys": []},
+                    "expect": "unknown_key",
+                },
+            ]
+        )
+    source = cases[0]["bundle"]
+    future_input, future_signature = rekeyed_signing_input(
+        source["signing_input"], signing, alg="Ed448"
+    )
+    cases.extend(
+        [
+            {
+                "name": "unsupported.future_alg",
+                "bundle": dict(
+                    source, signing_input=future_input, signature=future_signature
+                ),
+                "expect": "unsupported",
+            },
+            {
+                "name": "malformed.no_signature",
+                "bundle": {"permit_id": "p", "kid": KID, "signing_input": "{}"},
+                "expect": "malformed",
+            },
+        ]
+    )
+    receipt = cases_for_fixture(GOLDEN / "denial_constraints.json", signing)[0][
+        "bundle"
+    ]
+    cases.append(
+        {
+            "name": "denial_constraints.receipt_is_not_permit",
+            "bundle": receipt,
+            "expect": "malformed",
+        }
+    )
+    return cases
+
+
+def render_permits(key: Ed25519PrivateKey | None = None) -> str:
+    document = {
+        "_comment": (
+            "Permit verification vectors from the gateway's golden permit fixtures. "
+            "Each case uses keys.json unless it carries its own 'keys'."
+        ),
+        "cases": build_permit_cases(key=key),
+    }
+    return json.dumps(document, indent=2) + "\n"
+
+
 def main() -> None:
     key = signing_key()
-    # Build both documents before replacing either file, so a failure cannot
-    # leave a new key set next to the previous receipt vectors.
+    # Build all documents before replacing any file.
     keys_text = render_keys(_public_raw(key))
     receipts_text = render_receipts(key)
+    rotation_text = render_rotation()
+    permits_text = render_permits(key)
     (HERE / "keys.json").write_text(keys_text)
     (HERE / "receipts.json").write_text(receipts_text)
-    print(f"wrote {len(json.loads(receipts_text)['cases'])} cases")
+    (HERE / "rotation.json").write_text(rotation_text)
+    (HERE / "permits.json").write_text(permits_text)
+    print(
+        f"wrote {len(json.loads(receipts_text)['cases'])} receipt cases, "
+        f"{len(json.loads(permits_text)['cases'])} permit cases"
+    )
 
 
 if __name__ == "__main__":

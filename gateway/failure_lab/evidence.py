@@ -62,7 +62,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from failure_lab import TEST_DEFINITION_VERSION
@@ -1266,6 +1266,35 @@ class IntegrityReport:
         }
 
 
+def _unsafe_bundle_path(root: Path, relative: str) -> str | None:
+    """Reject a manifest path that is not a regular file inside the bundle.
+
+    Joining an absolute path, or a path with ``..``, drops the bundle
+    directory. A symlink can point at the same outside file. Either one
+    would let a matching hash pass for bytes that are not in the bundle.
+    """
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or relative.startswith(("/", "\\"))
+        or "\\" in relative
+        or "\x00" in relative
+    ):
+        return "path escapes the bundle and was not read"
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or ".." in pure.parts:
+        return "path escapes the bundle and was not read"
+    try:
+        root_real = root.resolve()
+        candidate = root_real.joinpath(*pure.parts)
+        if candidate.is_symlink():
+            return "path is a symlink and was not read"
+        candidate.resolve().relative_to(root_real)
+    except (RuntimeError, OSError, ValueError):
+        return "path escapes the bundle and was not read"
+    return None
+
+
 def verify_bundle_integrity(directory: Path | str) -> IntegrityReport:
     """Re-hash every file in a bundle against its manifest.
 
@@ -1279,7 +1308,15 @@ def verify_bundle_integrity(directory: Path | str) -> IntegrityReport:
     """
     root = Path(directory)
     manifest_path = root / MANIFEST_NAME
-    if not manifest_path.is_file():
+    try:
+        manifest_is_regular = (
+            not root.is_symlink()
+            and not manifest_path.is_symlink()
+            and manifest_path.is_file()
+        )
+    except (RuntimeError, OSError, ValueError):
+        manifest_is_regular = False
+    if not manifest_is_regular:
         return IntegrityReport(
             directory=root,
             ok=False,
@@ -1291,7 +1328,7 @@ def verify_bundle_integrity(directory: Path | str) -> IntegrityReport:
         )
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except ValueError as exc:
+    except (RuntimeError, OSError, ValueError) as exc:
         return IntegrityReport(
             directory=root,
             ok=False,
@@ -1302,7 +1339,17 @@ def verify_bundle_integrity(directory: Path | str) -> IntegrityReport:
             problems=[f"{MANIFEST_NAME} is not valid JSON: {exc}"],
         )
 
-    entries = manifest.get("files") or []
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list):
+        return IntegrityReport(
+            directory=root,
+            ok=False,
+            checked=0,
+            changed=[],
+            missing=[],
+            unexpected=[],
+            problems=[f"{MANIFEST_NAME} must contain a files list"],
+        )
+    entries = manifest["files"]
     changed: list[str] = []
     missing: list[str] = []
     problems: list[str] = []
@@ -1310,31 +1357,65 @@ def verify_bundle_integrity(directory: Path | str) -> IntegrityReport:
     listed: set[str] = set()
 
     for entry in entries:
-        relative = str(entry.get("path", ""))
+        if not isinstance(entry, dict):
+            problems.append("manifest file entry must be an object")
+            continue
+        relative = entry.get("path", "")
+        if not isinstance(relative, str):
+            problems.append("path escapes the bundle and was not read")
+            continue
         listed.add(relative)
+        unsafe = _unsafe_bundle_path(root, relative)
+        if unsafe is not None:
+            problems.append(f"{relative}: {unsafe}")
+            continue
         path = root / relative
-        if not path.is_file():
+        try:
+            regular = path.is_file() and not path.is_symlink()
+        except (RuntimeError, OSError, ValueError):
+            regular = False
+        if not regular:
             missing.append(relative)
             continue
+        try:
+            actual = _sha256_file(path)
+            size = path.stat().st_size
+        except (RuntimeError, OSError, ValueError) as exc:
+            problems.append(f"{relative}: could not read bundle file: {exc}")
+            continue
         checked += 1
-        actual = _sha256_file(path)
         expected = str(entry.get("sha256", ""))
         if actual != expected:
             changed.append(relative)
             problems.append(
                 f"{relative}: sha256 is {actual[:16]}..., manifest says {expected[:16]}..."
             )
-        size = path.stat().st_size
-        if entry.get("bytes") is not None and int(entry["bytes"]) != size:
+        expected_size = entry.get("bytes")
+        if expected_size is not None and (
+            not isinstance(expected_size, int)
+            or isinstance(expected_size, bool)
+            or expected_size != size
+        ):
             problems.append(
                 f"{relative}: {size} bytes on disk, manifest says {entry['bytes']}"
             )
 
-    on_disk = {
-        str(path.relative_to(root)).replace(os.sep, "/")
-        for path in root.rglob("*")
-        if path.is_file()
-    }
+    on_disk: set[str] = set()
+    pending = [root]
+    while pending:
+        directory_to_scan = pending.pop()
+        try:
+            with os.scandir(directory_to_scan) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(path)
+                    else:
+                        on_disk.add(str(path.relative_to(root)).replace(os.sep, "/"))
+        except (OSError, RuntimeError) as exc:
+            problems.append(
+                f"{directory_to_scan}: could not scan bundle directory: {exc}"
+            )
     unexpected = sorted(on_disk - listed - {MANIFEST_NAME})
     problems.extend(
         f"{name}: present on disk but not listed in the manifest" for name in unexpected

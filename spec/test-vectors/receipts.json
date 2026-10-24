@@ -747,6 +747,68 @@
       "expect": "invalid"
     },
     {
+      "name": "rotation.disabled_key_unknown",
+      "bundle": {
+        "receipt_id": "rcpt_golden_0001",
+        "kid": "sk_golden_0000",
+        "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
+        "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0000\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"e2399ee2995370e8bd1173a51c608073668492d17a6094266ba30a23c94e9941\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
+        "signature": "BRxGlomt0NTOtE9eAnk+3feuW1dWjNGYighD+L5SUkJL+ytdTlLYXjUZVfoxifQDT9YAgNcvw4g2FNleIUUMBw=="
+      },
+      "keys": {
+        "keys": [
+          {
+            "kid": "sk_golden_0001",
+            "alg": "Ed25519",
+            "status": "active",
+            "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+            "jwk": {
+              "kty": "OKP",
+              "crv": "Ed25519",
+              "x": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+            }
+          },
+          {
+            "kid": "sk_golden_0000",
+            "alg": "Ed25519",
+            "status": "disabled",
+            "public_key_b64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "jwk": {
+              "kty": "OKP",
+              "crv": "Ed25519",
+              "x": "JUO5L_EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0"
+            }
+          }
+        ]
+      },
+      "expect": "unknown_key"
+    },
+    {
+      "name": "unsupported.future_alg",
+      "bundle": {
+        "receipt_id": "rcpt_golden_0001",
+        "kid": "sk_golden_0001",
+        "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
+        "signing_input": "{\"alg\":\"Ed448\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"b3467ea3ccd2aeed963a621f21c94e8e77834048663a1bb1136e6670b22481c8\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
+        "signature": "+vWfEniQ/5NoTC9Qm5ECtMac8LJOuTKbO+HRKQ9JR9P9qjWk+upiTWwhCpcKCSlDAe5YDoBTiMRMq6YJkocHCQ=="
+      },
+      "expect": "unsupported"
+    },
+    {
+      "name": "unsupported.future_canonicalization",
+      "bundle": {
+        "receipt_id": "rcpt_golden_0001",
+        "kid": "sk_golden_0001",
+        "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
+        "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"canonicalization\":\"awi-canonical-json/99\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"1b3f4d3dcbbc89f5b8c964b6ea811f5b2a453ab16ebe18b4fa217b94ea2825c1\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
+        "signature": "dF+pACK77HJ+Zea1VtTq4AKZRvkV8PLuZOlEpn/Qi40t1ZT19HScDKLGWDb3mJAFePR2m7o8GKqRQC7uVhxaDA=="
+      },
+      "expect": "unsupported"
+    },
+    {
       "name": "malformed.no_signature",
       "bundle": {
         "receipt_id": "r",

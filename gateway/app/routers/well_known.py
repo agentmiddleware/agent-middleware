@@ -268,8 +268,8 @@ def _local_try_it_manifest() -> dict[str, Any]:
     """Credential-free proof path for the logical-action transaction loop."""
     return {
         "mode": "local_self_hosted",
-        "repository": "https://github.com/PetrefiedThunder/agent-middleware",
-        "repository_access": "private",
+        "repository": "https://github.com/agentmiddleware/agent-middleware",
+        "repository_access": "public",
         "command": "make prove-trust-plane",
         "live_access": "operator_issued",
         "requires_live_credentials": False,
@@ -285,8 +285,8 @@ def _local_try_it_manifest() -> dict[str, Any]:
             "Runs the real FastAPI transaction-integrity path against a "
             "throwaway local SQLite database. This is a reproducible proof, "
             "not a production or settlement claim. The source repository is "
-            "private; clone access must be granted separately. Authorized "
-            "clones can run the proof locally without live API credentials."
+            "public: clone it and run the proof locally without live API "
+            "credentials."
         ),
     }
 
@@ -304,10 +304,11 @@ def _integration_manifest() -> dict[str, Any]:
             "version": "0.5.0",
             "path": "sdk/python/",
             "install": "pip install -e ./sdk/python",
-            "latest_release_tag": None,
+            "latest_release_tag": "python-sdk-v0.4.0",
             "note": (
-                "Install from source in sdk/python/. No release has been cut "
-                "from this repository yet. Not published to PyPI."
+                "Install from source in sdk/python/ (import package "
+                "b2a_sdk), which yields 0.5.0 pre-release. Latest cut "
+                "release is tag python-sdk-v0.4.0. Not published to PyPI."
             ),
         },
         "typescript_sdk": {

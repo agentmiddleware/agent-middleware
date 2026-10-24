@@ -14,6 +14,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.db.database import get_session_factory
+from app.services.ownership import CallerIdentity
 from app.db.models import PermitModel
 from app.main import app
 from app.schemas.billing import ServiceCategory
@@ -392,7 +393,9 @@ async def test_aggregate_value_cap_released_reservation_frees_cap(
 
     assert (await reserve_once()).allowed is True
     assert (await reserve_once()).reason == "permit_aggregate_value_cap_exceeded"
-    await service.release_budget(permit.permit_id, Decimal("1"))
+    await service.release_budget(
+        permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+    )
     assert (await reserve_once()).allowed is True
 
 
@@ -403,19 +406,14 @@ async def test_aggregate_value_cap_receipt_history_floors_concurrent_reservation
     """Receipted charges that ``spent_credits`` no longer reflects still count.
 
     A charged call can end with its reservation handed back but its receipt
-    kept (charge succeeded, refund failed, ``release_budget`` ran). The
-    permit then has receipt history above ``spent_credits``. If the atomic
-    guard only checked ``spent_credits``, N parallel reservations would each
-    see the same low counter and collectively exceed the cap; the receipt
-    floor must be part of the guarded predicate, not a separate read.
+    kept. The permit then has receipt history above ``spent_credits``. The
+    guarded UPDATE has to absorb that history into the counter. A predicate
+    that only adds the receipt as a floor, then stores ``spent + amount``,
+    lets the next reservation treat the old receipt as already covered.
 
     Setup: cap 5, one receipted charge of 2 with ``spent_credits`` back at 0.
-    Remaining authority is ``max(spent, receipt_total)``, so of six
-    concurrent reservations of 2 the guard admits at most two and never
-    lets ``spent_credits`` pass the cap. A task that snapshots the floor
-    while ``spent_credits`` is still 0 can admit only one; a task that
-    reads after that commit sees the floor already covered and may admit a
-    second reservation that still fits under the cap.
+    One reservation of 2 writes spent to 4 (the new 2 plus the orphaned 2).
+    Of six concurrent reservations of 2, one is admitted and spent ends at 4.
     """
     import asyncio
 
@@ -441,7 +439,9 @@ async def test_aggregate_value_cap_receipt_history_floors_concurrent_reservation
 
     # Reserve, receipt the charge, then hand the reservation back: the shape
     # the charge-then-refund-failure path leaves behind.
-    await service.reserve_budget(permit.permit_id, Decimal("2"))
+    await service.reserve_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
     await get_receipt_service().create_receipt(
         permit_id=permit.permit_id,
         wallet_id=wallet_id,
@@ -455,7 +455,9 @@ async def test_aggregate_value_cap_receipt_history_floors_concurrent_reservation
         outcome="failed_unrefunded",
         audit_event_id=None,
     )
-    await service.release_budget(permit.permit_id, Decimal("2"))
+    await service.release_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
 
     factory = get_session_factory()
     async with factory() as session:
@@ -475,9 +477,7 @@ async def test_aggregate_value_cap_receipt_history_floors_concurrent_reservation
     results = await asyncio.gather(*(reserve_once() for _ in range(6)))
     allowed = [r for r in results if r.allowed]
     denied = [r for r in results if not r.allowed]
-    # The guard bounds cumulative authority, not one interleaving: a task
-    # that reads after an earlier commit sees a smaller receipt floor.
-    assert 1 <= len(allowed) <= 2
+    assert len(allowed) == 1
     assert all(r.reason == "permit_aggregate_value_cap_exceeded" for r in denied)
     for r in denied:
         assert r.details is not None
@@ -487,24 +487,20 @@ async def test_aggregate_value_cap_receipt_history_floors_concurrent_reservation
     async with factory() as session:
         model = await session.get(PermitModel, permit.permit_id)
         assert model is not None
-        assert model.spent_credits == Decimal("2") * len(allowed)
-        # Cumulative authority never exceeds the cap.
-        assert max(model.spent_credits, Decimal("2")) <= Decimal("5")
+        # The admitted reservation absorbed the orphaned receipt of 2.
+        assert model.spent_credits == Decimal("4")
 
 
 @pytest.mark.anyio
 async def test_aggregate_value_cap_receipt_history_floor_then_sequential_reservations(
     client, clean_database
 ):
-    """After the receipt floor is covered, spent_credits may rise to the cap.
+    """A released receipt stays inside the cap after the next reservation.
 
-    The floor is ``max(spent_credits, receipt_total)``, not receipt plus
-    spent: once a new reservation has caught spent up to the receipt
-    total, further reservations are bounded by the cap against spent
-    alone. This is the serialization a PostgreSQL row lock produces, and
-    it must not be confused with the happy path where a settled receipt is
-    still reflected in ``spent_credits`` (that path is
-    ``test_aggregate_value_cap_denies_over_total``).
+    Cap 5, historical receipt 2, spent back at 0. The first reservation of
+    2 must absorb that receipt, leaving spent at 4. The second reservation
+    of 2 is over the cap. Storing only the new 2 would let the second
+    reservation through and put cumulative value at 6.
     """
     from app.services.receipts import get_receipt_service
 
@@ -526,7 +522,9 @@ async def test_aggregate_value_cap_receipt_history_floor_then_sequential_reserva
         )
     )
 
-    await service.reserve_budget(permit.permit_id, Decimal("2"))
+    await service.reserve_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
     await get_receipt_service().create_receipt(
         permit_id=permit.permit_id,
         wallet_id=wallet_id,
@@ -540,7 +538,9 @@ async def test_aggregate_value_cap_receipt_history_floor_then_sequential_reserva
         outcome="failed_unrefunded",
         audit_event_id=None,
     )
-    await service.release_budget(permit.permit_id, Decimal("2"))
+    await service.release_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
 
     async def reserve_once():
         return await service.authorize_and_reserve(
@@ -554,10 +554,8 @@ async def test_aggregate_value_cap_receipt_history_floor_then_sequential_reserva
     first = await reserve_once()
     assert first.allowed is True, first.reason
     second = await reserve_once()
-    assert second.allowed is True, second.reason
-    third = await reserve_once()
-    assert third.allowed is False
-    assert third.reason == "permit_aggregate_value_cap_exceeded"
+    assert second.allowed is False
+    assert second.reason == "permit_aggregate_value_cap_exceeded"
 
     factory = get_session_factory()
     async with factory() as session:
@@ -599,14 +597,22 @@ async def test_reserve_budget_enforces_aggregate_value_cap(client, clean_databas
         )
     )
 
-    await service.reserve_budget(permit.permit_id, Decimal("1"))
+    await service.reserve_budget(
+        permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+    )
     with pytest.raises(PermitError) as excinfo:
-        await service.reserve_budget(permit.permit_id, Decimal("1"))
+        await service.reserve_budget(
+            permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+        )
     assert excinfo.value.reason == "permit_aggregate_value_cap_exceeded"
 
     # Releasing the in-flight reservation makes the cap share admissible again.
-    await service.release_budget(permit.permit_id, Decimal("1"))
-    await service.reserve_budget(permit.permit_id, Decimal("1"))
+    await service.release_budget(
+        permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+    )
+    await service.reserve_budget(
+        permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+    )
 
     # Parallel reservations against a fresh capped permit admit at most
     # floor(cap / amount), same guarantee as the MCP path.
@@ -625,7 +631,9 @@ async def test_reserve_budget_enforces_aggregate_value_cap(client, clean_databas
 
     async def reserve_or_reason() -> str:
         try:
-            await service.reserve_budget(permit2.permit_id, Decimal("2"))
+            await service.reserve_budget(
+                permit2.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+            )
         except PermitError as exc:
             return exc.reason
         return "allowed"

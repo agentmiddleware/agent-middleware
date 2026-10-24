@@ -33,6 +33,8 @@ def test_alembic_upgrade_creates_auth_schema(tmp_path, monkeypatch):
         "signing_keys",
         "permits",
         "receipts",
+        "receipt_resolutions",
+        "resolution_chain_heads",
         "idempotency_records",
         "mcp_dispatch_attempts",
         "human_approvals",
@@ -43,6 +45,48 @@ def test_alembic_upgrade_creates_auth_schema(tmp_path, monkeypatch):
     receipt_columns = {col["name"] for col in inspector.get_columns("receipts")}
     assert "approval_id" in receipt_columns
     assert {"idempotency_record_id", "dispatch_attempt_id"} <= receipt_columns
+
+    resolution_columns = {
+        col["name"] for col in inspector.get_columns("receipt_resolutions")
+    }
+    assert {
+        "resolution_id",
+        "receipt_id",
+        "wallet_id",
+        "sequence",
+        "prev_hash",
+        "receipt_hash",
+        "outcome",
+        "created_at",
+        "signing_input",
+        "signature",
+        "signature_key_id",
+        "payload_hash",
+        "resolution_hash",
+    } <= resolution_columns
+    head_columns = {
+        col["name"] for col in inspector.get_columns("resolution_chain_heads")
+    }
+    assert {"wallet_id", "last_sequence", "last_hash"} <= head_columns
+    resolution_fks = inspector.get_foreign_keys("receipt_resolutions")
+    assert any(
+        foreign_key["constrained_columns"] == ["receipt_id"]
+        and foreign_key["referred_table"] == "receipts"
+        for foreign_key in resolution_fks
+    )
+    assert any(
+        foreign_key["constrained_columns"] == ["wallet_id"]
+        and foreign_key["referred_table"] == "wallets"
+        for foreign_key in resolution_fks
+    )
+    assert any(
+        constraint["column_names"] == ["wallet_id", "sequence"]
+        for constraint in inspector.get_unique_constraints("receipt_resolutions")
+    )
+    assert {"ck_receipt_resolutions_sequence", "ck_receipt_resolutions_outcome"} <= {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("receipt_resolutions")
+    }
 
     ledger_columns = {col["name"] for col in inspector.get_columns("ledger_entries")}
     assert "operation_key" in ledger_columns

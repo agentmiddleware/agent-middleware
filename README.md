@@ -1,103 +1,68 @@
-# Agent Middleware (AMW)
+# Agent Middleware
 
-> **Agents retry. Consequential tools should not run or charge twice.**
+Agent Middleware is a gateway you put in front of an agent's risky tools (refunds, payouts, deploys) so each action needs a signed permit, runs at most once per request key, and leaves a signed receipt anyone can check offline.
 
-Agent Middleware is a gateway that sits in front of an agent's irreversible MCP
-tools (refunds, payouts, writes to systems of record). Agents act under a
-permit; a same-key retry returns the original receipt, no second call or
-charge.
+**Status:** Pre revenue, pre release, solo maintained. There are no paying
+customers or production deployments to point to. We are looking for design
+partners with one real consequential tool. Install from source; nothing is
+published to PyPI or npm.
 
-```text
-scoped signed permit -> governed MCP call (idempotency key) -> one dispatch, one debit -> Ed25519-signed receipt
-```
+## Try it in 3 minutes
 
-**Status: pre-revenue, pre-release, solo-maintained.** There are no paying
-customers and no production deployments to point to. We are looking for design
-partners with one real consequential tool. Nothing here is published to PyPI or
-npm yet; install from source.
-
-Note for contributors: the canonical gateway copy is
-`agent-middleware-api/app`. This tree's `gateway/app` is synced from it, so
-policy and safety fixes should match that copy, and drift between the two is
-treated as a bug.
-
-## See it in about a minute
-
-Prerequisites: Python 3.11+, [`uv`](https://docs.astral.sh/uv/), and `make`.
+Use the [hosted demo](https://github.com/agentmiddleware/amw-demo). Get a demo key at the [demo key page](https://www.agentmiddleware.dev/demo-key/). The example also needs the associated wallet ID.
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/amw-demo.git
+cd amw-demo
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+export AMW_API_KEY='<your key>'
+export AMW_WALLET_ID='<your wallet id>'
+python examples/permit_echo_retry.py
+```
+
+The example creates a permit, calls the reference echo tool, retries with the same key, and checks the receipt offline.
+
+## Run it locally
+
+Use the gateway Makefile to start a local gateway. [QUICKSTART.md](QUICKSTART.md) has the full walk through.
+
+```bash
+git clone https://github.com/agentmiddleware/agent-middleware
 cd agent-middleware/gateway
-make demo-ambiguous-retry
+make quickstart
 ```
 
-An accounts-payable agent pays invoice `INV-4417`, $250.00. The payout
-succeeds, **the response never reaches the agent**, and the agent correctly
-retries. The same tool runs once without the boundary and once behind it:
+## Concepts
 
-```text
-WITHOUT a transaction boundary        WITH Agent Middleware
-  PAY-0001  INV-4417  $250.00           PAY-0001  INV-4417  $250.00
-  PAY-0002  INV-4417  $250.00
-  2 payouts, $500.00                    1 payout, $250.00
-                                        1 debit, same receipt on both
-                                        retry returned PAY-0001
-```
+- **Permit:** A signed grant that limits an agent to specified tools, a budget, and an expiry.
+- **Call:** A governed MCP tool invocation under a permit.
+- **Request key:** The `Idempotency-Key` header that identifies a request for retry handling.
+- **Receipt:** A signed record of a call's outcome and hashes of its request and response, with a debit link when applicable.
+- **Credits:** Internal metering units, not money.
 
-The payout count is the number of times the tool body actually ran. The demo
-then verifies the receipt offline against the published key set.
+## Guarantees and limits
 
-Next: [QUICKSTART.md](QUICKSTART.md) boots a local gateway, connects an MCP
-client to it, and walks a permit, a governed call, a replay, and an offline
-receipt check.
+- a retry with the same key returns the original receipt instead of dispatching again
+- a new key is a new request
+- Reusing a key with a different request fails with a conflict before dispatch.
+- A `delivery_uncertain` receipt means no trustworthy answer came back. The debit is kept, and the operator must reconcile with the downstream tool. The gateway does not resend automatically.
+- The gateway limits dispatch and debit per key, but remote effects depend on the tool honoring the forwarded key. A receipt signs request and response hashes, not raw tool content, and cannot prove a remote effect happened. This is not exactly once.
 
-## What it guarantees, and what it does not
+Read [Security Limitations](gateway/SECURITY_LIMITATIONS.md) before relying on the gateway for a consequential action.
 
-- **At most one gateway dispatch and at most one debit per accepted idempotency
-  key.** A retry with the same key returns the original signed receipt. The same
-  key with a different payload fails closed.
-- **Authority before money.** Out-of-scope, expired, revoked, or tampered permits
-  are denied before any debit.
-- **Offline-verifiable receipts.** Ed25519 signatures over canonical JSON,
-  checkable with no network and no account.
+## Repo map
 
-It is **not exactly-once.** If the gateway sent the call and no trustworthy
-answer came back, the receipt says `delivery_uncertain`, the debit is kept, and
-nothing is re-sent automatically; someone has to reconcile with the downstream
-system. A remote side effect is deduplicated only if the remote tool also honors
-the forwarded idempotency key. **An agent that restarts with a new key can
-still pay twice.** It is not a payment network, an IAM system, or a compliance
-product. Read [gateway/SECURITY_LIMITATIONS.md](gateway/SECURITY_LIMITATIONS.md)
-before evaluating it for anything real.
+| Path | What it contains |
+| --- | --- |
+| [gateway/](gateway/) | Gateway implementation and local Makefile |
+| [sdk/](sdk/) | Python and TypeScript client and verification code |
+| [verifier/](verifier/) | Offline verification guide and vector checker |
+| [spec/](spec/) | Draft permit, receipt, and key formats |
+| [integrations/](integrations/) | Framework wrappers and adapters |
+| [examples/](examples/) | Runnable examples and MCP client config |
+| [amw-demo](https://github.com/agentmiddleware/amw-demo) | Hosted demo client and receipt verifier |
+| [amw-paypal-agent-demo](https://github.com/agentmiddleware/amw-paypal-agent-demo) | PayPal agent demo |
 
-## What is in this repository
-
-| Path | What it is | License |
-|---|---|---|
-| [`spec/`](spec/) | Permit, receipt, and key-set format (v0.1 draft) with test vectors | Apache-2.0 |
-| [`verifier/`](verifier/) | How to verify receipts offline; vector checker | Apache-2.0 |
-| [`sdk/python/`](sdk/python/) | Python client SDK and the `b2a-verify-receipt` offline verifier | Apache-2.0 |
-| [`sdk/typescript/`](sdk/typescript/) | TypeScript offline receipt verifier | Apache-2.0 |
-| [`integrations/`](integrations/) | LangChain, CrewAI, AutoGen, OpenAI Agents wrappers; LangGraph, PydanticAI, LlamaIndex adapters | Apache-2.0 |
-| [`examples/`](examples/) | Runnable examples, including an MCP client config | Apache-2.0 |
-| [`gateway/`](gateway/) | The gateway itself: permits, idempotency, dispatch fence, metering, receipts, audit chain, MCP endpoints, migrations, tests, failure lab | **Fair Source: FSL-1.1-ALv2** |
-
-The gateway is **Fair Source, not open source**. Under the Functional Source
-License you can read, modify, and self-host it for your own agents, and use it
-for anything except offering a competing product. **Every release converts to
-Apache-2.0 two years after it is published.** The spec, verifiers, SDKs,
-integrations, and examples are open source under Apache-2.0 today. Details and
-plain-English FAQ: [LICENSING.md](LICENSING.md).
-
-A hosted, managed version of the gateway is planned; its operations code is not
-in this repository.
-
-## Contributing and security
-
-- [CONTRIBUTING.md](CONTRIBUTING.md): setup, tests, and DCO sign-off (no CLA).
-- [SECURITY.md](SECURITY.md): report vulnerabilities privately, not in issues.
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), [GOVERNANCE.md](GOVERNANCE.md).
-
-"Agent Middleware" and "AMW" are used as project names. The licenses above
-cover code and text; they do not grant rights to use the project names or logos
-to imply endorsement.
+Apache 2.0 (gateway is Fair Source, FSL-1.1)

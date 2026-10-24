@@ -1,13 +1,13 @@
 """Coverage for scripts/rotate_api_keys.py.
 
-The verifier is the last gate in the rotation runbook, so its failure
-semantics matter more than its happy path: a rotation is only complete when
-the retired key is rejected AND the replacement authenticates, and the
-script must exit non-zero on every other combination.
+The verifier samples one response for each key; rotation completion also
+requires host configuration and rollout evidence. Its exit status reports
+whether the two sampled responses match the expected statuses.
 """
 
 import importlib.util
 from pathlib import Path
+import sys
 
 import httpx
 import pytest
@@ -24,7 +24,7 @@ def _load_module():
     return module
 
 
-@pytest.fixture()
+@pytest.fixture
 def rotate():
     return _load_module()
 
@@ -67,12 +67,24 @@ def test_verify_requires_env(rotate, monkeypatch):
     assert rotate.verify() == 2
 
 
-def test_verify_passes_when_old_dead_and_new_live(rotate, monkeypatch):
+def test_verify_reports_sampled_old_rejection_and_new_acceptance(rotate, monkeypatch):
     _env(monkeypatch)
     monkeypatch.setattr(
         rotate, "_probe", _fake_probe({"old-key-value": 403, "new-key-value": 200})
     )
     assert rotate.verify() == 0
+
+
+def test_verify_help_describes_sampled_responses(rotate, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["rotate_api_keys.py", "--help"])
+
+    with pytest.raises(SystemExit) as exc:
+        rotate.main()
+
+    assert exc.value.code == 0
+    assert "sample old-key rejection and new-key acceptance" in capsys.readouterr().out
+    assert "different load-balanced workers" in rotate.__doc__
+    assert "database-key authentication can update last_used_at" in rotate.__doc__
 
 
 def test_verify_fails_when_old_key_still_authenticates(rotate, monkeypatch):
@@ -115,7 +127,7 @@ def test_verify_rejects_unsafe_origins_before_probing(rotate, monkeypatch, targe
 
 
 @pytest.mark.parametrize(
-    "target, normalized",
+    ("target", "normalized"),
     [
         ("https://api.example.test/", "https://api.example.test"),
         ("https://api.thisisatest.tech", "https://api.thisisatest.tech"),

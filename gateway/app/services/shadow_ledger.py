@@ -32,6 +32,7 @@ from ..schemas.billing import InsufficientFundsResponse, ServiceCategory
 
 # One pricing table, not a second copy. The dry run must quote exactly what
 # the real charge path would take, so both read .pricing.
+from .ownership import CallerIdentity
 from .pricing import DEFAULT_PRICING
 
 logger = logging.getLogger(__name__)
@@ -529,6 +530,7 @@ class ShadowLedger:
                     units=Decimal(str(charge.units)),
                     description=f"[COMMITTED] {charge.description}",
                     dry_run=False,
+                    caller=CallerIdentity.for_wallet(session.wallet_id),
                 )
 
                 if isinstance(result, InsufficientFundsResponse):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from app.core.time import utc_now
 from decimal import Decimal
 import json
 import logging
@@ -10,6 +9,7 @@ import uuid
 
 from sqlalchemy import select
 
+from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import PolicyBundleModel
 from app.schemas.policies import (
@@ -19,6 +19,13 @@ from app.schemas.policies import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The planner's task tiers run low < medium < high (risk budgets in
+# app/optimizer/policy.py grow with tier, and app/routers/mcp.py maps them to
+# the same order for the risk guard). A bundle's risk_tier is the highest tier
+# it permits: an action at or below the ceiling passes, anything above it is
+# denied. Tiers outside this map fail closed.
+_RISK_TIER_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
 @dataclass(frozen=True)
@@ -214,12 +221,6 @@ async def wallet_human_approval_required(wallet_id: str) -> bool:
         return (await session.execute(stmt)).first() is not None
 
 
-# Risk tiers form a ceiling: low < medium < high. A bundle's tier is the
-# maximum it allows, so a low-risk call passes under a high ceiling. A tier
-# label that is not one of these three, on either side, fails closed.
-_RISK_TIER_ORDER = {"low": 0, "medium": 1, "high": 2}
-
-
 def _as_decimal(value: float | int | Decimal | None) -> Decimal | None:
     if value is None:
         return None
@@ -266,6 +267,21 @@ async def evaluate_wallet_policy(
     # Decimal and the incoming cost is normalized rather than compared as float.
     est = _as_decimal(estimated_cost)
     daily = _as_decimal(daily_spend_used)
+    for amount in (est, daily):
+        if amount is not None and not amount.is_finite():
+            # A non-finite cost poisons the monetary gates below: NaN makes
+            # Decimal ordering comparisons raise InvalidOperation (an
+            # unclassified 500 with no denial recorded), and -Infinity is
+            # smaller than every cap so it silently passes them. Neither can
+            # be shown under a cap, so deny instead of crashing or allowing.
+            # None keeps its existing meaning for each input: estimated cost
+            # skips its comparison, while unknown daily spend denies a cap.
+            return PolicyEvaluation(
+                False,
+                "policy_cost_invalid",
+                None,
+                {"policy_count": len(models)},
+            )
 
     evaluated: list[dict[str, Any]] = []
     for policy in models:

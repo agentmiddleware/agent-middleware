@@ -141,6 +141,7 @@ def validate_trust_mode_config(
     enable_proof_surfaces: bool = True,
     static_dev_api_keys: str = "",
     enable_dev_key_self_provision: bool = False,
+    enable_demo_tenant: bool = False,
     enable_public_mcp_endpoint: bool = False,
     allow_private_network_targets: bool = False,
     allow_unsafe_host_python_sandbox: bool = False,
@@ -148,6 +149,7 @@ def validate_trust_mode_config(
     redis_url: str = "",
     public_url: str = "",
     database_url: str = "",
+    cors_origins: str = "",
     enable_dogfood_tool: bool = False,
     enable_dogfood_second_tool: bool = False,
 ) -> None:
@@ -159,10 +161,10 @@ def validate_trust_mode_config(
     """
     production_like = is_production_like_environment(environment)
     violations: list[str] = []
-    # redis_url / public_url used to gate anonymous public MCP. That surface is
-    # now refused outright in production-like boots, but the parameters stay so
+    # public_url used to gate anonymous public MCP. That surface is now
+    # refused outright in production-like boots, but the parameter stays so
     # existing call sites keep working.
-    _ = redis_url, public_url
+    _ = public_url
 
     if production_like:
         if not trust_mode_enabled:
@@ -212,6 +214,11 @@ def validate_trust_mode_config(
                 "ENABLE_DEV_KEY_SELF_PROVISION must be false in "
                 "production-like environments (self-serve dev key minting "
                 "is local-only — see docs/static-dev-api-keys.md)"
+            )
+        if enable_demo_tenant and not (redis_url or "").strip():
+            violations.append(
+                "REDIS_URL is required when ENABLE_DEMO_TENANT is true in "
+                "production-like environments (issuance limits must be shared)"
             )
         if enable_public_mcp_endpoint:
             violations.append(
@@ -282,6 +289,16 @@ def validate_trust_mode_config(
                 "STATE_BACKEND, which governs the key/value state store rather "
                 "than the ORM engine"
             )
+        for entry in (cors_origins or "").split(","):
+            cleaned = entry.strip().strip("\"'").strip()
+            if cleaned == "*":
+                violations.append(
+                    "CORS_ORIGINS must not contain '*' in production-like "
+                    "environments (wildcard CORS lets any website read "
+                    "cross-origin responses; set an explicit origin list or "
+                    "leave it empty when there is no browser client)"
+                )
+                break
 
     if violations:
         raise TrustModeGuardrailError("; ".join(violations))
@@ -304,6 +321,7 @@ def validate_trust_mode_guardrails(settings: Settings) -> None:
         enable_proof_surfaces=settings.ENABLE_PROOF_SURFACES,
         static_dev_api_keys=settings.STATIC_DEV_API_KEYS,
         enable_dev_key_self_provision=settings.ENABLE_DEV_KEY_SELF_PROVISION,
+        enable_demo_tenant=settings.ENABLE_DEMO_TENANT,
         enable_public_mcp_endpoint=settings.ENABLE_PUBLIC_MCP_ENDPOINT,
         allow_private_network_targets=settings.ALLOW_PRIVATE_NETWORK_TARGETS,
         allow_unsafe_host_python_sandbox=settings.ALLOW_UNSAFE_HOST_PYTHON_SANDBOX,
@@ -313,6 +331,7 @@ def validate_trust_mode_guardrails(settings: Settings) -> None:
         database_url=settings.DATABASE_URL,
         enable_dogfood_tool=settings.ENABLE_DOGFOOD_TOOL,
         enable_dogfood_second_tool=settings.ENABLE_DOGFOOD_SECOND_TOOL,
+        cors_origins=settings.CORS_ORIGINS,
     )
 
 

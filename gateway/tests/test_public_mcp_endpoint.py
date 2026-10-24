@@ -626,37 +626,6 @@ async def test_expected_issuer_mismatch_is_not_a_signature_verdict(
     ("bundle", "expected_status"),
     [
         ("not-json", "malformed"),
-        # The unsupported cases must be declared inside the SIGNED bytes.
-        # Reading them from the envelope is what let an edited byte downgrade a
-        # genuine receipt to "this verifier is too old", so the envelope is no
-        # longer trusted for that decision -- which also means an envelope-only
-        # bad alg is no longer cheaply rejectable, by design.
-        (
-            {
-                **_unverifiable_bundle(),
-                "signing_input": json.dumps(
-                    {
-                        "receipt_id": "rcpt-no-key",
-                        "kid": "no-published-key",
-                        "alg": "RSA",
-                    }
-                ),
-            },
-            "unsupported",
-        ),
-        (
-            {
-                **_unverifiable_bundle(),
-                "signing_input": json.dumps(
-                    {
-                        "receipt_id": "rcpt-no-key",
-                        "kid": "no-published-key",
-                        "canonicalization": "unknown/1",
-                    }
-                ),
-            },
-            "unsupported",
-        ),
     ],
 )
 async def test_preflight_failures_do_not_touch_the_key_store(
@@ -677,6 +646,69 @@ async def test_preflight_failures_do_not_touch_the_key_store(
     )
 
     assert resp.json()["result"]["structuredContent"]["status"] == expected_status
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "signing_input",
+    [
+        json.dumps(
+            {
+                "receipt_id": "rcpt-no-key",
+                "kid": "no-published-key",
+                "alg": "RSA",
+            }
+        ),
+        json.dumps(
+            {
+                "receipt_id": "rcpt-no-key",
+                "kid": "no-published-key",
+                "canonicalization": "unknown/1",
+            }
+        ),
+    ],
+)
+async def test_unverified_algorithm_claim_is_unknown_key_not_unsupported(
+    client, public_mcp_enabled, signing_input
+):
+    """A changed alg is not "unsupported" until a signature check can say so.
+
+    This kid is not published, so the status is unknown_key. Calling it
+    unsupported used to skip the key store and hide a tampered receipt whose
+    key the gateway does hold.
+    """
+    await get_signing_key_service().ensure_active_key()
+    bundle = {**_unverifiable_bundle(), "signing_input": signing_input}
+    resp = await client.post(
+        PUBLIC_PATH,
+        json=_call("verify_receipt", {"bundle": bundle}),
+        headers=MCP_HEADERS,
+    )
+
+    assert resp.json()["result"]["structuredContent"]["status"] == "unknown_key"
+
+
+@pytest.mark.anyio
+async def test_verify_receipt_rejects_an_algorithm_edit_as_invalid(
+    client, public_mcp_enabled
+):
+    bundle = await _signed_bundle()
+    await get_signing_key_service().ensure_active_key()
+    forged = {
+        **bundle,
+        "signing_input": bundle["signing_input"].replace(
+            '"alg":"Ed25519"', '"alg":"RS256"', 1
+        ),
+    }
+    resp = await client.post(
+        PUBLIC_PATH,
+        json=_call("verify_receipt", {"bundle": forged}),
+        headers=MCP_HEADERS,
+    )
+    structured = resp.json()["result"]["structuredContent"]
+    assert structured["ok"] is False
+    assert structured["status"] == "invalid"
+    assert structured["claims"] == {}
 
 
 @pytest.mark.anyio

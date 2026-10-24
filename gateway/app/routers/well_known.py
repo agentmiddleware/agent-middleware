@@ -20,6 +20,7 @@ from ..core.config import get_settings, public_api_origin
 from ..core.product_positioning import (
     LEGACY_PRODUCT_LOOP,
     LEGACY_PRODUCT_WEDGE,
+    PLAIN_PRODUCT_DESCRIPTION,
     POSITIONING_DESCRIPTION,
     get_product_positioning,
 )
@@ -343,6 +344,7 @@ class AgentPluginManifest(BaseModel):
     schema_version: str = Field(default="1.0", description="Manifest schema version")
     name: str = Field(description="Service/plugin name")
     description: str = Field(description="What this service provides")
+    details: str = Field(description="Precise product behavior and scope")
     version: str = Field(description="Current version")
     canonical_api: str = Field(
         default="",
@@ -497,16 +499,17 @@ def _build_agent_manifest() -> AgentPluginManifest:
         # bootstrap payload.
         proof_surfaces = []
 
-    description = POSITIONING_DESCRIPTION
+    details = POSITIONING_DESCRIPTION
     if cfg.ENABLE_PROOF_SURFACES:
-        description += (
+        details += (
             " Additional routers are labeled proof surfaces, outside the "
             "transaction-integrity boundary."
         )
 
     return AgentPluginManifest(
         name="agent-middleware-api",
-        description=description,
+        description=PLAIN_PRODUCT_DESCRIPTION,
+        details=details,
         version=cfg.APP_VERSION,
         canonical_api=public_api_origin(),
         provider=_provider_manifest(cfg),

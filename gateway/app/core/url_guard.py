@@ -149,7 +149,11 @@ async def pin_outbound_url(
     resolved address must be globally routable, so connecting to the pinned
     address (instead of resolving again) closes DNS rebinding between
     validation and connection. When the URL is blocked, the pinned address
-    is None. The optional ``resolver`` override exists for tests.
+    is None. When ``ALLOW_PRIVATE_NETWORK_TARGETS`` is set, an allowed URL
+    also returns ``(None, None)``: nothing is pinned, and callers must then
+    connect by hostname as usual (``behavioral_sandbox`` does) so local mock
+    servers stay reachable. The optional ``resolver`` override exists for
+    tests.
     """
     try:
         parts = urlsplit(url)

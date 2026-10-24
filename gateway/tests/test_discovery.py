@@ -166,7 +166,7 @@ async def test_doc_index_describes_the_caller_supplied_permit_path(
     assert "only when none is supplied" in service["transport_note"]
     # The legacy note must not sell itself as the way to present a permit.
     assert "instead of self-issuing" not in service["legacy_json_rpc_note"]
-    assert "permit_id field" in service["legacy_json_rpc_note"]
+    assert "params.mcpContext.permit_id" in service["legacy_json_rpc_note"]
 
 
 @pytest.mark.anyio

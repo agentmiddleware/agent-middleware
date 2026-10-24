@@ -140,7 +140,7 @@ _TRUST_PLANE_SERVICES = [
         "legacy_json_rpc_note": (
             "Project-specific JSON-RPC endpoint; it does not implement the "
             "standard MCP initialization lifecycle. It accepts the same "
-            "externally issued permit as a top-level permit_id field."
+            "externally issued permit in params.mcpContext.permit_id."
         ),
         "surface": "product",
         "transaction_scope": "configured_upstream_mcp_tool_only",

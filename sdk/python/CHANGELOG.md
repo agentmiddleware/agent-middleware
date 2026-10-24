@@ -26,6 +26,9 @@ remain unchanged.
 
 ### Receipt verifier
 
+- `verify_permit_bundle()` checks the signed permit's required fields and
+  rejects a signed receipt as permit evidence. `VerificationResult.permit_id`
+  reports the signed permit id without changing existing positional arguments.
 - An edited `alg` or `canonicalization` inside `signing_input` is `invalid`
   when the signature does not verify and the key is available. Those claims
   are `unsupported` only after the signature over the exact bytes checks out.

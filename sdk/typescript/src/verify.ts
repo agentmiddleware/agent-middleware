@@ -262,7 +262,7 @@ function signatureValid(key: Buffer | P256VerificationKey, sig: Buffer, msg: Buf
 
 /**
  * Shared core behind verifyBundle and verifyPermitBundle. Receipts and
- * permits are the same signed-envelope shape; only the id member differs.
+ * permits share a signed-envelope shape; permits also require signed permit fields.
  */
 function verifySignedBundle(
   bundle: unknown,
@@ -351,6 +351,20 @@ function verifySignedBundle(
   // signing_input verbatim; re-serializing signed JSON can change number text.
   const objectId = p[idField];
   if (typeof objectId !== "string" || !objectId) return fail("malformed", `signed payload has no ${idField}`, kid);
+  if (idField === "permit_id") {
+    const stringFields = ["issuer_wallet_id", "subject_wallet_id", "max_credits", "issued_at", "expires_at", "nonce", "payload_hash"];
+    const lists = ["scopes", "allowed_tools"];
+    if (
+      stringFields.some((name) => typeof p[name] !== "string") ||
+      "receipt_id" in p ||
+      !("subject_key_id" in p) ||
+      (p.subject_key_id !== null && typeof p.subject_key_id !== "string") ||
+      lists.some((name) => !Array.isArray(p[name]) || !(p[name] as unknown[]).every((item) => typeof item === "string")) ||
+      p.status !== "active"
+    ) {
+      return fail("malformed", "signed payload is not a permit", kid);
+    }
+  }
   if (b[idField] !== undefined && b[idField] !== null && b[idField] !== objectId) {
     const mismatch = fail("mismatch", `bundle ${idField} does not match the signed ${idField}`, kid);
     if (idField === "permit_id") mismatch.permitId = objectId;

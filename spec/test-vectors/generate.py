@@ -725,6 +725,16 @@ def build_permit_cases(
             },
         ]
     )
+    receipt = cases_for_fixture(GOLDEN / "denial_constraints.json", signing)[0][
+        "bundle"
+    ]
+    cases.append(
+        {
+            "name": "denial_constraints.receipt_is_not_permit",
+            "bundle": receipt,
+            "expect": "malformed",
+        }
+    )
     return cases
 
 

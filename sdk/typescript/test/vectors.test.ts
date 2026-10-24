@@ -8,6 +8,7 @@ import { canonicalJson, keySetFromDocument, verifyBundle, verifyPermitBundle } f
 const vectors = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "spec", "test-vectors");
 const keys = keySetFromDocument(JSON.parse(readFileSync(join(vectors, "keys.json"), "utf8")));
 const receiptCases = JSON.parse(readFileSync(join(vectors, "receipts.json"), "utf8")).cases;
+const permitCases = JSON.parse(readFileSync(join(vectors, "permits.json"), "utf8")).cases;
 
 const suites = [
   { file: "receipts.json", verify: verifyBundle },
@@ -16,7 +17,7 @@ const suites = [
 ] as const;
 
 for (const { file, verify } of suites) {
-  const cases = file === "receipts.json" ? receiptCases : JSON.parse(readFileSync(join(vectors, file), "utf8")).cases;
+  const cases = file === "receipts.json" ? receiptCases : file === "permits.json" ? permitCases : JSON.parse(readFileSync(join(vectors, file), "utf8")).cases;
   for (const c of cases) {
     test(`${file}:${c.name}`, () => {
       const ks = c.keys ? keySetFromDocument(c.keys) : keys;
@@ -24,6 +25,21 @@ for (const { file, verify } of suites) {
     });
   }
 }
+
+test("a signed receipt is not permit evidence", () => {
+  const receipt = permitCases.find((c: { name: string }) => c.name === "denial_constraints.receipt_is_not_permit");
+  assert.equal(verifyBundle(receipt.bundle, keys).status, "verified");
+  assert.equal(verifyPermitBundle(receipt.bundle, keys).status, "malformed");
+});
+
+test("permit id mismatch reports the signed permit id in permitId", () => {
+  const mismatch = permitCases.find((c: { name: string }) => c.name === "active_minimal.envelope_permit_id_mismatch");
+  const signedId = JSON.parse(mismatch.bundle.signing_input).permit_id;
+  const result = verifyPermitBundle(mismatch.bundle, keys);
+  assert.equal(result.status, "mismatch");
+  assert.equal(result.permitId, signedId);
+  assert.equal(result.receiptId, undefined);
+});
 
 test("float-bearing vector keeps the signed integer above 2^53", () => {
   const floatCase = receiptCases.find((c: { name: string }) => c.name === "synthetic.float_payload_verifies");

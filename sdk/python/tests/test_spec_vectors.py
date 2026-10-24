@@ -9,9 +9,11 @@ for: every verifier status exercised in both suites.
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from pathlib import Path
 
 from b2a_sdk.receipt_verifier import (
+    VerificationResult,
     VerificationStatus,
     key_set_from_document,
     verify_bundle,
@@ -84,3 +86,21 @@ def test_verified_permit_reports_permit_id():
     assert result.ok
     assert result.permit_id == "pmt_golden_0001"
     assert result.receipt_id is None
+
+
+def test_receipt_cannot_verify_as_permit():
+    keys = key_set_from_document(_load("keys.json"))
+    case = _by_name(_load("permits.json")["cases"], "denial_constraints.receipt_is_not_permit")
+    assert verify_bundle(case["bundle"], keys).status is VerificationStatus.VERIFIED
+    assert verify_permit_bundle(case["bundle"], keys).status is VerificationStatus.MALFORMED
+
+
+def test_verification_result_keeps_existing_positional_field_order():
+    assert [member.name for member in fields(VerificationResult)] == [
+        "status",
+        "reason",
+        "receipt_id",
+        "key_id",
+        "claims",
+        "permit_id",
+    ]

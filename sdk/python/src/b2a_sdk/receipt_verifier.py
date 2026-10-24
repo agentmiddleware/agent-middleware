@@ -102,10 +102,10 @@ class VerificationResult:
     status: VerificationStatus
     reason: str | None = None
     receipt_id: str | None = None
-    permit_id: str | None = None
     key_id: str | None = None
     #: Fields parsed out of the signed bytes. Populated only when ``ok``.
     claims: dict[str, Any] = field(default_factory=dict)
+    permit_id: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -378,9 +378,8 @@ def _verify_signed_bundle(
 ) -> VerificationResult:
     """Shared core behind :func:`verify_bundle` and :func:`verify_permit_bundle`.
 
-    Receipts and permits are the same signed-envelope shape; only the id
-    member differs (``receipt_id`` vs ``permit_id``). Every other rule,
-    including the status taxonomy, is identical.
+    Receipts and permits share a signed-envelope shape and status taxonomy.
+    Permit verification also checks the signed permit's required members.
 
     Args:
         bundle: The portable receipt or permit bundle, as a dict or JSON string.
@@ -614,6 +613,37 @@ def _verify_signed_bundle(
             f"signed payload has no {id_field}",
             key_id=key_id,
         )
+
+    if id_field == "permit_id":
+        string_fields = (
+            "issuer_wallet_id",
+            "subject_wallet_id",
+            "max_credits",
+            "issued_at",
+            "expires_at",
+            "nonce",
+            "payload_hash",
+        )
+        if (
+            any(not isinstance(payload.get(name), str) for name in string_fields)
+            or "receipt_id" in payload
+            or "subject_key_id" not in payload
+            or (
+                payload["subject_key_id"] is not None
+                and not isinstance(payload["subject_key_id"], str)
+            )
+            or any(
+                not isinstance(payload.get(name), list)
+                or any(not isinstance(item, str) for item in payload[name])
+                for name in ("scopes", "allowed_tools")
+            )
+            or payload.get("status") != "active"
+        ):
+            return _fail(
+                VerificationStatus.MALFORMED,
+                "signed payload is not a permit",
+                key_id=key_id,
+            )
 
     # Envelope fields are unauthenticated. If the bundle advertises an id
     # other than the signed one, whoever presented it is describing the

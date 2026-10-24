@@ -467,7 +467,9 @@ class AWIPlaywrightBridge:
         """
         block_reason = await check_outbound_url(target_url)
         if block_reason:
-            raise ValueError(f"navigation blocked ({block_reason}): {target_url}")
+            raise NavigationBlocked(
+                f"navigation blocked ({block_reason}): {target_url}"
+            )
 
         if viewport is not None:
             width, height = viewport

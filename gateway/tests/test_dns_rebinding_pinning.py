@@ -14,16 +14,24 @@ address to prove the validated IP is the one connected to.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 import httpx
+from fastapi import FastAPI
 
 from app.core import url_guard
+from app.core.auth import AuthContext, get_auth_context
 from app.core.config import get_settings
 from app.core.url_guard import check_outbound_url, pin_outbound_url
+from app.routers.awi_enhanced import router as awi_enhanced_router
+from app.services import awi_session
 from app.services.awi_playwright_bridge import (
     AWIPlaywrightBridge,
     BridgeSession,
+    NavigationBlocked,
 )
 from app.services.behavioral_sandbox import BehavioralSandboxEngine
 
@@ -227,6 +235,16 @@ class TestSandboxRebindingPinning:
 
 class TestBrowserNavigationRevalidation:
     @pytest.mark.anyio
+    async def test_create_session_rejects_private_preflight(self, bridge, monkeypatch):
+        async def resolve(_host):
+            return _addrinfo(_PRIVATE)
+
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        with pytest.raises(NavigationBlocked, match="private_address_blocked"):
+            await bridge.create_session("https://example.com/")
+        assert bridge._sessions == {}
+
+    @pytest.mark.anyio
     async def test_goto_refuses_after_rebinding(self, bridge, session, monkeypatch):
         resolve_calls: list = []
         _rebinding_resolve_factory(monkeypatch, resolve_calls)
@@ -288,12 +306,16 @@ class TestBrowserNavigationRevalidation:
         resolve_calls: list = []
         _rebinding_resolve_factory(monkeypatch, resolve_calls)
         page = _RecordingPage()
+        page.close = AsyncMock()
+        context = SimpleNamespace(close=AsyncMock())
 
         async def no_playwright():
             bridge._playwright_initialized = True
 
         async def fake_context(session, headless, viewport):
             session._page = page
+            session._context = context
+            session.browser_context_id = "fake-context"
 
         monkeypatch.setattr(bridge, "_init_playwright", no_playwright)
         monkeypatch.setattr(bridge, "_create_browser_context", fake_context)
@@ -302,4 +324,37 @@ class TestBrowserNavigationRevalidation:
             await bridge.create_session("https://example.com/")
         assert len(resolve_calls) == 2
         assert page.goto_calls == []
+        page.close.assert_awaited_once()
+        context.close.assert_awaited_once()
         assert bridge._sessions == {}
+
+    @pytest.mark.anyio
+    async def test_attach_reports_blocked_navigation(self, monkeypatch):
+        manager = SimpleNamespace(
+            get_session=AsyncMock(return_value=SimpleNamespace(wallet_id=None)),
+            attach_dom_bridge=AsyncMock(
+                side_effect=NavigationBlocked(
+                    "navigation blocked (private_address_blocked)"
+                )
+            ),
+        )
+        monkeypatch.setattr(awi_session, "get_awi_session_manager", lambda: manager)
+        app = FastAPI()
+        app.include_router(awi_enhanced_router)
+        app.dependency_overrides[get_auth_context] = lambda: AuthContext(
+            source="api_key", raw_key="synthetic", is_bootstrap_admin=True
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/awi/dom/attach", json={"session_id": "existing-session"}
+            )
+
+        assert response.status_code == 403
+        assert response.json()["detail"]["error"] == "navigation_blocked"
+        assert manager.get_session.await_count == 1
+        manager.attach_dom_bridge.assert_awaited_once_with(
+            session_id="existing-session", target_url=None
+        )

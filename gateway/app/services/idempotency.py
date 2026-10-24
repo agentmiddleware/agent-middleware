@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, cast
 
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -795,8 +796,13 @@ class IdempotencyService:
                 if not record:
                     return
                 record.response_reference = response_reference
+                # Match the JSON FastAPI sends for this body. default=str
+                # turned Decimal amounts into strings, so a transfer retry
+                # did not equal the response the client already received.
                 record.response_json = (
-                    json.dumps(response_json, default=str) if response_json else None
+                    json.dumps(jsonable_encoder(response_json), default=str)
+                    if response_json
+                    else None
                 )
                 record.status_code = status_code
                 session.add(record)

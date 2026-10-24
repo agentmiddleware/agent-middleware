@@ -6,6 +6,7 @@ to decide whether to use this API.
 
 import pytest
 from httpx import AsyncClient, ASGITransport
+from app.core.config import get_settings
 from app.main import app
 
 
@@ -100,6 +101,57 @@ async def test_doc_index(client):
     assert len(data["services"]) >= 5
     assert all("surface" in s for s in data["services"])
     assert any(s["id"] == "mcp-trust-plane" for s in data["services"])
+
+
+@pytest.fixture
+def standard_mcp_disabled(monkeypatch):
+    monkeypatch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", "false")
+    get_settings.cache_clear()
+    yield
+    monkeypatch.delenv("ENABLE_STANDARD_MCP_ENDPOINT", raising=False)
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_doc_index_names_standard_mcp_as_the_governed_invoke_surface(client):
+    """Standard MCP is the canonical path, so the catalog must lead with it.
+
+    An agent reads this entry to find out how to call a tool. Pointing it at the
+    project-specific JSON-RPC transport sends conforming clients down a path
+    they would otherwise never need.
+    """
+
+    index = (await client.get("/docs/index")).json()
+    service = next(s for s in index["services"] if s["id"] == "mcp-trust-plane")
+
+    assert service["base_path"] == "/mcp"
+    assert service["transport"] == "standard_streamable_http"
+    assert service["quickstart_endpoint"] == "POST /mcp"
+    # The legacy transport stays advertised rather than hidden: it is the one
+    # that accepts a permit another issuer granted.
+    assert service["legacy_json_rpc_endpoint"] == "/mcp/messages"
+
+
+@pytest.mark.anyio
+async def test_doc_index_falls_back_when_standard_mcp_is_disabled(
+    client, standard_mcp_disabled
+):
+    """The catalog must never advertise a path the deployment does not serve.
+
+    `/mcp` answers 404 to an authenticated caller when the endpoint is off
+    (`test_standard_mcp_endpoint.py::test_endpoint_returns_404_when_disabled`
+    owns that contract), so naming it as base_path here would hand every reader
+    a dead path -- the class of overclaim the discovery-honesty rules exist to
+    prevent.
+    """
+
+    index = (await client.get("/docs/index")).json()
+    service = next(s for s in index["services"] if s["id"] == "mcp-trust-plane")
+
+    assert service["base_path"] == "/mcp/messages"
+    assert service["transport"] == "legacy_project_json_rpc"
+    assert service["quickstart_endpoint"] == "POST /mcp/messages"
+    assert service["standard_streamable_http_status"] == "disabled"
 
 
 @pytest.mark.anyio

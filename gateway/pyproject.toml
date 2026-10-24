@@ -79,6 +79,10 @@ resilience = ["tenacity>=8.0.0"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Pattern 9 (tests that cannot fail): an xfail that starts passing must fail
+# the suite so a fixed bug cannot hide behind a stale marker. Every xfail
+# needs a linked reason; no bare marks.
+xfail_strict = true
 pythonpath = [".", "../sdk/python/src", "../integrations", "../integrations/openai-agent-middleware/src"]
 markers = [
     "proof: exercises an example proof-surface workload, not the trust-plane product. Skipped by `make test`; run the full suite with `make test-all`.",

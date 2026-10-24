@@ -1,8 +1,10 @@
 # CI for AMW (Agent Middleware).
 # Projects are discovered at runtime (.github/scripts/detect_projects.py). Pull requests test
 # changed projects and their transitive dependents (.github/scripts/project_dependents.py).
-# Shared paths restore the full matrix. Main pushes, merge groups, and manual runs test every
-# discovered project. Keep the workflow unfiltered so "CI result" always reports.
+# Shared paths restore the full matrix; docs-only pull requests (doc suffixes only)
+# skip every heavy job. spec/, a nested README, and any deletion are never docs-only. Main pushes,
+# merge groups, and manual runs test every discovered project. Keep the workflow unfiltered
+# at the on: level so "CI result" always reports.
 name: CI
 
 on:
@@ -28,50 +30,43 @@ env:
   PYTEST_VERSION: "9.1.1"
 
 jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    permissions:
+      contents: read
+
   detect:
+    # One job for both discovery and PR scoping: each is a few seconds, and
+    # merging them avoids paying a separate job-minute for each.
     name: Detect projects
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
     outputs:
-      python: ${{ steps.d.outputs.python }}
-      typescript: ${{ steps.d.outputs.typescript }}
-      has_python: ${{ steps.d.outputs.has_python }}
-      has_typescript: ${{ steps.d.outputs.has_typescript }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - id: d
-        run: python3 .github/scripts/detect_projects.py
-
-  changes:
-    name: Changed projects
-    needs: detect
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
+      # On pull_request the filter step rewrites the scope outputs; on other
+      # events it is skipped and the full discovery outputs pass through.
+      python: ${{ steps.filter.outputs.python || steps.d.outputs.python }}
+      typescript: ${{ steps.filter.outputs.typescript || steps.d.outputs.typescript }}
+      has_python: ${{ steps.filter.outputs.has_python || steps.d.outputs.has_python }}
+      has_typescript: ${{ steps.filter.outputs.has_typescript || steps.d.outputs.has_typescript }}
       projects: ${{ steps.filter.outputs.projects }}
-      python: ${{ steps.filter.outputs.python }}
-      typescript: ${{ steps.filter.outputs.typescript }}
-      has_python: ${{ steps.filter.outputs.has_python }}
-      has_typescript: ${{ steps.filter.outputs.has_typescript }}
       gateway: ${{ steps.filter.outputs.gateway }}
       shared: ${{ steps.filter.outputs.shared }}
+      docs_only: ${{ steps.filter.outputs.docs_only }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Pull request checkout is the merge commit; its first parent is the base.
           fetch-depth: 2
           persist-credentials: false
+      - id: d
+        run: python3 .github/scripts/detect_projects.py
       - id: filter
+        if: github.event_name == 'pull_request'
         env:
-          PYTHON_PROJECTS: ${{ needs.detect.outputs.python }}
-          TYPESCRIPT_PROJECTS: ${{ needs.detect.outputs.typescript }}
+          PYTHON_PROJECTS: ${{ steps.d.outputs.python }}
+          TYPESCRIPT_PROJECTS: ${{ steps.d.outputs.typescript }}
         run: |
           python3 - <<'PY'
           import json
@@ -90,6 +85,52 @@ jobs:
               ).split(b"\0")
               if path
           ]
+
+          # Docs-only pull requests cannot break code, tests, or packaging, so
+          # every heavy job skips and "CI result" reports success. Doc suffixes
+          # only: a docs/ directory does not count. Nested README files,
+          # deletions, manifests, and spec/ are never docs.
+          DOC_SUFFIXES = (
+              ".md", ".markdown", ".mdown", ".mdx", ".rst", ".adoc",
+              ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+          )
+          deleted = {
+              path.decode("utf-8", "surrogateescape")
+              for path in subprocess.check_output(
+                  [
+                      "git", "diff", "--no-renames", "--name-only", "-z",
+                      "--diff-filter=D", "HEAD^1", "HEAD",
+                  ]
+              ).split(b"\0")
+              if path
+          }
+
+          def is_docs_path(path):
+              if path == "spec" or path.startswith("spec/"):
+                  return False
+              if path in deleted:
+                  return False
+              name = path.rsplit("/", 1)[-1]
+              if "/" in path and name.lower().startswith("readme"):
+                  return False
+              return path.lower().endswith(DOC_SUFFIXES)
+
+          if changed and all(is_docs_path(path) for path in changed):
+              print(f"docs-only change ({len(changed)} files); heavy jobs skip")
+              outputs = {
+                  "projects": "[]",
+                  "python": "[]",
+                  "typescript": "[]",
+                  "has_python": "false",
+                  "has_typescript": "false",
+                  "gateway": "false",
+                  "shared": "false",
+                  "docs_only": "true",
+              }
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  for key, value in outputs.items():
+                      print(f"{key}={value}", file=output)
+              raise SystemExit(0)
 
           def touched(project):
               scope = (
@@ -130,6 +171,7 @@ jobs:
               "has_typescript": str(bool(typescript)).lower(),
               "gateway": str(gateway).lower(),
               "shared": str(shared).lower(),
+              "docs_only": "false",
           }
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               for key, value in outputs.items():
@@ -138,11 +180,9 @@ jobs:
 
   python:
     name: Python ${{ matrix.python-version }} / ${{ matrix.project }}
-    needs: [detect, changes]
+    needs: detect
     if: >-
-      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_python == 'true' &&
-          (github.event_name != 'pull_request' ||
-           (needs.changes.result == 'success' && needs.changes.outputs.has_python == 'true')) }}
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_python == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -151,7 +191,8 @@ jobs:
       fail-fast: false
       matrix:
         # An empty fromJSON fails before `if` can skip the job; use an unused placeholder.
-        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.has_python == 'true' && needs.changes.outputs.python || github.event_name != 'pull_request' && needs.detect.outputs.has_python == 'true' && needs.detect.outputs.python || '["skip"]') }}
+        # needs.detect.outputs.python is already the PR-limited list on pull_request.
+        project: ${{ fromJSON(needs.detect.outputs.has_python == 'true' && needs.detect.outputs.python || '["skip"]') }}
         python-version: ["3.11", "3.12", "3.13", "3.14"]
         exclude:
           # crewai pulls chromadb, whose pydantic.v1 settings fail to import on 3.14.
@@ -269,10 +310,10 @@ jobs:
     # see gateway/docs/TESTING_TIERS.md). The database is created fresh in
     # this job and nothing outside the job can reach it.
     name: Postgres concurrency / gateway
-    needs: changes
+    needs: detect
     if: >-
-      ${{ always() && (github.event_name != 'pull_request' ||
-          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
+      ${{ always() && needs.detect.result == 'success' &&
+          (github.event_name != 'pull_request' || needs.detect.outputs.gateway == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -342,10 +383,10 @@ jobs:
     # databases, sets every opt-in flag, and fails loudly on any skip via
     # CI_STRICT=1 (see gateway/tests/support/db_gate.py).
     name: Postgres proofs / gateway
-    needs: changes
+    needs: detect
     if: >-
-      ${{ always() && (github.event_name != 'pull_request' ||
-          (needs.changes.result == 'success' && needs.changes.outputs.gateway == 'true')) }}
+      ${{ always() && needs.detect.result == 'success' &&
+          (github.event_name != 'pull_request' || needs.detect.outputs.gateway == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -397,6 +438,7 @@ jobs:
               "amw_pg_concurrency",
               "amw_action_pgproofs",
               "amw_pg_pgloop",
+              "amw_pg_accounting",
               "amw_action_migration",
               "amw_action_dispatch",
               "amw_pg_stress",
@@ -428,7 +470,7 @@ jobs:
           EOF
       - name: Migrate proof databases
         run: |
-          for db in amw_pg_concurrency amw_action_pgproofs amw_pg_pgloop amw_pg_stress amw_action_multiprocess; do
+          for db in amw_pg_concurrency amw_action_pgproofs amw_pg_pgloop amw_pg_accounting amw_pg_stress amw_action_multiprocess; do
             DATABASE_URL="postgresql+asyncpg://sellers@127.0.0.1:55439/$db" \
               uv run --no-sync python -m alembic upgrade head
           done
@@ -439,6 +481,7 @@ jobs:
         run: |
           uv run --no-sync pytest -q -rs --timeout 300 \
             tests/test_permit_postgres_concurrency.py \
+            tests/test_receipt_resolutions.py::test_postgres_parallel_wallet_appends_preserve_one_chain \
             tests/test_duplicate_guard_postgres_concurrency.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-concurrency.txt"
           test "${PIPESTATUS[0]}" -eq 0
       - name: Run action accounting proofs
@@ -466,6 +509,14 @@ jobs:
           uv run --no-sync pytest -q -rs --timeout 300 \
             tests/test_postgres_datetime_binding.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-driver.txt"
           test "${PIPESTATUS[0]}" -eq 0
+      - name: Run concurrent accounting proof
+        env:
+          DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_pg_accounting
+          RUN_POSTGRES_CONCURRENCY_TESTS: "1"
+        run: |
+          uv run --no-sync pytest -q -rs --timeout 300 \
+            tests/test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-accounting.txt"
+          test "${PIPESTATUS[0]}" -eq 0
       - name: Run multiprocess crash proofs
         env:
           STATE_BACKEND: postgres
@@ -484,15 +535,15 @@ jobs:
         working-directory: .
         run: |
           python3 gateway/tests/support/proof_log_gate.py \
-            "$GITHUB_WORKSPACE"/proof-logs-{concurrency,action,migration,driver,stress,action-mp}.txt
+            "$GITHUB_WORKSPACE"/proof-logs-{concurrency,action,migration,driver,accounting,stress,action-mp}.txt
 
   gateway-image-smoke:
     name: Gateway image import smoke
-    needs: changes
+    needs: detect
     if: >-
-      ${{ always() && (github.event_name != 'pull_request' ||
-          (needs.changes.result == 'success' &&
-           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
+      ${{ always() && needs.detect.result == 'success' &&
+          (github.event_name != 'pull_request' ||
+           (needs.detect.outputs.gateway == 'true' || needs.detect.outputs.shared == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -506,11 +557,9 @@ jobs:
 
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
-    needs: [detect, changes]
+    needs: detect
     if: >-
-      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_typescript == 'true' &&
-          (github.event_name != 'pull_request' ||
-           (needs.changes.result == 'success' && needs.changes.outputs.has_typescript == 'true')) }}
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.has_typescript == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -519,7 +568,7 @@ jobs:
       fail-fast: false
       matrix:
         # Same empty-matrix guard as the Python job. Node versions stay 22 and 24.
-        project: ${{ fromJSON(github.event_name == 'pull_request' && needs.changes.outputs.has_typescript == 'true' && needs.changes.outputs.typescript || github.event_name != 'pull_request' && needs.detect.outputs.has_typescript == 'true' && needs.detect.outputs.typescript || '["skip"]') }}
+        project: ${{ fromJSON(needs.detect.outputs.has_typescript == 'true' && needs.detect.outputs.typescript || '["skip"]') }}
         node-version: ["22", "24"]  # tests run .ts directly (Node 22.18+ type stripping)
     defaults:
       run:
@@ -538,11 +587,8 @@ jobs:
             corepack enable pnpm && echo "PM=pnpm" >> "$GITHUB_ENV" && pnpm install --frozen-lockfile
           elif [ -f yarn.lock ]; then
             corepack enable yarn && echo "PM=yarn" >> "$GITHUB_ENV" && yarn install --immutable
-          elif [ -f package-lock.json ]; then
-            echo "PM=npm" >> "$GITHUB_ENV" && npm ci
           else
-            echo "::warning::no lockfile in ${{ matrix.project }}; using npm install"
-            echo "PM=npm" >> "$GITHUB_ENV" && npm install --no-audit --no-fund
+            echo "PM=npm" >> "$GITHUB_ENV" && npm ci
           fi
       - name: Lint
         if: matrix.node-version == '22'
@@ -564,11 +610,11 @@ jobs:
     # Keep it out of CI result until both checks are green in CI and the
     # required-check decision is made explicitly.
     name: Trust release gate (non-required)
-    needs: changes
+    needs: detect
     if: >-
-      ${{ always() && (github.event_name != 'pull_request' ||
-          (needs.changes.result == 'success' &&
-           (needs.changes.outputs.gateway == 'true' || needs.changes.outputs.shared == 'true'))) }}
+      ${{ always() && needs.detect.result == 'success' &&
+          (github.event_name != 'pull_request' ||
+           (needs.detect.outputs.gateway == 'true' || needs.detect.outputs.shared == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -601,7 +647,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [detect, changes, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [lint, detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -612,8 +658,9 @@ jobs:
           RESULTS: ${{ toJSON(needs.*.result) }}
         run: |
           echo "$RESULTS"
-          # Skipped jobs (path-filtered matrix or Postgres proofs) are success for
-          # this required check. failure and cancelled still fail the aggregate.
+          # Skipped jobs (docs-only or path-filtered matrix, Postgres proofs)
+          # are success for this required check. failure and cancelled still
+          # fail the aggregate.
           python3 - <<'PY'
           import json
           import os

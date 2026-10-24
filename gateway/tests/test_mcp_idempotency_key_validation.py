@@ -175,7 +175,7 @@ INVALID_META_KEYS = [
 ]
 
 
-@pytest.mark.parametrize("bad_key,reason_code", INVALID_META_KEYS)
+@pytest.mark.parametrize(("bad_key", "reason_code"), INVALID_META_KEYS)
 async def test_standard_meta_key_invalid_is_refused_before_any_effect(
     client, standard_mcp_enabled, clean_database, counted_tool, bad_key, reason_code
 ):
@@ -207,7 +207,7 @@ async def test_standard_meta_key_invalid_is_refused_before_any_effect(
 
 
 @pytest.mark.parametrize(
-    "bad_header,reason_code",
+    ("bad_header", "reason_code"),
     [
         pytest.param("", "idempotency_key_blank", id="empty-header"),
         pytest.param("   ", "idempotency_key_blank", id="blank-header"),
@@ -506,7 +506,7 @@ MALFORMED_ENVELOPES = [
 ]
 
 
-@pytest.mark.parametrize("body,code,echoed_id", MALFORMED_ENVELOPES)
+@pytest.mark.parametrize(("body", "code", "echoed_id"), MALFORMED_ENVELOPES)
 async def test_legacy_malformed_envelope_returns_controlled_jsonrpc_error(
     client, body, code, echoed_id
 ):

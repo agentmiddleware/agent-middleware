@@ -248,6 +248,12 @@ async def evaluate_wallet_policy(
     (recorded in ``evaluated_constraints``) instead of denying — every OTHER
     constraint in the bundle is still enforced. Callers with no approval gate
     keep the fail-closed denial.
+
+    ``risk_tier`` is the caller's task tier (the planner supplies it; the
+    invoke path currently carries no tier signal and passes None). The
+    bundle's own ``risk_tier`` is enforced as a ceiling: a task tier above
+    the bundle's tier denies with ``risk_tier_not_allowed``. A missing tier
+    cannot be compared; a supplied tier outside low/medium/high fails closed.
     """
     stmt = (
         select(PolicyBundleModel)
@@ -374,6 +380,10 @@ async def evaluate_wallet_policy(
                     policy.policy_id,
                     {"evaluated": evaluated},
                 )
+            if est is None:
+                # Pre-cost checks cannot compare the cap yet; make the skipped
+                # comparison visible in the evaluated constraints.
+                constraints["daily_spend_unevaluated"] = ["estimated_cost"]
             if est is not None and daily + est > policy.daily_spend_limit:
                 return PolicyEvaluation(
                     False,
@@ -388,19 +398,25 @@ async def evaluate_wallet_policy(
                 policy.policy_id,
                 {"evaluated": evaluated},
             )
-        if policy.risk_tier is not None and risk_tier is not None:
-            ceiling = _RISK_TIER_ORDER.get(policy.risk_tier)
-            requested = _RISK_TIER_ORDER.get(risk_tier)
-            if ceiling is None or requested is None or requested > ceiling:
-                # Unknown labels fail closed, and a call above the
-                # bundle's ceiling is denied with a named reason.
-                constraints["requested_risk_tier"] = risk_tier
+        if risk_tier is not None and policy.risk_tier is not None:
+            constraints["requested_risk_tier"] = risk_tier
+            requested_rank = (
+                _RISK_TIER_ORDER.get(risk_tier) if isinstance(risk_tier, str) else None
+            )
+            allowed_rank = _RISK_TIER_ORDER.get(policy.risk_tier)
+            if (
+                requested_rank is None
+                or allowed_rank is None
+                or requested_rank > allowed_rank
+            ):
                 return PolicyEvaluation(
                     False,
                     "risk_tier_not_allowed",
                     policy.policy_id,
                     {"evaluated": evaluated},
                 )
+        elif risk_tier is None and policy.risk_tier is not None:
+            constraints["risk_tier_unevaluated"] = ["requested_risk_tier"]
 
     return PolicyEvaluation(
         True, "allowed", models[0].policy_id, {"evaluated": evaluated}

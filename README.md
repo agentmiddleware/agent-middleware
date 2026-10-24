@@ -54,6 +54,11 @@ Read [Security Limitations](gateway/SECURITY_LIMITATIONS.md) before relying on t
 
 ## Repo map
 
+This repository holds the reference gateway, protocol spec, SDKs,
+integrations, and design-partner pilot loop (start with
+[QUICKSTART.md](QUICKSTART.md)). The separate `agent-middleware-api`
+repository is outside this checkout; partner evaluation guidance is here.
+
 | Path | What it contains |
 | --- | --- |
 | [gateway/](gateway/) | Gateway implementation and local Makefile |

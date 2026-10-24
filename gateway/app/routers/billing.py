@@ -1039,11 +1039,14 @@ async def prepare_top_up(
     stripe_integration = get_stripe_integration()
 
     try:
+        key_arg = (
+            {"idempotency_key": idempotency_key} if idempotency_key is not None else {}
+        )
         result = await stripe_integration.create_top_up_intent(
             wallet_id=wallet_id,
             amount_fiat=Decimal(str(amount_fiat)),
             currency=currency,
-            idempotency_key=idempotency_key,
+            **key_arg,
         )
         return result
     except WalletNotFoundError as e:

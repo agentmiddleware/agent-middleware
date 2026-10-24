@@ -61,7 +61,7 @@ def _chain_wallet_filter(wallet_id: str | None) -> ColumnElement[bool]:
     the same chain as NULL. Walking those rows apart made each half look
     truncated or unlinked.
     """
-    column = ControlPlaneAuditEventModel.wallet_id
+    column = cast(ColumnElement[str | None], ControlPlaneAuditEventModel.wallet_id)
     if wallet_id:
         return cast(ColumnElement[bool], column == wallet_id)
     return cast(ColumnElement[bool], or_(column.is_(None), column == ""))
@@ -283,6 +283,7 @@ async def append_chained_audit_event(
     # spending the full budget on it only delays the real error.
     integrity_race_attempts = 2
     integrity_failures = 0
+    missing_head_seen = False
     for attempt in range(attempts):
         session = factory()
         try:
@@ -319,13 +320,19 @@ async def append_chained_audit_event(
                     # over rows that are already stored splits the hash links.
                     prior = (
                         await session.execute(
-                            select(ControlPlaneAuditEventModel.event_id)
+                            select(cast(Any, ControlPlaneAuditEventModel.event_id))
                             .where(_chain_wallet_filter(model.wallet_id))
                             .limit(1)
                         )
                     ).first()
                     if prior is not None:
-                        raise AuditChainHeadMissingError("audit_chain_head_missing")
+                        # The head read can precede another writer's commit,
+                        # while this event read follows it. Recheck in a fresh
+                        # transaction before treating the head as deleted.
+                        if missing_head_seen:
+                            raise AuditChainHeadMissingError("audit_chain_head_missing")
+                        missing_head_seen = True
+                        raise _HeadConflict()
                 model.seq = observed_seq + 1
                 _sign_with_previous(model, previous_hash, signing_key_id=key.key_id)
                 now = utc_now()

@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEV_KEY = f"{STATIC_DEV_KEY_PREFIX}static-training-key-for-tests"
 
 
-@pytest.fixture()
+@pytest.fixture
 def auth_settings():
     """Snapshot and restore the cached settings fields these tests mutate."""
     settings = get_settings()

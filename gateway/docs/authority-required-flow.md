@@ -1,11 +1,11 @@
 # Authority-required flow: tools/call → authority_required → approval → resume
 
 **Status: design proposal. Nothing in this document is implemented by merging
-it.** Implementation is gated on the customer-validation invariant in
-`AGENTS.md`: one named active prospect, one concrete consequential tool, a
-documented current-workflow blocker, a committed owner and date, and the
-smallest vertical slice that clears the blocker. This document exists so that
-when that evidence arrives, the design conversation is already over.
+it.** Implementation is gated on this evidence: one named active prospect,
+one concrete consequential tool, a documented current-workflow blocker, a
+committed owner and date, and the smallest vertical slice that clears the
+blocker. This document exists so that when that evidence arrives, the design
+conversation is already over.
 
 ## The problem this designs away
 

@@ -34,7 +34,7 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import mcp.types as mcp_types
 from fastapi import APIRouter, HTTPException, Request
@@ -59,39 +59,59 @@ from app.services.signing_keys import (
     get_signing_key_service,
 )
 
+if TYPE_CHECKING:
+    from b2a_sdk.receipt_verifier import VerificationKey
+
+
+# Image layout: both Dockerfiles copy the in-repo SDK to /sdk/python, install
+# it, and set PYTHONPATH=/sdk/python/src. From /app/app/routers/mcp_public.py,
+# parents[3] is /, so the checkout-relative path is this same file.
+_IMAGE_SDK_RECEIPT_VERIFIER = Path("/sdk/python/src/b2a_sdk/receipt_verifier.py")
+_CHECKOUT_SDK_RECEIPT_VERIFIER = (
+    Path(__file__).resolve().parents[3]
+    / "sdk"
+    / "python"
+    / "src"
+    / "b2a_sdk"
+    / "receipt_verifier.py"
+)
+
+
+def _receipt_verifier_file_candidates() -> tuple[Path, ...]:
+    """Checkout path first. In the image that path is ``/sdk/python/...``."""
+    if _CHECKOUT_SDK_RECEIPT_VERIFIER == _IMAGE_SDK_RECEIPT_VERIFIER:
+        return (_IMAGE_SDK_RECEIPT_VERIFIER,)
+    return (_CHECKOUT_SDK_RECEIPT_VERIFIER, _IMAGE_SDK_RECEIPT_VERIFIER)
+
+
+def _load_receipt_verifier_file(module_path: Path):
+    spec = importlib.util.spec_from_file_location(
+        "_agent_middleware_receipt_verifier",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load receipt verifier from {module_path}")
+    receipt_verifier = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = receipt_verifier
+    spec.loader.exec_module(receipt_verifier)
+    return receipt_verifier
+
 
 def _import_receipt_verifier():
-    """Import the first-party offline verifier, in-repo when not installed.
+    """Import the first-party offline verifier.
 
-    ``b2a_sdk`` is packaged for external verifiers and is not a declared app
-    dependency; tests see it via pytest's ``pythonpath`` and deployed images
-    carry the source tree at the repo root. Falling back to that tree keeps
-    the public tool running the *same* verifier code an outside party runs,
-    instead of a drift-prone reimplementation.
+    Images declare the dependency by installing ``/sdk/python`` and putting
+    ``/sdk/python/src`` on ``PYTHONPATH``. A checkout that has not installed
+    the package still loads that same file from the repository root. The
+    fallback is not a second implementation.
     """
     try:
-        receipt_verifier = importlib.import_module("b2a_sdk.receipt_verifier")
-    except ImportError:
-        module_path = (
-            Path(__file__).resolve().parents[3]
-            / "sdk"
-            / "python"
-            / "src"
-            / "b2a_sdk"
-            / "receipt_verifier.py"
-        )
-        if not module_path.is_file():
-            raise
-        spec = importlib.util.spec_from_file_location(
-            "_agent_middleware_receipt_verifier",
-            module_path,
-        )
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load receipt verifier from {module_path}")
-        receipt_verifier = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = receipt_verifier
-        spec.loader.exec_module(receipt_verifier)
-    return receipt_verifier
+        return importlib.import_module("b2a_sdk.receipt_verifier")
+    except ImportError as import_error:
+        for module_path in _receipt_verifier_file_candidates():
+            if module_path.is_file():
+                return _load_receipt_verifier_file(module_path)
+        raise import_error
 
 
 _receipt_verifier = _import_receipt_verifier()
@@ -367,7 +387,7 @@ def _mcp_error(code: int, message: str) -> McpError:
     return McpError(mcp_types.ErrorData(code=code, message=message))
 
 
-async def _published_key_set() -> dict[str, bytes] | None:
+async def _published_key_set() -> dict[str, bytes | VerificationKey] | None:
     """Load the same key set a verifier gets from trust-keys.json.
 
     ``None`` means "no usable keys right now" — the tool-level analogue of
@@ -452,8 +472,11 @@ async def _tool_verify_receipt(
             "endpoint will verify."
         )
 
-    # Classify malformed/unsupported/presentation mismatches before touching
-    # the key store. A key outage must not mask a caller-input error.
+    # Malformed bundles and issuer mismatches need no key. An algorithm or
+    # canonicalization string is not authenticated until the signature is
+    # checked, so an empty key set must not classify it: that used to report
+    # UNSUPPORTED and skip the published keys. Unknown kid falls through and
+    # the real key set then decides invalid, unsupported, or unknown_key.
     preflight = _receipt_verifier.verify_bundle(
         bundle, {}, expected_issuer=expected_issuer
     )

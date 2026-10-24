@@ -172,7 +172,9 @@ async def test_unknown_past_spend_denies_under_cap(client, clean_database):
 
 
 @pytest.mark.anyio
-async def test_unknown_estimate_denies_under_cap(client, clean_database):
+async def test_unknown_estimate_with_known_spend_follows_main_under_cap(
+    client, clean_database
+):
     wallet_id = await _wallet(client, "cap-unknown-estimate")
     await _bundle(client, wallet_id, daily_spend_limit=100)
     evaluation = await evaluate_wallet_policy(
@@ -181,8 +183,8 @@ async def test_unknown_estimate_denies_under_cap(client, clean_database):
         estimated_cost=None,
         daily_spend_used=5,
     )
-    assert evaluation.allowed is False
-    assert evaluation.reason == "daily_spend_unknown"
+    assert evaluation.allowed is True
+    assert evaluation.reason == "allowed"
 
 
 @pytest.mark.anyio

@@ -1157,9 +1157,9 @@ async def transfer_wallets(
             "message": str(e),
         }
         await guard.complete(refused_detail, status.HTTP_403_FORBIDDEN)
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=refused_detail,
+            content=refused_detail,
         )
     except OwnershipDeniedError:
         await _record_billing_governance(

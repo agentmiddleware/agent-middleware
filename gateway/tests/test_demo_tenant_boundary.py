@@ -199,8 +199,44 @@ async def test_demo_wallets_inherit_tenant_and_cannot_transfer_to_normal(
             headers=BOOTSTRAP_HEADERS,
         )
     assert refused.status_code == 403
-    assert refused.json()["detail"]["error"] == "cross_tenant_transfer_refused"
+    assert refused.json()["error"] == "cross_tenant_transfer_refused"
     assert (await money.get_wallet(normal.wallet_id)).balance == Decimal("10")
+
+
+@pytest.mark.anyio
+@pytest.mark.dormant
+async def test_cross_tenant_transfer_refusal_replays_same_error_body(
+    clean_database: None,
+) -> None:
+    money = get_agent_money()
+    demo = await money.create_sponsor_wallet(
+        "demo", "demo@example.invalid", Decimal("20"), require_kyc=False, tenant="demo"
+    )
+    normal = await money.create_sponsor_wallet(
+        "normal", "normal@example.invalid", Decimal("20"), require_kyc=False
+    )
+    headers = {**BOOTSTRAP_HEADERS, "Idempotency-Key": "cross-tenant-transfer"}
+    params = {
+        "from_wallet_id": demo.wallet_id,
+        "to_wallet_id": normal.wallet_id,
+        "amount": 1,
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.post(
+            "/v1/billing/transfer", params=params, headers=headers
+        )
+        replay = await client.post(
+            "/v1/billing/transfer", params=params, headers=headers
+        )
+    assert first.status_code == replay.status_code == 403
+    assert first.json() == replay.json()
+    assert first.json()["error"] == "cross_tenant_transfer_refused"
+    assert first.json()["message"] == "The request could not be completed."
+    assert "detail" not in first.json()
+    assert (await money.get_wallet(normal.wallet_id)).balance == Decimal("20")
+    assert (await money.get_wallet(demo.wallet_id)).balance == Decimal("20")
 
 
 @pytest.mark.anyio

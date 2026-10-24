@@ -7,7 +7,34 @@ Use a stable key when a response may be lost. A request key does not prove that
 a remote tool ran exactly once. If delivery is uncertain, reconcile the remote
 action before deciding what to do next.
 
-## Let the helper make it
+## Key ownership for agent retries
+
+The caller or orchestrator mints one key for each **logical operation** and
+keeps it across retries. An LLM tool call's `tool_call.id` is a suitable key
+when it is stable for that operation, is at most 128 characters, and has no
+control characters. Pass it as `idempotency_key` to the
+Python SDK, or as `key` to its synchronous `call` wrapper. Do not mint the key
+by hashing the arguments: two intentional tool calls can have identical
+arguments and still be different operations. Use a distinct key for each.
+
+Keep the key, tool, full arguments, wallet, and permit stable across a retry.
+Once the first call has completed, a retry with the same key returns the original receipt instead of dispatching again.
+While it is still running, the gateway can return `idempotency_in_progress`.
+A key reused with different arguments is refused as `idempotency_key_reused`:
+MCP REST invoke returns HTTP 409 with `detail` set to that string; legacy
+`/mcp/messages` and standard `/mcp` return a JSON-RPC error with code
+`-32603` and that message. On standard `/mcp`, changing the tool can conflict
+earlier during auto-permit minting with JSON-RPC code `-32003` and the same
+message. Billing charge uses HTTP 409 with `detail.error` set to the code;
+permit creation uses HTTP 409 with string `detail`.
+
+Standard `/mcp` makes a fresh `mcp-auto-` key for each call when the caller
+supplies none. That fresh key cannot identify a retry, so an unkeyed call is
+not retry-safe. The SDK's `invoke_tool` requires a key; its `"auto"` option
+derives one from arguments and is unsuitable when distinct calls can have the
+same arguments.
+
+## Optional argument-derived helper
 
 | Python | TypeScript | CLI |
 |---|---|---|
@@ -18,6 +45,8 @@ arguments, an optional business ID, and an optional scope. The output starts
 with `amwk1_` and is 58 characters long. Install the SDK from this checkout as
 shown in the
 [Python SDK guide](https://github.com/agentmiddleware/agent-middleware/blob/main/sdk/python/README.md).
+Use this helper only when your operation rules make that combination identify
+one action. For LLM tool calls, pass the stable `tool_call.id` instead.
 
 ```python
 from amw import request_key
@@ -49,7 +78,8 @@ result = await client.invoke_tool(
 ```
 
 The examples assume that `client`, `wallet_id`, and `permit_id` have already
-been set up for the governed tool. Both calls above use the same key.
+been set up for the governed tool. Both calls above use the same derived key;
+two separate calls with the same inputs would also share it.
 
 ## Retry after a timeout
 
@@ -57,10 +87,11 @@ Keep the key and the full arguments when retrying after a lost response. If the
 first call completed, the retry returns its stored receipt ID. The
 [local demo](https://github.com/agentmiddleware/agent-middleware/blob/main/QUICKSTART.md)
 prints `first receipt` and `retry receipt` with the same ID for this case.
+Here `tool_call` is the original call object retained by the orchestrator.
 
 ```python
 args = {"order_id": "A1", "amount": "12.00"}
-key = request_key("partner.refund", args, business_id="A1")
+key = tool_call.id  # Keep this operation ID when retrying.
 
 first = await client.invoke_tool(
     "partner.refund",
@@ -144,8 +175,8 @@ for included floats because decimal values can shift between tries.
 
 ## When a key is reused for another action
 
-If an included argument changes, the helper makes a different key. A new key
-names a new action. If a caller reuses an old key with changed arguments, the
+If an included argument changes, the helper makes a different key. If a caller
+reuses an old key with changed arguments, the
 gateway returns `idempotency_key_reused`. This also happens when only an
 excluded argument changes, because the gateway still checks the full request.
 The billing and MCP REST invoke routes use HTTP 409 for this code. JSON RPC
@@ -174,7 +205,8 @@ the code for changed action arguments.
    `idempotency_key_reused`.
 3. Use text such as `"12.00"` or integer minor units for amounts. Avoid floats.
 4. Two intentional actions with the same tool and arguments need distinct
-   business IDs or another argument that identifies each action.
+   caller-owned keys, such as their separate `tool_call.id` values. If you use
+   the helper for a different workflow, provide a distinct business ID.
 5. Changing `include` or `exclude` changes the derived key. Keep the rule
    stable for retries.
 6. The helper handles JSON field order and spacing. Do not hash a hand made

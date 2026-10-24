@@ -23,6 +23,19 @@ An accepted idempotency key binds one immutable invocation. Reusing that key
 with different tool input fails closed with an idempotency conflict; use a new
 key for each new invocation.
 
+On `POST /mcp/messages` that conflict is HTTP 200 with a JSON-RPC error.
+Match `error.message` `idempotency_key_reused`. The code on that message is
+-32603, which is also used for `internal_error`, so the message is the
+signal, not the code alone. The same route reports `idempotency_in_progress`
+as HTTP 200, code -32005, message `idempotency_in_progress`. Retry that same
+key. `delivery_uncertain` also uses code -32005, but means dispatch may have
+occurred: inspect the receipt and audit record and reconcile the downstream
+outcome before deciding on another action. Match the message, not only the
+code. This route does not report either idempotency condition as HTTP 409.
+REST routes such as
+`POST /v1/permits` do use HTTP 409 for an idempotency conflict and for a key
+that is still in progress.
+
 The product loop is:
 
 ```text
@@ -138,12 +151,30 @@ POST /mcp/messages
 ### Rate Limits
 - Default: 120 requests/minute per API key, configurable by the operator.
 - No extra burst allowance. Check `/v1/discover` rate-limit metadata for the current limit.
-- Shared Redis counts fixed 60-second windows; the local in-memory fallback counts a rolling 60 seconds.
+- Requests without accepted credentials, including unauthenticated requests and rejected credentials, also count against a shared per-client pre-authentication bucket.
+- Shared Redis counts fixed 60-second windows. The in-memory limiter, used when Redis is not configured or when a non-production boot loses Redis, counts a rolling 60 seconds.
+- On a production-like boot with `REDIS_URL` set, a Redis outage does not use that in-memory limiter. Requests subject to rate limiting fail with HTTP 503 and error `rate_limiter_unavailable`; exempt public documentation and health routes are not refused by the limiter.
 
 ### Velocity Monitoring
-Wallets are auto-frozen if spending exceeds:
-- 1000 credits/hour
-- 10000 credits/day
+Default velocity alert thresholds are 1000 credits per hour and 10000 credits
+per day. The operator can change those defaults; a wallet's `hourly_limit` and
+`daily_limit` override them. Velocity alerts are not a spending allowance.
+When a wallet sets `daily_limit`, billing also enforces it as a hard cap:
+an attempted charge above that cap is refused without debit, including when
+`daily_limit` is zero.
+
+The monitor records proposed spend before checking whether it is strictly
+over a velocity threshold; equality is not a crossing. It checks the prior
+alert count before adding the new alert. A first crossing does not itself
+freeze the wallet, but another billing check can still deny the charge. With
+`VELOCITY_FREEZE_THRESHOLD` at its default 3, a fourth over-limit assessment
+after three recorded alerts requests a freeze; this is not necessarily the
+fourth paid charge. The freeze assessment is not debited. Hourly and daily
+spend counters roll over, but the alert count does not. Closed or suspended
+wallets are not changed to frozen. If a governed database transaction rolls
+back, its uncommitted velocity and billing mutations roll back with it. A
+governed refusal can still commit an alert; a post-dispatch
+`delivery_uncertain` outcome retains the debit.
 
 ---
 
@@ -206,13 +237,32 @@ clients require `/mcp` after the operator enables the Streamable HTTP transport.
 
 ## Error Codes
 
+HTTP responses can report authentication, rate-limit, and REST failures.
+These codes do not describe every governed failure on `POST /mcp/messages`:
+
 | Code | Meaning |
 |------|---------|
 | 401 | Missing credentials, a malformed or too-short API key, or invalid bearer authentication. |
-| 403 | API key rejected, or an authenticated caller lacks required wallet/tenant, administrator, policy, or ACL access. |
-| 402 | Insufficient credits |
-| 429 | Rate limit exceeded |
-| 500 | Internal error |
+| 403 | A well-formed API key was rejected, or an HTTP route denied required wallet, tenant, administrator, policy, or ACL access. |
+| 429 | A rate limit was exceeded: per-key, shared per-client pre-authentication (including unauthenticated requests and rejected credentials), or public MCP client/global bucket. |
+| 503 | On a rate-limited request in a production-like boot with `REDIS_URL` set, the shared limiter could not use Redis. The error is `rate_limiter_unavailable`. |
+| 500 | Unclassified server error on a REST route. |
+
+`POST /mcp/messages` `tools/call` reports governed failures as HTTP 200 JSON-RPC errors. Do not branch on HTTP 402 or HTTP 409 for that route. Read `error.message`:
+
+| error.message | JSON-RPC code | Meaning |
+|---------------|---------------|---------|
+| insufficient_funds | -32004 | Billing refused the debit, including insufficient credits or a spending cap. |
+| wallet_frozen | -32003 | Wallet is frozen. |
+| wallet_expired | -32003 | Wallet is expired. |
+| idempotency_key_reused | -32603 | Same key, different tool input. Match the message. This code is also used for `internal_error`. |
+| idempotency_in_progress | -32005 | Same key is still in progress. Retry the same key. This code is also used for other retryable contention, so match the message. |
+| delivery_uncertain | -32005 | Dispatch may have occurred. Inspect receipt and audit evidence, then reconcile the downstream outcome; do not treat it as an in-progress retry. |
+
+Some REST billing routes report billing refusals, including insufficient
+credits or spending caps, as HTTP 402. `POST /v1/permits` reports an
+idempotency conflict as HTTP 409. On `POST /mcp/messages`, read the JSON-RPC
+error body instead.
 
 ---
 

@@ -15,7 +15,7 @@ Send your wallet key in `X-API-Key`. Permit creation requires an `Idempotency-Ke
 API_URL='YOUR_API_URL'
 curl -sS -X POST "$API_URL/mcp/messages" \
   -H 'Content-Type: application/json' \
-  -H 'X-API-Key: YOUR_DEMO_KEY' \
+  -H 'X-API-Key: $AMW_API_KEY' \
   -H 'Idempotency-Key: YOUR_REQUEST_KEY' \
   -d '{"jsonrpc":"2.0","id":"YOUR_REQUEST_KEY","method":"tools/call","params":{"name":"YOUR_TOOL_NAME","arguments":{},"mcpContext":{"wallet_id":"YOUR_WALLET_ID","permit_id":"YOUR_PERMIT_ID","idempotency_key":"YOUR_REQUEST_KEY"}}}'
 ```

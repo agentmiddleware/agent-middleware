@@ -13,7 +13,7 @@ Install the [Python SDK](/docs/python-sdk/) with its `verify` extra. Export your
 
 ```bash
 API_URL='YOUR_API_URL'
-curl -sS -H 'X-API-Key: YOUR_DEMO_KEY' \
+curl -sS -H 'X-API-Key: $AMW_API_KEY' \
   "$API_URL/v1/receipts/YOUR_RECEIPT_ID/portable" > receipt.json
 curl -sS "$API_URL/.well-known/trust-keys.json" > trust-keys.json
 b2a-verify-receipt --bundle receipt.json --keys trust-keys.json

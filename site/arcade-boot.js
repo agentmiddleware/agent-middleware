@@ -33,6 +33,22 @@
   var styleHref = launcher.getAttribute("data-arcade-style");
   if (!scriptSrc || !styleHref) return;
 
+  function assetUrl(value, extension) {
+    try {
+      var url = new URL(value, location.href);
+      if (url.origin !== location.origin ||
+          (url.protocol !== "http:" && url.protocol !== "https:") ||
+          url.pathname.slice(-extension.length) !== extension) return null;
+      return url;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  var scriptUrl = assetUrl(scriptSrc, ".js");
+  var styleUrl = assetUrl(styleHref, ".css");
+  if (!scriptUrl || !styleUrl) return;
+
   // Same reveal arcade.js performs, moved here so it happens on every visit
   // without the room itself being downloaded.
   launcher.hidden = false;
@@ -50,11 +66,11 @@
     loading = new Promise(function (resolve, reject) {
       var link = doc.createElement("link");
       link.rel = "stylesheet";
-      link.href = styleHref;
+      link.href = styleUrl.href;
       doc.head.appendChild(link);
 
       var script = doc.createElement("script");
-      script.src = scriptSrc;
+      script.src = scriptUrl.href;
       script.async = true;
       script.onload = function () {
         launcher.removeAttribute("aria-busy");

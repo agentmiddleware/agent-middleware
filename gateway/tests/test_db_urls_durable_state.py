@@ -236,6 +236,63 @@ def test_non_sqlite_urls_are_neither_file_nor_memory(url):
     assert not is_in_memory_sqlite_url(url)
 
 
+def test_sqlite_url_with_credentials_is_not_a_filename():
+    url = "sqlite+pysqlcipher://:example-passphrase@/state.db"
+    assert sqlite_path_from_url(url) == ""
+    assert not is_in_memory_sqlite_url(url)
+
+
+@pytest.mark.parametrize("setting", ["SQLITE_URL", "DATABASE_URL"])
+@pytest.mark.parametrize("state_backend", ["auto", "sqlite"])
+def test_sqlite_url_with_credentials_fails_closed(monkeypatch, setting, state_backend):
+    reset_durable_state_for_tests()
+    monkeypatch.setenv("ENVIRONMENT", "local")
+    monkeypatch.setenv("STATE_BACKEND", state_backend)
+    monkeypatch.setenv("SQLITE_URL", "")
+    monkeypatch.setenv("DATABASE_URL", "")
+    monkeypatch.setenv(setting, "sqlite+pysqlcipher://:example-passphrase@/state.db")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(DurableStateConfigError, match="could not be parsed"):
+            DurableStateStore()
+    finally:
+        get_settings.cache_clear()
+        reset_durable_state_for_tests()
+
+
+@pytest.mark.parametrize(
+    ("state_backend", "redis_url", "environment", "expected"),
+    [
+        ("memory", "", "local", "memory"),
+        ("redis", "redis://127.0.0.1:1/0", "local", "redis"),
+        ("auto", "redis://127.0.0.1:1/0", "local", "redis"),
+        ("redis", "redis://127.0.0.1:1/0", "production", "redis"),
+        ("auto", "redis://127.0.0.1:1/0", "production", "redis"),
+    ],
+)
+def test_unused_invalid_sqlite_database_url_does_not_block_backend(
+    monkeypatch, state_backend, redis_url, environment, expected
+):
+    reset_durable_state_for_tests()
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    monkeypatch.setenv("STATE_BACKEND", state_backend)
+    monkeypatch.setenv("SQLITE_URL", "")
+    monkeypatch.setenv(
+        "DATABASE_URL", "sqlite+pysqlcipher://:example-passphrase@/state.db"
+    )
+    monkeypatch.setenv("REDIS_URL", redis_url)
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        assert DurableStateStore()._resolve_backend() == expected
+    finally:
+        get_settings.cache_clear()
+        reset_durable_state_for_tests()
+
+
 @pytest.mark.parametrize("scheme", _SQLITE_SCHEMES)
 def test_file_sqlite_url_with_any_driver_persists_to_that_file(
     monkeypatch, tmp_path, scheme

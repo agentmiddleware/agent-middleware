@@ -32,6 +32,18 @@ order: `GET /.well-known/agent.json`, then `GET /llms.txt`
 transport, authentication (`X-API-Key` header), and dependency-readiness
 rules; start the full loop at [`docs/quickstart.md`](docs/quickstart.md).
 
+## Demo keys
+
+`GET /v1/demo/keys` explains the issuance request. When
+`ENABLE_DEMO_TENANT=true`, an anonymous `POST /v1/demo/keys` with a JSON body
+issues a demo sponsor wallet, agent wallet, and API key. The body may contain
+`utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, and
+`referrer`; all are optional. The key is returned once and stored as a hash.
+Issuance is limited per IP and globally. Demo wallets use synthetic credits
+and are confined to the demo tenant. Browser origins for this route are set
+with `DEMO_ALLOWED_ORIGINS` (comma-separated); the default includes both
+`thisisatest.tech` and `agentmiddleware.dev`, with and without `www`.
+
 ## How it works
 
 ```text
@@ -63,14 +75,42 @@ is receipted `delivery_uncertain` and never silently re-sent. See
 ## Guarantees and limits
 
 - At most one gateway dispatch and at most one debit per accepted idempotency
-  key; a same-key retry returns the original receipt; same key with a different
-  payload fails closed.
+  key; a retry with the same key returns the original receipt instead of dispatching again.
+  The same key with a different payload fails closed.
 - Budget, scope, expiry, and revocation are checked before money moves.
 - **Not exactly-once.** A remote side effect is deduplicated only if the remote
   tool honors the forwarded idempotency key, and an agent that restarts with a
   new key can still cause a second effect.
 - Internal credit ledger only: not settlement, not a compliance record, not IAM.
 - MCP is the only governed adapter; one operator-configured upstream tool.
+
+## Money, pricing, and top-up
+
+- Credits are internal metering units, not money. The default rate is 1000
+  credits per 1.00 USD, and it is operator-configurable (`EXCHANGE_RATE`).
+  Category defaults live in one pricing table (the base platform fee is 0.1
+  credits per call). A registered tool can override that default. The local
+  demo tool is registered at 2 credits per call, which is not the AGENT_COMMS
+  table default of 1.5. `GET /v1/billing/pricing` returns the category table
+  in effect, not each tool's registration price.
+- Credits are created by admin-gated sponsor issuance
+  (`POST /v1/billing/wallets/sponsor`) and, only when
+  `ENABLE_PROOF_SURFACES` is on, by verified Stripe top-up (USD only, where
+  Stripe keys are configured). The opt-in demo-key route creates synthetic
+  credits confined to demo wallets. Sponsor wallets may require KYC before a
+  top-up is prepared. There is no subscription, invoice, or payout flow in
+  this gateway. Direct client-token top-up answers `410 Gone`.
+- x402 and ACP mount only with `ENABLE_PROOF_SURFACES`. x402 prepares a
+  permit-backed authorization and a signed receipt. The payer wallet signs
+  anything that would go on chain. This repository does not submit it. ACP
+  charges USD on the existing Stripe rail with a Shared Payment Token. It
+  does not mint credits, and it is not an on-chain signature.
+- `Idempotency-Key` is honored on agent-wallet creation, charges, and
+  transfers. The same key and the same payload returns the original result.
+  The same key with different arguments is refused with 409. A retry without
+  the header is a new operation and can debit twice. Sponsor-wallet creation
+  does not read that header. If that call times out, list wallets before
+  retrying.
 
 Read [`SECURITY_LIMITATIONS.md`](SECURITY_LIMITATIONS.md),
 [`TRUST_MODEL.md`](TRUST_MODEL.md), and [`docs/threat-model.md`](docs/threat-model.md)

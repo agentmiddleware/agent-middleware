@@ -77,11 +77,11 @@ The human site publishes one non-sensitive portable `partner.echo` receipt and
 the matching public-key snapshot:
 
 ```bash
-GET https://www.thisisatest.tech/proof/receipt.json
-GET https://www.thisisatest.tech/proof/trust-keys.json
+GET https://www.agentmiddleware.dev/proof/receipt.json
+GET https://www.agentmiddleware.dev/proof/trust-keys.json
 ```
 
-Use the offline CLI command on `https://www.thisisatest.tech/proof/`. A valid
+Use the offline CLI command on `https://www.agentmiddleware.dev/proof/`. A valid
 signature proves the receipt matches the supplied snapshot. Authenticate or
 pin that snapshot through a trusted channel before treating issuer identity as
 independently established.

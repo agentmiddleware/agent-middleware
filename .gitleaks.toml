@@ -28,6 +28,19 @@ paths = [
   '''(?:^|/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock|uv\.lock|poetry\.lock|Cargo\.lock)$''',
 ]
 
+# Test suites and generated vectors use clearly-fake keys (lowercase-dash
+# placeholders, the documented public test seed). Line-scoped .gitleaksignore
+# entries cannot survive the squash-merge workflow — every merge shifts line
+# numbers — so scope the generic-api-key rule off these paths instead. Every
+# other rule (private key blocks, AMW_* env secrets, high-entropy strings)
+# still scans them.
+[[allowlists]]
+description = "Fake keys in test files and generated test vectors (generic-api-key only)"
+rules = ["generic-api-key"]
+paths = [
+  '''(?:^|/)(?:gateway/tests/|spec/test-vectors/|sdk/python/tests/|sdk/typescript/test/|integrations/[^/]+/tests/)''',
+]
+
 [[allowlists]]
 description = "Clearly-fake placeholder values in docs, specs and tests"
 regexTarget = "match"

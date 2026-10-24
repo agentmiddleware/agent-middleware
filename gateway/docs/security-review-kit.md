@@ -126,9 +126,7 @@ the boundary itself in [TRUST_MODEL.md](../TRUST_MODEL.md) and
 Include, at minimum:
 
 - The commit SHA under attack (`/health/dependencies` reports `commit_sha` on
-  a running instance; a deployed origin can lag `main` by a long way, as a
-  dated external-surface review found. That report,
-  `external-surface-review-2026-08-23.md`, is not included in this repository).
+  a running instance; check it because a deployed origin can lag `main`).
 - The environment posture: engine (SQLite vs PostgreSQL), `TRUST_MODE_ENABLED`,
   `ENABLE_PROOF_SURFACES`, and whether either dev-key surface was enabled.
 - The exact request and the observed response, plus receipt IDs and wallet
@@ -157,10 +155,5 @@ Read these before starting, so you spend your time on new ground:
 - [invariant-attack-report.md](invariant-attack-report.md) — the hostile
   concurrency campaign, with the one invariant that broke (the SQLite budget
   race), its root cause, and the fix.
-- `hard-run-report-2026-08-12.md` (not included in this repository) — a dated,
-  credential-less black-box run against the deployment, with reproduction
-  commands.
-- `external-surface-review-2026-08-23.md` (not included in this repository)
-  — the deployed origins reviewed from outside.
 - [owasp-agentic-top10-mapping.md](owasp-agentic-top10-mapping.md) — the same
   posture in ASI01–ASI10 vocabulary, with the honest gap named per risk.

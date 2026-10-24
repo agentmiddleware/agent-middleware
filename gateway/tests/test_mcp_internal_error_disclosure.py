@@ -90,7 +90,14 @@ def _assert_internal_error(error: dict, *, wire: str) -> str:
     correlation_id = error["data"]["correlation_id"]
     assert CORRELATION_ID.match(correlation_id)
     assert set(error) == {"code", "message", "data"}
-    assert set(error["data"]) == {"correlation_id"}
+    assert set(error["data"]) == {
+        "correlation_id",
+        "code",
+        "message",
+        "fix",
+        "docs_url",
+    }
+    assert error["data"]["code"] == "internal_error"
     assert "SELECT" not in wire
     return correlation_id
 
@@ -244,6 +251,8 @@ async def test_http_invoke_route_hides_unclassified_failure(
     assert resp.status_code == 200
     body = resp.json()
     assert body["isError"] is True
+    assert body["code"] == "internal_error"
+    assert body["docs_url"].endswith("#internal_error")
     assert body["content"] == [{"type": "text", "text": "Error: internal_error"}]
     assert body["structuredContent"]["error"] == "internal_error"
     correlation_id = body["structuredContent"]["correlation_id"]
@@ -348,7 +357,7 @@ async def test_classified_value_error_text_still_reaches_the_client(
     )
 
     assert resp.status_code == 200
-    assert resp.json()["error"] == {
-        "code": -32603,
-        "message": "idempotency_key_reused",
-    }
+    error = resp.json()["error"]
+    assert error["code"] == -32603
+    assert error["message"] == "idempotency_key_reused"
+    assert error["data"]["code"] == "idempotency_key_reused"

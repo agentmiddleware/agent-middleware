@@ -37,7 +37,9 @@ from pathlib import Path
 from typing import Any
 
 from failure_lab import TEST_DEFINITION_VERSION
-from failure_lab import __version__ as FAILURE_LAB_VERSION
+from failure_lab import __version__
+
+FAILURE_LAB_VERSION = __version__
 
 CLAIMS_SCHEMA_VERSION = "failure-lab-claims/1"
 

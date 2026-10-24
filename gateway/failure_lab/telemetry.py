@@ -258,7 +258,7 @@ def pseudonymous_subject(raw: str, *, namespace: str = "failure-lab") -> str:
     sees it. Hashing an email address would still be an identifier for a
     person, so do not: pass the session, not the human.
     """
-    digest = hashlib.sha256(f"{namespace}\x1f{raw}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{namespace}\x1f{raw}".encode()).hexdigest()
     return f"sub_{digest[:24]}"
 
 

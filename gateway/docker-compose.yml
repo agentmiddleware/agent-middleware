@@ -3,8 +3,10 @@
 services:
   api:
     build:
-      context: .
-      dockerfile: Dockerfile.dev
+      # Repository root, so the image can COPY sdk/python. Paths inside the
+      # Dockerfile are relative to that root; this file stays in gateway/.
+      context: ..
+      dockerfile: gateway/Dockerfile.dev
     ports:
       - "8000:8000"
     env_file:

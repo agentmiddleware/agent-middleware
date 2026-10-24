@@ -14,6 +14,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.db.database import get_session_factory
+from app.services.ownership import CallerIdentity
 from app.db.models import PermitModel
 from app.main import app
 from app.schemas.billing import ServiceCategory
@@ -392,7 +393,9 @@ async def test_aggregate_value_cap_released_reservation_frees_cap(
 
     assert (await reserve_once()).allowed is True
     assert (await reserve_once()).reason == "permit_aggregate_value_cap_exceeded"
-    await service.release_budget(permit.permit_id, Decimal("1"))
+    await service.release_budget(
+        permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+    )
     assert (await reserve_once()).allowed is True
 
 
@@ -436,7 +439,9 @@ async def test_aggregate_value_cap_receipt_history_floors_concurrent_reservation
 
     # Reserve, receipt the charge, then hand the reservation back: the shape
     # the charge-then-refund-failure path leaves behind.
-    await service.reserve_budget(permit.permit_id, Decimal("2"))
+    await service.reserve_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
     await get_receipt_service().create_receipt(
         permit_id=permit.permit_id,
         wallet_id=wallet_id,
@@ -450,7 +455,9 @@ async def test_aggregate_value_cap_receipt_history_floors_concurrent_reservation
         outcome="failed_unrefunded",
         audit_event_id=None,
     )
-    await service.release_budget(permit.permit_id, Decimal("2"))
+    await service.release_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
 
     factory = get_session_factory()
     async with factory() as session:
@@ -515,7 +522,9 @@ async def test_aggregate_value_cap_receipt_history_floor_then_sequential_reserva
         )
     )
 
-    await service.reserve_budget(permit.permit_id, Decimal("2"))
+    await service.reserve_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
     await get_receipt_service().create_receipt(
         permit_id=permit.permit_id,
         wallet_id=wallet_id,
@@ -529,7 +538,9 @@ async def test_aggregate_value_cap_receipt_history_floor_then_sequential_reserva
         outcome="failed_unrefunded",
         audit_event_id=None,
     )
-    await service.release_budget(permit.permit_id, Decimal("2"))
+    await service.release_budget(
+        permit.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+    )
 
     async def reserve_once():
         return await service.authorize_and_reserve(
@@ -586,14 +597,22 @@ async def test_reserve_budget_enforces_aggregate_value_cap(client, clean_databas
         )
     )
 
-    await service.reserve_budget(permit.permit_id, Decimal("1"))
+    await service.reserve_budget(
+        permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+    )
     with pytest.raises(PermitError) as excinfo:
-        await service.reserve_budget(permit.permit_id, Decimal("1"))
+        await service.reserve_budget(
+            permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+        )
     assert excinfo.value.reason == "permit_aggregate_value_cap_exceeded"
 
     # Releasing the in-flight reservation makes the cap share admissible again.
-    await service.release_budget(permit.permit_id, Decimal("1"))
-    await service.reserve_budget(permit.permit_id, Decimal("1"))
+    await service.release_budget(
+        permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+    )
+    await service.reserve_budget(
+        permit.permit_id, Decimal("1"), caller=CallerIdentity.admin()
+    )
 
     # Parallel reservations against a fresh capped permit admit at most
     # floor(cap / amount), same guarantee as the MCP path.
@@ -612,7 +631,9 @@ async def test_reserve_budget_enforces_aggregate_value_cap(client, clean_databas
 
     async def reserve_or_reason() -> str:
         try:
-            await service.reserve_budget(permit2.permit_id, Decimal("2"))
+            await service.reserve_budget(
+                permit2.permit_id, Decimal("2"), caller=CallerIdentity.admin()
+            )
         except PermitError as exc:
             return exc.reason
         return "allowed"

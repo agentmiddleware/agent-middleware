@@ -190,6 +190,15 @@ class DurableStateStore:
         # asyncpg, and silently degrade to in-memory state after the failure.
         if not self._sqlite_url:
             self._sqlite_url = sqlite_path_from_url(self._database_url)
+            if (
+                self._database_url
+                and is_sqlite_url(self._database_url)
+                and not self._sqlite_url
+                and not is_in_memory_sqlite_url(self._database_url)
+            ):
+                raise DurableStateConfigError(
+                    "DATABASE_URL is a SQLite URL that could not be parsed"
+                )
         self._production_like = is_production_like_environment(settings.ENVIRONMENT)
 
         self._init_lock = asyncio.Lock()

@@ -48,7 +48,9 @@ class _Session:
 def _stub_tool(monkeypatch: pytest.MonkeyPatch, recorded: dict[str, Any]) -> None:
     def tool(name_or_fn=None, *args, **kwargs):
         def decorate(fn):
-            recorded["name"] = name_or_fn if isinstance(name_or_fn, str) else fn.__name__
+            recorded["name"] = (
+                name_or_fn if isinstance(name_or_fn, str) else fn.__name__
+            )
             recorded["fn"] = fn
             return fn
 

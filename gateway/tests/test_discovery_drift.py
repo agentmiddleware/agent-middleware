@@ -58,7 +58,8 @@ async def test_agent_manifest_points_to_canonical_control_plane_surfaces(client)
     assert endpoints["billing"] == "/v1/billing"
     assert endpoints["mcp_json_rpc"] == "/mcp/messages"
     assert endpoints["mcp_tools"] == "/mcp/tools.json"
-    assert "mcp" not in endpoints
+    # The standard MCP endpoint is on by default.
+    assert endpoints["mcp"] == "/mcp"
     assert endpoints["permits"] == "/v1/permits"
     assert endpoints["receipts"] == "/v1/receipts"
     assert endpoints["health"] == "/health"
@@ -182,7 +183,26 @@ async def test_openapi_contains_core_control_plane_routes(client):
         "Missing credentials on production-like boots"
         in catalog_responses["401"]["description"]
     )
-    assert "/mcp" not in paths
+    # include_in_schema follows ENABLE_STANDARD_MCP_ENDPOINT, which defaults on.
+    assert "/mcp" in paths
+    standard_mcp_body = paths["/mcp"]["post"]["requestBody"]
+    assert standard_mcp_body["required"] is True
+    standard_mcp_schema = standard_mcp_body["content"]["application/json"]["schema"]
+    assert standard_mcp_schema["type"] == "object"
+    common_required = set(standard_mcp_schema["required"])
+    assert common_required == {"jsonrpc"}
+    assert standard_mcp_schema["properties"]["jsonrpc"]["const"] == "2.0"
+    request, notification, rpc_response = standard_mcp_schema["oneOf"]
+    assert request["title"] == "JSON-RPC request"
+    assert common_required | set(request["required"]) == {"jsonrpc", "method", "id"}
+    assert notification["title"] == "JSON-RPC notification"
+    assert common_required | set(notification["required"]) == {"jsonrpc", "method"}
+    assert rpc_response["title"] == "JSON-RPC response"
+    assert common_required | set(rpc_response["required"]) == {"jsonrpc", "id"}
+    assert {frozenset(shape["required"]) for shape in rpc_response["oneOf"]} == {
+        frozenset({"result"}),
+        frozenset({"error"}),
+    }
     legacy_mcp_description = paths["/mcp/messages"]["post"]["description"]
     assert "does not implement the standard MCP initialization lifecycle" in (
         legacy_mcp_description

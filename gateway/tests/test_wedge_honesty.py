@@ -151,7 +151,8 @@ async def test_discover_pricing_and_guides_are_trust_plane(client, proof_surface
     assert "awi_adoption" not in guides
     assert guides["mcp_json_rpc"] == "/mcp/messages"
     assert guides["mcp_json_rpc_status"] == "legacy_project_transport"
-    assert "standard_mcp" not in guides
+    # The standard MCP endpoint is on by default.
+    assert guides["standard_mcp"] == "/mcp"
     assert guides["wedge"] == "/WEDGE.md"
     assert "partner.notes.write" in guides["dogfood"]
 
@@ -213,8 +214,9 @@ async def test_agent_json_sdk_integrations_are_honest(client):
     assert integrations["mcp"] is True
     assert integrations["mcp_json_rpc"] == "/mcp/messages"
     assert integrations["mcp_json_rpc_status"] == "legacy_project_transport"
-    assert "preferred_integration" not in integrations
-    assert "standard_mcp_streamable_http" not in integrations
+    # The standard MCP endpoint is on by default, so it is the preferred path.
+    assert integrations["preferred_integration"] == "standard_mcp_streamable_http"
+    assert integrations["standard_mcp_streamable_http"] == "/mcp"
 
 
 @pytest.mark.anyio

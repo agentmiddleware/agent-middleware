@@ -1,6 +1,6 @@
-# Group updates per ecosystem so the monorepo CI matrix runs for fewer pull
-# requests. Security updates remain enabled in repository Code security settings.
-# Directory globs pick up new packages under the listed roots.
+# Dependabot version updates. Directory globs only match dirs that exist, so new packages
+# under these roots are picked up automatically. Security updates are enabled separately
+# (repo Settings > Code security, or scripts/github_repo_settings.py in the org's .github repository).
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -18,15 +18,18 @@ updates:
 
   - package-ecosystem: pip
     directories:
+      - "/spec"
+      - "/verifier"
       - "/sdk/python"
       - "/integrations/*"
+      - "/examples/*"
       - "/gateway"
     schedule:
       interval: weekly
       day: monday
       time: "06:00"
       timezone: America/Los_Angeles
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     groups:
       python-dependencies:
         applies-to: version-updates
@@ -39,13 +42,18 @@ updates:
 
   - package-ecosystem: npm
     directories:
+      - "/spec"
+      - "/verifier"
       - "/sdk/typescript"
+      - "/integrations/*"
+      - "/examples/*"
+      - "/gateway"
     schedule:
       interval: weekly
       day: monday
       time: "06:00"
       timezone: America/Los_Angeles
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
     groups:
       npm-dependencies:
         applies-to: version-updates
@@ -59,7 +67,8 @@ updates:
   - package-ecosystem: docker
     directory: "/gateway"
     schedule:
-      interval: monthly
+      interval: weekly
+      day: monday
     groups:
       gateway-images:
         patterns: ["*"]

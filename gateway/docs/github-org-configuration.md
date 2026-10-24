@@ -57,10 +57,12 @@ repository's former `master` branch or change workflow triggers by itself.
 ## Dependabot and Actions budget
 
 [Dependabot configuration](../../.github/dependabot.yml) groups Python,
-TypeScript, and GitHub Actions updates for this monorepo. Python directories
-are `/gateway`, `/sdk/python`, and `/integrations/*`; npm is in
-`/sdk/typescript`; Dockerfiles are under `/gateway`. There is no root
-`requirements.lock`, `.railway` npm project, or `b2a_sdk` directory here.
+TypeScript, Docker, and GitHub Actions updates for this monorepo. Its Python
+directories include `/gateway`, `/sdk/python`, and `/integrations/*`; its npm
+directories include `/sdk/typescript`. The configuration also lists `/spec`,
+`/verifier`, and `/examples/*`, which currently have no package manifests.
+Dockerfiles are under `/gateway`. There is no root `requirements.lock`,
+`.railway` npm project, or `b2a_sdk` directory here.
 The `gateway` and SDK package manifests remain the source of dependency pins.
 Version and security updates are grouped separately. A grouped pull request
 still needs its usual review and required CI checks.

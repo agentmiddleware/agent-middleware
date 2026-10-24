@@ -53,7 +53,7 @@ Verified from repo:
 | Public claim | Repo evidence | Reality level |
 | --- | --- | --- |
 | The product wedge is an MCP trust plane, not a broad agent platform. | `WEDGE.md` defines the wedge and lists non-core proof surfaces. | Verified. |
-| Agents can discover machine-readable interfaces. | `README.md` points agents to `/.well-known/agent.json`, `/llm.txt`, `/mcp/tools.json`, and `/openapi.json`; discovery drift tests exist in `tests/test_discovery_drift.py`. | Verified. |
+| Agents can discover machine-readable interfaces. | `README.md` points agents to `/.well-known/agent.json`, `/llms.txt`, `/mcp/tools.json`, and `/openapi.json`; discovery drift tests exist in `tests/test_discovery_drift.py`. | Verified. |
 | Signed permits bind wallet, key, tool, scope, budget, expiry, and nonce. | `app/services/permits.py` creates signed permits and validates wallet, key, tool, scope, budget, expiry, and signature; `tests/test_permits.py` covers valid and invalid cases. | Verified. |
 | Governed MCP requires permits and idempotency in strict trust mode. | `app/routers/mcp.py` enforces permit and idempotency checks for governed calls; `tests/test_mcp_trust_mode.py` covers missing permit, missing idempotency, wrong key, wrong wallet, and wrong tool. | Verified. |
 | Successful governed invokes charge the wallet and emit signed receipts. | `app/routers/mcp.py` charges through `AgentMoney`, records audit, and creates receipts; `tests/test_demo_trust_plane.py` and `tests/test_agent_ops_war_room_demo.py` assert success receipts and replay behavior. | Verified. |

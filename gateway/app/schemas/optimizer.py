@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -37,16 +37,16 @@ class OptimizerState(BaseModel):
     daily_spend_used: float = Field(..., ge=0, allow_inf_nan=False)
     daily_limit: float = Field(..., ge=0, allow_inf_nan=False)
     rate_limit_headroom: float = Field(..., ge=0, le=1, allow_inf_nan=False)
-    service_health: Dict[str, Literal["healthy", "degraded", "down"]]
-    simulation_flags: Dict[str, bool]
-    auth_scope: List[str]
-    task_context: Dict
+    service_health: dict[str, Literal["healthy", "degraded", "down"]]
+    simulation_flags: dict[str, bool]
+    auth_scope: list[str]
+    task_context: dict
     remaining_budget: float = Field(..., ge=0, allow_inf_nan=False)
     slo_window_seconds: int = Field(30, ge=1)
 
     @field_validator("task_context")
     @classmethod
-    def _task_context_is_finite(cls, task_context: Dict) -> Dict:
+    def _task_context_is_finite(cls, task_context: dict) -> dict:
         # task_context is untyped, but its candidate_actions carry the
         # credit_cost / latency_ms / risk_score / expected_value / reliability
         # the planner scores and budgets with. A NaN cost passes every budget
@@ -60,7 +60,7 @@ class OptimizerState(BaseModel):
 
 class OptimizerRequest(BaseModel):
     state: OptimizerState
-    objective_overrides: Optional[Dict[str, FiniteFloat]] = None
+    objective_overrides: Optional[dict[str, FiniteFloat]] = None
     max_actions: Optional[int] = Field(default=5, ge=1)
     require_real_effects: bool = False
 
@@ -70,10 +70,10 @@ class OptimizerResponse(BaseModel):
     # solver was never a declared dependency). Selection is the deterministic
     # greedy heuristic, so these are the two statuses the planner can emit.
     status: Literal["HeuristicFallback", "Infeasible"]
-    selected_actions: List[Dict]
-    rejected_actions: List[Dict]
-    policy_reasons: Dict[str, str]
+    selected_actions: list[dict]
+    rejected_actions: list[dict]
+    policy_reasons: dict[str, str]
     expected_utility: float
-    totals: Dict[str, float]
-    constraint_margins: Dict[str, float]
-    governance: Optional[Dict] = None
+    totals: dict[str, float]
+    constraint_margins: dict[str, float]
+    governance: Optional[dict] = None

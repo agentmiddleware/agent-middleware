@@ -126,11 +126,18 @@ async def caller(client, standard_mcp_enabled, clean_database, effects):
 
 
 def _standard_raw(raw_id: str, meta_key: str = '"k-1"') -> bytes:
+    # Concatenated so the JSON braces are not format fields.
     return (
-        '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s",'
-        '"arguments":{"text":"one"},"_meta":{"%s":%s}}}'
-        % (raw_id, TOOL, META_KEY, meta_key)
-    ).encode("utf-8")
+        '{"jsonrpc":"2.0","id":'
+        + raw_id
+        + ',"method":"tools/call","params":{"name":"'
+        + TOOL
+        + '","arguments":{"text":"one"},"_meta":{"'
+        + META_KEY
+        + '":'
+        + meta_key
+        + "}}}"
+    ).encode()
 
 
 def _standard_call(*, meta: Any = None, context: Any = None) -> dict:
@@ -189,6 +196,8 @@ async def test_standard_legacy_context_key_conflicting_with_meta_is_refused(
     error = response.json()["error"]
     assert error["code"] == -32602
     assert error["data"]["reason_code"] == "idempotency_key_conflict"
+    assert error["data"]["code"] == "idempotency_key_conflict"
+    assert error["data"]["docs_url"].endswith("#idempotency_key_conflict")
     assert "params.mcpContext.idempotency_key" in error["data"]["source"]
     assert caller["effects"] == []
     assert await _debits(client, caller["provisioned"]) == 0
@@ -254,7 +263,7 @@ async def test_standard_non_utf8_header_key_is_refused_not_aliased(client, calle
     assert caller["effects"] == []
     assert await _debits(client, caller["provisioned"]) == 0
 
-    utf8 = {**caller["headers"], "Idempotency-Key": "é-1".encode("utf-8")}
+    utf8 = {**caller["headers"], "Idempotency-Key": "é-1".encode()}
     first = _receipt_id(await client.post("/mcp", json=_standard_call(), headers=utf8))
     replay = _receipt_id(await client.post("/mcp", json=_standard_call(), headers=utf8))
     assert first == replay

@@ -177,7 +177,7 @@ print(json.dumps(paths))
 
 
 @pytest.mark.parametrize(
-    "environment,proof_surfaces,upstream_enabled",
+    ("environment", "proof_surfaces", "upstream_enabled"),
     [
         ("local", "false", "false"),
         ("local", "true", "true"),

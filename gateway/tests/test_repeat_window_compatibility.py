@@ -20,7 +20,7 @@ from tests.test_upstream_retry_cap_enforcement import (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("permit_window,global_window", [(60, 86400), (120, 1)])
+@pytest.mark.parametrize(("permit_window", "global_window"), [(60, 86400), (120, 1)])
 async def test_rollback_enforces_signed_window_with_issuance_disabled(
     clean_database, monkeypatch, permit_window, global_window
 ):

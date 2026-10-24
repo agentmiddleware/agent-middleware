@@ -24,6 +24,7 @@ from ..schemas.billing import (
     WalletResponse,
 )
 from .billing_engine import BillingEngine
+from .ownership import CallerIdentity
 
 # DEFAULT_PRICING lives in .pricing so the governed price path, this facade,
 # and the dry-run shadow ledger all read one table. Re-exported here because
@@ -142,6 +143,7 @@ class AgentMoney:
         metadata: dict | None = None,
         require_kyc: bool | None = None,
         session: AsyncSession | None = None,
+        tenant: str | None = None,
     ) -> WalletResponse:
         return await self._wallet_engine.create_sponsor_wallet(
             sponsor_name=sponsor_name,
@@ -151,6 +153,7 @@ class AgentMoney:
             metadata=metadata,
             require_kyc=require_kyc,
             session=session,
+            tenant=tenant,
         )
 
     async def create_agent_wallet(
@@ -163,6 +166,8 @@ class AgentMoney:
         auto_refill_threshold: Decimal = Decimal("100.0"),
         auto_refill_amount: Decimal = Decimal("1000.0"),
         session: AsyncSession | None = None,
+        *,
+        caller: CallerIdentity,
     ) -> WalletResponse:
         return await self._wallet_engine.create_agent_wallet(
             sponsor_wallet_id=sponsor_wallet_id,
@@ -173,6 +178,7 @@ class AgentMoney:
             auto_refill_threshold=auto_refill_threshold,
             auto_refill_amount=auto_refill_amount,
             session=session,
+            caller=caller,
         )
 
     async def create_child_wallet(
@@ -184,6 +190,8 @@ class AgentMoney:
         task_description: str = "",
         ttl_seconds: int | None = None,
         auto_reclaim: bool = True,
+        *,
+        caller: CallerIdentity,
     ) -> WalletResponse:
         return await self._wallet_engine.create_child_wallet(
             parent_wallet_id=parent_wallet_id,
@@ -193,10 +201,15 @@ class AgentMoney:
             task_description=task_description,
             ttl_seconds=ttl_seconds,
             auto_reclaim=auto_reclaim,
+            caller=caller,
         )
 
-    async def reclaim_child_wallet(self, child_wallet_id: str) -> dict:
-        return await self._wallet_engine.reclaim_child_wallet(child_wallet_id)
+    async def reclaim_child_wallet(
+        self, child_wallet_id: str, *, caller: CallerIdentity
+    ) -> dict:
+        return await self._wallet_engine.reclaim_child_wallet(
+            child_wallet_id, caller=caller
+        )
 
     async def transfer(
         self,
@@ -205,6 +218,8 @@ class AgentMoney:
         amount: Decimal,
         description: str = "",
         correlation_id: str | None = None,
+        *,
+        caller: CallerIdentity,
     ) -> dict:
         return await self._wallet_engine.transfer(
             from_wallet_id=from_wallet_id,
@@ -212,6 +227,7 @@ class AgentMoney:
             amount=amount,
             description=description,
             correlation_id=correlation_id,
+            caller=caller,
         )
 
     async def is_wallet_or_descendant(
@@ -273,6 +289,8 @@ class AgentMoney:
         dry_run: bool = False,
         dry_run_session_id: str | None = None,
         operation_key: str | None = None,
+        *,
+        caller: CallerIdentity,
     ) -> LedgerEntry | InsufficientFundsResponse | SimulatedChargeResult:
         return await self._billing_engine.charge(
             wallet_id=wallet_id,
@@ -283,6 +301,7 @@ class AgentMoney:
             dry_run=dry_run,
             dry_run_session_id=dry_run_session_id,
             operation_key=operation_key,
+            caller=caller,
         )
 
     async def refund_charge(
@@ -291,11 +310,13 @@ class AgentMoney:
         wallet_id: str,
         charge_entry_id: str,
         description: str = "",
+        caller: CallerIdentity,
     ) -> LedgerEntry:
         return await self._billing_engine.refund_charge(
             wallet_id=wallet_id,
             charge_entry_id=charge_entry_id,
             description=description,
+            caller=caller,
         )
 
     async def top_up(

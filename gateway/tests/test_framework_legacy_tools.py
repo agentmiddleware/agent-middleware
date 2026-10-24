@@ -44,7 +44,7 @@ TOOL_CASES: dict[str, tuple[dict[str, Any], str, str, str]] = {
         {"event": "task_completed", "properties": '{"step": 1}'},
         "POST",
         "/v1/telemetry/events",
-        "evt-1",
+        "'ingested': 1",
     ),
     "get_balance": (
         {},
@@ -79,10 +79,15 @@ TOOL_CASES: dict[str, tuple[dict[str, Any], str, str, str]] = {
 }
 
 _RESPONSES: dict[tuple[str, str], dict[str, Any]] = {
-    ("POST", "/v1/telemetry/events"): {"event_id": "evt-1"},
+    ("POST", "/v1/telemetry/events"): {
+        "ingested": 1,
+        "failed": 0,
+        "batch_id": "batch-1",
+        "errors": [],
+    },
     ("GET", f"/v1/billing/wallets/{WALLET_ID}"): {"balance": 42.5},
     ("POST", "/v1/comms/messages"): {"message_id": "msg-1"},
-    ("POST", "/v1/ai/decide"): {"decision": "b"},
+    ("POST", "/v1/ai/decide"): {"action": "b", "decision_id": "d1"},
     ("POST", "/v1/ai/heal"): {"action": "restart"},
     ("POST", "/v1/awi/sessions"): {"session_id": "awi-123"},
 }

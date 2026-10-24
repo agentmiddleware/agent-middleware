@@ -13,15 +13,19 @@ Fail-closed rules:
   ``goose_amw.canonical.idempotency_key`` (verified caller + tool + canonical
   args hash + agent session id). The Goose request id is logged only.
 - ``requestState`` is HMAC-SHA256 sealed; missing secret fails closed.
-- Clients without ``input_required`` support are rejected.
-- Deny, timeout, and tampering each emit a receipt via an injectable sink and
-  never execute.
+- Clients without ``input_required`` support are rejected, with a receipt.
+- Deny, timeout, tampering, and every retry mismatch each emit a receipt via
+  an injectable sink and never execute.
+- Pending approvals, decisions, and consumption live in the database
+  (``DbApprovalStore``), so a restart cannot replay an approval.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import concurrent.futures
 import hashlib
 import hmac
 import json
@@ -30,8 +34,18 @@ import os
 import secrets
 import threading
 import time
+from collections.abc import Coroutine
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Literal
+from datetime import datetime, timezone
+from typing import Any, Callable, Literal, TypeVar, cast
+
+from sqlalchemy import select, update
+from sqlalchemy.sql.elements import ColumnElement
+from sqlmodel import col
+
+from app.core.time import to_naive_utc, utc_now
+from app.db.approval_gate_models import ApprovalGateModel
+from app.db.database import get_session_factory
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +62,9 @@ RejectReason = Literal[
     "timeout",
     "tampered",
     "unsupported_client",
+    "tool_mismatch",
+    "session_mismatch",
+    "key_mismatch",
     "args_mismatch",
     "principal_mismatch",
     "replayed",
@@ -66,7 +83,7 @@ class _StateTampered(ValueError):
 def _load_canonical() -> Any:
     """Import goose_amw.canonical lazily; fail closed when absent."""
     try:
-        from goose_amw import canonical as canonical_module
+        from goose_amw import canonical as canonical_module  # type: ignore[import-not-found]
     except ImportError as exc:
         raise ApprovalGateUnavailable(
             "goose_amw is not importable; approval gate refuses to run "
@@ -225,6 +242,236 @@ class InMemoryApprovalStore(ApprovalStore):
             return replace(record)
 
 
+_T = TypeVar("_T")
+
+
+def _run_sync(coro: Coroutine[Any, Any, _T]) -> _T:
+    """Drive one DB coroutine from the store's synchronous interface.
+
+    The gate evaluates inline in a sync ``tools/call`` path, while the
+    gateway's persistence is async. With no running loop this is a plain
+    ``asyncio.run``; from inside a running loop (the async approvals router)
+    the coroutine runs on a helper thread with its own loop instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _to_db_time(value: float) -> datetime:
+    """Epoch seconds to the naive-UTC form used for persistence."""
+    return to_naive_utc(datetime.fromtimestamp(value, tz=timezone.utc))
+
+
+def _from_db_time(value: datetime) -> float:
+    """Naive-UTC database timestamp back to epoch seconds."""
+    return value.replace(tzinfo=timezone.utc).timestamp()
+
+
+def _model_from_record(record: ApprovalRecord) -> ApprovalGateModel:
+    return ApprovalGateModel(
+        nonce=record.nonce,
+        idempotency_key=record.idempotency_key,
+        args_hash=record.args_hash,
+        principal=record.principal,
+        tool=record.tool,
+        session_id=record.session_id,
+        status=record.status,
+        created_at=_to_db_time(record.created_at),
+        deadline=_to_db_time(record.deadline),
+        decided_at=(
+            _to_db_time(record.decided_at) if record.decided_at is not None else None
+        ),
+        consumed_at=utc_now() if record.consumed else None,
+    )
+
+
+def _record_from_model(model: ApprovalGateModel) -> ApprovalRecord:
+    # The table check constraint admits only the four ApprovalStatus values.
+    status = cast(ApprovalStatus, model.status)
+    return ApprovalRecord(
+        nonce=model.nonce,
+        idempotency_key=model.idempotency_key,
+        args_hash=model.args_hash,
+        principal=model.principal,
+        tool=model.tool,
+        session_id=model.session_id,
+        status=status,
+        created_at=_from_db_time(model.created_at),
+        deadline=_from_db_time(model.deadline),
+        decided_at=(
+            _from_db_time(model.decided_at) if model.decided_at is not None else None
+        ),
+        consumed=model.consumed_at is not None,
+    )
+
+
+class DbApprovalStore(ApprovalStore):
+    """Durable store on the gateway database via the shared session factory.
+
+    Decisions and consumption survive a restart: a consumed nonce stays
+    consumed because consume is a conditional ``UPDATE ... WHERE
+    status='approved' AND consumed_at IS NULL`` whose rowcount admits exactly
+    one winner, so neither a restart nor concurrent retries can replay it.
+    """
+
+    def save(self, record: ApprovalRecord) -> None:
+        _run_sync(self._save(record))
+
+    async def _save(self, record: ApprovalRecord) -> None:
+        factory = get_session_factory()
+        async with factory() as session:
+            await session.merge(_model_from_record(record))
+            await session.commit()
+
+    def get(self, nonce: str) -> ApprovalRecord | None:
+        return _run_sync(self._get(nonce))
+
+    async def _get(self, nonce: str) -> ApprovalRecord | None:
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(ApprovalGateModel).where(
+                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
+                )
+            )
+            model = result.scalar_one_or_none()
+            return _record_from_model(model) if model is not None else None
+
+    def list_pending(self) -> list[ApprovalRecord]:
+        return _run_sync(self._list_pending())
+
+    async def _list_pending(self) -> list[ApprovalRecord]:
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(ApprovalGateModel)
+                .where(
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.status == "pending",
+                    )
+                )
+                .order_by(
+                    col(ApprovalGateModel.created_at).asc(),
+                    col(ApprovalGateModel.nonce).asc(),
+                )
+            )
+            return [_record_from_model(model) for model in result.scalars().all()]
+
+    def decide(
+        self, nonce: str, approved: bool, *, now: float
+    ) -> ApprovalRecord | None:
+        return _run_sync(self._decide(nonce, approved, now=now))
+
+    async def _decide(
+        self, nonce: str, approved: bool, *, now: float
+    ) -> ApprovalRecord | None:
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(ApprovalGateModel).where(
+                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
+                )
+            )
+            model = result.scalar_one_or_none()
+            if model is None or model.status != "pending":
+                return None
+            updated = await session.execute(
+                update(ApprovalGateModel)
+                .where(
+                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.status == "pending",
+                    ),
+                )
+                .values(
+                    status="approved" if approved else "denied",
+                    decided_at=_to_db_time(now),
+                )
+            )
+            await session.commit()
+            if cast(Any, updated).rowcount != 1:
+                return None
+            await session.refresh(model)
+            return _record_from_model(model)
+
+    def consume(self, nonce: str) -> ApprovalRecord | None:
+        return _run_sync(self._consume(nonce))
+
+    async def _consume(self, nonce: str) -> ApprovalRecord | None:
+        """Atomically spend an approved, unconsumed approval — single use.
+
+        The ``WHERE status='approved' AND consumed_at IS NULL`` clause is the
+        single serialization point: exactly one caller (one retry, one
+        transport) wins, and a restart cannot resurrect a spent approval.
+        """
+        factory = get_session_factory()
+        async with factory() as session:
+            updated = await session.execute(
+                update(ApprovalGateModel)
+                .where(
+                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.status == "approved",
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        cast(Any, ApprovalGateModel.consumed_at).is_(None),
+                    ),
+                )
+                .values(consumed_at=utc_now())
+            )
+            await session.commit()
+            if cast(Any, updated).rowcount != 1:
+                return None
+            result = await session.execute(
+                select(ApprovalGateModel).where(
+                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
+                )
+            )
+            model = result.scalar_one_or_none()
+            return _record_from_model(model) if model is not None else None
+
+    def mark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+        return _run_sync(self._mark_expired(nonce, now=now))
+
+    async def _mark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(ApprovalGateModel).where(
+                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
+                )
+            )
+            model = result.scalar_one_or_none()
+            if model is None:
+                return None
+            if model.status == "pending":
+                await session.execute(
+                    update(ApprovalGateModel)
+                    .where(
+                        cast(
+                            ColumnElement[bool],
+                            ApprovalGateModel.nonce == nonce,
+                        ),
+                        cast(
+                            ColumnElement[bool],
+                            ApprovalGateModel.status == "pending",
+                        ),
+                    )
+                    .values(status="expired", decided_at=_to_db_time(now))
+                )
+                await session.commit()
+                await session.refresh(model)
+            return _record_from_model(model)
+
+
 ReceiptSink = Callable[[str, dict[str, Any]], None]
 
 
@@ -261,7 +508,7 @@ class ApprovalGate:
         self._secret = raw_secret.encode("utf-8") if raw_secret else None
         ttl = ttl_seconds if ttl_seconds is not None else _ttl_from_env()
         self._ttl = _clamp_ttl(ttl)
-        self.store = store or InMemoryApprovalStore()
+        self.store = store or DbApprovalStore()
         self.clock = clock
         self.receipt_sink = receipt_sink or _log_receipt_sink
 
@@ -324,6 +571,13 @@ class ApprovalGate:
         client_supports_input_required: bool,
     ) -> ApprovalDecision:
         if not client_supports_input_required:
+            self._emit(
+                "unsupported_client",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
             return ApprovalDecision(action="REJECT", reason="unsupported_client")
         secret = self._require_secret()
         now = self.clock()
@@ -347,6 +601,9 @@ class ApprovalGate:
                 "v": STATE_VERSION,
                 "argsHash": args_hash,
                 "principal": caller,
+                "tool": tool,
+                "sessionId": session_id,
+                "idempotencyKey": idempotency_key,
                 "deadline": deadline,
                 "nonce": nonce,
             },
@@ -383,6 +640,13 @@ class ApprovalGate:
         request_state: str,
     ) -> ApprovalDecision:
         if not client_supports_input_required:
+            self._emit(
+                "unsupported_client",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
             return ApprovalDecision(action="REJECT", reason="unsupported_client")
         secret = self._require_secret()
         try:
@@ -397,6 +661,25 @@ class ApprovalGate:
             )
             return ApprovalDecision(action="REJECT", reason="tampered")
         nonce = sealed.get("nonce")
+        if not isinstance(nonce, str) or not nonce:
+            self._emit(
+                "tampered",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="tampered")
+        if sealed.get("tool") != tool:
+            self._emit("tool_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="tool_mismatch", nonce=nonce
+            )
+        if sealed.get("sessionId") != session_id:
+            self._emit("session_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="session_mismatch", nonce=nonce
+            )
         if sealed.get("principal") != caller:
             self._emit("principal_mismatch", nonce=nonce, tool=tool, principal=caller)
             return ApprovalDecision(
@@ -407,7 +690,13 @@ class ApprovalGate:
             return ApprovalDecision(
                 action="REJECT", reason="args_mismatch", nonce=nonce
             )
-        record = self.store.get(nonce) if isinstance(nonce, str) else None
+        # Last: the key is derived from caller, tool, args, and session, so a
+        # mismatch here with all inputs matching means the key derivation
+        # itself drifted between pause and retry.
+        if sealed.get("idempotencyKey") != idempotency_key:
+            self._emit("key_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(action="REJECT", reason="key_mismatch", nonce=nonce)
+        record = self.store.get(nonce)
         if record is None:
             self._emit("tampered", nonce=nonce, tool=tool, principal=caller)
             return ApprovalDecision(action="REJECT", reason="tampered", nonce=nonce)

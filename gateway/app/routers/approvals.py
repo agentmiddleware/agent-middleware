@@ -13,7 +13,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.services.approval_gate import ApprovalStore, InMemoryApprovalStore
+from app.services.approval_gate import ApprovalStore, DbApprovalStore
 
 router = APIRouter(prefix="/v1/approvals", tags=["Approvals"])
 
@@ -27,7 +27,7 @@ def require_loopback(request: Request) -> None:
         raise HTTPException(status_code=403, detail="approvals are local-only")
 
 
-_store: ApprovalStore = InMemoryApprovalStore()
+_store: ApprovalStore = DbApprovalStore()
 
 
 def get_approval_store() -> ApprovalStore:

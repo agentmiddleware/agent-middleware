@@ -9,6 +9,7 @@ not repeat the effect.
 
 from __future__ import annotations
 
+from decimal import Decimal
 import json
 
 import pytest
@@ -17,6 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from app.db.database import get_session_factory
 from app.db.models import IdempotencyRecordModel, LedgerEntryModel
 from app.main import app
+from app.services.agent_money import get_agent_money
 from app.services.idempotency import MAX_CLIENT_IDEMPOTENCY_KEY_LENGTH
 from app.services.signing_keys import sha256_hex
 from sqlalchemy import func, select
@@ -372,7 +374,7 @@ async def test_transfer_error_replays_keep_the_original_body(
     assert first.status_code == 402, first.text
     assert second.status_code == 402, second.text
     assert second.json() == first.json()
-    assert set(first.json()) == {"detail"}
+    assert set(first.json()) == {"detail", "code", "message", "fix", "docs_url"}
     assert await _balance(client, api_headers, sender) == 50
 
     missing_headers = {**api_headers, "Idempotency-Key": "xfer-err-404"}
@@ -390,7 +392,7 @@ async def test_transfer_error_replays_keep_the_original_body(
     assert first_missing.status_code == 404, first_missing.text
     assert second_missing.status_code == 404, second_missing.text
     assert second_missing.json() == first_missing.json()
-    assert set(first_missing.json()) == {"detail"}
+    assert set(first_missing.json()) == {"detail", "code", "message", "fix", "docs_url"}
 
     same_headers = {**api_headers, "Idempotency-Key": "xfer-err-400"}
     same = {"from_wallet_id": sender, "to_wallet_id": sender, "amount": 1}
@@ -403,8 +405,37 @@ async def test_transfer_error_replays_keep_the_original_body(
     assert first_same.status_code == 400, first_same.text
     assert second_same.status_code == 400, second_same.text
     assert second_same.json() == first_same.json()
-    assert set(first_same.json()) == {"detail"}
+    assert set(first_same.json()) == {"detail", "code", "message", "fix", "docs_url"}
     assert await _balance(client, api_headers, sender) == 50
+
+    money = get_agent_money()
+    demo = await money.create_sponsor_wallet(
+        "err-demo", "err-demo@t.com", Decimal("20"), require_kyc=False, tenant="demo"
+    )
+    normal = await money.create_sponsor_wallet(
+        "err-normal", "err-normal@t.com", Decimal("20"), require_kyc=False
+    )
+    cross_headers = {**api_headers, "Idempotency-Key": "xfer-err-403"}
+    cross = {
+        "from_wallet_id": demo.wallet_id,
+        "to_wallet_id": normal.wallet_id,
+        "amount": 1,
+    }
+    first_cross = await client.post(
+        "/v1/billing/transfer", params=cross, headers=cross_headers
+    )
+    second_cross = await client.post(
+        "/v1/billing/transfer", params=cross, headers=cross_headers
+    )
+    assert first_cross.status_code == 403, first_cross.text
+    assert second_cross.status_code == 403, second_cross.text
+    # Main's stored shape wins for this replay: the original refusal carries
+    # detail, the replay carries the bare error/message body plus the envelope.
+    assert first_cross.json()["detail"]["error"] == "cross_tenant_transfer_refused"
+    assert set(second_cross.json()) == {"error", "message", "code", "fix", "docs_url"}
+    assert second_cross.json()["error"] == "cross_tenant_transfer_refused"
+    assert second_cross.json()["code"] == "cross_tenant_transfer_refused"
+    assert await _balance(client, api_headers, demo.wallet_id) == 20
 
 
 async def test_transfer_unknown_source_with_key_is_404(

@@ -1056,6 +1056,11 @@ async def prepare_top_up(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"message": str(e), **e.as_error_data()},
         ) from e
+    except (IdempotencyConflictError, IdempotencyInProgressError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": str(e), "message": str(e)},
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

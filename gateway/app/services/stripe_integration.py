@@ -21,9 +21,15 @@ from anyio import to_thread
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.sql.elements import ColumnElement
+from sqlmodel import col
 
 from ..db.database import get_session_factory
-from ..db.models import BillingAlertModel, LedgerEntryModel, WalletModel
+from ..db.models import (
+    BillingAlertModel,
+    IdempotencyRecordModel,
+    LedgerEntryModel,
+    WalletModel,
+)
 from ..core.config import get_settings
 from ..core.webhook_auth import WebhookVerificationError, verify_stripe_event
 from ..core.time import utc_now
@@ -32,6 +38,7 @@ from ..schemas.billing import AlertSeverity, AlertType, WalletStatus
 from .agent_money import WalletNotFoundError
 from .idempotency import (
     IDEMPOTENCY_KEY_HEADER_SOURCE,
+    IdempotencyInProgressError,
     get_idempotency_service,
     validate_client_idempotency_key,
 )
@@ -54,6 +61,11 @@ stripe.default_http_client = stripe.new_default_http_client(
 )
 
 SUPPORTED_TOP_UP_CURRENCY = "usd"
+_TOP_UP_QUOTE_PREFIX = "topup-quote:"
+# Stripe can prune an idempotency result once it is at least 24 hours old.
+# Never resend a create request after this conservative window.
+_TOP_UP_RETRY_MAX_AGE_SECONDS = 23 * 60 * 60
+_TOP_UP_RETRY_IDLE_SECONDS = 5 * 60
 
 
 class StripeSettlementError(ValueError):
@@ -164,18 +176,62 @@ class StripeIntegration:
         )
         replay_endpoint = "/v1/billing/top-up/prepare"
         if replay_service is not None and validated_key is not None:
-            begun = await replay_service.begin_with_record(
-                wallet_id=wallet_id,
-                endpoint=replay_endpoint,
-                idempotency_key=validated_key,
-                request_payload={
-                    "amount_cents": amount_cents,
-                    "currency": SUPPORTED_TOP_UP_CURRENCY,
-                },
-            )
-            if begun.replay is not None:
-                assert begun.replay.response_json is not None
-                return begun.replay.response_json
+            try:
+                begun = await replay_service.begin_with_record(
+                    wallet_id=wallet_id,
+                    endpoint=replay_endpoint,
+                    idempotency_key=validated_key,
+                    request_payload={
+                        "amount_cents": amount_cents,
+                        "currency": SUPPORTED_TOP_UP_CURRENCY,
+                    },
+                    operation_kind="stripe_top_up",
+                )
+            except IdempotencyInProgressError:
+                # Only records made by this flow have a quote checkpoint. Older
+                # ambiguous rows stay blocked: they may already have sent a
+                # Stripe request with parameters we cannot reconstruct.
+                async with self._session_factory()() as session:
+                    record = (
+                        await session.execute(
+                            select(IdempotencyRecordModel).where(
+                                col(IdempotencyRecordModel.wallet_id) == wallet_id,
+                                col(IdempotencyRecordModel.endpoint) == replay_endpoint,
+                                col(IdempotencyRecordModel.idempotency_key)
+                                == validated_key,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if record is None or record.operation_kind != "stripe_top_up":
+                        raise
+                    if record.response_json is not None:
+                        return json.loads(record.response_json)
+                    quote = record.response_reference or ""
+                    age = (utc_now() - record.created_at).total_seconds()
+                    if (
+                        not quote.startswith(_TOP_UP_QUOTE_PREFIX)
+                        or age < _TOP_UP_RETRY_IDLE_SECONDS
+                        or age >= _TOP_UP_RETRY_MAX_AGE_SECONDS
+                    ):
+                        raise
+                    credits_metadata = quote[len(_TOP_UP_QUOTE_PREFIX) :]
+                    credits = Decimal(credits_metadata)
+                    credits_response = (
+                        int(credits)
+                        if credits == credits.to_integral_value()
+                        else float(credits)
+                    )
+            else:
+                if begun.replay is not None:
+                    assert begun.replay.response_json is not None
+                    return begun.replay.response_json
+                # Persist the exact Stripe quote before network I/O. A retry
+                # must reuse it even when EXCHANGE_RATE changes meanwhile.
+                async with self._session_factory()() as session:
+                    record = await session.get(IdempotencyRecordModel, begun.record_id)
+                    assert record is not None
+                    record.response_reference = _TOP_UP_QUOTE_PREFIX + credits_metadata
+                    await session.commit()
 
         def _create_top_up_payment_intent() -> Any:
             metadata = {

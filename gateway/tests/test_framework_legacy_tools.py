@@ -137,7 +137,7 @@ class _StubFunctionTool:
         name: str | None = None,
         async_fn: Any = None,
         **_: Any,
-    ) -> "_StubFunctionTool":
+    ) -> _StubFunctionTool:
         return cls(fn, async_fn, name)
 
     async def acall(self, **kwargs: Any) -> Any:
@@ -234,7 +234,7 @@ async def test_langgraph_tool_rejects_malformed_json_without_sending(
     client, sent = recording
     tools = {fn.__name__: fn for fn in get_langgraph_tools(client)}
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="Expecting property name"):
         await _ainvoke_langchain_style(
             tools["send_message"], {"to_agent": "agent-2", "content": "{not json"}
         )

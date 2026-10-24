@@ -11,7 +11,8 @@ Integration packages for popular agent frameworks:
 ## Installation
 
 No PyPI package is published; import this module from a checkout of the
-repository after `python -m pip install -r requirements.txt`.
+repository after `python -m pip install -r gateway/requirements.txt -e ./sdk/python`
+with `PYTHONPATH=integrations`.
 
 ## Quick Start
 
@@ -53,9 +54,9 @@ __version__ = "0.4.1"
 
 from .client import B2AClient, B2AConfig
 from .tools import (
-    get_langgraph_tools,
-    get_crewai_tools,
     get_autogen_tools,
+    get_crewai_tools,
+    get_langgraph_tools,
     get_llamaindex_tools,
 )
 
@@ -88,8 +89,8 @@ __all__ = [
     "B2AConfig",
     "LangGraphGovernedTools",
     "PydanticAIGovernedTools",
-    "get_langgraph_tools",
-    "get_crewai_tools",
     "get_autogen_tools",
+    "get_crewai_tools",
+    "get_langgraph_tools",
     "get_llamaindex_tools",
 ]

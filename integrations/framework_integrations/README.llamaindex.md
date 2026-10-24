@@ -13,7 +13,9 @@ the autogen / langchain / openai integrations, or `LangGraphGovernedTools` /
 
 ## Installation
 
-No PyPI package is published. Work from a checkout of this repository:
+No PyPI package is published. The SDK distribution will be published as
+`amw-sdk` (`pip install amw-sdk`). For now, work from a checkout of this
+repository:
 
 ```bash
 git clone https://github.com/PetrefiedThunder/agent-middleware.git
@@ -34,9 +36,7 @@ from framework_integrations import B2AClient, get_llamaindex_tools
 
 # Initialize client
 client = B2AClient(
-    api_url="http://localhost:8000",
-    api_key="your-api-key",
-    wallet_id="your-wallet-id"
+    api_url="http://localhost:8000", api_key="your-api-key", wallet_id="your-wallet-id"
 )
 
 # Get LlamaIndex-compatible tools
@@ -73,7 +73,7 @@ tools = get_llamaindex_tools(client)
 agent = ReActAgent.from_tools(
     tools,
     llm=llm,
-    system_prompt="You are a data processing agent. Use tools to handle data."
+    system_prompt="You are a data processing agent. Use tools to handle data.",
 )
 
 result = await agent.achat("Process the uploaded dataset")

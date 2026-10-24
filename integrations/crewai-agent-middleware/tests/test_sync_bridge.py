@@ -12,10 +12,12 @@ import json
 import warnings
 from datetime import UTC, datetime
 
-import crewai_b2a.tool as tool_module
 import httpx
 import pytest
+
+# isort: split
 from crewai_b2a import B2AClient, CrewAIB2ATool
+from crewai_b2a import tool as tool_module
 
 
 def _permit_payload() -> dict:

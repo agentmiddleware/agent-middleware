@@ -91,6 +91,7 @@ _PUBLIC_DISCOVERY_PATHS = frozenset(
         "/redoc",
         "/docs/oauth2-redirect",
         "/docs/index",
+        "/docs/concepts/request-keys",
         "/openapi.json",
         "/health",
         "/health/ready",
@@ -124,11 +125,24 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Content-Security-Policy",
             _content_security_policy(request, response),
         )
-        if not _is_public_discovery(request.url.path):
+        if not _is_public_discovery(_request_path(request)):
             response.headers.setdefault("Cache-Control", "no-store")
         if _is_secure(request):
             response.headers.setdefault("Strict-Transport-Security", HSTS_VALUE)
         return response
+
+
+def _request_path(request: Request) -> str:
+    """Return the path the router matches.
+
+    ``request.url.path`` reparses the path and drops a literal ``?`` or ``#``.
+    A decoded ``%3F`` would otherwise make ``/health?not-health`` look like
+    the cacheable ``/health`` document.
+    """
+    path = request.scope["path"]
+    if not isinstance(path, str):
+        raise TypeError("ASGI scope path must be a string")
+    return path
 
 
 def _normalized_path(path: str) -> str:
@@ -138,7 +152,7 @@ def _normalized_path(path: str) -> str:
 
 
 def _content_security_policy(request: Request, response: Response) -> str:
-    path = _normalized_path(request.url.path)
+    path = _normalized_path(_request_path(request))
     if path in _DOCS_HTML_PATHS:
         return DOCS_HTML_CSP
     content_type = (

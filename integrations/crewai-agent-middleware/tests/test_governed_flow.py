@@ -1,11 +1,18 @@
 """Tests for governed permit→invoke→receipt flow in CrewAI wrapper."""
 
 import ast
+import asyncio
 import json
 from datetime import UTC, datetime
 
 import httpx
 import pytest
+from b2a_sdk.errors import (
+    DeliveryUncertainError,
+    IdempotencyConflictError,
+    InsufficientFundsError,
+    PermitDeniedError,
+)
 
 from crewai_b2a import B2AClient, CrewAIB2ATool
 
@@ -229,19 +236,20 @@ async def test_replay_with_changed_arguments_returns_idempotency_conflict():
         permit_idempotency_key="permit-replay-key",
         arguments={"query": "first"},
     )
-    conflict = await tool._arun(
-        operation="call_tool",
-        tool_name="partner.search",
-        idempotency_key="replay-key",
-        permit_idempotency_key="permit-replay-key",
-        arguments={"query": "second"},
-    )
+    with pytest.raises(IdempotencyConflictError) as exc_info:
+        await tool._arun(
+            operation="call_tool",
+            tool_name="partner.search",
+            idempotency_key="replay-key",
+            permit_idempotency_key="permit-replay-key",
+            arguments={"query": "second"},
+        )
 
     assert gateway.invoke_keys == [("replay-key", "replay-key")] * 2
     assert gateway.permit_requests == 1
     assert gateway.charges == 1
     assert ast.literal_eval(first)["receipt_id"] == "receipt-charge-1"
-    assert conflict == "Error: idempotency_key_reused"
+    assert "idempotency_key_reused" in str(exc_info.value)
 
     await base_client.close()
 
@@ -291,3 +299,192 @@ async def test_signed_receipt_returned():
     assert "'2'" in result
 
     await base_client.close()
+
+
+def _governed_tool(handler) -> tuple[CrewAIB2ATool, B2AClient]:
+    client = B2AClient(api_key="test-key", transport=httpx.MockTransport(handler))
+    tool = CrewAIB2ATool(api_key="test-key", wallet_id="wallet-1")
+    tool.client = client
+    return tool, client
+
+
+def _mcp_error_handler(reason: str, outcome: str):
+    """Permit succeeds, then the invoke answers with a typed gateway error."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/permits":
+            return httpx.Response(201, json=_permit_payload())
+        if request.url.path == "/mcp/messages":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "billing-key",
+                    "error": {
+                        "code": -32003,
+                        "message": reason,
+                        "data": {"receipt": _receipt_payload(outcome)},
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    return handler
+
+
+_BILLING_CALL = {
+    "operation": "call_tool",
+    "tool_name": "partner.search",
+    "idempotency_key": "billing-key",
+    "permit_idempotency_key": "permit-billing-key",
+    "arguments": {"query": "test"},
+}
+
+
+def _assert_terminal_billing_error(exc: Exception, error_type: type[Exception]) -> None:
+    """The raised object keeps the fields a caller needs to decide not to retry."""
+    if error_type is InsufficientFundsError:
+        assert isinstance(exc, InsufficientFundsError)
+        assert exc.wallet_id == "wallet-1"
+    elif error_type is PermitDeniedError:
+        assert isinstance(exc, PermitDeniedError)
+        assert exc.reason == "permit_tool_not_allowed"
+    elif error_type is DeliveryUncertainError:
+        assert isinstance(exc, DeliveryUncertainError)
+        assert exc.receipt_id == "receipt-delivery_uncertain"
+    elif error_type is IdempotencyConflictError:
+        assert isinstance(exc, IdempotencyConflictError)
+        assert "idempotency_key_reused" in str(exc)
+    else:
+        raise AssertionError(f"unexpected error type {error_type}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "outcome", "error_type"),
+    [
+        ("insufficient_funds", "insufficient_funds", InsufficientFundsError),
+        ("permit_tool_not_allowed", "denied", PermitDeniedError),
+        ("delivery_uncertain", "delivery_uncertain", DeliveryUncertainError),
+        ("idempotency_key_reused", "denied", IdempotencyConflictError),
+    ],
+    ids=[
+        "insufficient_funds",
+        "permit_denied",
+        "delivery_uncertain",
+        "idempotency_conflict",
+    ],
+)
+async def test_arun_raises_terminal_billing_errors(reason, outcome, error_type):
+    """Invoke failures that must not be retried stay typed exceptions."""
+    tool, client = _governed_tool(_mcp_error_handler(reason, outcome))
+    with pytest.raises(error_type) as exc_info:
+        await tool._arun(**_BILLING_CALL)
+    _assert_terminal_billing_error(exc_info.value, error_type)
+    await client.close()
+
+
+def _run_on_fresh_loop(tool: CrewAIB2ATool, client: B2AClient, **kwargs):
+    """Call the sync wrapper on its own loop, then close the client."""
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        try:
+            return tool._run(**kwargs)
+        finally:
+            loop.run_until_complete(client.close())
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
+@pytest.mark.parametrize(
+    ("reason", "outcome", "error_type"),
+    [
+        ("insufficient_funds", "insufficient_funds", InsufficientFundsError),
+        ("permit_tool_not_allowed", "denied", PermitDeniedError),
+        ("delivery_uncertain", "delivery_uncertain", DeliveryUncertainError),
+        ("idempotency_key_reused", "denied", IdempotencyConflictError),
+    ],
+    ids=[
+        "insufficient_funds",
+        "permit_denied",
+        "delivery_uncertain",
+        "idempotency_conflict",
+    ],
+)
+def test_run_raises_terminal_billing_errors(reason, outcome, error_type):
+    """The sync wrapper raises the same terminal billing errors as the async one."""
+    tool, client = _governed_tool(_mcp_error_handler(reason, outcome))
+    with pytest.raises(error_type) as exc_info:
+        _run_on_fresh_loop(tool, client, **_BILLING_CALL)
+    _assert_terminal_billing_error(exc_info.value, error_type)
+
+
+def _permit_insufficient_funds_handler():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/permits":
+            return httpx.Response(
+                402,
+                json={
+                    "detail": {
+                        "shortfall": 3,
+                        "top_up_url": "https://billing.example/top-up",
+                    }
+                },
+            )
+        return httpx.Response(404)
+
+    return handler
+
+
+def _assert_permit_insufficient_funds(exc: InsufficientFundsError) -> None:
+    assert exc.wallet_id == "wallet-1"
+    assert exc.shortfall == 3.0
+    assert exc.top_up_url == "https://billing.example/top-up"
+    assert exc.status_code == 402
+
+
+@pytest.mark.asyncio
+async def test_arun_raises_insufficient_funds_when_permit_create_is_rejected():
+    """A 402 while creating the permit is an insufficient-funds error, not text."""
+    tool, client = _governed_tool(_permit_insufficient_funds_handler())
+    with pytest.raises(InsufficientFundsError) as exc_info:
+        await tool._arun(**_BILLING_CALL)
+    _assert_permit_insufficient_funds(exc_info.value)
+    await client.close()
+
+
+def test_run_raises_insufficient_funds_when_permit_create_is_rejected():
+    """The sync wrapper raises the same 402 instead of returning Error text."""
+    tool, client = _governed_tool(_permit_insufficient_funds_handler())
+    with pytest.raises(InsufficientFundsError) as exc_info:
+        _run_on_fresh_loop(tool, client, **_BILLING_CALL)
+    _assert_permit_insufficient_funds(exc_info.value)
+
+
+def _connection_reset_handler():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection reset", request=request)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_arun_keeps_retryable_transport_failure_as_error_text():
+    """A dropped connection is still text, so it does not look like a billing refusal."""
+    tool, client = _governed_tool(_connection_reset_handler())
+    result = await tool._arun(operation="discover_tools")
+    assert isinstance(result, str)
+    assert result.startswith("Error:")
+    assert "connection reset" in result
+    await client.close()
+
+
+def test_run_keeps_retryable_transport_failure_as_error_text():
+    """The sync wrapper also leaves a dropped connection as retryable text."""
+    tool, client = _governed_tool(_connection_reset_handler())
+    result = _run_on_fresh_loop(tool, client, operation="discover_tools")
+    assert isinstance(result, str)
+    assert result.startswith("Error:")
+    assert "connection reset" in result

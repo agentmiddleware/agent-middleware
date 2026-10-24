@@ -5,6 +5,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+from b2a_sdk.errors import (
+    DeliveryUncertainError,
+    IdempotencyConflictError,
+    InsufficientFundsError,
+    PermitDeniedError,
+)
 from b2a_sdk.models import PermitRequest
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
@@ -268,6 +274,13 @@ class CrewAIB2ATool(BaseTool):
                 return f"Balance: {balance} credits"
 
             return f"Unknown operation: {operation}"
+        except (
+            InsufficientFundsError,
+            PermitDeniedError,
+            DeliveryUncertainError,
+            IdempotencyConflictError,
+        ):
+            raise
         except Exception as exc:  # noqa: BLE001
             # CrewAI agents read a string. Any failure here becomes that string.
             return _error_text(exc)
@@ -292,6 +305,13 @@ class CrewAIB2ATool(BaseTool):
         )
         try:
             return self._drive(coro)
+        except (
+            InsufficientFundsError,
+            PermitDeniedError,
+            DeliveryUncertainError,
+            IdempotencyConflictError,
+        ):
+            raise
         except Exception as exc:  # noqa: BLE001
             # The coroutine was not scheduled, or it already finished.
             try:

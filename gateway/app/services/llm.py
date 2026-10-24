@@ -206,7 +206,12 @@ class LLMService:
             finish_reason=choice.get("finish_reason"),
         )
 
-    @retry_with_backoff(max_attempts=3, base_delay=1.0, max_delay=10.0)
+    @retry_with_backoff(
+        max_attempts=3,
+        base_delay=1.0,
+        max_delay=10.0,
+        non_retriable_exceptions=(ValueError,),
+    )
     async def chat(
         self,
         messages: list[dict[str, str]],

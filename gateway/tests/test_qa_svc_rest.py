@@ -102,15 +102,6 @@ class TestPatternEvaluation:
         assert result.done is False
         assert result.reward == -1.0
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG sandbox.py _evaluate_action: any known keyword solves any "
-            "pattern env, the guess is never matched against the actual "
-            "hidden rule (e.g. rule 'mirror' solved by 'rotate'). Fixing "
-            "changes game semantics, left for the owner."
-        ),
-    )
     async def test_wrong_keyword_does_not_solve(self, engine):
         env = await engine.create_environment(
             env_type="pattern", difficulty="easy", seed=1
@@ -375,6 +366,26 @@ class TestLLMParsing:
 
 
 class TestLLMFailureHandling:
+    async def test_anthropic_unsupported_tools_do_not_retry(self, monkeypatch, caplog):
+        service = LLMService()
+        service.settings = _openai_settings(LLM_PROVIDER="anthropic")
+        calls = 0
+        original_build_payload = service._build_payload
+
+        def build_payload(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original_build_payload(*args, **kwargs)
+
+        monkeypatch.setattr(service, "_build_payload", build_payload)
+        with pytest.raises(ValueError, match="tools are not supported"):
+            await service.chat(
+                [{"role": "user", "content": "hi"}],
+                tools=[{"type": "function", "function": {"name": "f"}}],
+            )
+        assert calls == 1
+        assert "retry_attempt" not in caplog.text
+
     async def test_mock_response_when_no_key_no_network(self):
         service = LLMService()
         service.settings = _openai_settings(LLM_API_KEY="")

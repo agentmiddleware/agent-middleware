@@ -31,6 +31,38 @@ router = APIRouter(
 )
 
 
+def _env_not_found(env_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "error": "not_found",
+            "message": f"Environment {env_id} not found",
+        },
+    )
+
+
+async def _load_owned_env_id(env_id: str, auth: AuthContext) -> str:
+    """Return the env id after enforcing that the caller's wallet owns it.
+
+    A foreign environment is answered exactly like a missing one: the wallet
+    check's 403 (which echoes the owner's wallet id) is mapped to 404 so one
+    tenant cannot probe for, or learn the owner of, another tenant's
+    environment. This mirrors ``_load_owned_env`` in the puzzle-sandbox
+    router.
+    """
+    from ..services.behavioral_sandbox import get_behavioral_sandbox
+
+    engine = get_behavioral_sandbox()
+    found, owner = await engine.get_environment_owner(env_id)
+    if not found:
+        raise _env_not_found(env_id)
+    try:
+        auth.require_wallet_access(owner)
+    except HTTPException:
+        raise _env_not_found(env_id) from None
+    return env_id
+
+
 @router.post(
     "/environments",
     response_model=SandboxEnvironment,
@@ -93,18 +125,9 @@ async def get_environment(
     auth: AuthContext = Depends(get_auth_context),
 ):
     """Get the current state of a sandbox environment."""
+    await _load_owned_env_id(env_id, auth)
     try:
         engine = get_behavioral_sandbox()
-        found, owner = await engine.get_environment_owner(env_id)
-        if not found:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "not_found",
-                    "message": f"Environment {env_id} not found",
-                },
-            )
-        auth.require_wallet_access(owner)
         return await engine.get_environment_state(env_id)
     except HTTPException:
         raise
@@ -132,18 +155,9 @@ async def destroy_environment(
     auth: AuthContext = Depends(get_auth_context),
 ):
     """Destroy a sandbox environment."""
+    await _load_owned_env_id(env_id, auth)
     try:
         engine = get_behavioral_sandbox()
-        found, owner = await engine.get_environment_owner(env_id)
-        if not found:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "not_found",
-                    "message": f"Environment {env_id} not found",
-                },
-            )
-        auth.require_wallet_access(owner)
         destroyed = await engine.destroy_environment(env_id)
         if not destroyed:
             raise HTTPException(
@@ -184,18 +198,9 @@ async def execute_tool(
 
     Use `dry_run=true` to simulate execution without side effects.
     """
+    await _load_owned_env_id(request.env_id, auth)
     try:
         engine = get_behavioral_sandbox()
-        found, owner = await engine.get_environment_owner(request.env_id)
-        if not found:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "not_found",
-                    "message": f"Environment {request.env_id} not found",
-                },
-            )
-        auth.require_wallet_access(owner)
         result = await engine.execute_tool(request)
         settings = get_settings()
         await record_governed_action(

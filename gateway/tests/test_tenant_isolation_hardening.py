@@ -198,17 +198,19 @@ async def test_sandbox_env_not_accessible_across_tenants(client, clean_database)
         await client.get(f"/v1/sandbox/behavioral/environments/{env_id}")
     ).status_code == 401
 
-    # Wallet B cannot read or destroy A's environment.
+    # Wallet B cannot read or destroy A's environment. A foreign env answers
+    # 404 exactly like a missing one (no existence oracle, owner never echoed),
+    # per _load_owned_env_id in the behavioral router (mirrors puzzle router).
     assert (
         await client.get(
             f"/v1/sandbox/behavioral/environments/{env_id}", headers=b["agent_headers"]
         )
-    ).status_code == 403
+    ).status_code == 404
     assert (
         await client.delete(
             f"/v1/sandbox/behavioral/environments/{env_id}", headers=b["agent_headers"]
         )
-    ).status_code == 403
+    ).status_code == 404
 
     # Owner can read.
     assert (

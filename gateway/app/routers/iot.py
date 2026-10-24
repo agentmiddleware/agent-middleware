@@ -103,10 +103,16 @@ async def register_device(
     auth: AuthContext = Depends(get_auth_context),
     bridge: ProtocolBridge = Depends(get_iot_bridge),
 ):
-    # device_id is globally unique, so a taken id is a 409 for any caller; the
-    # response never names the existing owner.
+    # device_id is globally unique. A caller that already owns the id gets a
+    # 409; any other non-admin caller gets the same 404 as a missing id, so
+    # the response never reveals whether someone else's id exists and never
+    # names the existing owner. Bootstrap admins keep the 409.
     existing = await bridge.registry.get(device.device_id)
     if existing:
+        if not auth.is_bootstrap_admin and (
+            auth.wallet_id is None or existing.owner_wallet_id != auth.wallet_id
+        ):
+            raise _device_not_found(device.device_id)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={

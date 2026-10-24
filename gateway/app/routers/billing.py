@@ -1,11 +1,14 @@
 """
 Agent Financial Gateways Router
 ---------------------------------
-Two-tier wallet system: human sponsors (liability sinks) fund agent wallets.
-Per-action micro-metering charges fractions of a cent per API call.
-Swarm arbitrage silently books margin on every transaction.
+Two-tier wallet system: human sponsors fund agent wallets from an internal
+credit balance. Per-action micro-metering charges credits per API call
+against the calling wallet, with one ledger entry per charge.
 
-This is how the API generates revenue autonomously.
+Credits are internal metering units, topped up through verified Stripe
+webhooks where configured (or by explicit admin-gated operator issuance).
+Core routes do not pay merchants out. ACP checkout, on the expansion
+router, charges a Stripe Shared Payment Token and mints no credits.
 """
 
 from decimal import Decimal
@@ -15,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from ..core.auth import AuthContext, get_auth_context, verify_api_key
 from ..core.config import get_settings
+from ..core.wallet_resolution import resolve_wallet_id
 from ..core.dependencies import get_agent_money
 from .http_idempotency import (
     begin_http_idempotency as _begin_idempotency,
@@ -26,10 +30,10 @@ from ..services.agent_money import (
     WalletNotFoundError,
 )
 from ..services.governance import record_governed_action
-
+from ..services.ownership import CallerIdentity, OwnershipDeniedError
 from ..services.policies import evaluate_wallet_policy
 from ..services.velocity_monitor import WalletFrozenError
-from ..services.wallet_engine import WalletExpiredError
+from ..services.wallet_engine import CrossTenantTransferError, WalletExpiredError
 from ..services.stripe_integration import get_stripe_integration
 from ..services.shadow_ledger import SimulatedChargeResult, get_shadow_ledger
 from ..services.acp_bridge import (
@@ -63,6 +67,22 @@ from ..schemas.billing import (
 
 def _require_wallet_access(auth: AuthContext, wallet_id: str) -> None:
     auth.require_wallet_access(wallet_id)
+
+
+def _ownership_denied(wallet_id: str) -> HTTPException:
+    """Map a service-layer ownership denial to 403.
+
+    Routes still check first; this covers the service backstop so a denial
+    raised below the route keeps its meaning instead of escaping as a 500.
+    """
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "wallet_access_denied",
+            "message": "API key is not authorized for this wallet.",
+            "wallet_id": wallet_id,
+        },
+    )
 
 
 def _session_not_found(session_id: str) -> HTTPException:
@@ -223,8 +243,10 @@ expansion_router = APIRouter(
     description=(
         "Bootstrap operator provisioning only. Create a human-owned root "
         "account that acts as the 'liability sink' for agent spending. "
-        "Sponsors ingest fiat currency via payment rails and convert it to "
-        "ecosystem credits. Agent wallets are provisioned from sponsor balances."
+        "Sponsors hold internal credits funded by verified Stripe top-ups "
+        "(USD only, where Stripe is configured) or by this explicit "
+        "admin-gated issuance. Agent wallets are provisioned from sponsor "
+        "balances. No settlement or payouts are performed."
     ),
     responses={
         status.HTTP_403_FORBIDDEN: {
@@ -316,12 +338,17 @@ async def create_agent_wallet(
             auto_refill=request.auto_refill,
             auto_refill_threshold=Decimal(str(request.auto_refill_threshold)),
             auto_refill_amount=Decimal(str(request.auto_refill_amount)),
+            caller=CallerIdentity.from_auth(auth),
         )
     except WalletNotFoundError as e:
         # Every terminal branch must complete the record, or the key stays
         # in-progress and a retry answers 409 until the stale-record sweep.
         await guard.complete({"detail": str(e)}, 404)
         raise HTTPException(status_code=404, detail=str(e))
+    except OwnershipDeniedError:
+        denied = _ownership_denied(request.sponsor_wallet_id)
+        await guard.complete({"detail": denied.detail}, denied.status_code)
+        raise denied
     except InsufficientFundsError as e:
         insufficient_detail = {
             "error": "insufficient_funds",
@@ -385,6 +412,7 @@ async def create_child_wallet(
             task_description=request.task_description,
             ttl_seconds=request.ttl_seconds,
             auto_reclaim=request.auto_reclaim,
+            caller=CallerIdentity.from_auth(auth),
         )
         return ChildWalletResponse(
             wallet_id=response.wallet_id,
@@ -423,6 +451,8 @@ async def create_child_wallet(
                 "message": str(e),
             },
         )
+    except OwnershipDeniedError:
+        raise _ownership_denied(request.parent_wallet_id)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -446,7 +476,9 @@ async def reclaim_child_wallet(
 ):
     _require_wallet_access(auth, wallet_id)
     try:
-        result = await money.reclaim_child_wallet(wallet_id)
+        result = await money.reclaim_child_wallet(
+            wallet_id, caller=CallerIdentity.from_auth(auth)
+        )
         return ReclaimResponse(
             child_wallet_id=result["child_wallet_id"],
             parent_wallet_id=result["parent_wallet_id"],
@@ -456,6 +488,8 @@ async def reclaim_child_wallet(
         )
     except WalletNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except OwnershipDeniedError:
+        raise _ownership_denied(wallet_id)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -574,7 +608,7 @@ async def get_ledger(
 )
 async def charge_wallet(
     request: Request,
-    wallet_id: str,
+    wallet_id: str | None = None,
     service_category: ServiceCategory | None = None,
     service: ServiceCategory | None = Query(
         None,
@@ -599,7 +633,7 @@ async def charge_wallet(
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ):
-    _require_wallet_access(auth, wallet_id)
+    wallet_id = resolve_wallet_id(wallet_id, auth)
     category = service_category or service
     if not category:
         raise HTTPException(
@@ -684,6 +718,7 @@ async def charge_wallet(
             units=Decimal(str(units)),
             request_path=request_path,
             description=description or "",
+            caller=CallerIdentity.from_auth(auth),
         )
 
         if isinstance(result, SimulatedChargeResult):
@@ -749,6 +784,31 @@ async def charge_wallet(
         )
         await _complete_idempotency(result.model_dump(mode="json"), 200)
         return result
+    except OwnershipDeniedError:
+        # The route already authorized this wallet above; reaching here means
+        # the service backstop disagreed, which is still a 403, recorded and
+        # completed like every other charge denial.
+        await _record_billing_governance(
+            event="billing.charge",
+            auth=auth,
+            wallet_id=wallet_id,
+            service_category=category.value,
+            endpoint=endpoint,
+            request_id=request_id,
+            ok=False,
+            error="wallet_access_denied",
+            metadata={"units": units, "request_path": request_path},
+        )
+        denied_detail = {
+            "error": "wallet_access_denied",
+            "wallet_id": wallet_id,
+            "message": "API key is not authorized for this wallet.",
+        }
+        await _complete_idempotency(
+            {"detail": denied_detail},
+            status.HTTP_403_FORBIDDEN,
+        )
+        raise _ownership_denied(wallet_id)
     except WalletNotFoundError as e:
         # Every other endpoint in this router answers 404 for an unknown
         # wallet; this one let the exception escape as a 500, which reads as
@@ -892,7 +952,7 @@ async def top_up_wallet(
     ),
 )
 async def prepare_top_up(
-    wallet_id: str,
+    wallet_id: str | None = Query(None, description="Sponsor wallet ID"),
     amount_fiat: float = Query(
         ...,
         gt=0,
@@ -903,7 +963,6 @@ async def prepare_top_up(
     currency: str = Query("USD", description="Fiat currency code"),
     auth: AuthContext = Depends(get_auth_context),
 ):
-    _require_wallet_access(auth, wallet_id)
     """
     Prepare a fiat top-up by creating a Stripe PaymentIntent.
 
@@ -922,6 +981,7 @@ async def prepare_top_up(
             "currency": str,
         }
     """
+    wallet_id = resolve_wallet_id(wallet_id, auth)
     from ..core.config import get_settings
 
     settings = get_settings()
@@ -998,7 +1058,9 @@ async def transfer_wallets(
     """
     Transfer credits between two wallets.
 
-    This enables agent-to-agent payments for completed tasks.
+    This moves internal metering units between wallets, for example when
+    one agent compensates another from its budget. It is not a payment or
+    settlement: no money moves, only internal credits.
     Both wallets are locked during the transaction for ACID compliance.
     """
     _require_wallet_access(auth, from_wallet_id)
@@ -1045,6 +1107,7 @@ async def transfer_wallets(
             amount=Decimal(str(amount)),
             description=description or "",
             correlation_id=correlation_id,
+            caller=CallerIdentity.from_auth(auth),
         )
         await _record_billing_governance(
             event="billing.transfer",
@@ -1079,6 +1142,32 @@ async def transfer_wallets(
         )
         await guard.complete({"detail": str(e)}, 404)
         raise HTTPException(status_code=404, detail=str(e))
+    except CrossTenantTransferError as e:
+        refused_detail = {
+            "error": "cross_tenant_transfer_refused",
+            "message": str(e),
+        }
+        await guard.complete(refused_detail, status.HTTP_403_FORBIDDEN)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=refused_detail,
+        )
+    except OwnershipDeniedError:
+        await _record_billing_governance(
+            event="billing.transfer",
+            auth=auth,
+            wallet_id=from_wallet_id,
+            service_category="transfer",
+            endpoint="/v1/billing/transfer",
+            request_id=correlation_id,
+            estimated_cost=amount,
+            ok=False,
+            error="wallet_access_denied",
+            metadata={"to_wallet_id": to_wallet_id},
+        )
+        denied = _ownership_denied(from_wallet_id)
+        await guard.complete({"detail": denied.detail}, denied.status_code)
+        raise denied
     except InsufficientFundsError as e:
         await _record_billing_governance(
             event="billing.transfer",
@@ -1436,7 +1525,9 @@ async def get_velocity_status(
 class CreateDryRunSessionRequest(BaseModel):
     """Start a dry-run session for simulating billing operations."""
 
-    wallet_id: str = Field(..., description="Wallet to simulate charges against")
+    wallet_id: str | None = Field(
+        None, description="Wallet to simulate charges against"
+    )
 
 
 class DryRunSessionResponse(ExactDecimalFieldsMixin):
@@ -1460,7 +1551,7 @@ class DryRunSessionResponse(ExactDecimalFieldsMixin):
 class SimulatedChargeRequest(BaseModel):
     """Simulate a charge without affecting real balance."""
 
-    wallet_id: str = Field(..., description="Wallet being simulated")
+    wallet_id: str | None = Field(None, description="Wallet being simulated")
     service: ServiceCategory = Field(..., description="Service category to simulate")
     units: float = Field(
         default=1.0,
@@ -1529,20 +1620,20 @@ async def create_dry_run_session(
     money: AgentMoney = Depends(get_agent_money),
 ):
     """Start a new dry-run session for the specified wallet."""
-    _require_wallet_access(auth, request.wallet_id)
-    wallet = await money.get_wallet(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
+    wallet = await money.get_wallet(wallet_id)
     if not wallet:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "wallet_not_found",
-                "message": f"Wallet {request.wallet_id} not found",
+                "message": f"Wallet {wallet_id} not found",
             },
         )
 
     shadow_ledger = get_shadow_ledger()
     session = await shadow_ledger.create_session(
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         real_balance=Decimal(str(wallet.balance)),
     )
 
@@ -1797,24 +1888,25 @@ async def simulate_charge(
             reason=result.reason,
         )
 
-    _require_wallet_access(auth, request.wallet_id)
-    wallet = await money.get_wallet(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
+    wallet = await money.get_wallet(wallet_id)
     if not wallet:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "wallet_not_found",
-                "message": f"Wallet {request.wallet_id} not found",
+                "message": f"Wallet {wallet_id} not found",
             },
         )
 
     charge_result = await money.charge(
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         service_category=request.service,
         units=Decimal(str(request.units)),
         description=request.description or "",
         dry_run=True,
         dry_run_session_id=None,
+        caller=CallerIdentity.from_auth(auth),
     )
 
     # AgentMoney._dry_run_charge (which charge(dry_run=True) always delegates

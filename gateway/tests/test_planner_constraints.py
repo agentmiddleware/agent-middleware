@@ -383,7 +383,9 @@ _NON_FINITE_BODY_IDS = ["nan-cost", "neg-inf-risk", "inf-balance", "inf-budget"]
 @pytest.mark.proof
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "objective_overrides, state_fields", _NON_FINITE_BODIES, ids=_NON_FINITE_BODY_IDS
+    ("objective_overrides", "state_fields"),
+    _NON_FINITE_BODIES,
+    ids=_NON_FINITE_BODY_IDS,
 )
 async def test_planner_endpoint_rejects_non_finite_inputs(
     client, clean_database, objective_overrides, state_fields
@@ -408,7 +410,9 @@ async def test_planner_endpoint_rejects_non_finite_inputs(
 @pytest.mark.proof
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "objective_overrides, state_fields", _NON_FINITE_BODIES, ids=_NON_FINITE_BODY_IDS
+    ("objective_overrides", "state_fields"),
+    _NON_FINITE_BODIES,
+    ids=_NON_FINITE_BODY_IDS,
 )
 async def test_planner_endpoint_never_plans_with_bare_non_finite_tokens(
     clean_database, monkeypatch, objective_overrides, state_fields
@@ -498,7 +502,7 @@ def test_task_context_rejects_non_finite_candidate_numbers(field, value):
 @pytest.mark.proof
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "field, token",
+    ("field", "token"),
     [
         ("credit_cost", "NaN"),
         ("risk_score", "-Infinity"),

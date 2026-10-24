@@ -281,6 +281,8 @@ async def test_tools_call_requires_wallet_scoped_key(client, standard_mcp_enable
     error = resp.json()["error"]
     assert error["code"] == -32003
     assert "wallet_scoped_key_required" in error["message"]
+    assert error["data"]["code"] == "wallet_scoped_key_required"
+    assert error["data"]["docs_url"].endswith("#wallet_scoped_key_required")
 
 
 @pytest.mark.anyio
@@ -292,6 +294,43 @@ async def test_tools_call_unknown_tool(client, standard_mcp_enabled, clean_datab
         headers={**provisioned["agent_headers"], **MCP_HEADERS},
     )
     assert resp.json()["error"]["code"] == -32001
+
+
+@pytest.mark.anyio
+async def test_tools_call_dogfood_tool_works_without_prior_tools_list(
+    client, standard_mcp_enabled, clean_database, monkeypatch, tmp_path
+):
+    """A fresh gateway must resolve flag-gated tools on tools/call alone."""
+    from app.services import dogfood_tool
+
+    monkeypatch.setenv("ENABLE_DOGFOOD_TOOL", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(dogfood_tool, "DOGFOOD_NOTES_PATH", tmp_path / "notes.jsonl")
+    # Simulate a freshly started gateway: nothing has run tools/list yet.
+    dogfood_tool.unregister_dogfood_tool()
+    get_service_registry().unregister_local(dogfood_tool.DOGFOOD_TOOL_ID)
+
+    provisioned = await provision_agent_wallet(client)
+    try:
+        resp = await client.post(
+            "/mcp",
+            json=_rpc(
+                "tools/call",
+                params={
+                    "name": dogfood_tool.DOGFOOD_TOOL_ID,
+                    "arguments": {"text": "fresh"},
+                },
+            ),
+            headers={**provisioned["agent_headers"], **MCP_HEADERS},
+        )
+        body = resp.json()
+        assert "error" not in body, body
+        assert body["result"]["isError"] is False
+        assert body["result"]["receipt"]["wallet_id"] == provisioned["agent_wallet_id"]
+    finally:
+        dogfood_tool.unregister_dogfood_tool()
+        monkeypatch.setenv("ENABLE_DOGFOOD_TOOL", "false")
+        get_settings.cache_clear()
 
 
 @pytest.mark.anyio
@@ -415,10 +454,10 @@ async def test_tools_call_reports_auto_permit_contention_as_retryable(
         registry.unregister_local(tool_name)
 
     assert response.status_code == 200
-    assert response.json()["error"] == {
-        "code": -32005,
-        "message": "idempotency_in_progress",
-    }
+    error = response.json()["error"]
+    assert error["code"] == -32005
+    assert error["message"] == "idempotency_in_progress"
+    assert error["data"]["code"] == "idempotency_in_progress"
     assert calls == 0
 
 
@@ -460,10 +499,10 @@ async def test_tools_call_reports_governed_invoke_contention_with_existing_code(
         registry.unregister_local(tool_name)
 
     assert response.status_code == 200
-    assert response.json()["error"] == {
-        "code": -32005,
-        "message": "idempotency_in_progress",
-    }
+    error = response.json()["error"]
+    assert error["code"] == -32005
+    assert error["message"] == "idempotency_in_progress"
+    assert error["data"]["code"] == "idempotency_in_progress"
 
 
 # ── Bodies the reply could not carry are refused before dispatch ─────────────

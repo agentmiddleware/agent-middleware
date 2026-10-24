@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from ..core.dependencies import get_agent_money
 
 from ..core.auth import AuthContext, get_auth_context
+from ..core.wallet_resolution import resolve_wallet_id
 from ..services.api_key_service import (
     get_api_key_service,
     InvalidRotationRequestError,
@@ -147,14 +148,14 @@ async def create_api_key(
     the first key's metadata (``api_key`` is ``null`` on replay; the secret
     is never stored) instead of minting a second live key.
     """
-    auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
     await _refuse_bounded_minter(auth)
-    await _require_wallet_exists(request.wallet_id)
+    await _require_wallet_exists(wallet_id)
     guard, replay = await begin_http_idempotency(
         idempotency_key_lines=idempotency_key_lines,
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         endpoint="/v1/api-keys",
-        request_payload=request.model_dump(mode="json"),
+        request_payload={**request.model_dump(mode="json"), "wallet_id": wallet_id},
     )
     if replay is not None:
         return replay
@@ -162,7 +163,7 @@ async def create_api_key(
 
     try:
         result = await service.create_key(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             key_name=request.key_name,
             expires_in_days=request.expires_in_days,
             max_uses=request.max_uses,
@@ -243,7 +244,7 @@ async def rotate_api_key(
     the first rotation (``new_key.api_key`` is ``null`` on replay) instead of
     minting another key or failing on the already-revoked ``key_id``.
     """
-    auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
     _refuse_jwt_minter(auth)
     if request.key_id is None or request.key_id != auth.key_id:
         # Without key_id this is a plain create with no bounds to inherit.
@@ -251,12 +252,12 @@ async def rotate_api_key(
         # bounded caller could adopt an unbounded sibling's authority (with
         # or without revoke_old). A bounded caller may rotate only itself.
         await _refuse_bounded_minter(auth)
-    await _require_wallet_exists(request.wallet_id)
+    await _require_wallet_exists(wallet_id)
     guard, replay = await begin_http_idempotency(
         idempotency_key_lines=idempotency_key_lines,
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         endpoint="/v1/api-keys/rotate",
-        request_payload=request.model_dump(mode="json"),
+        request_payload={**request.model_dump(mode="json"), "wallet_id": wallet_id},
     )
     if replay is not None:
         return replay
@@ -266,7 +267,7 @@ async def rotate_api_key(
 
     try:
         result = await service.rotate_key(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             key_id=request.key_id,
             revoke_old=request.revoke_old,
             reason=request.reason,
@@ -364,14 +365,14 @@ async def emergency_revoke(
     Use this when a wallet may be compromised.
     Optionally creates a new emergency key.
     """
-    auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
     if request.create_new_key:
         _refuse_jwt_minter(auth)
     service = get_api_key_service()
 
     try:
         result = await service.emergency_revocation(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             reason=request.reason,
             create_new_key=request.create_new_key,
             # A wallet-scoped caller's replacement is bounded by its own key,

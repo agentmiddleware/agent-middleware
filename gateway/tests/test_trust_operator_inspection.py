@@ -144,6 +144,11 @@ async def test_receipt_inspection_filters_and_permit_route_include_audit_ids(
     assert listed["audit_event_id"] == audit_event.event_id
     assert "ledger_entry_id" in listed
 
+    defaulted = await client.get("/v1/receipts", headers=provisioned["agent_headers"])
+    assert defaulted.status_code == 200
+    assert defaulted.json()["total"] == 1
+    assert defaulted.json()["receipts"][0]["receipt_id"] == receipt.receipt_id
+
     permit_receipts = await client.get(
         f"/v1/permits/{permit['permit_id']}/receipts",
         headers=provisioned["agent_headers"],
@@ -153,15 +158,17 @@ async def test_receipt_inspection_filters_and_permit_route_include_audit_ids(
 
 
 @pytest.mark.anyio
-async def test_wallet_receipt_inspection_rejects_global_queries(
+async def test_admin_receipt_inspection_requires_wallet_id(
     client,
     clean_database,
 ):
-    provisioned = await provision_agent_wallet(client)
+    await provision_agent_wallet(client)
+    await provision_agent_wallet(client)
 
-    response = await client.get("/v1/receipts", headers=provisioned["agent_headers"])
+    response = await client.get("/v1/receipts", headers=BOOTSTRAP_HEADERS)
 
-    assert response.status_code == 403
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "missing_wallet_id"
 
 
 @pytest.mark.anyio

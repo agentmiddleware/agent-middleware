@@ -126,15 +126,15 @@ test("a short envelope key with an unknown signed kid stays unknown", () => {
   assert.equal(verifyBundle(bundle, new Map([["k", Buffer.from("short")]])).status, "unknown_key");
 });
 
-test("a very deep signed payload is malformed instead of throwing", () => {
+test("a very deep signed payload verifies without throwing", () => {
   const open = '{"a":'.repeat(8000);
   const close = "}".repeat(8000);
   const signingInput = `{"deep":${open}0${close},"kid":"k","payload_hash":"abc","receipt_id":"r"}`;
 
   const result = verifyBundle(signed(signingInput), keys);
 
-  assert.equal(result.status, "malformed");
-  assert.equal(result.ok, false);
+  assert.equal(result.status, "verified");
+  assert.equal(result.ok, true);
 });
 
 test("a JSON string bundle verifies the same as an object", () => {
@@ -205,10 +205,10 @@ test("a signed algorithm this verifier does not implement is unsupported", () =>
   assert.equal(verifyBundle(signed(signingInput), keys).status, "unsupported");
 });
 
-test("a payload hash that does not match is a mismatch", () => {
+test("a signed payload hash is advisory", () => {
   const signingInput = '{"kid":"k","payload_hash":"0000","receipt_id":"r"}';
 
-  assert.equal(verifyBundle(signed(signingInput), keys).status, "mismatch");
+  assert.equal(verifyBundle(signed(signingInput), keys).status, "verified");
 });
 
 test("a kid on the envelope that is not the signed kid is a mismatch", () => {

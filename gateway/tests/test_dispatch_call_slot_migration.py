@@ -2,14 +2,17 @@
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from tests.support import db_gate
 from tests.support.action_database_guard import (
     require_action_database_url,
     require_action_test_environment,
@@ -23,15 +26,27 @@ if TARGET:
 PREVIOUS = "037_mcp_dispatch_claim_hash"
 REVISION = "038_dispatch_call_slot_dup_idx"
 INDEX = "ix_mcp_dispatch_attempts_duplicate_detection"
+GATEWAY_ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.skipif(not TARGET, reason="requires fresh disposable migration PostgreSQL")
+def alembic_config():
+    config = Config(str(GATEWAY_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(GATEWAY_ROOT / "migrations"))
+    config.set_main_option("prepend_sys_path", str(GATEWAY_ROOT))
+    return config
+
+
+@db_gate.collection_mark(
+    url_env="DISPATCH_MIGRATION_DATABASE_URL",
+    reason="requires fresh disposable migration PostgreSQL",
+)
 def test_dispatch_call_slot_upgrade_recovers_after_concurrent_index_failure(
     monkeypatch,
 ):
     assert TARGET is not None
     monkeypatch.setenv("DATABASE_URL", TARGET)
-    config = Config("alembic.ini")
+    config = alembic_config()
+    head_revision = ScriptDirectory.from_config(config).get_current_head()
 
     async def query(statement):
         engine = create_async_engine(TARGET)
@@ -103,6 +118,4 @@ def test_dispatch_call_slot_upgrade_recovers_after_concurrent_index_failure(
         command.upgrade(config, REVISION)
 
     command.upgrade(config, "head")
-    assert sql("SELECT version_num FROM alembic_version") == [
-        ("042_permit_action_binding",)
-    ]
+    assert sql("SELECT version_num FROM alembic_version") == [(head_revision,)]

@@ -100,7 +100,13 @@ for module in "${TRUST_COVERAGE_MODULES[@]}"; do
 done
 
 echo "[trust-coverage] enforcing 80% coverage over trust-plane control modules"
-"${PYTEST_CMD[@]}" -q \
+# Coverage resolves each --cov target before pytest collects tests, then
+# evicts that temporary import. The eviction orphans the compiled SQLAlchemy
+# cache-key module's traversal symbols, so cache-key generation fails with
+# "TypeError: 'InternalTraversal' object is not callable". Preload SQLAlchemy
+# in this pytest process (before coverage starts) so the eviction never
+# touches it. This stays on PYTEST_CMD so a PYTEST override is honored.
+"${PYTEST_CMD[@]}" -p sqlalchemy -q \
   "${TRUST_COVERAGE_TESTS[@]}" \
   "${COV_ARGS[@]}" \
   --cov-report=term-missing \

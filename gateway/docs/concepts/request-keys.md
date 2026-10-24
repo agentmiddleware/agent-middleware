@@ -30,9 +30,10 @@ permit creation uses HTTP 409 with string `detail`.
 
 Standard `/mcp` makes a fresh `mcp-auto-` key for each call when the caller
 supplies none. That fresh key cannot identify a retry, so an unkeyed call is
-not retry-safe. The SDK's `invoke_tool` requires a key; its `"auto"` option
-derives one from arguments and is unsuitable when distinct calls can have the
-same arguments.
+not retry-safe. The legacy `/mcp/messages` demo auto-permit path also assigns
+a fresh `mcp-auto-` key when none is supplied. The SDK's `invoke_tool`
+requires a key; its `"auto"` option derives one from arguments and is
+unsuitable when distinct calls can have the same arguments.
 
 ## Optional argument-derived helper
 
@@ -221,7 +222,8 @@ the code for changed action arguments.
 You may send a key you made yourself. It must be a nonblank string of at most
 128 characters with no control characters. The gateway records it exactly as
 sent and does not trim or normalize it. Keep it and the full request stable
-across retries.
+across retries. The Python SDK strips leading and trailing whitespace from a
+supplied key before sending it.
 
 The Python SDK and the [specification](https://github.com/agentmiddleware/agent-middleware/tree/main/spec/request-key-v1)
 are covered by:

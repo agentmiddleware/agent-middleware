@@ -54,6 +54,47 @@ def test_upgrade_repairs_legacy_sqlite_defaults(tmp_path, monkeypatch):
     _upgrade(monkeypatch, db_path, "044_receipt_resolutions")
     with sqlite3.connect(db_path) as connection:
         assert set(_defaults(connection).values()) == {"'false'"}
+        connection.execute(
+            "INSERT INTO wallets (wallet_id, wallet_type, owner_key, balance, "
+            "lifetime_credits, lifetime_debits, daily_spent, auto_refill, status) "
+            "VALUES ('w-legacy', 'agent', '', 0, 0, 0, 0, 0, 'active')"
+        )
+        connection.execute(
+            "INSERT INTO signing_keys (key_id, alg, public_key_b64, status) "
+            "VALUES ('k-legacy', 'Ed25519', 'public', 'active')"
+        )
+        connection.executemany(
+            "INSERT INTO permits (permit_id, issuer_wallet_id, subject_wallet_id, "
+            "scopes_json, allowed_tools_json, max_credits, expires_at, nonce, "
+            "status, signature, key_id) VALUES (?, 'w-legacy', 'w-legacy', "
+            "'[]', '[]', 1, '2030-01-01', ?, 'active', 'sig', 'k-legacy')",
+            (("p-default", "n-default"), ("p-true", "n-true")),
+        )
+        connection.executemany(
+            "INSERT INTO refresh_tokens (jti, wallet_id, created_at, expires_at) "
+            "VALUES (?, 'w-legacy', '2026-01-01', '2026-02-01')",
+            (("j-default",), ("j-true",)),
+        )
+        connection.executemany(
+            "INSERT INTO human_approvals (approval_id, wallet_id, permit_id, "
+            "tool, idempotency_key, requested_at, expires_at) "
+            "VALUES (?, 'w-legacy', ?, 'tool', ?, '2026-01-01', '2026-02-01')",
+            (
+                ("a-default", "p-default", "idem-default"),
+                ("a-true", "p-true", "idem-true"),
+            ),
+        )
+        for table, column, key in (
+            ("refresh_tokens", "revoked", "jti"),
+            ("human_approvals", "simulated", "approval_id"),
+            ("permits", "requires_human_approval", "permit_id"),
+        ):
+            connection.execute(
+                f"UPDATE {table} SET {column} = 'true' WHERE {key} LIKE '%-true'"
+            )
+            assert connection.execute(
+                f"SELECT {column}, typeof({column}) FROM {table} ORDER BY {key}"
+            ).fetchall() == [("false", "text"), ("true", "text")]
         indexes = {
             table: {
                 row[1:] for row in connection.execute(f"PRAGMA index_list({table})")
@@ -71,7 +112,14 @@ def test_upgrade_repairs_legacy_sqlite_defaults(tmp_path, monkeypatch):
     _upgrade(monkeypatch, db_path, "head")
     with sqlite3.connect(db_path) as connection:
         assert set(_defaults(connection).values()) == {"0"}
-        for table, _ in _COLUMNS:
+        for table, column, key in (
+            ("refresh_tokens", "revoked", "jti"),
+            ("human_approvals", "simulated", "approval_id"),
+            ("permits", "requires_human_approval", "permit_id"),
+        ):
+            assert connection.execute(
+                f"SELECT {column}, typeof({column}) FROM {table} ORDER BY {key}"
+            ).fetchall() == [(0, "integer"), (1, "integer")]
             assert {
                 row[1:] for row in connection.execute(f"PRAGMA index_list({table})")
             } == indexes[table]

@@ -177,7 +177,7 @@ async def serve_async(
                         structuredContent={"error": error, "guidance": guidance},
                     )
                 if response.status_code == 202 and error == "human_approval_pending":
-                    approval = detail.get("approval", {})
+                    approval = detail.get("approval", {}) if isinstance(detail, dict) else {}
                     guidance = "Retry with the same permit_id and idempotency_key after approval."
                     return CallToolResult(
                         content=[

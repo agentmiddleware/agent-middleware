@@ -72,6 +72,7 @@ def test_serve_async_registers_tool_and_starts_transport(monkeypatch, tmp_path, 
             "invoke-123",
             False,
         ),
+        (202, "human_approval_pending", "permit-123", "invoke-123", False),
     ],
 )
 def test_serve_async_tool_invokes_gateway_with_arguments(
@@ -154,8 +155,10 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
         )
         assert result.isError is True
         assert result.structuredContent["error"] == "human_approval_pending"
-        assert result.structuredContent["approval"] == detail["approval"]
-        assert "approval-123" in result.content[0].text
+        approval = detail["approval"] if isinstance(detail, dict) else {}
+        assert result.structuredContent["approval"] == approval
+        if approval:
+            assert "approval-123" in result.content[0].text
         assert "invoke-123" not in result.content[0].text
         assert "same permit_id and idempotency_key" in result.structuredContent["guidance"]
     else:

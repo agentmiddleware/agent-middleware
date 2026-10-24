@@ -16,6 +16,7 @@ tables and fails closed if they are missing.
 
 import logging
 import os
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, AsyncGenerator
@@ -142,6 +143,38 @@ def _get_database_url() -> str | None:
     return as_sqlalchemy_url(raw)
 
 
+class _StatementReleasingCursor(sqlite3.Cursor):
+    """Release a failed SQLite statement on the aiosqlite worker thread."""
+
+    def execute(self, sql, parameters=(), /):  # noqa: ANN001, ANN201
+        try:
+            return super().execute(sql, parameters)
+        except BaseException:
+            self._release_statement()
+            raise
+
+    def executemany(self, sql, seq_of_parameters, /):  # noqa: ANN001, ANN201
+        try:
+            return super().executemany(sql, seq_of_parameters)
+        except BaseException:
+            self._release_statement()
+            raise
+
+    def _release_statement(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            # Preserve the original statement error when the connection is unusable.
+            pass
+
+
+class _StatementReleasingConnection(sqlite3.Connection):
+    """SQLite connection whose cursors release failed statements promptly."""
+
+    def cursor(self, factory=_StatementReleasingCursor):  # noqa: ANN001, ANN201
+        return super().cursor(factory)
+
+
 def get_engine() -> AsyncEngine | None:
     """Get or create the async database engine.
 
@@ -167,7 +200,10 @@ def get_engine() -> AsyncEngine | None:
             # choking on concurrent writes manifests as OperationalError
             # "database is locked". connect_args + WAL mode below solve it
             # for dev/test; production runs on PostgreSQL.
-            engine_kwargs["connect_args"] = {"timeout": 30}
+            engine_kwargs["connect_args"] = {
+                "timeout": 30,
+                "factory": _StatementReleasingConnection,
+            }
         else:
             engine_kwargs["pool_size"] = get_settings().DB_POOL_SIZE
             engine_kwargs["max_overflow"] = get_settings().DB_MAX_OVERFLOW

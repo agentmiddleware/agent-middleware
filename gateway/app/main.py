@@ -574,7 +574,7 @@ app = FastAPI(
     contact=public_contact or None,
     license_info={
         "name": "Business Source License 1.1",
-        "url": "https://github.com/PetrefiedThunder/agent-middleware/blob/main/LICENSE",
+        "url": "https://github.com/agentmiddleware/agent-middleware/blob/main/LICENSE",
     },
     servers=build_openapi_servers(settings.PUBLIC_URL, settings.ENVIRONMENT),
 )

@@ -151,4 +151,4 @@ SQLite-only tests will still pass; PostgreSQL-specific tests skip if unavailable
 - Check [docs/PROOF_MATRIX.md](docs/PROOF_MATRIX.md) for what each proof command asserts (and what it does not).
 - Review [CONTRIBUTING.md](../CONTRIBUTING.md) for development setup and `make` targets.
 
-If you believe you've found a bug, use the [bug report template](https://github.com/PetrefiedThunder/agent-middleware/issues/new?template=bug_report.yml). For security issues, see [SECURITY.md](../SECURITY.md).
+If you believe you've found a bug, use the [bug report template](https://github.com/agentmiddleware/agent-middleware/issues/new?template=bug_report.yml). For security issues, see [SECURITY.md](../SECURITY.md).

@@ -5,8 +5,10 @@ import os
 import pytest
 import pytest_asyncio
 
+from app.services.ownership import CallerIdentity
 from tests import test_action_invocation as action
 from tests.conftest import clean_database as sqlite_clean_database
+from tests.support import db_gate
 from tests.support.action_database_guard import (
     require_action_database_url,
     require_action_test_environment,
@@ -20,8 +22,8 @@ if os.environ.get("RUN_POSTGRES_CONCURRENCY_TESTS") == "1":
 
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
-    pytest.mark.skipif(
-        os.environ.get("RUN_POSTGRES_CONCURRENCY_TESTS") != "1",
+    db_gate.collection_mark(
+        flag="RUN_POSTGRES_CONCURRENCY_TESTS",
         reason="requires explicitly opted-in disposable local amw_action PostgreSQL database",
     ),
 ]
@@ -39,7 +41,9 @@ async def require_fresh_action_schema():
     async with get_engine().connect() as connection:
         await _assert_migrated_empty_database(connection)
         for table in ("permits", "receipts"):
-            columns = await connection.run_sync(lambda c: inspect(c).get_columns(table))
+            columns = await connection.run_sync(
+                lambda c, table=table: inspect(c).get_columns(table)
+            )
             assert set(FIELDS) <= {c["name"] for c in columns}, "stale 042 schema"
 
 
@@ -141,7 +145,9 @@ async def test_action_revocation_serial_orders(
         monkeypatch.setattr(permits, "_validate_model_for_action", hold_validation)
         pending = asyncio.create_task(action.prepare_action(action_runtime, args))
         await asyncio.wait_for(locked.wait(), timeout=5)
-        revocation = asyncio.create_task(permits.revoke_permit(action_runtime[2]))
+        revocation = asyncio.create_task(
+            permits.revoke_permit(action_runtime[2], caller=CallerIdentity.admin())
+        )
         try:
             await wait_for_lock_waiter(blocker)
         finally:

@@ -561,6 +561,92 @@ class TestACPLineItemBounds:
         item = ACPLineItem(name="Widget", quantity=1, unit_amount=unit_amount, currency="usd")
         assert item.to_payload()["unit_amount"] == unit_amount
 
+    @pytest.mark.parametrize("currency", ["USD", "eur", ""])
+    def test_currency_outside_the_allowlist_is_rejected(self, currency):
+        """Currency is case-sensitive and fail-closed, same as the server."""
+        with pytest.raises(ValueError, match="currency"):
+            ACPLineItem(name="Widget", quantity=1, unit_amount=1, currency=currency)
+
+    def test_bool_and_float_amounts_are_rejected(self):
+        """True and 1.0 are not integers. The server 422s them."""
+        with pytest.raises(ValueError, match="quantity"):
+            ACPLineItem(name="Widget", quantity=True, unit_amount=1, currency="usd")
+        with pytest.raises(ValueError, match="unit_amount"):
+            ACPLineItem(name="Widget", quantity=1, unit_amount=1.0, currency="usd")
+
+    def test_empty_name_is_rejected(self):
+        with pytest.raises(ValueError, match="name"):
+            ACPLineItem(name="", quantity=1, unit_amount=1, currency="usd")
+
+
+class TestACPCheckoutRequestBounds:
+    """A checkout the server would 422 must fail before the SPT can be sent."""
+
+    def _item(self) -> ACPLineItem:
+        return ACPLineItem(name="Widget", quantity=1, unit_amount=100, currency="usd")
+
+    def test_bad_merchant_domain_is_rejected(self):
+        with pytest.raises(ValueError, match="merchant_domain"):
+            ACPCheckoutRequest(
+                intent_id="int-abc",
+                line_items=[self._item()],
+                spt_token="spt_test_token",
+                merchant_domain="https://shop.example/pay",
+                client_total=100,
+            )
+
+    def test_uppercase_domain_is_rejected(self):
+        with pytest.raises(ValueError, match="merchant_domain"):
+            ACPCheckoutRequest(
+                intent_id="int-abc",
+                line_items=[self._item()],
+                spt_token="spt_test_token",
+                merchant_domain="Shop.Example",
+                client_total=100,
+            )
+
+    def test_empty_line_items_are_rejected(self):
+        with pytest.raises(ValueError, match="line_items"):
+            ACPCheckoutRequest(
+                intent_id="int-abc",
+                line_items=[],
+                spt_token="spt_test_token",
+                merchant_domain="example.com",
+                client_total=0,
+            )
+
+    def test_negative_client_total_is_rejected(self):
+        with pytest.raises(ValueError, match="client_total"):
+            ACPCheckoutRequest(
+                intent_id="int-abc",
+                line_items=[self._item()],
+                spt_token="spt_test_token",
+                merchant_domain="example.com",
+                client_total=-1,
+            )
+
+    def test_spt_token_length_is_bounded_without_echoing_the_token(self):
+        secret = "s" * 513
+        with pytest.raises(ValueError, match="spt_token") as exc_info:
+            ACPCheckoutRequest(
+                intent_id="int-abc",
+                line_items=[self._item()],
+                spt_token=secret,
+                merchant_domain="example.com",
+                client_total=100,
+            )
+        assert secret not in str(exc_info.value)
+
+    def test_bad_intent_id_is_rejected(self):
+        with pytest.raises(ValueError, match="intent_id"):
+            ACPCheckoutRequest(
+                intent_id="has space",
+                line_items=[self._item()],
+                spt_token="spt_test_token",
+                merchant_domain="example.com",
+                client_total=100,
+            )
+
 
 class TestBearerTokenValidation:
     """A blank bearer must not become a malformed `Authorization: Bearer `."""
@@ -582,3 +668,16 @@ class TestBearerTokenValidation:
         """Omitting it stays the way to send no Authorization header."""
         client = AgentMiddlewareClient(api_key="test-key", base_url="http://test")
         assert "Authorization" not in client._client.headers
+
+    def test_bearer_token_rejects_header_injection(self):
+        with pytest.raises(ValueError, match="control characters"):
+            AgentMiddlewareClient(
+                api_key="test-key",
+                base_url="http://test",
+                bearer_token="tok\r\nX-Injected: yes",
+            )
+
+    @pytest.mark.parametrize("client_cls", [AgentMiddlewareClient, X402Client])
+    def test_api_key_rejects_header_injection(self, client_cls):
+        with pytest.raises(ValueError, match="control characters"):
+            client_cls(api_key="sk\r\nX-Injected: yes", base_url="http://test")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -94,6 +95,7 @@ class FakeSession:
         )
         self.initialize_error = initialize_error
         self.call_error = call_error
+        self._tool_output_schemas: dict[str, Any] = {}
         self.events: list[str] = []
         self.call_arguments: dict[str, Any] | None = None
         self.call_meta: dict[str, Any] | None = None
@@ -406,6 +408,103 @@ async def test_url_guard_allows_only_public_https_or_local_loopback_http() -> No
                 configuration,
                 resolver=_global_resolver,
             )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://[::169.254.169.254]/mcp",
+        "https://[::10.0.0.1]/mcp",
+        "https://[::127.0.0.1]/mcp",
+        "https://[64:ff9b::169.254.169.254]/mcp",
+        "https://[64:ff9b::10.0.0.1]/mcp",
+        "https://[::ffff:0:169.254.169.254]/mcp",
+        "https://[::ffff:0:10.0.0.1]/mcp",
+        "https://[fec0::1]/mcp",
+    ],
+)
+async def test_upstream_rejects_literals_stdlib_calls_global(url: str) -> None:
+    """Same hole as the outbound guard: is_global is true for these literals."""
+    configuration = _configuration(MCP_UPSTREAM_URL=url, ENVIRONMENT="production")
+    with pytest.raises(UpstreamMcpConfigurationError):
+        await validate_upstream_url(configuration, resolver=_global_resolver)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "address",
+    [
+        "::169.254.169.254",
+        "64:ff9b::10.0.0.1",
+        "fec0::1",
+        "::10.0.0.1",
+        "::ffff:0:10.0.0.1",
+    ],
+)
+async def test_upstream_rejects_dns_to_address_stdlib_calls_global(
+    address: str,
+) -> None:
+    async def resolve(_host: str, _port: int | None) -> Sequence[str]:
+        return ("93.184.216.34", address)
+
+    configuration = _configuration(
+        MCP_UPSTREAM_URL="https://partner.example/mcp",
+        ENVIRONMENT="production",
+    )
+    with pytest.raises(UpstreamMcpConfigurationError):
+        await validate_upstream_url(configuration, resolver=resolve)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://2130706433/mcp",
+        "https://0x7f000001/mcp",
+        "https://0177.0.0.1/mcp",
+        "https://127.1/mcp",
+        "https://0/mcp",
+    ],
+)
+async def test_upstream_rejects_ambiguous_numeric_host(url: str) -> None:
+    """DNS returning a public address must not launder a non-canonical IPv4."""
+    configuration = _configuration(MCP_UPSTREAM_URL=url, ENVIRONMENT="production")
+    with pytest.raises(UpstreamMcpConfigurationError) as exc_info:
+        await validate_upstream_url(configuration, resolver=_global_resolver)
+    assert (
+        exc_info.value.detail
+        == "MCP_UPSTREAM_URL must not use an ambiguous numeric host"
+    )
+
+
+@pytest.mark.anyio
+async def test_upstream_allows_public_nat64_embedding() -> None:
+    """A DNS64 address for a public IPv4 destination is not a private target."""
+
+    async def resolve(_host: str, _port: int | None) -> Sequence[str]:
+        return ("64:ff9b::8.8.8.8",)
+
+    configuration = _configuration(
+        MCP_UPSTREAM_URL="https://partner.example/mcp",
+        ENVIRONMENT="production",
+    )
+    resolved = await validate_upstream_url(configuration, resolver=resolve)
+    assert ipaddress.ip_address(resolved) == ipaddress.ip_address("64:ff9b::8.8.8.8")
+    literal = _configuration(
+        MCP_UPSTREAM_URL="https://[64:ff9b::8.8.8.8]/mcp",
+        ENVIRONMENT="production",
+    )
+    pinned = await validate_upstream_url(literal, resolver=resolve)
+    assert ipaddress.ip_address(pinned) == ipaddress.ip_address("64:ff9b::8.8.8.8")
+    translated = _configuration(
+        MCP_UPSTREAM_URL="https://[::ffff:0:8.8.8.8]/mcp",
+        ENVIRONMENT="production",
+    )
+    pinned_translated = await validate_upstream_url(translated, resolver=resolve)
+    assert ipaddress.ip_address(pinned_translated) == ipaddress.ip_address(
+        "::ffff:0:8.8.8.8"
+    )
 
 
 @pytest.mark.anyio
@@ -1012,6 +1111,64 @@ async def test_call_tool_commits_dispatch_boundary_and_forwards_metadata() -> No
     )
     assert len(result.response_hash) == 64
     assert result.size_bytes == len(result.canonical_json.encode("utf-8"))
+
+
+@pytest.mark.anyio
+async def test_schema_cache_must_exist_before_dispatch_claim() -> None:
+    session = FakeSession()
+    del session._tool_output_schemas
+    adapter = UpstreamMcpAdapter(_configuration())
+    _mark_discovered(adapter)
+    _bind_session(adapter, session)
+    claimed = False
+
+    async def before_dispatch() -> None:
+        nonlocal claimed
+        claimed = True
+
+    with pytest.raises(UpstreamMcpPreDispatchError) as exc_info:
+        await adapter.call_tool(
+            {},
+            invocation_id="inv",
+            idempotency_key="idem",
+            before_dispatch=before_dispatch,
+        )
+
+    assert exc_info.value.code == "upstream_client_schema_cache_unavailable"
+    assert claimed is False
+    assert session.events == ["initialize"]
+
+
+@pytest.mark.anyio
+async def test_discovered_output_schema_is_copied_before_dispatch_claim() -> None:
+    output_schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+    }
+    adapter = UpstreamMcpAdapter(_configuration())
+    adapter._discovered_tool = DiscoveredUpstreamTool(
+        name="partner.write",
+        description="Partner write",
+        input_schema={"type": "object"},
+        output_schema=output_schema,
+    )
+    session = FakeSession()
+    _bind_session(adapter, session)
+
+    async def before_dispatch() -> None:
+        cached = session._tool_output_schemas["partner.write"]
+        assert cached == output_schema
+        assert cached is not output_schema
+        assert cached["properties"] is not output_schema["properties"]
+        session.events.append("before_dispatch")
+
+    await adapter.call_tool(
+        {},
+        invocation_id="inv-copy",
+        idempotency_key="idem-copy",
+        before_dispatch=before_dispatch,
+    )
+    assert session.events == ["initialize", "before_dispatch", "call_tool"]
 
 
 @pytest.mark.anyio

@@ -6,7 +6,7 @@ This is the spine connecting routers to actual business logic.
 Service modules import lazily inside each getter: most of them back proof
 surfaces that stay unmounted unless ENABLE_PROOF_SURFACES is true, so
 importing this module must not drag them (and their third-party imports)
-into every boot. Only the settings object is needed at import time.
+into every boot.
 """
 
 from functools import lru_cache
@@ -28,14 +28,15 @@ if TYPE_CHECKING:
     from ..services.telemetry_pm import AutonomousPM
     from ..services.telemetry_scope import TelemetryScope
 
-settings = get_settings()
 
-
-@lru_cache()
+@lru_cache
 def get_iot_bridge() -> "ProtocolBridge":
     """Singleton IoT Protocol Bridge with ACL engine and MQTT translator."""
     from ..services.iot_bridge import ProtocolBridge
 
+    # Read settings when the singleton is created so cache resets can use
+    # changed configuration without retaining an import-time settings object.
+    settings = get_settings()
     bridge = ProtocolBridge(
         mqtt_broker_url=settings.MQTT_BROKER_URL,
         mqtt_default_qos=settings.MQTT_DEFAULT_QOS,
@@ -43,11 +44,12 @@ def get_iot_bridge() -> "ProtocolBridge":
     return bridge
 
 
-@lru_cache()
+@lru_cache
 def get_autonomous_pm() -> "AutonomousPM":
     """Singleton Autonomous Product Manager with event store and anomaly detector."""
     from ..services.telemetry_pm import AutonomousPM
 
+    settings = get_settings()
     return AutonomousPM(
         retention_hours=settings.TELEMETRY_RETENTION_HOURS,
         git_remote=settings.GIT_REMOTE_URL,
@@ -55,7 +57,7 @@ def get_autonomous_pm() -> "AutonomousPM":
     )
 
 
-@lru_cache()
+@lru_cache
 def get_media_engine() -> "MediaEngine":
     """Singleton Programmatic Media Engine with full pipeline."""
     from ..services.media_engine import MediaEngine
@@ -63,7 +65,7 @@ def get_media_engine() -> "MediaEngine":
     return MediaEngine()
 
 
-@lru_cache()
+@lru_cache
 def get_agent_comms() -> "AgentComms":
     """Singleton Agent Communications with registry and message router."""
     from ..services.agent_comms import AgentComms
@@ -71,7 +73,7 @@ def get_agent_comms() -> "AgentComms":
     return AgentComms()
 
 
-@lru_cache()
+@lru_cache
 def get_content_factory() -> "ContentFactory":
     """Singleton Content Factory with format adapters and algorithmic scheduler."""
     from ..services.content_factory import ContentFactory
@@ -79,7 +81,7 @@ def get_content_factory() -> "ContentFactory":
     return ContentFactory()
 
 
-@lru_cache()
+@lru_cache
 def get_red_team_swarm() -> "RedTeamSwarm":
     """Singleton Red Team Security Swarm with attack engine and scan store."""
     from ..services.red_team import RedTeamSwarm
@@ -87,7 +89,7 @@ def get_red_team_swarm() -> "RedTeamSwarm":
     return RedTeamSwarm()
 
 
-@lru_cache()
+@lru_cache
 def get_agent_oracle() -> "AgentOracle":
     """Singleton Agent Oracle with crawler, indexer, and registration engine."""
     from ..services.oracle import AgentOracle
@@ -95,7 +97,7 @@ def get_agent_oracle() -> "AgentOracle":
     return AgentOracle()
 
 
-@lru_cache()
+@lru_cache
 def get_agent_money() -> "AgentMoney":
     """Singleton Agent Money engine with wallets, metering, and arbitrage."""
     from ..services.agent_money import AgentMoney
@@ -103,7 +105,7 @@ def get_agent_money() -> "AgentMoney":
     return AgentMoney()
 
 
-@lru_cache()
+@lru_cache
 def get_protocol_engine() -> "ProtocolEngine":
     """Singleton Protocol Generation Engine — code-to-discovery pipeline."""
     from ..services.protocol_engine import ProtocolEngine
@@ -111,7 +113,7 @@ def get_protocol_engine() -> "ProtocolEngine":
     return ProtocolEngine()
 
 
-@lru_cache()
+@lru_cache
 def get_rtaas_engine() -> "RTaaSEngine":
     """Singleton Red-Team-as-a-Service engine."""
     from ..services.rtaas import RTaaSEngine
@@ -119,7 +121,7 @@ def get_rtaas_engine() -> "RTaaSEngine":
     return RTaaSEngine()
 
 
-@lru_cache()
+@lru_cache
 def get_sandbox_engine() -> "SandboxEngine":
     """Singleton Interactive Testing Sandbox engine."""
     from ..services.sandbox import SandboxEngine
@@ -127,7 +129,7 @@ def get_sandbox_engine() -> "SandboxEngine":
     return SandboxEngine()
 
 
-@lru_cache()
+@lru_cache
 def get_telemetry_scope() -> "TelemetryScope":
     """Singleton Telemetry Scoping engine — multi-tenant autonomous PM."""
     from ..services.telemetry_scope import TelemetryScope
@@ -135,7 +137,7 @@ def get_telemetry_scope() -> "TelemetryScope":
     return TelemetryScope()
 
 
-@lru_cache()
+@lru_cache
 def get_broadcast_engine() -> "OracleBroadcastEngine":
     """Singleton Oracle Broadcast — pushes APIs into agent directories."""
     from ..services.oracle_broadcast import OracleBroadcastEngine

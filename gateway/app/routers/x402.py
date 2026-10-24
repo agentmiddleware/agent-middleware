@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.core.auth import AuthContext, get_auth_context
 from app.core.time import utc_now
+from app.core.wallet_resolution import resolve_wallet_id
 from app.services.x402_engine import (
     X402Error,
     X402SettlementUncertainError,
@@ -51,7 +52,7 @@ class X402RequirementResponse(BaseModel):
 
 class X402SettleRequest(BaseModel):
     permit_id: str
-    wallet_id: str
+    wallet_id: str | None = None
     amount: Decimal
     pay_to: str
     network: str
@@ -109,7 +110,7 @@ async def parse_payment_required(
 
 
 async def _refuse_in_progress_settle(
-    request: X402SettleRequest,
+    wallet_id: str,
     *,
     idempotency_key: str,
     in_progress: IdempotencyInProgressError,
@@ -125,7 +126,7 @@ async def _refuse_in_progress_settle(
     reconstructed from its payload hashes; retain that distinct conflict.
     """
     record = await get_idempotency_service().get_record(
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         endpoint=_SETTLE_ENDPOINT,
         idempotency_key=idempotency_key,
     )
@@ -170,21 +171,21 @@ async def settle_payment_required(
     except X402Error as exc:
         raise HTTPException(status_code=400, detail=exc.reason)
 
-    auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
 
     idem = get_idempotency_service()
     try:
         begun = await idem.begin_with_record(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             endpoint=_SETTLE_ENDPOINT,
             idempotency_key=idempotency_key,
-            request_payload=request.model_dump(mode="json"),
+            request_payload={**request.model_dump(mode="json"), "wallet_id": wallet_id},
         )
     except IdempotencyConflictError as exc:
         raise HTTPException(status_code=409, detail=exc.args[0])
     except IdempotencyInProgressError as exc:
         await _refuse_in_progress_settle(
-            request,
+            wallet_id,
             idempotency_key=idempotency_key,
             in_progress=exc,
         )
@@ -194,7 +195,7 @@ async def settle_payment_required(
     try:
         settlement = await handler.settle(
             permit_id=request.permit_id,
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             key_id=auth.key_id,
             requirement=requirement,
             idempotency_key=idempotency_key,
@@ -207,7 +208,7 @@ async def settle_payment_required(
         # Only confirmed pre-reservation or fully compensated failures release
         # this owner. Uncertain settlement/compensation keeps it above.
         await idem.abandon(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             endpoint=_SETTLE_ENDPOINT,
             idempotency_key=idempotency_key,
             expected_record_id=begun.record_id,
@@ -216,7 +217,7 @@ async def settle_payment_required(
         raise HTTPException(status_code=status_code, detail=exc.reason)
     except PermitError as exc:
         await idem.abandon(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             endpoint=_SETTLE_ENDPOINT,
             idempotency_key=idempotency_key,
             expected_record_id=begun.record_id,
@@ -247,7 +248,7 @@ async def settle_payment_required(
         audit_event_id=settlement.audit_event_id,
     )
     await idem.complete(
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         endpoint=_SETTLE_ENDPOINT,
         idempotency_key=idempotency_key,
         response_reference=settlement.receipt_id,

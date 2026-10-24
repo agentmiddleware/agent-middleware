@@ -1373,7 +1373,7 @@ async def test_remote_insufficient_funds_releases_the_use_before_the_fallible_bu
         token = _mint(rsa_key, extra={"groups": ["payments-ops"]})
         headers = {**setup["agent_headers"], "Authorization": f"Bearer {token}"}
 
-        async def _exhausted(self, attempt_id):
+        async def _exhausted(self, attempt_id, *, caller):
             raise PermitWriteContendedError()
 
         monkeypatch.setattr(PermitService, "release_dispatch_budget_once", _exhausted)

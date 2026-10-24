@@ -21,7 +21,7 @@ from app.core.config import get_settings
 UNKNOWN_KEY = "some-unknown-caller-key"
 
 
-@pytest.fixture()
+@pytest.fixture
 def open_mode_settings():
     """Arm DEBUG open mode: DEBUG on, no keys, local environment."""
     settings = get_settings()

@@ -1,27 +1,94 @@
 """CrewAI Tool for Agent Middleware API."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from b2a_sdk.models import PermitRequest
 from crewai.tools import BaseTool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, PrivateAttr
 
 from .client import B2AClient
 
-
-class MCPToolSchema(BaseModel):
-    """Schema for MCP tool input."""
-
-    tool_name: str
-    idempotency_key: str
-    permit_idempotency_key: str
-    arguments: dict[str, Any] = {}
+_MAX_KEY_LENGTH = 128
 
 
-class WalletBalanceSchema(BaseModel):
-    """Schema for wallet balance check."""
+def _required_text(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} is required and must not be blank")
+    return value.strip()
+
+
+def _idempotency_key(value: object, name: str) -> str:
+    key = _required_text(value, name)
+    if len(key) > _MAX_KEY_LENGTH:
+        raise ValueError(f"{name} must be at most 128 characters")
+    return key
+
+
+def _tool_arguments(value: object) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError("arguments must be an object")
+    return value
+
+
+def _receipt_id_from_payload(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    containers = [payload.get("result")]
+    error = payload.get("error")
+    if isinstance(error, dict):
+        containers.append(error.get("data"))
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        receipt = container.get("receipt")
+        if not isinstance(receipt, dict):
+            continue
+        receipt_id = receipt.get("receipt_id")
+        if isinstance(receipt_id, str) and receipt_id:
+            return receipt_id
+    return None
+
+
+def _error_text(exc: Exception) -> str:
+    receipt_id = getattr(exc, "receipt_id", None)
+    if not isinstance(receipt_id, str) or not receipt_id:
+        receipt_id = _receipt_id_from_payload(getattr(exc, "payload", None))
+    if receipt_id:
+        return f"Error: {exc} receipt_id={receipt_id}"
+    return f"Error: {exc}"
+
+
+class CrewAIB2AToolInput(BaseModel):
+    """Arguments a CrewAI agent can pass into this tool."""
+
+    operation: str = Field(description="One of discover_tools, call_tool, or balance.")
+    tool_name: str = Field(
+        default="",
+        description="MCP tool name. Required for call_tool.",
+    )
+    idempotency_key: str = Field(
+        default="",
+        description=(
+            "Caller-owned invoke key. Required for call_tool. "
+            "Reuse it only for the same invocation."
+        ),
+    )
+    permit_idempotency_key: str = Field(
+        default="",
+        description=(
+            "Caller-owned permit key. Required for call_tool. "
+            "Reuse it to replay the same permit."
+        ),
+    )
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Arguments passed to the MCP tool.",
+    )
 
 
 class CrewAIB2ATool(BaseTool):
@@ -33,17 +100,22 @@ class CrewAIB2ATool(BaseTool):
         "Use this to call billable services and manage agent billing. "
         "All invocations return signed receipts."
     )
+    args_schema: type[BaseModel] = CrewAIB2AToolInput
 
     client: B2AClient | None = None
     base_url: str = "https://api.thisisatest.tech"
-    api_key: str
+    api_key: str = Field(repr=False, exclude=True)
     wallet_id: str
     permit_budget: Decimal = Decimal(100)
     permit_ttl_minutes: int = 30
-    # Cache permits to avoid 409 on replay (server hashes full permit body including expires_at)
-    # permit_idempotency_key -> permit_id
-    _permit_cache: dict[str, str] = {}  # noqa: RUF012
-    _permit_requests: dict[str, PermitRequest] = {}  # noqa: RUF012
+
+    # One dict per instance. A shared class dict would let one wallet reuse
+    # another wallet's permit when both agents pick the same permit key.
+    _permit_cache: dict[str, str] = PrivateAttr(default_factory=dict)
+    _permit_requests: dict[str, PermitRequest] = PrivateAttr(default_factory=dict)
+    _permit_ttls: dict[str, int] = PrivateAttr(default_factory=dict)
+    _sync_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
+    _owns_client: bool = PrivateAttr(default=False)
 
     def __init__(
         self,
@@ -52,20 +124,23 @@ class CrewAIB2ATool(BaseTool):
         base_url: str = "https://api.thisisatest.tech",
         permit_budget: Decimal = Decimal(100),
         permit_ttl_minutes: int = 30,
-        **kwargs,
+        **kwargs: Any,
     ):
         # BaseTool is a pydantic model: required fields must reach its
         # validator, so pass them through instead of assigning afterwards.
         super().__init__(
-            api_key=api_key,
-            wallet_id=wallet_id,
-            base_url=base_url,
+            api_key=_required_text(api_key, "api_key"),
+            wallet_id=_required_text(wallet_id, "wallet_id"),
+            base_url=_required_text(base_url, "base_url"),
             permit_budget=permit_budget,
             permit_ttl_minutes=permit_ttl_minutes,
             **kwargs,
         )
-        self._permit_cache = {}  # Instance-specific cache
+        self._permit_cache = {}
         self._permit_requests = {}
+        self._permit_ttls = {}
+        self._sync_loop = None
+        self._owns_client = False
 
     def _get_client(self) -> B2AClient:
         if self.client is None:
@@ -73,11 +148,13 @@ class CrewAIB2ATool(BaseTool):
                 api_key=self.api_key,
                 base_url=self.base_url,
             )
+            self._owns_client = True
         return self.client
 
     def _permit_request(self, tool_name: str, permit_key: str) -> PermitRequest:
         # Both sync and async entry points retain the body before sending it.
         # A lost response therefore cannot change the expiry on retry.
+        expected_scopes = [f"tool:{tool_name}:invoke", "billing:charge"]
         request = self._permit_requests.get(permit_key)
         if request is None:
             request = PermitRequest(
@@ -87,135 +164,87 @@ class CrewAIB2ATool(BaseTool):
                 expires_at=datetime.now(UTC)
                 + timedelta(minutes=self.permit_ttl_minutes),
                 allowed_tools=[tool_name],
-                scopes=[f"tool:{tool_name}:invoke", "billing:charge"],
+                scopes=expected_scopes,
             )
             self._permit_requests[permit_key] = request
-        elif (
-            request.subject_wallet_id != self.wallet_id
+            self._permit_ttls[permit_key] = self.permit_ttl_minutes
+            return request
+        if (
+            request.issuer_wallet_id != self.wallet_id
+            or request.subject_wallet_id != self.wallet_id
             or request.max_credits != self.permit_budget
             or request.allowed_tools != [tool_name]
+            or list(request.scopes) != expected_scopes
+            or self._permit_ttls.get(permit_key) != self.permit_ttl_minutes
         ):
             raise ValueError(
                 "permit_idempotency_key reused with different permit terms"
             )
         return request
 
-    def _run(
-        self,
-        operation: str,
-        **kwargs,
-    ) -> str:
-        """Synchronous operation (for CrewAI compatibility).
-
-        Args:
-            operation: One of 'discover_tools', 'call_tool', 'balance'
-            **kwargs: Operation-specific arguments
-        """
-        import asyncio
-
-        client = self._get_client()
-
+    def _drive(self, coro: Any) -> Any:
+        # CrewAI calls this from a normal thread, where Python 3.12 and later
+        # have no current event loop. asyncio.run() would also close the loop
+        # and the HTTP client would fail on the next call. Keep one loop.
         try:
-            if operation == "discover_tools":
-                tools = asyncio.get_event_loop().run_until_complete(
-                    client.discover_tools()
-                )
-                return str(
-                    [{"name": t.name, "description": t.description} for t in tools]
-                )
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "synchronous run was called while an event loop is running; "
+                "use the async tool path"
+            )
+        loop = self._sync_loop
+        if loop is None or loop.is_closed():
+            loop = asyncio.new_event_loop()
+            self._sync_loop = loop
+        return loop.run_until_complete(coro)
 
-            elif operation == "call_tool":
-                tool_name = kwargs.get("tool_name")
-                idempotency_key = kwargs.get("idempotency_key")
-                permit_idempotency_key = kwargs.get("permit_idempotency_key")
-                arguments = kwargs.get("arguments", {})
+    def close(self) -> None:
+        """Close the sync loop this tool opened. Safe to call more than once."""
+        loop = self._sync_loop
+        client = self.client if self._owns_client else None
+        self._sync_loop = None
+        if loop is None or loop.is_closed():
+            return
+        if client is not None:
+            try:
+                loop.run_until_complete(client.close())
+            except Exception:  # noqa: BLE001, S110
+                # Cleanup must not hide the call that already finished.
+                pass
+            self.client = None
+        loop.close()
 
-                if not idempotency_key or not idempotency_key.strip():
-                    return "Error: idempotency_key is required and must not be blank"
-
-                if not permit_idempotency_key or not permit_idempotency_key.strip():
-                    return "Error: permit_idempotency_key is required and must not be blank"
-
-                request = self._permit_request(tool_name, permit_idempotency_key)
-                if permit_idempotency_key in self._permit_cache:
-                    permit_id = self._permit_cache[permit_idempotency_key]
-                else:
-                    permit = asyncio.get_event_loop().run_until_complete(
-                        client.create_permit(
-                            request, idempotency_key=permit_idempotency_key
-                        )
-                    )
-                    permit_id = permit.permit_id
-                    self._permit_cache[permit_idempotency_key] = permit_id
-
-                result = asyncio.get_event_loop().run_until_complete(
-                    client.invoke_tool(
-                        tool_name,
-                        arguments,
-                        wallet_id=self.wallet_id,
-                        permit_id=permit_id,
-                        idempotency_key=idempotency_key,
-                    )
-                )
-
-                return str(
-                    {
-                        "content": result.content,
-                        "structured_content": result.structured_content,
-                        "receipt_id": result.receipt.receipt_id,
-                        "credits_charged": str(result.receipt.credits_charged),
-                        "signature": result.receipt.signature,
-                    }
-                )
-
-            elif operation == "balance":
-                balance = asyncio.get_event_loop().run_until_complete(
-                    client.get_balance(self.wallet_id)
-                )
-                return f"Balance: {balance} credits"
-
-            else:
-                return f"Unknown operation: {operation}"
-
-        except Exception as e:  # noqa: BLE001
-            return f"Error: {e!s}"
-
-    async def _arun(
-        self,
-        operation: str,
-        **kwargs,
-    ) -> str:
-        """Asynchronous operation (preferred)."""
-        client = self._get_client()
-
+    async def _execute(self, operation: str, **kwargs: Any) -> str:
         try:
+            client = self._get_client()
             if operation == "discover_tools":
                 tools = await client.discover_tools()
                 return str(
                     [{"name": t.name, "description": t.description} for t in tools]
                 )
 
-            elif operation == "call_tool":
-                tool_name = kwargs.get("tool_name")
-                idempotency_key = kwargs.get("idempotency_key")
-                permit_idempotency_key = kwargs.get("permit_idempotency_key")
-                arguments = kwargs.get("arguments", {})
-
-                if not idempotency_key or not idempotency_key.strip():
-                    return "Error: idempotency_key is required and must not be blank"
-
-                if not permit_idempotency_key or not permit_idempotency_key.strip():
-                    return "Error: permit_idempotency_key is required and must not be blank"
-
-                request = self._permit_request(tool_name, permit_idempotency_key)
-                if permit_idempotency_key in self._permit_cache:
-                    permit_id = self._permit_cache[permit_idempotency_key]
+            if operation == "call_tool":
+                tool_name = _required_text(kwargs.get("tool_name"), "tool_name")
+                idempotency_key = _idempotency_key(
+                    kwargs.get("idempotency_key"), "idempotency_key"
+                )
+                permit_key = _idempotency_key(
+                    kwargs.get("permit_idempotency_key"),
+                    "permit_idempotency_key",
+                )
+                arguments = _tool_arguments(kwargs.get("arguments", {}))
+                request = self._permit_request(tool_name, permit_key)
+                if permit_key in self._permit_cache:
+                    permit_id = self._permit_cache[permit_key]
                 else:
                     permit = await client.create_permit(
-                        request, idempotency_key=permit_idempotency_key
+                        request, idempotency_key=permit_key
                     )
                     permit_id = permit.permit_id
-                    self._permit_cache[permit_idempotency_key] = permit_id
+                    self._permit_cache[permit_key] = permit_id
 
                 result = await client.invoke_tool(
                     tool_name,
@@ -224,7 +253,6 @@ class CrewAIB2ATool(BaseTool):
                     permit_id=permit_id,
                     idempotency_key=idempotency_key,
                 )
-
                 return str(
                     {
                         "content": result.content,
@@ -235,12 +263,58 @@ class CrewAIB2ATool(BaseTool):
                     }
                 )
 
-            elif operation == "balance":
+            if operation == "balance":
                 balance = await client.get_balance(self.wallet_id)
                 return f"Balance: {balance} credits"
 
-            else:
-                return f"Unknown operation: {operation}"
+            return f"Unknown operation: {operation}"
+        except Exception as exc:  # noqa: BLE001
+            # CrewAI agents read a string. Any failure here becomes that string.
+            return _error_text(exc)
 
-        except Exception as e:  # noqa: BLE001
-            return f"Error: {e!s}"
+    def _run(
+        self,
+        operation: str,
+        tool_name: str = "",
+        idempotency_key: str = "",
+        permit_idempotency_key: str = "",
+        arguments: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Synchronous operation (for CrewAI compatibility)."""
+        coro = self._execute(
+            operation,
+            tool_name=tool_name,
+            idempotency_key=idempotency_key,
+            permit_idempotency_key=permit_idempotency_key,
+            arguments=arguments,
+            **kwargs,
+        )
+        try:
+            return self._drive(coro)
+        except Exception as exc:  # noqa: BLE001
+            # The coroutine was not scheduled, or it already finished.
+            try:
+                coro.close()
+            except RuntimeError:
+                pass
+            return _error_text(exc)
+
+    async def _arun(
+        self,
+        operation: str,
+        tool_name: str = "",
+        idempotency_key: str = "",
+        permit_idempotency_key: str = "",
+        arguments: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Asynchronous operation (preferred)."""
+        return await self._execute(
+            operation,
+            tool_name=tool_name,
+            idempotency_key=idempotency_key,
+            permit_idempotency_key=permit_idempotency_key,
+            arguments=arguments,
+            **kwargs,
+        )

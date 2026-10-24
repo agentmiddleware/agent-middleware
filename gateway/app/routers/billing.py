@@ -14,6 +14,7 @@ router, charges a Stripe Shared Payment Token and mints no credits.
 from decimal import Decimal
 from typing import ClassVar, cast
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -23,6 +24,7 @@ from ..core.wallet_resolution import resolve_wallet_id
 from ..core.dependencies import get_agent_money
 from .http_idempotency import (
     begin_http_idempotency as _begin_idempotency,
+    resolve_idempotency_key_lines,
 )
 from ..services.agent_money import (
     AgentMoney,
@@ -301,11 +303,12 @@ async def create_sponsor_wallet(
 )
 async def create_agent_wallet(
     request: CreateAgentWalletRequest,
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ):
     _require_wallet_access(auth, request.sponsor_wallet_id)
+    idempotency_key = resolve_idempotency_key_lines(idempotency_key_lines)
     # Resolve the sponsor before opening an idempotency record: the record's
     # wallet_id references wallets, so beginning one for an unknown sponsor
     # would fail the foreign key and answer 500 where the unkeyed path answers
@@ -635,11 +638,12 @@ async def charge_wallet(
     ),
     request_path: str | None = None,
     description: str | None = None,
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ):
     wallet_id = resolve_wallet_id(wallet_id, auth)
+    idempotency_key = resolve_idempotency_key_lines(idempotency_key_lines)
     category = service_category or service
     if not category:
         raise HTTPException(
@@ -1079,7 +1083,7 @@ async def transfer_wallets(
         None,
         description="Optional ID to link related transfers",
     ),
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ):
@@ -1092,20 +1096,34 @@ async def transfer_wallets(
     Both wallets are locked during the transaction for ACID compliance.
     """
     _require_wallet_access(auth, from_wallet_id)
+    idempotency_key = resolve_idempotency_key_lines(idempotency_key_lines)
     endpoint = "/v1/billing/transfer"
+    # The idempotency row's wallet_id references wallets. Beginning one for an
+    # unknown source fails the foreign key and answers 500, where the unkeyed
+    # path answers 404.
+    if idempotency_key is not None and await money.get_wallet(from_wallet_id) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=str(WalletNotFoundError(from_wallet_id)),
+        )
     # Opt-in idempotency: a retried transfer with the same Idempotency-Key
     # replays the original result instead of moving credits twice. Keyed on
-    # the source wallet (the debited side).
+    # the source wallet (the debited side). correlation_id is part of the
+    # identity when the caller sends one, because it is stored on both ledger
+    # rows and becomes the transfer id the caller is shown.
+    request_payload = {
+        "from_wallet_id": from_wallet_id,
+        "to_wallet_id": to_wallet_id,
+        "amount": str(amount),
+        "description": description,
+    }
+    if correlation_id is not None:
+        request_payload["correlation_id"] = correlation_id
     guard, replay = await _begin_idempotency(
         idempotency_key=idempotency_key,
         wallet_id=from_wallet_id,
         endpoint=endpoint,
-        request_payload={
-            "from_wallet_id": from_wallet_id,
-            "to_wallet_id": to_wallet_id,
-            "amount": str(amount),
-            "description": description,
-        },
+        request_payload=request_payload,
     )
     if replay is not None:
         return replay
@@ -1134,8 +1152,12 @@ async def transfer_wallets(
                 "description": description,
             },
         )
-        await guard.complete(result, 200, response_reference=result.get("transfer_id"))
-        return result
+        # Store the same JSON the live response uses. complete() stringifies
+        # Decimal values, so a raw engine dict replays amounts as strings
+        # after the first response already sent numbers.
+        body = jsonable_encoder(result)
+        await guard.complete(body, 200, response_reference=body.get("transfer_id"))
+        return JSONResponse(status_code=200, content=body)
     except WalletNotFoundError as e:
         await _record_billing_governance(
             event="billing.transfer",
@@ -1149,7 +1171,7 @@ async def transfer_wallets(
             error="wallet_not_found",
             metadata={"to_wallet_id": to_wallet_id},
         )
-        await guard.complete({"error": "wallet_not_found", "message": str(e)}, 404)
+        await guard.complete({"detail": str(e)}, 404)
         raise HTTPException(status_code=404, detail=str(e))
     except CrossTenantTransferError as e:
         refused_detail = {
@@ -1195,7 +1217,7 @@ async def transfer_wallets(
             "wallet_id": e.wallet_id,
             "shortfall": float(e.shortfall),
         }
-        await guard.complete(insufficient_detail, 402)
+        await guard.complete({"detail": insufficient_detail}, 402)
         raise HTTPException(
             status_code=402,
             detail=insufficient_detail,
@@ -1240,13 +1262,14 @@ async def transfer_wallets(
             error="transfer_error",
             metadata={"to_wallet_id": to_wallet_id, "message": str(e)},
         )
+        transfer_error = {"error": "transfer_error", "message": str(e)}
         await guard.complete(
-            {"error": "transfer_error", "message": str(e)},
+            {"detail": transfer_error},
             status.HTTP_400_BAD_REQUEST,
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "transfer_error", "message": str(e)},
+            detail=transfer_error,
         )
 
 

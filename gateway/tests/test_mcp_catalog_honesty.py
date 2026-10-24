@@ -102,7 +102,7 @@ def test_preview_stub_tools_are_labeled_demos_without_side_effects():
 
 
 @pytest.mark.anyio
-async def test_root_discovery_names_one_invoke_path_and_legacy_routes():
+async def test_root_discovery_names_one_invoke_path_and_legacy_routes(clean_database):
     """Root discovery recommends POST /mcp and marks older routes legacy."""
     from app.main import app
 

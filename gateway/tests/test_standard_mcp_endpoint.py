@@ -22,7 +22,7 @@ from app.services.idempotency import (
     IdempotencyInProgressError,
     get_idempotency_service,
 )
-from app.services.mcp_generator import McpGenerator
+from app.services.mcp_generator import MCP_SERVER_VERSION, McpGenerator
 from app.services.service_registry import get_service_registry
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
@@ -66,6 +66,49 @@ def _initialize(protocol_version: str = "2025-06-18") -> dict:
             "clientInfo": {"name": "test-client", "version": "0.0.0"},
         },
     )
+
+
+def test_openapi_documents_distinct_jsonrpc_post_bodies():
+    schema = app.openapi()["paths"]["/mcp"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    assert schema["required"] == ["jsonrpc"]
+    variants = {variant["title"]: variant for variant in schema["oneOf"]}
+    assert set(variants) == {
+        "JSON-RPC request",
+        "JSON-RPC notification",
+        "JSON-RPC response",
+    }
+    request = variants["JSON-RPC request"]
+    assert request["required"] == ["method", "id"]
+    assert request["not"] == {
+        "anyOf": [{"required": ["result"]}, {"required": ["error"]}]
+    }
+    assert variants["JSON-RPC notification"]["required"] == ["method"]
+    assert variants["JSON-RPC notification"]["not"] == {
+        "anyOf": [
+            {"required": ["id"]},
+            {"required": ["result"]},
+            {"required": ["error"]},
+        ]
+    }
+    response = variants["JSON-RPC response"]
+    assert response["required"] == ["id"]
+    assert response["not"] == {"required": ["method"]}
+    assert response["oneOf"] == [
+        {"required": ["result"]},
+        {"required": ["error"]},
+    ]
+    assert "result" in response["properties"]
+    assert {item["type"] for item in request["properties"]["id"]["anyOf"]} == {
+        "integer",
+        "string",
+    }
+    assert {item["type"] for item in response["properties"]["id"]["anyOf"]} == {
+        "integer",
+        "string",
+        "null",
+    }
 
 
 @pytest.mark.anyio
@@ -114,9 +157,36 @@ async def test_discovery_preserves_typed_tools_alongside_no_argument_tool(
 
 
 @pytest.mark.anyio
-async def test_endpoint_disabled_by_default(client):
-    resp = await client.post("/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS)
-    assert resp.status_code == 404
+async def test_endpoint_enabled_by_default_and_requires_auth(client, monkeypatch):
+    monkeypatch.delenv("ENABLE_STANDARD_MCP_ENDPOINT", raising=False)
+    get_settings.cache_clear()
+    try:
+        assert get_settings().ENABLE_STANDARD_MCP_ENDPOINT is True
+        resp = await client.post("/mcp", json=_initialize(), headers=MCP_HEADERS)
+        assert resp.status_code == 401
+        resp = await client.post(
+            "/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS
+        )
+        assert resp.status_code == 200
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_endpoint_returns_404_when_disabled(client, monkeypatch):
+    monkeypatch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", "false")
+    get_settings.cache_clear()
+    try:
+        unauthenticated = await client.post(
+            "/mcp", json=_initialize(), headers=MCP_HEADERS
+        )
+        assert unauthenticated.status_code == 401
+        resp = await client.post(
+            "/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS
+        )
+        assert resp.status_code == 404
+    finally:
+        get_settings.cache_clear()
 
 
 @pytest.mark.anyio
@@ -137,6 +207,7 @@ async def test_initialize_negotiates_requested_protocol(client, standard_mcp_ena
     assert result["protocolVersion"] == "2025-03-26"
     assert result["capabilities"]["tools"] == {"listChanged": False}
     assert result["serverInfo"]["name"] == McpGenerator.MANIFEST_NAME
+    assert result["serverInfo"]["version"] == MCP_SERVER_VERSION
     assert "Transaction-integrity boundary" in result["instructions"]
     assert "delivery_uncertain" in result["instructions"]
     assert "legacy compatibility identifier" in result["instructions"]
@@ -236,6 +307,23 @@ async def test_standard_mcp_rejects_same_host_different_origin(
     )
 
     assert resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_standard_mcp_rejects_rebound_host_without_public_url(
+    client, standard_mcp_enabled
+):
+    assert not get_settings().PUBLIC_URL
+    resp = await client.post(
+        "/mcp",
+        json=_rpc("ping"),
+        headers={
+            **BOOTSTRAP_MCP_HEADERS,
+            "Host": "rebind.evil",
+            "Origin": "http://rebind.evil",
+        },
+    )
+    assert resp.status_code == 421
 
 
 @pytest.mark.anyio

@@ -1,6 +1,6 @@
 # Dependabot version updates. Directory globs only match dirs that exist, so new packages
 # under these roots are picked up automatically. Security updates are enabled separately
-# (repo Settings > Code security, or apply-protection.sh once public).
+# (repo Settings > Code security, or scripts/github_repo_settings.py in the org's .github repository).
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -49,3 +49,11 @@ updates:
         update-types: ["minor", "patch"]
     commit-message:
       prefix: "deps(npm)"
+
+  - package-ecosystem: docker
+    directory: "/gateway"
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "deps(docker)"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -185,8 +186,6 @@ def test_sync_calls_reuse_pooled_connections_across_calls() -> None:
 
 
 def test_sync_client_refuses_to_run_inside_an_event_loop() -> None:
-    import asyncio
-
     client = SyncAgentMiddlewareClient(api_key="test-key")
 
     async def inside() -> None:
@@ -197,3 +196,34 @@ def test_sync_client_refuses_to_run_inside_an_event_loop() -> None:
         asyncio.run(inside())
     finally:
         client.close()
+
+
+def test_sync_client_close_inside_event_loop_can_be_retried() -> None:
+    client = SyncAgentMiddlewareClient(
+        api_key="test-key",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"tools": []})),
+    )
+    owned_loop = client._loop
+
+    async def inside() -> None:
+        with pytest.raises(RuntimeError, match="inside an event loop"):
+            client.close()
+
+    try:
+        asyncio.run(inside())
+        assert client._loop is owned_loop
+        assert owned_loop is not None and not owned_loop.is_closed()
+        assert not client._client._client.is_closed
+        assert client.discover_tools() == []
+    finally:
+        client.close()
+
+    assert client._client._client.is_closed
+    assert owned_loop is not None and owned_loop.is_closed()
+    assert client._loop is None
+    client.close()  # idempotent after a successful retry
+
+    async def inside_closed() -> None:
+        client.close()  # idempotent even inside a running event loop
+
+    asyncio.run(inside_closed())

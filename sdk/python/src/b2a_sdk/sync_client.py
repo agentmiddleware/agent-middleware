@@ -178,9 +178,20 @@ class SyncAgentMiddlewareClient:
 
     def close(self) -> None:
         """Close the underlying HTTP client and the owned loop. Idempotent."""
-        loop, self._loop = self._loop, None
+        loop = self._loop
         if loop is None or loop.is_closed():
+            self._loop = None
             return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "SyncAgentMiddlewareClient.close() cannot run inside an event loop; "
+                "call close() from synchronous code"
+            )
+        self._loop = None
         try:
             loop.run_until_complete(self._client.close())
         finally:

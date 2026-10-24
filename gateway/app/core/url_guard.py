@@ -203,7 +203,7 @@ async def pin_outbound_url(
         # This platform's resolver may map the form somewhere harmless while
         # the fetching client's resolver maps it to loopback or intranet
         # space (or the reverse). Refuse without consulting DNS.
-        return "private_address_blocked"
+        return "private_address_blocked", None
 
     try:
         ipaddress.ip_address(host)

@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "b2a-sdk>=0.4.0",
+    "amw-sdk>=0.4.0",
     "crewai>=0.1.0",
     "httpx>=0.25.0",
 ]
@@ -22,4 +22,7 @@ dev = ["pytest", "pytest-asyncio", "ruff"]
 packages = ["src/crewai_b2a"]
 
 [tool.uv.sources]
-b2a-sdk = { path = "../../sdk/python", editable = true }
+amw-sdk = { path = "../../sdk/python", editable = true }
+
+[tool.ruff.lint.isort]
+known-first-party = ["crewai_b2a"]

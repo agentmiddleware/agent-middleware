@@ -14,7 +14,10 @@ lazily inserts ``signing_keys.activated_at``.
 
 The dialect-agnostic bind guard in ``app.db.database`` is the fix. The unit
 tests below run everywhere; ``TestPostgresTrustLoop`` exercises the real
-driver and is skipped unless ``TEST_POSTGRES_URL`` is set (CI sets it).
+driver and is skipped unless ``TEST_POSTGRES_URL`` is set. The
+``postgres-proofs`` CI job sets that URL with ``CI_STRICT=1`` (see
+``tests/support/db_gate.py``), so a missing URL fails the job instead of
+passing by skipping the class.
 """
 
 from __future__ import annotations
@@ -26,6 +29,9 @@ import pytest
 
 from app.core.time import to_naive_utc, utc_now
 from app.db.database import _normalize_bind_parameters
+from tests.support import db_gate
+
+POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL", "").strip()
 
 
 class TestToNaiveUtc:
@@ -74,11 +80,8 @@ class TestNormalizeBindParameters:
         assert _normalize_bind_parameters("raw") == "raw"
 
 
-POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL", "").strip()
-
-
-@pytest.mark.skipif(
-    not POSTGRES_URL,
+@db_gate.collection_mark(
+    url_env="TEST_POSTGRES_URL",
     reason="TEST_POSTGRES_URL not set; Postgres-dialect coverage skipped",
 )
 class TestPostgresTrustLoop:

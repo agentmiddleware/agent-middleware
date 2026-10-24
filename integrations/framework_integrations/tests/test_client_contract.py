@@ -239,7 +239,9 @@ def test_create_awi_session_sends_the_configured_wallet(monkeypatch):
 
     async def run() -> dict:
         try:
-            return await client.create_awi_session("https://example.com/start", max_steps=12)
+            return await client.create_awi_session(
+                "https://example.com/start", max_steps=12
+            )
         finally:
             await client.close()
 
@@ -255,7 +257,9 @@ def test_create_awi_session_sends_the_configured_wallet(monkeypatch):
     }
 
 
-def test_create_awi_session_rejects_a_step_count_the_gateway_will_not_accept(monkeypatch):
+def test_create_awi_session_rejects_a_step_count_the_gateway_will_not_accept(
+    monkeypatch,
+):
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

@@ -6,6 +6,7 @@ import asyncio
 import threading
 
 import httpx
+
 from crewai_b2a import B2AClient, CrewAIB2ATool
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+
 from autogen_b2a import B2AClient, B2AFunctionTool
 
 

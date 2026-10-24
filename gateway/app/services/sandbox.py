@@ -413,7 +413,7 @@ class SandboxEngine:
             if action_type == "submit_transform":
                 # Check if agent guessed the transformation rule
                 guess = str(action_value).lower()
-                for rule in env.hidden_rules:
+                for _rule in env.hidden_rules:
                     if any(
                         keyword in guess
                         for keyword in [

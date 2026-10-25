@@ -35,6 +35,7 @@ from ..services.ownership import CallerIdentity, OwnershipDeniedError
 from ..services.idempotency import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
+    InvalidIdempotencyKeyError,
     get_idempotency_service,
 )
 from ..services.policies import evaluate_wallet_policy
@@ -989,6 +990,7 @@ async def prepare_top_up(
         description="Amount in fiat currency (USD)",
     ),
     currency: str = Query("USD", description="Fiat currency code"),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ):
     """
@@ -1037,14 +1039,28 @@ async def prepare_top_up(
     stripe_integration = get_stripe_integration()
 
     try:
+        key_arg = (
+            {"idempotency_key": idempotency_key} if idempotency_key is not None else {}
+        )
         result = await stripe_integration.create_top_up_intent(
             wallet_id=wallet_id,
             amount_fiat=Decimal(str(amount_fiat)),
             currency=currency,
+            **key_arg,
         )
         return result
     except WalletNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except InvalidIdempotencyKeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": str(e), **e.as_error_data()},
+        ) from e
+    except (IdempotencyConflictError, IdempotencyInProgressError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": str(e), "message": str(e)},
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1151,15 +1167,15 @@ async def transfer_wallets(
         )
         await guard.complete({"error": "wallet_not_found", "message": str(e)}, 404)
         raise HTTPException(status_code=404, detail=str(e))
-    except CrossTenantTransferError as e:
+    except CrossTenantTransferError:
         refused_detail = {
             "error": "cross_tenant_transfer_refused",
-            "message": str(e),
+            "message": "The request could not be completed.",
         }
         await guard.complete(refused_detail, status.HTTP_403_FORBIDDEN)
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=refused_detail,
+            content=refused_detail,
         )
     except OwnershipDeniedError:
         await _record_billing_governance(

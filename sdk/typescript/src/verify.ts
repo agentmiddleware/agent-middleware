@@ -25,6 +25,7 @@ export interface VerificationResult {
   ok: boolean;
   reason?: string;
   receiptId?: string;
+  permitId?: string;
   keyId?: string;
   /**
    * Fields read from the signed bytes. An integer that does not fit in a JS
@@ -275,8 +276,16 @@ function signatureValid(key: unknown, sig: Buffer, msg: Buffer): boolean {
   return publicKey !== null && isDerEcdsaSignature(sig) && p256Ok(publicKey, sig, msg);
 }
 
-/** Verify one portable receipt bundle against a caller-supplied key set. */
-export function verifyBundle(bundle: unknown, keySet: { get(kid: string): unknown }, expectedIssuer?: string): VerificationResult {
+/**
+ * Shared core behind verifyBundle and verifyPermitBundle. Receipts and
+ * permits share a signed-envelope shape; permits also require signed permit fields.
+ */
+function verifySignedBundle(
+  bundle: unknown,
+  keySet: { get(kid: string): unknown },
+  idField: "receipt_id" | "permit_id",
+  expectedIssuer?: string,
+): VerificationResult {
   if (typeof bundle === "string" || bundle instanceof Uint8Array) {
     const text = typeof bundle === "string" ? bundle : textFromBytes(bundle);
     if (text === null) return fail("malformed", "bundle is not valid JSON");
@@ -359,15 +368,48 @@ export function verifyBundle(bundle: unknown, keySet: { get(kid: string): unknow
   const envelopeCanon = b.canonicalization === undefined ? CANONICALIZATION : b.canonicalization;
   if (envelopeCanon !== expectedCanon) return fail("mismatch", "bundle canonicalization differs from the signed payload", kid);
 
-  // payload_hash is advisory and never recomputed here. The Ed25519 check
-  // above already covers signing_input verbatim, payload_hash included, so
-  // any edit to the signed bytes is invalid. Re-serializing the parsed
-  // payload would reject genuine receipts: JSON numbers do not round-trip
-  // across languages (Python signs 1.0 and 4e-05; this parser reads them as
-  // 1 and 0.00004). Integers that do not fit in a JS number are returned as
-  // the signed decimal text, not the rounded number.
-  const receiptId = p.receipt_id;
-  if (typeof receiptId !== "string" || !receiptId) return fail("malformed", "signed payload has no receipt_id", kid);
-  if (b.receipt_id !== undefined && b.receipt_id !== null && b.receipt_id !== receiptId) return fail("mismatch", "bundle receipt_id does not match the signed receipt_id", kid, receiptId);
-  return { status: "verified", ok: true, receiptId, keyId: kid, claims: p };
+  // payload_hash is advisory and never recomputed here. The signature covers
+  // signing_input verbatim; re-serializing signed JSON can change number text.
+  const objectId = p[idField];
+  if (typeof objectId !== "string" || !objectId) return fail("malformed", `signed payload has no ${idField}`, kid);
+  if (idField === "permit_id") {
+    const stringFields = ["issuer_wallet_id", "subject_wallet_id", "max_credits", "issued_at", "expires_at", "nonce", "payload_hash"];
+    const lists = ["scopes", "allowed_tools"];
+    if (
+      stringFields.some((name) => typeof p[name] !== "string") ||
+      "receipt_id" in p ||
+      !("subject_key_id" in p) ||
+      (p.subject_key_id !== null && typeof p.subject_key_id !== "string") ||
+      lists.some((name) => !Array.isArray(p[name]) || !(p[name] as unknown[]).every((item) => typeof item === "string")) ||
+      p.status !== "active"
+    ) {
+      return fail("malformed", "signed payload is not a permit", kid);
+    }
+  }
+  if (b[idField] !== undefined && b[idField] !== null && b[idField] !== objectId) {
+    const mismatch = fail("mismatch", `bundle ${idField} does not match the signed ${idField}`, kid);
+    if (idField === "permit_id") mismatch.permitId = objectId;
+    else mismatch.receiptId = objectId;
+    return mismatch;
+  }
+  const done: VerificationResult = { status: "verified", ok: true, keyId: kid, claims: p };
+  if (idField === "permit_id") done.permitId = objectId;
+  else done.receiptId = objectId;
+  return done;
+}
+
+/** Verify one portable receipt bundle against a caller-supplied key set. */
+export function verifyBundle(bundle: unknown, keySet: { get(kid: string): unknown }, expectedIssuer?: string): VerificationResult {
+  return verifySignedBundle(bundle, keySet, "receipt_id", expectedIssuer);
+}
+
+/**
+ * Verify one portable permit bundle against a caller-supplied key set.
+ * Same envelope shape and status taxonomy as verifyBundle, with permit_id
+ * in place of receipt_id. Signature only: expiry and revocation are enforced
+ * by the gateway at validation time, so a verified permit must still be
+ * rechecked live before it is honored.
+ */
+export function verifyPermitBundle(bundle: unknown, keySet: { get(kid: string): unknown }, expectedIssuer?: string): VerificationResult {
+  return verifySignedBundle(bundle, keySet, "permit_id", expectedIssuer);
 }

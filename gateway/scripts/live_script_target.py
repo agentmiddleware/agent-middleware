@@ -10,6 +10,8 @@ from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 API_URL_ENV_VAR = "AGENT_MIDDLEWARE_API_URL"
+CANONICAL_PRODUCTION_HOST = "api.agentmiddleware.dev"
+LEGACY_PRODUCTION_HOSTS = ("api.thisisatest.tech",)
 CANONICAL_PRODUCTION_ORIGIN = "https://api.agentmiddleware.dev"
 LEGACY_PRODUCTION_ORIGINS = ("https://api.thisisatest.tech",)
 
@@ -116,7 +118,7 @@ def resolve_live_target(
 
     origin = f"{scheme}://{authority}"
     if (
-        origin == CANONICAL_PRODUCTION_ORIGIN or origin in LEGACY_PRODUCTION_ORIGINS
+        host == CANONICAL_PRODUCTION_HOST or host in LEGACY_PRODUCTION_HOSTS
     ) and not confirm_production:
         raise LiveTargetError(
             "the canonical production target requires --confirm-production"

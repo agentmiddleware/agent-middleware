@@ -109,6 +109,30 @@ def test_canonical_production_requires_confirmation() -> None:
     )
 
 
+def test_production_hosts_require_confirmation_regardless_of_port() -> None:
+    with pytest.raises(LiveTargetError, match="--confirm-production"):
+        resolve_live_target(
+            "https://api.agentmiddleware.dev:8443",
+            confirm_production=False,
+            environ={},
+        )
+    with pytest.raises(LiveTargetError, match="--confirm-production"):
+        resolve_live_target(
+            "https://api.thisisatest.tech:8443",
+            confirm_production=False,
+            environ={},
+        )
+
+    assert (
+        resolve_live_target(
+            "https://api.agentmiddleware.dev:8443",
+            confirm_production=True,
+            environ={},
+        )
+        == "https://api.agentmiddleware.dev:8443"
+    )
+
+
 @pytest.mark.parametrize(
     ("target", "normalized"),
     [

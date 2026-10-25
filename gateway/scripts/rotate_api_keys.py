@@ -7,7 +7,7 @@ generated fresh or read from the environment, never from arguments or code:
     python scripts/rotate_api_keys.py generate [--count 2]
 
     # 2. Smoke-check after host configuration and rollout are confirmed
-    export AGENT_MIDDLEWARE_API_URL=https://api.thisisatest.tech
+    export AGENT_MIDDLEWARE_API_URL=https://api.agentmiddleware.dev
     export OLD_API_KEY=...   # exact old bootstrap key
     export NEW_API_KEY=...   # exact intended replacement bootstrap key
     python scripts/rotate_api_keys.py verify

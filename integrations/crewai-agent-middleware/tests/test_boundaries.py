@@ -458,7 +458,10 @@ async def test_balance_and_discovery_use_this_tools_identity(monkeypatch):
 
     class _CaptureClient(real_client):
         def __init__(
-            self, api_key: str, base_url: str = "https://api.thisisatest.tech", **kwargs
+            self,
+            api_key: str,
+            base_url: str = "https://api.agentmiddleware.dev",
+            **kwargs,
         ):
             captured["constructed_key"] = api_key
             captured["constructed_url"] = base_url

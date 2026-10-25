@@ -94,18 +94,18 @@ def test_multiple_trailing_dns_root_dots_are_rejected() -> None:
 def test_canonical_production_requires_confirmation() -> None:
     with pytest.raises(LiveTargetError, match="--confirm-production"):
         resolve_live_target(
-            "https://API.THISISATEST.TECH.:443/",
+            "https://API.AGENTMIDDLEWARE.DEV.:443/",
             confirm_production=False,
             environ={},
         )
 
     assert (
         resolve_live_target(
-            "https://API.THISISATEST.TECH.:443/",
+            "https://API.AGENTMIDDLEWARE.DEV.:443/",
             confirm_production=True,
             environ={},
         )
-        == "https://api.thisisatest.tech"
+        == "https://api.agentmiddleware.dev"
     )
 
 
@@ -208,7 +208,7 @@ REJECTED_CONFIGURATIONS = (
         id="multiple-trailing-root-dots",
     ),
     pytest.param(
-        ["--api-url", "https://api.thisisatest.tech"],
+        ["--api-url", "https://api.agentmiddleware.dev"],
         None,
         CANARY_KEY,
         id="production-without-confirmation",
@@ -422,10 +422,15 @@ def _load_battery(
         pytest.param("", [], id="empty-target"),
         pytest.param("http://staging.example.test", [], id="remote-cleartext"),
         pytest.param(
-            "https://api.thisisatest.tech", [], id="production-without-confirmation"
+            "https://api.agentmiddleware.dev", [], id="production-without-confirmation"
         ),
         pytest.param(
-            "https://API.THISISATEST.TECH./", [], id="production-alias-unconfirmed"
+            "https://api.thisisatest.tech",
+            [],
+            id="legacy-production-without-confirmation",
+        ),
+        pytest.param(
+            "https://API.AGENTMIDDLEWARE.DEV./", [], id="production-alias-unconfirmed"
         ),
         pytest.param(
             "https://user:password@staging.example.test",
@@ -490,9 +495,9 @@ def test_adversarial_battery_requires_bootstrap_key_before_any_request(
             id="cli-overrides-environment",
         ),
         pytest.param(
-            "https://api.thisisatest.tech",
+            "https://api.agentmiddleware.dev",
             ["--confirm-production"],
-            "https://api.thisisatest.tech",
+            "https://api.agentmiddleware.dev",
             id="confirmed-production",
         ),
     ],

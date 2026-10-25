@@ -122,7 +122,7 @@ def test_constant_test_loop_refuses_cleartext_http_non_loopback():
     """Configuration error (exit 2) when API_URL uses HTTP for non-loopback host."""
     env = {
         **os.environ,
-        "API_URL": "http://api.thisisatest.tech",
+        "API_URL": "http://api.agentmiddleware.dev",
         "CI_SMOKE_AGENT_KEY": "test_key_value",
     }
     result = subprocess.run(
@@ -624,7 +624,7 @@ def test_off_loopback_runs_require_a_pinned_tool_and_approved_payload():
             sys.executable,
             str(CONSTANT_TEST_SCRIPT),
             "--api-url",
-            "https://api.thisisatest.tech",
+            "https://api.agentmiddleware.dev",
         ],
         env=env,
         capture_output=True,
@@ -641,7 +641,7 @@ def test_off_loopback_runs_require_a_pinned_tool_and_approved_payload():
             sys.executable,
             str(CONSTANT_TEST_SCRIPT),
             "--api-url",
-            "https://api.thisisatest.tech",
+            "https://api.agentmiddleware.dev",
             "--tool",
             "partner.echo",
         ],

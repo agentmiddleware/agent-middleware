@@ -396,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--confirm-production",
         action="store_true",
-        help="confirm intentional use of https://api.thisisatest.tech",
+        help="confirm intentional use of https://api.agentmiddleware.dev",
     )
     args = parser.parse_args(argv)
 

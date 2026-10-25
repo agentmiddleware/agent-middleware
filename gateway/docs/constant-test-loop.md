@@ -45,7 +45,7 @@ deployment.
 
 ```bash
 python scripts/constant_test_loop.py \
-  --api-url https://api.thisisatest.tech \
+  --api-url https://api.agentmiddleware.dev \
   --tool partner.echo \
   --tool-args '{"text": "constant test loop"}'
 ```
@@ -75,7 +75,7 @@ export BOOTSTRAP_KEY="amw_live_..."
 # Disable shell tracing while handling credentials. Do not print this JSON.
 set +x
 PROVISION_JSON="$(python scripts/partner_api_key_bootstrap.py \
-  --api-url https://api.thisisatest.tech \
+  --api-url https://api.agentmiddleware.dev \
   --agent-id ci-smoke-agent \
   --key-name constant-test-loop \
   --budget-credits 5000 \
@@ -89,7 +89,7 @@ unset PROVISION_JSON
 KEY_FILE="$(mktemp)"
 umask 077
 python scripts/partner_api_key_bootstrap.py \
-  --api-url https://api.thisisatest.tech \
+  --api-url https://api.agentmiddleware.dev \
   --agent-id ci-smoke-agent \
   --key-name constant-test-loop \
   --budget-credits 5000 \
@@ -101,7 +101,7 @@ export CI_SMOKE_KEY_ID="$(jq -r .key_id "$KEY_FILE")"
 rm "$KEY_FILE"  # Clean up immediately
 
 # Run the constant test
-API_URL=https://api.thisisatest.tech python scripts/constant_test_loop.py
+API_URL=https://api.agentmiddleware.dev python scripts/constant_test_loop.py
 ```
 
 ## Machine-Readable Bootstrap Output
@@ -111,7 +111,7 @@ API_URL=https://api.thisisatest.tech python scripts/constant_test_loop.py
 ```bash
 # Pipe to jq to extract the agent API key
 BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
-  --api-url https://api.thisisatest.tech \
+  --api-url https://api.agentmiddleware.dev \
   --agent-id ci-smoke-agent \
   --key-name test-key \
   --budget-credits 5000 \
@@ -119,7 +119,7 @@ BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
 
 # Or pipe directly to gh secret set
 BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
-  --api-url https://api.thisisatest.tech \
+  --api-url https://api.agentmiddleware.dev \
   --agent-id ci-smoke-agent \
   --key-name constant-test-loop \
   --budget-credits 5000 \

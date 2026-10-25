@@ -103,7 +103,7 @@ class CrewAIB2ATool(BaseTool):
     args_schema: type[BaseModel] = CrewAIB2AToolInput
 
     client: B2AClient | None = None
-    base_url: str = "https://api.thisisatest.tech"
+    base_url: str = "https://api.agentmiddleware.dev"
     api_key: str = Field(repr=False, exclude=True)
     wallet_id: str
     permit_budget: Decimal = Decimal(100)
@@ -121,7 +121,7 @@ class CrewAIB2ATool(BaseTool):
         self,
         api_key: str,
         wallet_id: str,
-        base_url: str = "https://api.thisisatest.tech",
+        base_url: str = "https://api.agentmiddleware.dev",
         permit_budget: Decimal = Decimal(100),
         permit_ttl_minutes: int = 30,
         **kwargs: Any,

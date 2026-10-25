@@ -31,9 +31,11 @@ Limits (by design):
 """
 
 import argparse
+import asyncio
 import contextlib
 import csv
 import io
+import math
 import os
 import re
 import sqlite3
@@ -47,6 +49,7 @@ from urllib.parse import quote
 
 from sqlalchemy import Connection, CursorResult, Engine, create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 ENV_VAR = "AMW_DS_READONLY_DATABASE_URL"
 AUTO_PREFIX = "mcp-auto-"
@@ -55,6 +58,17 @@ BUCKETS: tuple[str, ...] = ("0-1", "1-5", "5-10", "10-30", "30-60", "60+")
 CSV_FILENAME = "dup_pairs.csv"
 SUMMARY_FILENAME = "summary.md"
 CSV_HEADER: tuple[str, ...] = ("metric", "key_kind", "bucket", "count")
+STATEMENT_TIMEOUT_SECONDS_DEFAULT = 300.0
+POSTGRES_SET_TRANSACTION = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+POSTGRES_SESSION_CHARACTERISTICS = (
+    "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"
+)
+POSTGRES_SHOW_READ_ONLY = "SHOW transaction_read_only"
+POSTGRES_SNAPSHOT = (
+    "one REPEATABLE READ READ ONLY transaction on a single connection"
+    " (all aggregate queries share one snapshot)"
+)
+SQLITE_SNAPSHOT = "single read-only SQLite connection"
 
 _FORBIDDEN_KEYWORDS: tuple[str, ...] = (
     "INSERT",
@@ -153,6 +167,16 @@ def execute_select(
     return conn.execute(text(sql), dict(params or {}))
 
 
+async def execute_select_async(
+    conn: AsyncConnection,
+    sql: str,
+    params: Mapping[str, Any] | None = None,
+) -> CursorResult[Any]:
+    """Async variant of ``execute_select`` for the PostgreSQL path."""
+    assert_select_only(sql)
+    return await conn.execute(text(sql), dict(params or {}))
+
+
 class _NotMeasured(Exception):
     """Fixed-reason measurement abort. The reason never holds secrets."""
 
@@ -161,16 +185,62 @@ class _NotMeasured(Exception):
         self.reason = reason
 
 
-def create_readonly_engine(url: str) -> Engine:
-    """Create an engine for a read-only DSN.
+def normalize_postgres_url_to_asyncpg(url: str) -> str:
+    """Map a PostgreSQL DSN to its ``postgresql+asyncpg://`` spelling.
 
-    SQLite (tests only) opens the file with ``mode=ro`` so writes fail.
-    Other DSNs are returned as-is; PostgreSQL connections are fenced with
-    read-only transaction state after connecting.
+    Accepts ``postgres://``, ``postgresql://``, and any
+    ``postgresql+<driver>://`` spelling (including ``+psycopg``,
+    ``+psycopg2``, and the already-correct ``+asyncpg``). Only the scheme
+    is changed; user, password, host, port, database, and query survive
+    untouched. The gateway only ships asyncpg, so the PostgreSQL path
+    must always connect through this spelling.
     """
+    trimmed = url.strip()
+    marker = "://"
+    index = trimmed.find(marker)
+    if index == -1:
+        raise ValueError("unsupported database")
+    scheme = trimmed[:index].lower()
+    rest = trimmed[index + len(marker) :]
+    if scheme.split("+")[0] not in ("postgres", "postgresql"):
+        raise ValueError("unsupported database")
+    return "postgresql+asyncpg://" + rest
+
+
+def postgres_statement_timeout_sql(statement_timeout_seconds: float) -> str:
+    """Render the fenced ``SET LOCAL statement_timeout`` statement."""
+    if (
+        not isinstance(statement_timeout_seconds, (int, float))
+        or not math.isfinite(float(statement_timeout_seconds))
+        or float(statement_timeout_seconds) < 0
+    ):
+        raise ValueError("invalid statement timeout")
+    millis = int(round(float(statement_timeout_seconds) * 1000))
+    return f"SET LOCAL statement_timeout = {millis}"
+
+
+def build_postgres_fence_statements(
+    *, statement_timeout_seconds: float = STATEMENT_TIMEOUT_SECONDS_DEFAULT
+) -> list[str]:
+    """Ordered fence statements for the single measurement transaction.
+
+    PostgreSQL forbids ``SET TRANSACTION`` after any query in the
+    transaction, so these run first, in this order, before any ``SELECT``:
+    ``SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY``, the
+    session characteristics fence, ``SET LOCAL statement_timeout``, then
+    ``SHOW transaction_read_only`` (verified to be ``on``).
+    """
+    return [
+        POSTGRES_SET_TRANSACTION,
+        POSTGRES_SESSION_CHARACTERISTICS,
+        postgres_statement_timeout_sql(statement_timeout_seconds),
+        POSTGRES_SHOW_READ_ONLY,
+    ]
+
+
+def create_sqlite_readonly_engine(url: str) -> Engine:
+    """Create a read-only SQLite engine (tests only, file opens ``mode=ro``)."""
     parsed = make_url(url)
-    if parsed.drivername.split("+")[0] != "sqlite":
-        return create_engine(url)
     database = parsed.database or ""
     if database == ":memory:":
         return create_engine("sqlite:///:memory:")
@@ -182,14 +252,65 @@ def create_readonly_engine(url: str) -> Engine:
     return create_engine("sqlite://", creator=_connect)
 
 
-def _enforce_postgres_readonly(conn: Connection) -> None:
+def create_postgres_async_engine(url: str) -> AsyncEngine:
+    """Create the PostgreSQL async engine (always via asyncpg)."""
+    return create_async_engine(normalize_postgres_url_to_asyncpg(url))
+
+
+def create_readonly_engine(url: str) -> Engine | AsyncEngine:
+    """Create an engine for a read-only DSN.
+
+    SQLite (tests only) opens the file with ``mode=ro`` so writes fail.
+    PostgreSQL is normalised to ``postgresql+asyncpg://`` and uses an
+    async engine; its connections are fenced with read-only transaction
+    state as the first statements of the measurement transaction.
+    """
+    parsed = make_url(url)
+    base = parsed.drivername.split("+")[0]
+    if base in ("postgres", "postgresql"):
+        return create_postgres_async_engine(url)
+    if base != "sqlite":
+        return create_engine(url)
+    return create_sqlite_readonly_engine(url)
+
+
+def _enforce_postgres_readonly(
+    conn: Connection,
+    *,
+    statement_timeout_seconds: float = STATEMENT_TIMEOUT_SECONDS_DEFAULT,
+) -> None:
     # Fixed literal statements that fence the transaction read-only. They
     # run before any measurement query and intentionally bypass
     # assert_select_only, which forbids SET for measurement queries.
+    statements = build_postgres_fence_statements(
+        statement_timeout_seconds=statement_timeout_seconds
+    )
     try:
-        conn.execute(text("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"))
-        conn.execute(text("SET TRANSACTION READ ONLY"))
-        mode = conn.execute(text("SHOW transaction_read_only")).scalar()
+        conn.execute(text(statements[0]))
+        conn.execute(text(statements[1]))
+        conn.execute(text(statements[2]))
+        mode = conn.execute(text(statements[3])).scalar()
+    except Exception as exc:
+        raise _NotMeasured("read-only setup failed") from exc
+    if str(mode).strip().lower() != "on":
+        raise _NotMeasured("read-only verification failed")
+
+
+async def _enforce_postgres_readonly_async(
+    conn: AsyncConnection,
+    *,
+    statement_timeout_seconds: float = STATEMENT_TIMEOUT_SECONDS_DEFAULT,
+) -> None:
+    """Async fence; same ordered statements as ``_enforce_postgres_readonly``."""
+    statements = build_postgres_fence_statements(
+        statement_timeout_seconds=statement_timeout_seconds
+    )
+    try:
+        await conn.execute(text(statements[0]))
+        await conn.execute(text(statements[1]))
+        await conn.execute(text(statements[2]))
+        result = await conn.execute(text(statements[3]))
+        mode = result.scalar()
     except Exception as exc:
         raise _NotMeasured("read-only setup failed") from exc
     if str(mode).strip().lower() != "on":
@@ -365,6 +486,27 @@ def run_measurement(
         raise
     except Exception as exc:
         raise _NotMeasured("query failed") from exc
+    return _collect_measurement(
+        total=total,
+        span=span,
+        pairs_total=pairs_total,
+        hist_rows=hist_rows,
+        later_rows=later_rows,
+        combo_rows=combo_rows,
+        queries=queries,
+    )
+
+
+def _collect_measurement(
+    *,
+    total: int,
+    span: Any,
+    pairs_total: int,
+    hist_rows: Any,
+    later_rows: Any,
+    combo_rows: Any,
+    queries: QuerySet,
+) -> Measurement:
     hist = dict.fromkeys(BUCKETS, 0)
     for row in hist_rows:
         if row["bucket"] in hist:
@@ -390,6 +532,120 @@ def run_measurement(
         combo=combo,
         queries=queries,
     )
+
+
+async def run_measurement_async(
+    conn: AsyncConnection,
+    queries: QuerySet,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+    window: float,
+) -> Measurement:
+    """Async variant of ``run_measurement`` for the PostgreSQL path."""
+    base: dict[str, Any] = {}
+    if since is not None:
+        base["since"] = since
+    if until is not None:
+        base["until"] = until
+    full = dict(base)
+    full["window"] = window
+    try:
+        total_result = await execute_select_async(conn, queries.total, base)
+        total = int(total_result.scalar() or 0)
+        span_result = await execute_select_async(conn, queries.date_range, base)
+        span = span_result.mappings().one()
+        pairs_result = await execute_select_async(conn, queries.pairs, full)
+        pairs_total = int(pairs_result.scalar() or 0)
+        hist_result = await execute_select_async(conn, queries.hist, full)
+        hist_rows = hist_result.mappings().all()
+        later_result = await execute_select_async(conn, queries.later_kind, full)
+        later_rows = later_result.mappings().all()
+        combo_result = await execute_select_async(conn, queries.combo, full)
+        combo_rows = combo_result.mappings().all()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise _NotMeasured("query failed") from exc
+    return _collect_measurement(
+        total=total,
+        span=span,
+        pairs_total=pairs_total,
+        hist_rows=hist_rows,
+        later_rows=later_rows,
+        combo_rows=combo_rows,
+        queries=queries,
+    )
+
+
+def run_postgres_measurement_sync(
+    conn: Connection,
+    queries: QuerySet,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+    window: float,
+    statement_timeout_seconds: float = STATEMENT_TIMEOUT_SECONDS_DEFAULT,
+) -> Measurement:
+    """Fence then measure on one sync connection (single-transaction shape)."""
+    _enforce_postgres_readonly(
+        conn, statement_timeout_seconds=statement_timeout_seconds
+    )
+    return run_measurement(conn, queries, since=since, until=until, window=window)
+
+
+async def run_postgres_measurement_async(
+    conn: AsyncConnection,
+    queries: QuerySet,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+    window: float,
+    statement_timeout_seconds: float = STATEMENT_TIMEOUT_SECONDS_DEFAULT,
+) -> Measurement:
+    """Fence then measure on one async connection (single-transaction shape)."""
+    await _enforce_postgres_readonly_async(
+        conn, statement_timeout_seconds=statement_timeout_seconds
+    )
+    return await run_measurement_async(
+        conn, queries, since=since, until=until, window=window
+    )
+
+
+async def _postgres_single_transaction(
+    normalized_url: str,
+    queries: QuerySet,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+    window: float,
+    statement_timeout_seconds: float,
+) -> Measurement:
+    """Run the fence plus all aggregates in one REPEATABLE READ transaction."""
+    try:
+        engine = create_async_engine(normalized_url)
+    except Exception as exc:
+        raise _NotMeasured("connection failed") from exc
+    try:
+        try:
+            async with engine.begin() as conn:
+                return await run_postgres_measurement_async(
+                    conn,
+                    queries,
+                    since=since,
+                    until=until,
+                    window=window,
+                    statement_timeout_seconds=statement_timeout_seconds,
+                )
+        except _NotMeasured:
+            raise
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise _NotMeasured("connection failed") from exc
+    finally:
+        with contextlib.suppress(Exception):
+            await engine.dispose()
 
 
 def render_csv(measurement: Measurement) -> str:
@@ -435,6 +691,7 @@ def render_summary(
     window: float,
     since: datetime | None,
     until: datetime | None,
+    snapshot: str = POSTGRES_SNAPSHOT,
 ) -> str:
     """Markdown with each count next to the exact SQL that produced it."""
     generated = datetime.now(timezone.utc).isoformat()
@@ -459,6 +716,7 @@ def render_summary(
         "",
         f"- generated_at: {generated}",
         _params_block(window=window, since=since, until=until).rstrip("\n"),
+        f"- snapshot: {snapshot}",
         f"- rows_read: {measurement.rows_read}",
         f"- date_range: {date_lo} to {date_hi} (dispatch created_at)",
         "",
@@ -587,9 +845,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Only calls at or before this ISO 8601 time.",
     )
+    parser.add_argument(
+        "--statement-timeout-seconds",
+        type=float,
+        default=STATEMENT_TIMEOUT_SECONDS_DEFAULT,
+        help="PostgreSQL SET LOCAL statement_timeout for the measurement.",
+    )
     args = parser.parse_args(argv)
     if args.window_seconds < 0:
         parser.error("--window-seconds must be >= 0")
+    timeout = float(args.statement_timeout_seconds)
+    if not math.isfinite(timeout) or timeout < 0:
+        parser.error("--statement-timeout-seconds must be >= 0")
     return args
 
 
@@ -632,6 +899,7 @@ def main(argv: list[str] | None = None) -> int:
     window = float(args.window_seconds)
     since = args.since
     until = args.until
+    statement_timeout_seconds = float(args.statement_timeout_seconds)
     # The DSN comes only from this variable. Nothing else in the
     # environment or on disk is consulted, and the value is never printed.
     url = os.environ.get(ENV_VAR)
@@ -667,47 +935,76 @@ def main(argv: list[str] | None = None) -> int:
             until=until,
             reason="unsupported database",
         )
-    try:
-        engine = create_readonly_engine(cleaned)
-    except Exception:
-        return _write_not_measured(
-            out_dir,
-            window=window,
-            since=since,
-            until=until,
-            reason="connection failed",
-        )
     queries = build_queries(dialect, since=since, until=until)
-    try:
-        with _ro_session(engine, dialect) as conn:
-            try:
-                execute_select(conn, "SELECT 1").scalar()
-            except ValueError:
-                raise
-            except Exception as exc:
-                raise _NotMeasured("connection failed") from exc
-            if dialect == "postgresql":
-                _enforce_postgres_readonly(conn)
-            measurement = run_measurement(
-                conn, queries, since=since, until=until, window=window
+    if dialect == "postgresql":
+        try:
+            normalized = normalize_postgres_url_to_asyncpg(cleaned)
+        except Exception:
+            return _write_not_measured(
+                out_dir,
+                window=window,
+                since=since,
+                until=until,
+                reason="connection failed",
             )
-    except _NotMeasured as exc:
-        return _write_not_measured(
-            out_dir, window=window, since=since, until=until, reason=exc.reason
-        )
-    except ValueError:
-        raise
-    except Exception:
-        return _write_not_measured(
-            out_dir, window=window, since=since, until=until, reason="query failed"
-        )
-    finally:
-        with contextlib.suppress(Exception):
-            engine.dispose()
+        try:
+            measurement = asyncio.run(
+                _postgres_single_transaction(
+                    normalized,
+                    queries,
+                    since=since,
+                    until=until,
+                    window=window,
+                    statement_timeout_seconds=statement_timeout_seconds,
+                )
+            )
+        except _NotMeasured as exc:
+            return _write_not_measured(
+                out_dir, window=window, since=since, until=until, reason=exc.reason
+            )
+        except ValueError:
+            raise
+        except Exception:
+            return _write_not_measured(
+                out_dir, window=window, since=since, until=until, reason="query failed"
+            )
+        snapshot = POSTGRES_SNAPSHOT
+    else:
+        try:
+            engine = create_sqlite_readonly_engine(cleaned)
+        except Exception:
+            return _write_not_measured(
+                out_dir,
+                window=window,
+                since=since,
+                until=until,
+                reason="connection failed",
+            )
+        try:
+            with _ro_session(engine, dialect) as conn:
+                measurement = run_measurement(
+                    conn, queries, since=since, until=until, window=window
+                )
+        except _NotMeasured as exc:
+            return _write_not_measured(
+                out_dir, window=window, since=since, until=until, reason=exc.reason
+            )
+        except ValueError:
+            raise
+        except Exception:
+            return _write_not_measured(
+                out_dir, window=window, since=since, until=until, reason="query failed"
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                engine.dispose()
+        snapshot = SQLITE_SNAPSHOT
     _atomic_write_text(out_dir / CSV_FILENAME, render_csv(measurement))
     _atomic_write_text(
         out_dir / SUMMARY_FILENAME,
-        render_summary(measurement, window=window, since=since, until=until),
+        render_summary(
+            measurement, window=window, since=since, until=until, snapshot=snapshot
+        ),
     )
     print(f"total_calls: {measurement.total_calls}")
     print(f"pairs_total: {measurement.pairs_total}")

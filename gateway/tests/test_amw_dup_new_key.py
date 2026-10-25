@@ -5,6 +5,7 @@ synthetic values only (wal_test_*, k-*, mcp-auto-*, example.invalid).
 No real data, no network, no shared database.
 """
 
+import asyncio
 import csv
 import importlib.util
 import sqlite3
@@ -490,3 +491,355 @@ def test_sqlite_connection_refuses_writes(tmp_path: Path) -> None:
                 )
     finally:
         engine.dispose()
+
+
+FAKE_TOTAL = 7
+FAKE_PAIRS = 3
+FAKE_LO = "2026-01-01 00:00:00.000000"
+FAKE_HI = "2026-01-01 00:01:00.000000"
+PG_SYNTH_PASSWORD = "pg-synth-pass-0001"
+PG_SYNTH_HOST = "example.invalid"
+
+
+class _FakeResult:
+    """Fixed synthetic result for one recorded statement (no DB)."""
+
+    def __init__(
+        self,
+        *,
+        scalar: Any = None,
+        one: Any = None,
+        all_rows: Any = None,
+    ) -> None:
+        self._scalar = scalar
+        self._one = one
+        self._all_rows = [] if all_rows is None else all_rows
+
+    def scalar(self) -> Any:
+        return self._scalar
+
+    def mappings(self) -> "_FakeResult":
+        return self
+
+    def one(self) -> Any:
+        return self._one
+
+    def all(self) -> Any:
+        return self._all_rows
+
+
+def _fake_aggregate_result(sql: str) -> _FakeResult:
+    upper = sql.strip().upper()
+    if "MIN(CREATED_AT)" in upper and "MAX(CREATED_AT)" in upper:
+        return _FakeResult(one={"lo": FAKE_LO, "hi": FAKE_HI, "n": FAKE_TOTAL})
+    if "AS BUCKET" in upper:
+        return _FakeResult(
+            all_rows=[{"bucket": "0-1", "n": 1}, {"bucket": "1-5", "n": 2}]
+        )
+    if "AS KIND" in upper:
+        return _FakeResult(
+            all_rows=[{"kind": "auto", "n": 1}, {"kind": "caller", "n": 2}]
+        )
+    if "AS COMBO" in upper:
+        return _FakeResult(all_rows=[{"combo": "mixed", "n": FAKE_PAIRS}])
+    if "FROM PAIRS" in upper:
+        return _FakeResult(scalar=FAKE_PAIRS)
+    if "FROM CALLS" in upper:
+        return _FakeResult(scalar=FAKE_TOTAL)
+    return _FakeResult(scalar=0, one={"lo": None, "hi": None, "n": 0}, all_rows=[])
+
+
+def _statement_text(statement: Any) -> str:
+    maybe_text = getattr(statement, "text", None)
+    if isinstance(maybe_text, str):
+        return maybe_text
+    return str(statement)
+
+
+class _FakeConnection:
+    """Sync recorder: every statement goes through this one object."""
+
+    def __init__(self, *, show_value: str = "on") -> None:
+        self.statements: list[str] = []
+        self.show_value = show_value
+
+    def execute(self, statement: Any, parameters: Any = None) -> _FakeResult:
+        sql = _statement_text(statement)
+        self.statements.append(sql)
+        upper = sql.strip().upper()
+        if upper.startswith("SHOW"):
+            return _FakeResult(scalar=self.show_value)
+        if upper.startswith("SET"):
+            return _FakeResult(scalar=None)
+        return _fake_aggregate_result(sql)
+
+
+class _FakeAsyncConnection:
+    """Async recorder mirroring the production asyncpg transaction shape."""
+
+    def __init__(self, *, show_value: str = "on") -> None:
+        self.statements: list[str] = []
+        self.show_value = show_value
+
+    async def execute(self, statement: Any, parameters: Any = None) -> _FakeResult:
+        sql = _statement_text(statement)
+        self.statements.append(sql)
+        upper = sql.strip().upper()
+        if upper.startswith("SHOW"):
+            return _FakeResult(scalar=self.show_value)
+        if upper.startswith("SET"):
+            return _FakeResult(scalar=None)
+        return _fake_aggregate_result(sql)
+
+
+class _FakeAsyncEngine:
+    """Counts transaction blocks; yields one shared fake connection."""
+
+    def __init__(self, conn: _FakeAsyncConnection) -> None:
+        self._conn = conn
+        self.begin_count = 0
+        self.disposed = False
+
+    def begin(self) -> Any:
+        engine = self
+
+        class _Ctx:
+            async def __aenter__(self) -> _FakeAsyncConnection:
+                engine.begin_count += 1
+                return engine._conn
+
+            async def __aexit__(self, *exc: Any) -> bool:
+                return False
+
+        return _Ctx()
+
+    async def dispose(self) -> None:
+        self.disposed = True
+
+
+def _first_select_index(statements: list[str]) -> int:
+    for index, sql in enumerate(statements):
+        lead = sql.strip().upper()
+        if lead.startswith("SELECT") or lead.startswith("WITH"):
+            return index
+    return len(statements)
+
+
+def test_postgres_fence_is_first_before_any_select() -> None:
+    fake = _FakeConnection(show_value="on")
+    queries = amw.build_queries("postgresql", since=None, until=None)
+    measurement = amw.run_postgres_measurement_sync(
+        fake,
+        queries,
+        since=None,
+        until=None,
+        window=60.0,
+        statement_timeout_seconds=300.0,
+    )
+    assert measurement.total_calls == FAKE_TOTAL
+    assert measurement.pairs_total == FAKE_PAIRS
+    assert len(fake.statements) == 10
+    assert fake.statements[0] == amw.POSTGRES_SET_TRANSACTION
+    assert "REPEATABLE READ" in fake.statements[0]
+    assert "READ ONLY" in fake.statements[0]
+    assert fake.statements[1] == amw.POSTGRES_SESSION_CHARACTERISTICS
+    assert fake.statements[2].startswith("SET LOCAL statement_timeout")
+    assert "300000" in fake.statements[2]
+    assert fake.statements[3] == amw.POSTGRES_SHOW_READ_ONLY
+    assert _first_select_index(fake.statements) == 4
+
+
+def test_postgres_show_off_raises_verification_failed() -> None:
+    fake = _FakeConnection(show_value="off")
+    with pytest.raises(
+        amw._NotMeasured, match="read-only verification failed"
+    ) as excinfo:
+        amw._enforce_postgres_readonly(fake, statement_timeout_seconds=300.0)
+    assert excinfo.value.reason == "read-only verification failed"
+    assert fake.statements[0] == amw.POSTGRES_SET_TRANSACTION
+    assert _first_select_index(fake.statements) == len(fake.statements)
+
+
+def test_postgres_show_off_via_main_is_not_measured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def _raise_not_on(*args: Any, **kwargs: Any) -> Any:
+        raise amw._NotMeasured("read-only verification failed")
+
+    monkeypatch.setattr(amw, "_postgres_single_transaction", _raise_not_on)
+    monkeypatch.setenv(
+        amw.ENV_VAR,
+        f"postgresql://analyst:{PG_SYNTH_PASSWORD}@{PG_SYNTH_HOST}/db",
+    )
+    out_dir = tmp_path / "out"
+    assert amw.main(["--out-dir", str(out_dir)]) == 0
+    captured = capsys.readouterr()
+    assert "not measured" in captured.out
+    assert PG_SYNTH_PASSWORD not in captured.out
+    assert PG_SYNTH_HOST not in captured.out
+    summary = (out_dir / "summary.md").read_text(encoding="utf-8")
+    csv_text = (out_dir / "dup_pairs.csv").read_text(encoding="utf-8")
+    assert "not measured" in summary
+    assert PG_SYNTH_PASSWORD not in summary
+    assert PG_SYNTH_PASSWORD not in csv_text
+    assert PG_SYNTH_HOST not in summary
+
+
+def test_postgres_url_normalisation_uses_asyncpg() -> None:
+    userinfo = f"analyst:{PG_SYNTH_PASSWORD}@{PG_SYNTH_HOST}:5432/db"
+    assert (
+        amw.normalize_postgres_url_to_asyncpg(f"postgres://{userinfo}")
+        == f"postgresql+asyncpg://{userinfo}"
+    )
+    assert (
+        amw.normalize_postgres_url_to_asyncpg(f"postgresql://{userinfo}")
+        == f"postgresql+asyncpg://{userinfo}"
+    )
+    assert (
+        amw.normalize_postgres_url_to_asyncpg(f"postgresql+psycopg://{userinfo}")
+        == f"postgresql+asyncpg://{userinfo}"
+    )
+    assert (
+        amw.normalize_postgres_url_to_asyncpg(
+            f"postgresql+psycopg2://{userinfo}?sslmode=require"
+        )
+        == f"postgresql+asyncpg://{userinfo}?sslmode=require"
+    )
+    already = f"postgresql+asyncpg://{userinfo}"
+    assert amw.normalize_postgres_url_to_asyncpg(already) == already
+    engine = amw.create_postgres_async_engine(f"postgresql://{userinfo}")
+    assert engine.url.drivername == "postgresql+asyncpg"
+    asyncio.run(engine.dispose())
+
+
+def test_postgres_main_normalises_and_never_leaks_password(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    captured: dict[str, str] = {}
+    queries = amw.build_queries("postgresql", since=None, until=None)
+    canned = amw.Measurement(
+        total_calls=FAKE_TOTAL,
+        date_lo=FAKE_LO,
+        date_hi=FAKE_HI,
+        rows_read=FAKE_TOTAL,
+        pairs_total=FAKE_PAIRS,
+        hist={
+            "0-1": 1,
+            "1-5": 2,
+            "5-10": 0,
+            "10-30": 0,
+            "30-60": 0,
+            "60+": 0,
+        },
+        later_kind={"auto": 1, "caller": 2},
+        combo={"both-auto": 0, "mixed": FAKE_PAIRS, "both-caller": 0},
+        queries=queries,
+    )
+
+    async def _capture(normalized_url: str, *args: Any, **kwargs: Any) -> Any:
+        captured["url"] = normalized_url
+        return canned
+
+    monkeypatch.setattr(amw, "_postgres_single_transaction", _capture)
+    monkeypatch.setenv(
+        amw.ENV_VAR,
+        f"postgres://analyst:{PG_SYNTH_PASSWORD}@{PG_SYNTH_HOST}/db",
+    )
+    out_dir = tmp_path / "out"
+    assert amw.main(["--out-dir", str(out_dir)]) == 0
+    assert captured["url"].startswith("postgresql+asyncpg://")
+    assert PG_SYNTH_HOST in captured["url"]
+    captured_out = capsys.readouterr()
+    assert PG_SYNTH_PASSWORD not in captured_out.out
+    assert PG_SYNTH_HOST not in captured_out.out
+    summary = (out_dir / "summary.md").read_text(encoding="utf-8")
+    csv_text = (out_dir / "dup_pairs.csv").read_text(encoding="utf-8")
+    assert PG_SYNTH_PASSWORD not in summary
+    assert PG_SYNTH_PASSWORD not in csv_text
+    assert PG_SYNTH_HOST not in summary
+    assert "REPEATABLE READ" in summary
+    assert "snapshot:" in summary
+
+
+def test_postgres_aggregates_share_single_connection() -> None:
+    fake = _FakeConnection(show_value="on")
+    queries = amw.build_queries("postgresql", since=None, until=None)
+    amw.run_postgres_measurement_sync(
+        fake,
+        queries,
+        since=None,
+        until=None,
+        window=60.0,
+        statement_timeout_seconds=300.0,
+    )
+    assert len(fake.statements) == 10
+    aggregates = fake.statements[4:]
+    assert queries.total in aggregates
+    assert queries.date_range in aggregates
+    assert queries.pairs in aggregates
+    assert queries.hist in aggregates
+    assert queries.later_kind in aggregates
+    assert queries.combo in aggregates
+
+
+def test_postgres_async_transaction_uses_one_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_conn = _FakeAsyncConnection(show_value="on")
+    fake_engine = _FakeAsyncEngine(fake_conn)
+    captured: dict[str, str] = {}
+
+    def _fake_create(url: str) -> _FakeAsyncEngine:
+        captured["url"] = url
+        return fake_engine
+
+    monkeypatch.setattr(amw, "create_async_engine", _fake_create)
+    queries = amw.build_queries("postgresql", since=None, until=None)
+    measurement = asyncio.run(
+        amw._postgres_single_transaction(
+            f"postgresql+asyncpg://analyst@{PG_SYNTH_HOST}/db",
+            queries,
+            since=None,
+            until=None,
+            window=60.0,
+            statement_timeout_seconds=300.0,
+        )
+    )
+    assert captured["url"].startswith("postgresql+asyncpg://")
+    assert fake_engine.begin_count == 1
+    assert fake_engine.disposed is True
+    assert len(fake_conn.statements) == 10
+    assert fake_conn.statements[0] == amw.POSTGRES_SET_TRANSACTION
+    assert _first_select_index(fake_conn.statements) == 4
+    assert measurement.total_calls == FAKE_TOTAL
+
+
+def test_statement_timeout_is_configurable() -> None:
+    assert "300000" in amw.postgres_statement_timeout_sql(300.0)
+    assert (
+        amw.build_postgres_fence_statements(statement_timeout_seconds=5.0)[2]
+        == "SET LOCAL statement_timeout = 5000"
+    )
+    args = amw.parse_args(["--out-dir", "/tmp/out-test"])
+    assert args.statement_timeout_seconds == 300.0
+    args = amw.parse_args(
+        ["--out-dir", "/tmp/out-test", "--statement-timeout-seconds", "12.5"]
+    )
+    assert args.statement_timeout_seconds == 12.5
+
+
+def test_summary_states_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert "REPEATABLE READ" in amw.POSTGRES_SNAPSHOT
+    db_path = tmp_path / "dup.db"
+    out_dir = tmp_path / "out"
+    _build_standard_db(db_path)
+    assert _run_script(monkeypatch, db_path, out_dir) == 0
+    summary = (out_dir / "summary.md").read_text(encoding="utf-8")
+    assert "- snapshot:" in summary
+    assert amw.SQLITE_SNAPSHOT in summary

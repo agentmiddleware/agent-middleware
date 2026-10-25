@@ -21,7 +21,28 @@ from urllib.parse import urlencode
 
 import httpx
 
+from .errors import TransportError
+
 DEFAULT_API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
+_ASCII_PRINTABLE_MIN = 32
+_ASCII_PRINTABLE_MAX = 126
+
+
+def _printable_ascii_idempotency_key(idempotency_key: str) -> str:
+    """Return a header-safe key, or raise before httpx encodes the request.
+
+    ``Idempotency-Key`` is an HTTP header. httpx encodes header values as
+    ASCII, so a non-ASCII key would raise ``UnicodeEncodeError``. Reject
+    anything outside printable ASCII after trim.
+    """
+    if not isinstance(idempotency_key, str):
+        raise ValueError("idempotency_key must be a string")
+    key = idempotency_key.strip()
+    if not key:
+        raise ValueError("idempotency_key must not be blank")
+    if any(ord(char) < _ASCII_PRINTABLE_MIN or ord(char) > _ASCII_PRINTABLE_MAX for char in key):
+        raise ValueError("idempotency_key must be printable ASCII")
+    return key
 
 
 def generate_manifest(
@@ -143,7 +164,7 @@ async def serve_async(
             "Accept": "application/json, text/event-stream",
         }
         if idempotency_key is not None:
-            headers["Idempotency-Key"] = idempotency_key
+            headers["Idempotency-Key"] = _printable_ascii_idempotency_key(idempotency_key)
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{api_url}/mcp",
@@ -172,13 +193,13 @@ async def serve_async(
                     isError=True,
                     structuredContent=structured,
                 )
+            if response.status_code >= 500:
+                raise TransportError(f"POST /mcp failed: HTTP {response.status_code}")
             response.raise_for_status()
             envelope = response.json()
             if "error" in envelope:
                 error = envelope["error"]
-                structured = {"error": error["message"], "code": error["code"]}
-                if "data" in error:
-                    structured["data"] = error["data"]
+                structured = error if isinstance(error, dict) else {"error": error}
                 return CallToolResult(
                     content=[TextContent(type="text", text=json.dumps(structured))],
                     isError=True,

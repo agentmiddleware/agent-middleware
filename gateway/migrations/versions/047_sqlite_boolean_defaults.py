@@ -1,14 +1,14 @@
 """Repair legacy SQLite text booleans and replace their text defaults.
 
-Revision ID: 046_sqlite_boolean_defaults
-Revises: 045_api_key_usage_events
+Revision ID: 047_sqlite_boolean_defaults
+Revises: 045_approval_gate_approvals
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "046_sqlite_boolean_defaults"
-down_revision: str = "045_api_key_usage_events"
+revision: str = "047_sqlite_boolean_defaults"
+down_revision: str = "045_approval_gate_approvals"
 branch_labels = None
 depends_on = None
 
@@ -46,5 +46,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Corrected values and defaults must not be restored to text booleans.
-    pass
+    if op.get_bind().dialect.name == "sqlite":
+        raise RuntimeError("sqlite_boolean_defaults_downgrade_unsupported")

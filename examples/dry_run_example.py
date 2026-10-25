@@ -42,8 +42,8 @@ async def demo_simulation():
     print("=" * 60)
 
     # The server assigns the wallet id (e.g. "spn-bde42b5c4606"); it cannot be
-    # chosen by the caller. Everything below bills against this exact id —
-    # using a made-up one returns 404 wallet_not_found.
+    # chosen by the caller. Everything below bills against this exact id.
+    # Using a made-up one returns 404 wallet_not_found.
     wallet = await b2a.create_sponsor_wallet(
         sponsor_name="Demo Sponsor",
         email="demo@example.com",
@@ -151,25 +151,32 @@ async def demo_simulation():
 
     print(f"\nWorkflow A (3x video generation): {workflow_a_total} credits")
     print(f"Workflow B (3x IoT messages): {workflow_b_total} credits")
-
-    if workflow_a_total < workflow_b_total:
-        print("\n✅ Workflow A is more cost-effective!")
-    else:
-        print("\n✅ Workflow B is more cost-effective!")
+    print(f"\n✅ {_cheaper_label(workflow_a_total, workflow_b_total)}")
 
     print("\n" + "=" * 60)
     print("Demo complete!")
     print("=" * 60)
 
 
-async def main():
+def _cheaper_label(cost_a, cost_b) -> str:
+    """Name the cheaper workflow. Equal totals are a tie, not a win for B."""
+    if cost_a < cost_b:
+        return "Workflow A is more cost-effective!"
+    if cost_b < cost_a:
+        return "Workflow B is more cost-effective!"
+    return "Workflow A and workflow B cost the same."
+
+
+async def main() -> int:
     try:
         await demo_simulation()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - display unexpected demo failures
         print(f"\nError: {e}")
         print("Make sure the B2A API is running at http://localhost:8000")
         print("Or set B2A_API_URL environment variable.")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

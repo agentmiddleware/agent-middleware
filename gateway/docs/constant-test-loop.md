@@ -124,7 +124,7 @@ BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
   --key-name constant-test-loop \
   --budget-credits 5000 \
   --json | jq -r .api_key | \
-  gh secret set CI_SMOKE_AGENT_KEY --repo PetrefiedThunder/agent-middleware
+  gh secret set CI_SMOKE_AGENT_KEY --repo agentmiddleware/agent-middleware
 ```
 
 ### Security Properties

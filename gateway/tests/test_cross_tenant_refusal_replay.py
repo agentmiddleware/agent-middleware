@@ -163,6 +163,7 @@ async def test_foreign_permit_refusal_replay_has_no_side_effects(
     before_a = await _state(client, tenant_a, permit_a["permit_id"])
     before_b = await _state(client, tenant_b, permit_a["permit_id"])
     records_before = await _count(IdempotencyRecordModel)
+    receipts_before = await _count(ReceiptModel)
 
     first, replay = await _call_twice(
         client,
@@ -208,6 +209,7 @@ async def test_foreign_permit_refusal_replay_has_no_side_effects(
 
     # The replay was served from the one stored refusal under B's wallet.
     assert await _count(IdempotencyRecordModel) == records_before + 1
+    assert await _count(ReceiptModel) == receipts_before + 1
     async with get_session_factory()() as session:
         stored = (
             (

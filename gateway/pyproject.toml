@@ -57,6 +57,10 @@ dependencies = [
     "aiosqlite>=0.22.1",
 ]
 
+# Offline policy replay (app/replay); also runnable as `python -m app.replay`.
+[project.scripts]
+amw-replay = "app.replay.cli:main"
+
 # The gateway ships as a container image, not a wheel, and only `app/` is
 # importable at runtime; keep tests, scripts, and failure_lab out of builds.
 [tool.hatch.build.targets.wheel]

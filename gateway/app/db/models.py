@@ -897,6 +897,10 @@ class ReceiptModel(SQLModel, table=True):
     # Signed only when present so receipts created before migration 032 keep
     # verifying byte-for-byte.
     reason_code: Optional[str] = Field(default=None, max_length=128)
+    # Provenance signed into receipts issued from 052 onward. NULL on legacy
+    # receipts, whose signatures do not cover these fields.
+    enforcement_mode: Optional[str] = Field(default=None, max_length=16)
+    gateway_build: Optional[str] = Field(default=None, max_length=64)
     audit_event_id: Optional[str] = Field(
         default=None,
         max_length=50,

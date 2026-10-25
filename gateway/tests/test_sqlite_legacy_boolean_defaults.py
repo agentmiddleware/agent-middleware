@@ -35,7 +35,7 @@ def _defaults(connection):
 
 def test_upgrade_repairs_legacy_sqlite_defaults(tmp_path, monkeypatch):
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["051_sqlite_boolean_defaults"]
+    assert len(script.get_heads()) == 1
     assert script.get_revision("051_sqlite_boolean_defaults").down_revision == (
         "050_demo_key_first_used"
     )
@@ -117,7 +117,7 @@ def test_upgrade_repairs_legacy_sqlite_defaults(tmp_path, monkeypatch):
             for table, _ in _COLUMNS
         }
 
-    _upgrade(monkeypatch, db_path, "head")
+    _upgrade(monkeypatch, db_path, "051_sqlite_boolean_defaults")
     with sqlite3.connect(db_path) as connection:
         assert set(_defaults(connection).values()) == {"0"}
         for table, column, key in (

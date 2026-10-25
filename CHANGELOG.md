@@ -12,3 +12,6 @@ This repository starts with a fresh history. Releases are listed here once tagge
   loading the calls file raises `ReplayError` naming the record.
 - Replay: new `amw-replay --require-verified` flag exits 2 unless every
   recorded receipt verified against `--recorded-keys`.
+- Receipts: new optional signed fields `enforcement_mode` ("enforce" or
+  "permissive") and `gateway_build` (build commit). Each is signed only when set,
+  so older receipts still verify. Migration 052 adds the columns.

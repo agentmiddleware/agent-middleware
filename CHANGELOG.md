@@ -15,3 +15,6 @@ This repository starts with a fresh history. Releases are listed here once tagge
 - Receipts: new optional signed fields `enforcement_mode` ("enforce" or
   "permissive") and `gateway_build` (build commit). Each is signed only when set,
   so older receipts still verify. Migration 052 adds the columns.
+- Migrations: 053 recreates `receipt_resolutions`, `resolution_chain_heads`,
+  `approval_gate_approvals`, `api_key_usage_events` and the `api_key_usage_daily`
+  view on databases built by the archived api chain, only when missing.

@@ -113,12 +113,38 @@ def is_ambiguous_ipv4_literal(host: str) -> bool:
     return False
 
 
+# Host shapes that some resolver or fetcher parses as an IP literal even
+# though strict parsing rejects them: bare integers, dotted digit groups with
+# leading zeros (octal on glibc, decimal elsewhere), and 0x hex forms. The
+# guard and the fetching client may resolve these differently, so they fail
+# closed here instead of depending on this platform's getaddrinfo.
+_NUMERIC_LITERAL_RE = re.compile(r"[0-9]+(?:\.[0-9]+)*")
+_HEX_LITERAL_RE = re.compile(r"0[xX][0-9a-fA-F.]+")
+
+
 def _address_blocked(address: str) -> bool:
     try:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return False
     return address_is_blocked(ip)
+
+
+def _is_ambiguous_numeric_literal(host: str) -> bool:
+    """True when the host looks like an IP literal strict parsing rejects.
+
+    Only all-digit dotted forms and 0x hex forms qualify, so ordinary
+    hostnames (which always carry a non-numeric label, such as ``007.com``)
+    still take the DNS path. A match that ``ipaddress`` also accepts is a
+    real literal and is handled by the address check above, not here.
+    """
+    if not (_NUMERIC_LITERAL_RE.fullmatch(host) or _HEX_LITERAL_RE.fullmatch(host)):
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return False
 
 
 async def _resolve_host(host: str):
@@ -175,6 +201,12 @@ async def pin_outbound_url(
         return "private_host_blocked", None
 
     if _address_blocked(host):
+        return "private_address_blocked", None
+
+    if _is_ambiguous_numeric_literal(host):
+        # This platform's resolver may map the form somewhere harmless while
+        # the fetching client's resolver maps it to loopback or intranet
+        # space (or the reverse). Refuse without consulting DNS.
         return "private_address_blocked", None
 
     try:

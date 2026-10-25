@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 
 from app.replay.policy_replay import (
     ReplayError,
@@ -14,6 +16,37 @@ from app.replay.policy_replay import (
     replay_calls,
 )
 from app.services.signing_keys import SigningKeyError
+
+
+def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
+    """Write every output through a temp file in ``out``, then rename into place.
+
+    On any failure, remove every temp file created and every target already
+    renamed, so the output directory keeps no partial outputs or temp files.
+    """
+    temps: list[tuple[str, Path]] = []
+    placed: list[Path] = []
+    try:
+        for name, content in files.items():
+            fd, tmp_name = tempfile.mkstemp(prefix=f"{name}.", suffix=".tmp", dir=out)
+            temps.append((tmp_name, out / name))
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+        for tmp_name, target in temps:
+            os.replace(tmp_name, target)
+            placed.append(target)
+    except BaseException:
+        for target in placed:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        for tmp_name, _ in temps:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,16 +120,16 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out)
     try:
         out.mkdir(parents=True, exist_ok=True)
-        (out / "receipts.jsonl").write_text(
-            "".join(json.dumps(r, sort_keys=True) + "\n" for r in result.receipts),
-            encoding="utf-8",
-        )
-        (out / "summary.json").write_text(
-            json.dumps(result.summary, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        (out / "keys.json").write_text(
-            json.dumps({"keys": [result.public_key]}, indent=2) + "\n", encoding="utf-8"
+        _write_outputs_atomically(
+            out,
+            {
+                "receipts.jsonl": "".join(
+                    json.dumps(r, sort_keys=True) + "\n" for r in result.receipts
+                ),
+                "summary.json": json.dumps(result.summary, indent=2, sort_keys=True)
+                + "\n",
+                "keys.json": json.dumps({"keys": [result.public_key]}, indent=2) + "\n",
+            },
         )
     except OSError as exc:
         print(f"amw-replay: {exc}", file=sys.stderr)

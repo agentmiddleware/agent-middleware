@@ -949,6 +949,15 @@ def test_load_recorded_calls_bad_approval_id_names_record(tmp_path):
         load_recorded_calls(path)
 
 
+def test_load_recorded_calls_rejects_whitespace_approval_id(tmp_path):
+    for i, value in enumerate((" ", "\t\n", "  \t  \n ")):
+        payload = _record_payload(approval_id=value)
+        with pytest.raises(ReplayError, match="approval_id"):
+            load_recorded_calls(
+                _record_file(tmp_path, payload, name=f"ws-approval-{i}.json")
+            )
+
+
 def test_load_recorded_calls_accepts_missing_or_valid_approval_id(tmp_path):
     assert (
         load_recorded_calls(_record_file(tmp_path, _record_payload()))[0].payload.get(
@@ -1041,3 +1050,86 @@ def test_cli_require_verified_passes_when_all_verified(tmp_path, capsys):
     assert code == 0, capsys.readouterr().err
     summary = json.loads((out / "summary.json").read_text())
     assert summary["total"] == 6
+
+
+# --- 24. CLI outputs are written atomically -----------------------------------
+
+
+def _replay_out_argv(tmp_path: Path) -> tuple[list[str], Path]:
+    out = tmp_path / "out"
+    return (
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--out",
+            str(out),
+        ],
+        out,
+    )
+
+
+def test_cli_success_writes_only_outputs(tmp_path, capsys):
+    argv, out = _replay_out_argv(tmp_path)
+    assert replay_main(argv) == 0, capsys.readouterr().err
+    assert sorted(p.name for p in out.iterdir()) == [
+        "keys.json",
+        "receipts.jsonl",
+        "summary.json",
+    ]
+
+
+def test_cli_outputs_rename_into_place(tmp_path, capsys, monkeypatch):
+    import os
+
+    real_replace = os.replace
+    renamed: list[tuple[Path, Path]] = []
+
+    def _spy(src, dst):
+        renamed.append((Path(src), Path(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _spy)
+    argv, out = _replay_out_argv(tmp_path)
+    assert replay_main(argv) == 0, capsys.readouterr().err
+    ours = [(src, dst) for src, dst in renamed if dst.parent == out]
+    assert sorted(dst.name for _, dst in ours) == [
+        "keys.json",
+        "receipts.jsonl",
+        "summary.json",
+    ]
+    assert all(src.parent == out for src, _ in ours)
+
+
+def test_cli_first_output_failure_leaves_no_files(tmp_path, capsys, monkeypatch):
+    import tempfile
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tempfile, "mkstemp", _boom)
+    argv, out = _replay_out_argv(tmp_path)
+    assert replay_main(argv) == 2
+    assert "amw-replay: disk full" in capsys.readouterr().err
+    assert list(out.iterdir()) == []
+
+
+def test_cli_second_output_failure_removes_first_temp(tmp_path, capsys, monkeypatch):
+    import tempfile
+
+    real_mkstemp = tempfile.mkstemp
+    attempts = {"count": 0}
+
+    def _fail_second(*args, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 2:
+            raise OSError("disk full")
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkstemp", _fail_second)
+    argv, out = _replay_out_argv(tmp_path)
+    assert replay_main(argv) == 2
+    assert "amw-replay: disk full" in capsys.readouterr().err
+    assert attempts["count"] == 2
+    assert list(out.iterdir()) == []

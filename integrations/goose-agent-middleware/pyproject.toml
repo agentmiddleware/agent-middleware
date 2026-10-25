@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "goose-agent-middleware"
+version = "0.1.0"
+description = "Agent Middleware as a Goose StreamableHttp MCP extension: permits, PreToolUse deny hook, idempotent writes, signed receipts"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "amw-sdk>=0.4.0",
+    "mcp>=2.3.0,<3",
+    "cryptography>=50.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+goose-amw-proxy = "goose_amw.proxy:main"
+goose-amw-hook = "goose_amw.hook:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/goose_amw"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "../../sdk/python/src"]
+
+[tool.uv.sources]
+amw-sdk = { path = "../../sdk/python", editable = true }

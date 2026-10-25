@@ -1,0 +1,43 @@
+{
+  "_comment": "Rotated receipt case from a golden receipt fixture; test use only.",
+  "cases": [
+    {
+      "name": "rotation.successor_key_valid",
+      "bundle": {
+        "receipt_id": "rcpt_golden_0001",
+        "kid": "sk_golden_0002",
+        "alg": "Ed25519",
+        "canonicalization": "awi-canonical-json/1",
+        "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0002\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"9989515fa343596a004e43206061852f91babe363dcce504d39a85cfb8f4e277\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
+        "signature": "pG0OTGI0X2lxH8kwyN+M/fUzdHLJimXmVzBhKlohsypSbQI6rWPNfb++4N+57RAqzspAA6o/1FgsyEqYqBV0Ag=="
+      },
+      "keys": {
+        "keys": [
+          {
+            "kid": "sk_golden_0001",
+            "alg": "Ed25519",
+            "status": "active",
+            "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+            "jwk": {
+              "kty": "OKP",
+              "crv": "Ed25519",
+              "x": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+            }
+          },
+          {
+            "kid": "sk_golden_0002",
+            "alg": "Ed25519",
+            "status": "active",
+            "public_key_b64": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+            "jwk": {
+              "kty": "OKP",
+              "crv": "Ed25519",
+              "x": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc"
+            }
+          }
+        ]
+      },
+      "expect": "verified"
+    }
+  ]
+}

@@ -122,9 +122,21 @@ def test_unreachable_gateway_error_hides_key(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     key = secrets.token_hex(16)
+
+    def _unreachable(request: Any) -> Any:
+        raise amw_approvals.httpx.ConnectError(f"dial boom {key} quoted")
+
+    transport = amw_approvals.httpx.MockTransport(_unreachable)
+    _real_client = amw_approvals.httpx.Client
+
+    def _mock_client(*args: Any, **kwargs: Any) -> Any:
+        kwargs["transport"] = transport
+        return _real_client(*args, **kwargs)
+
+    monkeypatch.setattr(amw_approvals.httpx, "Client", _mock_client)
     monkeypatch.setenv("VALID_API_KEYS", key)
-    # RFC 1122 loopback; port 9 (discard) is closed, so connect fails.
-    base_url = f"http://{LOOPBACK_V4}:9"
+    # RFC 2606 example.com: allowed https URL, never dialed (MockTransport).
+    base_url = f"https://{EXAMPLE_COM}"
     assert amw_approvals.main(["--base-url", base_url, "list"]) == 1
     out = capsys.readouterr()
     assert "gateway unreachable at" in out.err

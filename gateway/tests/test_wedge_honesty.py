@@ -151,7 +151,8 @@ async def test_discover_pricing_and_guides_are_trust_plane(client, proof_surface
     assert "awi_adoption" not in guides
     assert guides["mcp_json_rpc"] == "/mcp/messages"
     assert guides["mcp_json_rpc_status"] == "legacy_project_transport"
-    assert "standard_mcp" not in guides
+    # The standard MCP endpoint is on by default.
+    assert guides["standard_mcp"] == "/mcp"
     assert guides["wedge"] == "/WEDGE.md"
     assert "partner.notes.write" in guides["dogfood"]
 
@@ -202,8 +203,9 @@ async def test_agent_json_sdk_integrations_are_honest(client):
     assert python_sdk["install"] == "pip install -e ./sdk/python"
     assert "pip install amw-sdk" not in json.dumps(python_sdk)
     assert "not published" in python_sdk["note"].lower()
-    # No release has been cut from this repository yet.
-    assert python_sdk["latest_release_tag"] is None
+    # 0.4.0 was cut as tag python-sdk-v0.4.0 (see sdk/python/CHANGELOG.md);
+    # the source tree has since moved to an unreleased 0.5.0.
+    assert python_sdk["latest_release_tag"] == "python-sdk-v0.4.0"
 
     typescript_sdk = integrations["typescript_sdk"]
     assert isinstance(typescript_sdk, dict)
@@ -213,8 +215,9 @@ async def test_agent_json_sdk_integrations_are_honest(client):
     assert integrations["mcp"] is True
     assert integrations["mcp_json_rpc"] == "/mcp/messages"
     assert integrations["mcp_json_rpc_status"] == "legacy_project_transport"
-    assert "preferred_integration" not in integrations
-    assert "standard_mcp_streamable_http" not in integrations
+    # The standard MCP endpoint is on by default, so it is the preferred path.
+    assert integrations["preferred_integration"] == "standard_mcp_streamable_http"
+    assert integrations["standard_mcp_streamable_http"] == "/mcp"
 
 
 @pytest.mark.anyio

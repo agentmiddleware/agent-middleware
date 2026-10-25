@@ -39,7 +39,10 @@ from ..schemas.awi_enhanced import (
     RAGQueryResponse,
     SessionContextResponse,
 )
-from ..services.awi_playwright_bridge import BrowserSessionLimitExceeded
+from ..services.awi_playwright_bridge import (
+    BrowserSessionLimitExceeded,
+    NavigationBlocked,
+)
 
 if TYPE_CHECKING:
     from ..services.awi_rag_engine import SessionMemory
@@ -477,6 +480,11 @@ async def attach_dom_bridge(
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={"error": "dom_session_limit_exceeded", "message": str(e)},
+        )
+    except NavigationBlocked as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "navigation_blocked", "message": str(e)},
         )
     except ValueError as e:
         raise HTTPException(

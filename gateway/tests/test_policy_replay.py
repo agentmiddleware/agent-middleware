@@ -1173,3 +1173,98 @@ def test_cli_rename_failure_restores_previous_outputs(tmp_path, capsys, monkeypa
     for name, data in old_bytes.items():
         assert (out / name).read_bytes() == data
     assert sorted(p.name for p in out.iterdir()) == sorted(old)
+
+
+def test_cli_overwrite_prepopulated_out_writes_new_contents(tmp_path, capsys):
+    argv, out = _replay_out_argv(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_text(content)
+    assert replay_main(argv) == 0, capsys.readouterr().err
+    assert sorted(p.name for p in out.iterdir()) == [
+        "keys.json",
+        "receipts.jsonl",
+        "summary.json",
+    ]
+    for name, content in old.items():
+        assert (out / name).read_text() != content
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["total"] == 6
+    receipts = (out / "receipts.jsonl").read_text().splitlines()
+    assert len(receipts) == 6
+
+
+def test_cli_backup_link_failure_falls_back_to_copy(tmp_path, capsys, monkeypatch):
+    import os
+
+    argv, out = _replay_out_argv(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_text(content)
+
+    def _no_link(_src, _dst):
+        raise OSError("hardlinks unsupported")
+
+    monkeypatch.setattr(os, "link", _no_link)
+    assert replay_main(argv) == 0, capsys.readouterr().err
+    assert sorted(p.name for p in out.iterdir()) == [
+        "keys.json",
+        "receipts.jsonl",
+        "summary.json",
+    ]
+    for name, content in old.items():
+        assert (out / name).read_text() != content
+
+
+def test_cli_restore_failure_keeps_backup_and_mentions_it(
+    tmp_path, capsys, monkeypatch
+):
+    import os
+
+    argv, out = _replay_out_argv(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_bytes(content.encode("utf-8"))
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _fail_temp_rename_then_restore(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and dst_path.name in old
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 2:
+                raise OSError("rename failed")
+        if src_str.endswith(".bak.tmp") and dst_path.parent == out:
+            raise OSError("restore failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_temp_rename_then_restore)
+    assert replay_main(argv) == 2
+    err = capsys.readouterr().err
+    assert renames["count"] == 2
+    backups = list(out.glob("*.bak.tmp"))
+    assert len(backups) == 1
+    assert str(backups[0]) in err
+    assert backups[0].is_file()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 import sys
 import tempfile
@@ -22,10 +23,11 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
     """Write every output through a temp file in ``out``, then rename into place.
 
     Existing targets are preserved via same-dir hardlink backups before any
-    rename. On any failure, new temps are removed, overwritten targets are
-    restored from backups, and targets that did not previously exist are
-    removed. Backups are deleted on success. No temp or backup files remain
-    in either case.
+    rename, falling back to a copy when hardlinks are unavailable. On any
+    failure, new temps are removed, overwritten targets are restored from
+    backups, and targets that did not previously exist are removed. Backups
+    are deleted on success and after a clean rollback. A backup whose
+    restore fails is kept and its path is included in the raised error.
     """
     temps: list[tuple[str, Path]] = []
     backups: dict[Path, Path] = {}
@@ -45,7 +47,10 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
             try:
                 os.close(fd_bak)
                 os.unlink(bak_name)
-                os.link(target, bak_name)
+                try:
+                    os.link(target, bak_name)
+                except OSError:
+                    shutil.copy2(target, bak_name)
             except BaseException:
                 try:
                     os.unlink(bak_name)
@@ -56,29 +61,37 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
         for tmp_name, target in temps:
             os.replace(tmp_name, target)
             placed.append(target)
-    except BaseException:
+    except BaseException as original:
         for tmp_name, _ in temps:
             try:
                 os.unlink(tmp_name)
             except OSError:
                 pass
+        failed_restores: list[Path] = []
         for target in placed:
             backup = backups.get(target)
             if backup is not None:
                 try:
                     os.replace(backup, target)
                 except OSError:
-                    pass
+                    failed_restores.append(backup)
             else:
                 try:
                     target.unlink()
                 except OSError:
                     pass
         for backup in backups.values():
+            if backup in failed_restores:
+                continue
             try:
                 os.unlink(backup)
             except OSError:
                 pass
+        if failed_restores:
+            kept = ", ".join(str(path) for path in failed_restores)
+            raise OSError(
+                f"{original}; rollback restore failed, backup(s) preserved at: {kept}"
+            ) from original
         raise
     else:
         for backup in backups.values():

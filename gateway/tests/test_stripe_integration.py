@@ -288,6 +288,39 @@ async def test_prepare_top_up_in_progress_fallback_rehydrates_client_secret(
 
 
 @pytest.mark.anyio
+async def test_prepare_top_up_in_progress_fallback_rejects_reused_key_other_amount(
+    client, sponsor_wallet, api_headers, fake_payment_intent_retrieve
+):
+    """In-progress fallback must check request_hash before replaying.
+
+    Same key with a different amount gets 409 and never touches Stripe's
+    stored PaymentIntent or its client_secret.
+    """
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "in-progress-reuse"}
+    base = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}"
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_reuse", client_secret="pi_reuse_secret"
+        )
+        first = await client.post(f"{base}&amount_fiat=50.0", headers=headers)
+        with patch(
+            "app.services.idempotency.IdempotencyService.begin_with_record",
+            new=AsyncMock(side_effect=IdempotencyInProgressError("in progress")),
+        ):
+            second = await client.post(f"{base}&amount_fiat=75.0", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["detail"]["error"] == "idempotency_key_reused"
+    assert "pi_reuse_secret" not in second.text
+    mock_create.assert_called_once()
+    fake_payment_intent_retrieve.assert_not_called()
+
+
+@pytest.mark.anyio
 async def test_prepare_top_up_retry_sends_the_same_stripe_idempotency_key(
     client, sponsor_wallet, api_headers
 ):

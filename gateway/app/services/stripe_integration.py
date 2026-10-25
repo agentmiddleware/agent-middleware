@@ -38,6 +38,7 @@ from ..schemas.billing import AlertSeverity, AlertType, WalletStatus
 from .agent_money import WalletNotFoundError
 from .idempotency import (
     IDEMPOTENCY_KEY_HEADER_SOURCE,
+    IdempotencyConflictError,
     IdempotencyInProgressError,
     get_idempotency_service,
     validate_client_idempotency_key,
@@ -176,16 +177,17 @@ class StripeIntegration:
             get_idempotency_service() if validated_key is not None else None
         )
         replay_endpoint = "/v1/billing/top-up/prepare"
+        replay_payload = {
+            "amount_cents": amount_cents,
+            "currency": SUPPORTED_TOP_UP_CURRENCY,
+        }
         if replay_service is not None and validated_key is not None:
             try:
                 begun = await replay_service.begin_with_record(
                     wallet_id=wallet_id,
                     endpoint=replay_endpoint,
                     idempotency_key=validated_key,
-                    request_payload={
-                        "amount_cents": amount_cents,
-                        "currency": SUPPORTED_TOP_UP_CURRENCY,
-                    },
+                    request_payload=replay_payload,
                     operation_kind="stripe_top_up",
                 )
             except IdempotencyInProgressError:
@@ -205,6 +207,12 @@ class StripeIntegration:
                     ).scalar_one_or_none()
                     if record is None or record.operation_kind != "stripe_top_up":
                         raise
+                    # The in-progress error can be raised before any request
+                    # match check (e.g. the SQLite lock path), so verify the
+                    # key is not being reused for a different request before
+                    # replaying or resuming another request's PaymentIntent.
+                    if record.request_hash != sha256_hex(replay_payload):
+                        raise IdempotencyConflictError("idempotency_key_reused")
                     if record.response_json is not None:
                         return await self._rehydrate_top_up_replay(
                             json.loads(record.response_json)

@@ -303,6 +303,26 @@ jobs:
           test ! -e "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests/test_receipt_vectors.py
           uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests
 
+  framework-integrations:
+    name: Framework integrations
+    needs: detect
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Test framework integrations
+        run: uv run --no-project --isolated --python 3.12 --with pytest==9.1.1 --with-editable './sdk/python[verify]' python -m pytest integrations/framework_integrations/tests -q -rs
+
   postgres-concurrency:
     # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:
     # SQLite treats SELECT ... FOR UPDATE as a silent no-op, so these tests
@@ -647,7 +667,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [lint, detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [lint, detect, python, framework-integrations, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

@@ -121,6 +121,31 @@ def test_emit_telemetry_defaults_non_string_severity(monkeypatch, severity):
     assert json.loads(seen[0].content)["severity"] == "info"
 
 
+@pytest.mark.parametrize(
+    ("event", "properties"),
+    [
+        ("", None),
+        (" \t", {"message": ""}),
+        (None, {"message": " \t"}),
+    ],
+)
+def test_emit_telemetry_rejects_blank_effective_message_before_sending(
+    monkeypatch, event, properties
+):
+    seen: list[httpx.Request] = []
+    client = _client(monkeypatch, _capture(seen))
+
+    async def run() -> None:
+        try:
+            await client.emit_telemetry(event, properties)
+        finally:
+            await client.close()
+
+    with pytest.raises(ValueError, match="telemetry message"):
+        asyncio.run(run())
+    assert seen == []
+
+
 def test_send_message_matches_the_comms_request_contract(monkeypatch):
     seen: list[httpx.Request] = []
     client = _client(monkeypatch, _capture(seen))

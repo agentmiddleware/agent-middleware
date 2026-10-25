@@ -90,6 +90,8 @@ class B2AClient:
         message = props.pop("message", None)
         if not isinstance(message, str) or not message.strip():
             message = event
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("telemetry message must be a non-blank string")
         source = props.pop("source", None)
         if not isinstance(source, str) or not source.strip():
             source = "framework_integrations"

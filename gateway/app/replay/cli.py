@@ -40,11 +40,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         recorded_keys = None
         if args.recorded_keys:
-            from b2a_sdk.receipt_verifier import key_set_from_document
-
-            recorded_keys = key_set_from_document(
-                json.loads(Path(args.recorded_keys).read_text(encoding="utf-8"))
+            from b2a_sdk.receipt_verifier import (
+                VerificationError,
+                key_set_from_document,
             )
+
+            try:
+                recorded_keys = key_set_from_document(
+                    json.loads(Path(args.recorded_keys).read_text(encoding="utf-8"))
+                )
+            except VerificationError as exc:
+                raise ReplayError(str(exc)) from exc
         calls = load_recorded_calls(args.calls, recorded_keys=recorded_keys)
         bundle = load_policy_bundle(args.bundle)
         result = replay_calls(calls, bundle)

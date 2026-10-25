@@ -102,6 +102,24 @@ class NetworkSealedError(RuntimeError):
     """Raised when anything tries to open a connection during a replay."""
 
 
+#: Recorded outcomes that ran past the policy gate when the gateway wrote
+#: them. ``ReceiptService`` (``app/services/receipts.py``) records exactly
+#: seven outcomes; only ``denied`` and ``insufficient_funds`` refuse the call
+#: before dispatch. ``failed_*``, ``delivery_uncertain`` and
+#: ``response_rejected`` were authorized first, so replay re-evaluates them
+#: under the new bundle instead of short-circuiting as a recorded deny. Any
+#: other value fails closed as a deny.
+RECORDED_ALLOW_OUTCOMES = frozenset(
+    {
+        "success",
+        "failed_refunded",
+        "failed_unrefunded",
+        "delivery_uncertain",
+        "response_rejected",
+    }
+)
+
+
 @dataclass(frozen=True)
 class RecordedCall:
     source: str
@@ -109,6 +127,10 @@ class RecordedCall:
     signature: str | None
     payload: dict[str, Any]
     signature_verified: bool = False
+    #: The outer record's unauthenticated ``receipt_id``/``kid`` labels, when
+    #: it carries them. Verified against the signed claims, never trusted.
+    outer_receipt_id: Any = None
+    outer_kid: Any = None
 
     @property
     def call_hash(self) -> str:
@@ -116,11 +138,11 @@ class RecordedCall:
 
     @property
     def old_decision(self) -> str:
-        # Only an explicit success counted as allowed when recorded. Every
-        # other gateway outcome (denied, insufficient_funds, failed_*,
-        # delivery_uncertain, response_rejected) is a deny, so the
-        # non-policy-denial guard in _decide keeps applying to it.
-        return ALLOW if self.payload["outcome"] == "success" else DENY
+        # Only the pre-dispatch refusals (denied, insufficient_funds) counted
+        # as denied when recorded, so the non-policy-denial guard in _decide
+        # keeps applying to them. Post-authorization outcomes were allowed
+        # through the gate and get re-evaluated.
+        return ALLOW if self.payload["outcome"] in RECORDED_ALLOW_OUTCOMES else DENY
 
     @property
     def old_reason(self) -> str | None:
@@ -131,11 +153,6 @@ class RecordedCall:
 class PolicyBundle:
     document: dict[str, Any]
     models: tuple[PolicyBundleModel, ...]
-    #: Per-model flag aligned with ``models``: True when the bundle JSON
-    #: explicitly states ``risk_tier`` for that policy (as opposed to the
-    #: schema default). Only an explicit ceiling fails a replay closed when
-    #: the recorded call carries no tier.
-    risk_tier_explicit: tuple[bool, ...] = ()
 
     @property
     def bundle_hash(self) -> str:
@@ -223,18 +240,42 @@ def _record_to_call(source: str, record: Any) -> RecordedCall:
     if canonical_json(payload) != signing_input:
         raise ReplayError(f"{source}: signing_input is not canonical gateway JSON")
     signature = record.get("signature") or record.get("signature_b64_over_test_seed")
-    return RecordedCall(source, signing_input, signature, payload)
+    return RecordedCall(
+        source,
+        signing_input,
+        signature,
+        payload,
+        outer_receipt_id=record.get("receipt_id"),
+        outer_kid=record.get("kid"),
+    )
 
 
-def _verify_recorded(call: RecordedCall, recorded_keys: dict[str, Any]) -> None:
-    from b2a_sdk.receipt_verifier import verify_bundle
+def _verify_recorded(call: RecordedCall, recorded_keys: dict[str, Any]) -> bool:
+    """Verify one recording; True only for verified claims under a true label.
+
+    The envelope's ``receipt_id``/``kid`` are passed through as the
+    unauthenticated labels ``verify_bundle`` checks against the signed
+    claims, so a record that mislabels valid gateway bytes reports
+    ``MISMATCH``. That record's claims are still authentic, only wrongly
+    labelled, so it replays with degraded provenance (False) instead of
+    refusing to load. Any other failure still raises.
+    """
+    from b2a_sdk.receipt_verifier import VerificationStatus, verify_bundle
 
     if not call.signature:
         raise ReplayError(f"{call.source}: recorded receipt has no signature")
     result = verify_bundle(
         {
-            "receipt_id": call.payload["receipt_id"],
-            "kid": call.payload.get("kid"),
+            "receipt_id": (
+                call.outer_receipt_id
+                if call.outer_receipt_id is not None
+                else call.payload["receipt_id"]
+            ),
+            "kid": (
+                call.outer_kid
+                if call.outer_kid is not None
+                else call.payload.get("kid")
+            ),
             "alg": call.payload.get("alg", "Ed25519"),
             "canonicalization": RECEIPT_CANONICALIZATION,
             "signing_input": call.signing_input,
@@ -242,10 +283,13 @@ def _verify_recorded(call: RecordedCall, recorded_keys: dict[str, Any]) -> None:
         },
         recorded_keys,
     )
+    if result.status is VerificationStatus.MISMATCH:
+        return False
     if not result.ok:
         raise ReplayError(
             f"{call.source}: recorded receipt signature {result.status.value}"
         )
+    return True
 
 
 def load_recorded_calls(
@@ -260,8 +304,8 @@ def load_recorded_calls(
     if recorded_keys is not None:
         verified_calls: list[RecordedCall] = []
         for call in calls:
-            _verify_recorded(call, recorded_keys)
-            verified_calls.append(replace(call, signature_verified=True))
+            verified = _verify_recorded(call, recorded_keys)
+            verified_calls.append(replace(call, signature_verified=verified))
         calls = verified_calls
     return calls
 
@@ -315,7 +359,6 @@ def load_policy_bundle(path: str | Path) -> PolicyBundle:
     if not isinstance(policies, list) or not policies:
         raise ReplayError("bundle has no policies")
     models: list[PolicyBundleModel] = []
-    risk_explicit: list[bool] = []
     for index, policy in enumerate(policies):
         if not isinstance(policy, dict):
             raise ReplayError(f"bundle policy {index} must be an object")
@@ -362,23 +405,19 @@ def load_policy_bundle(path: str | Path) -> PolicyBundle:
             is_active=_policy_bool(policy, "is_active", default=True),
         )
         models.append(model)
-        risk_explicit.append("risk_tier" in policy)
-    return PolicyBundle(
-        document=document, models=tuple(models), risk_tier_explicit=tuple(risk_explicit)
-    )
+    return PolicyBundle(document=document, models=tuple(models))
 
 
 def _unknown_inputs(
     call: RecordedCall,
     models: Sequence[PolicyBundleModel],
-    risk_explicit: Sequence[bool],
 ) -> list[str]:
     """Recorded inputs an applicable policy needs but the call lacks.
 
-    ``require_real_effects`` needs ``simulation``, an explicit ``risk_tier``
-    ceiling needs ``risk_tier``, and ``max_cost_per_action`` needs
-    ``credits_authorized``. A defaulted (unstated) risk tier keeps the live
-    allow-with-unevaluated behavior instead of failing closed.
+    ``require_real_effects`` needs ``simulation``, any ``risk_tier`` ceiling
+    needs ``risk_tier`` (an unstated tier still defaults to ``medium``, which
+    is a ceiling like any other), and ``max_cost_per_action`` needs
+    ``credits_authorized``.
     """
     payload = call.payload
     unknown: list[str] = []
@@ -388,10 +427,7 @@ def _unknown_inputs(
     ):
         unknown.append("simulation")
     if (
-        any(
-            explicit and m.risk_tier is not None
-            for explicit, m in zip(risk_explicit, models, strict=True)
-        )
+        any(m.risk_tier is not None for m in models)
         and payload.get("risk_tier") is None
     ):
         unknown.append("risk_tier")
@@ -407,15 +443,12 @@ def _decide(
     call: RecordedCall, bundle: PolicyBundle
 ) -> tuple[str, str, str | None, list[str]]:
     wallet_id = call.payload["wallet_id"]
-    indexed = [
-        (index, model)
-        for index, model in enumerate(bundle.models)
+    models = [
+        model
+        for model in bundle.models
         if model.is_active and (not model.wallet_id or model.wallet_id == wallet_id)
     ]
-    models = [model for _, model in indexed]
-    unevaluated = _unknown_inputs(
-        call, models, [bundle.risk_tier_explicit[index] for index, _ in indexed]
-    )
+    unevaluated = _unknown_inputs(call, models)
     if call.old_decision == DENY and call.old_reason not in POLICY_REASON_CODES:
         # Denied before or outside policy evaluation; a bundle cannot undo it.
         return (

@@ -243,21 +243,34 @@ def test_only_targeted_calls_flip_allow_to_deny(tmp_path):
             assert claims["new_decision"] == "deny"
             assert claims["new_reason"] == "human_approval_required"
             assert claims["change"] == "allow_to_deny"
-        else:
+        elif claims["old_decision"] == "deny":
             assert claims["change"] == "unchanged", source
-            assert claims["new_decision"] == claims["old_decision"]
+            assert claims["new_decision"] == "deny"
+        else:
+            # Approval-holding successes satisfy the new approval rule, but the
+            # goldens record no tier and the bundle's default medium ceiling
+            # still applies, so replay fails closed on the unknown tier.
+            assert claims["old_decision"] == "allow"
+            assert claims["new_decision"] == "deny"
+            assert claims["new_reason"] == "replay_input_unknown:risk_tier"
+            assert claims["unevaluated_constraints"] == ["risk_tier"]
+            assert claims["change"] == "allow_to_deny"
 
 
 def test_only_targeted_calls_flip_untargeted_rules_change_nothing(tmp_path):
     calls = _calls()
-    for document in (
-        # The constraints these calls were recorded under.
-        {"allowed_tools": ["golden-path-echo"], "max_cost_per_action": "2.5"},
-        # A rule scoped to a different wallet never touches these calls.
-        {"wallet_id": "agt-other", "allowed_tools": ["something-else"]},
-    ):
-        result = replay_calls(calls, load_policy_bundle(_bundle(tmp_path, document)))
-        assert {_claims(r)["change"] for r in result.receipts} == {"unchanged"}
+    # A rule scoped to a different wallet never touches these calls: with no
+    # applicable policy there is no ceiling to fail closed on either.
+    result = replay_calls(
+        calls,
+        load_policy_bundle(
+            _bundle(
+                tmp_path,
+                {"wallet_id": "agt-other", "allowed_tools": ["something-else"]},
+            )
+        ),
+    )
+    assert {_claims(r)["change"] for r in result.receipts} == {"unchanged"}
 
 
 def test_only_targeted_calls_flip_recorded_non_policy_denial_stays(tmp_path):
@@ -294,9 +307,9 @@ def test_summary_counts_match_receipts(tmp_path):
     ]
     changes = [_claims(r)["change"] for r in receipts]
     assert summary["total"] == len(receipts) == 6
-    assert summary["allow_to_deny"] == changes.count("allow_to_deny") == 3
+    assert summary["allow_to_deny"] == changes.count("allow_to_deny") == 5
     assert summary["deny_to_allow"] == changes.count("deny_to_allow") == 0
-    assert summary["unchanged"] == changes.count("unchanged") == 3
+    assert summary["unchanged"] == changes.count("unchanged") == 1
     assert (
         summary["allow_to_deny"] + summary["deny_to_allow"] + summary["unchanged"]
         == summary["total"]
@@ -403,7 +416,9 @@ def test_load_policy_bundle_rejects_unknown_risk_tier(tmp_path):
 
 
 def test_replay_unknown_simulation_denies(tmp_path):
-    calls = load_recorded_calls(_record_file(tmp_path, _record_payload()))
+    calls = load_recorded_calls(
+        _record_file(tmp_path, _record_payload(risk_tier="low"))
+    )
     result = replay_calls(
         calls,
         load_policy_bundle(_bundle(tmp_path, {"require_real_effects": True})),
@@ -417,12 +432,20 @@ def test_replay_unknown_simulation_denies(tmp_path):
 def test_replay_recorded_simulation_reaches_policy(tmp_path):
     bundle_path = _bundle(tmp_path, {"require_real_effects": True})
     calls = load_recorded_calls(
-        _record_file(tmp_path, _record_payload(simulation=True), name="t.json")
+        _record_file(
+            tmp_path,
+            _record_payload(simulation=True, risk_tier="low"),
+            name="t.json",
+        )
     )
     result = replay_calls(calls, load_policy_bundle(bundle_path))
     assert _claims(result.receipts[0])["new_reason"] == "real_effects_required"
     calls = load_recorded_calls(
-        _record_file(tmp_path, _record_payload(simulation=False), name="f.json")
+        _record_file(
+            tmp_path,
+            _record_payload(simulation=False, risk_tier="low"),
+            name="f.json",
+        )
     )
     result = replay_calls(calls, load_policy_bundle(bundle_path))
     claims = _claims(result.receipts[0])
@@ -457,8 +480,31 @@ def test_replay_recorded_risk_tier_reaches_policy(tmp_path):
     assert _claims(result.receipts[0])["new_reason"] == "risk_tier_not_allowed"
 
 
+def test_replay_default_risk_ceiling_denies_unknown_tier(tmp_path):
+    # A bundle that omits risk_tier still carries the default medium ceiling,
+    # so a recorded call with no tier fails closed like an explicit ceiling.
+    for document in ({}, {"allowed_tools": ["golden-path-echo"]}):
+        calls = load_recorded_calls(_record_file(tmp_path, _record_payload()))
+        result = replay_calls(calls, load_policy_bundle(_bundle(tmp_path, document)))
+        claims = _claims(result.receipts[0])
+        assert claims["new_decision"] == "deny"
+        assert claims["new_reason"] == "replay_input_unknown:risk_tier"
+        assert claims["unevaluated_constraints"] == ["risk_tier"]
+    bundle_path = _bundle(tmp_path, {})
+    calls = load_recorded_calls(
+        _record_file(tmp_path, _record_payload(risk_tier="medium"), name="m.json")
+    )
+    result = replay_calls(calls, load_policy_bundle(bundle_path))
+    assert _claims(result.receipts[0])["new_decision"] == "allow"
+    calls = load_recorded_calls(
+        _record_file(tmp_path, _record_payload(risk_tier="high"), name="h.json")
+    )
+    result = replay_calls(calls, load_policy_bundle(bundle_path))
+    assert _claims(result.receipts[0])["new_reason"] == "risk_tier_not_allowed"
+
+
 def test_replay_unknown_credits_denies(tmp_path):
-    payload = _record_payload()
+    payload = _record_payload(risk_tier="low")
     del payload["credits_authorized"]
     calls = load_recorded_calls(_record_file(tmp_path, payload))
     result = replay_calls(
@@ -483,6 +529,33 @@ def test_replay_recorded_insufficient_funds_never_flips(tmp_path):
     assert claims["old_decision"] == "deny"
     assert claims["new_decision"] == "deny"
     assert claims["new_reason"] == "recorded_denial:insufficient_funds"
+
+
+def test_replay_post_authorization_outcomes_reevaluated(tmp_path):
+    # Post-authorization outcomes ran past the policy gate when recorded, so
+    # they replay as allows; a stricter bundle flips them to deny with the
+    # new policy's reason, not a recorded-denial short-circuit.
+    bundle_path = _bundle(tmp_path, {"human_approval_required": True})
+    for outcome in (
+        "response_rejected",
+        "delivery_uncertain",
+        "failed_refunded",
+        "failed_unrefunded",
+    ):
+        calls = load_recorded_calls(
+            _record_file(
+                tmp_path,
+                _record_payload(outcome=outcome, risk_tier="low"),
+                name=f"{outcome}.json",
+            )
+        )
+        assert calls[0].old_decision == "allow", outcome
+        result = replay_calls(calls, load_policy_bundle(bundle_path))
+        claims = _claims(result.receipts[0])
+        assert claims["old_decision"] == "allow", outcome
+        assert claims["new_decision"] == "deny", outcome
+        assert claims["new_reason"] == "human_approval_required", outcome
+        assert claims["change"] == "allow_to_deny", outcome
 
 
 # --- 10. CLI errors stay on protocol ------------------------------------------
@@ -524,6 +597,37 @@ def test_cli_output_write_failure_returns_2(tmp_path, capsys):
     )
     assert code == 2
     assert "amw-replay: " in capsys.readouterr().err
+
+
+def test_cli_malformed_recorded_keys_returns_2(tmp_path, capsys):
+    for name, document, message in (
+        (
+            "no-keys.json",
+            {"keys": "not-a-list"},
+            "key set document has no 'keys' list",
+        ),
+        (
+            "not-object.json",
+            ["not", "an", "object"],
+            "key set document must be a JSON object",
+        ),
+    ):
+        keys_path = tmp_path / name
+        keys_path.write_text(json.dumps(document))
+        code = replay_main(
+            [
+                "--bundle",
+                str(_approval_rule(tmp_path)),
+                "--calls",
+                str(GOLDEN_DIR),
+                "--recorded-keys",
+                str(keys_path),
+                "--out",
+                str(tmp_path / "out"),
+            ]
+        )
+        assert code == 2, name
+        assert f"amw-replay: {message}" in capsys.readouterr().err, name
 
 
 # --- 11. the seal survives nesting --------------------------------------------
@@ -570,6 +674,36 @@ def test_replay_receipt_marks_unverified_recordings(tmp_path):
     assert [_claims(r)["recorded_signature_verified"] for r in result.receipts] == [
         False
     ] * 6
+
+
+def test_recorded_envelope_mismatch_yields_unverified(tmp_path):
+    base = json.loads((GOLDEN_DIR / "success_legacy.json").read_text())
+    signed = json.loads(base["signing_input"])
+    # An envelope that repeats the signed claims still verifies.
+    matching = dict(base)
+    matching["receipt_id"] = signed["receipt_id"]
+    matching["kid"] = signed["kid"]
+    match_path = tmp_path / "match.json"
+    match_path.write_text(json.dumps(matching))
+    assert (
+        load_recorded_calls(match_path, recorded_keys=_recorded_keys())[
+            0
+        ].signature_verified
+        is True
+    )
+    # An envelope that mislabels them degrades provenance instead of raising.
+    for name, outer in (
+        ("bad-id.json", {"receipt_id": "rcpt_not_the_signed_one"}),
+        ("bad-kid.json", {"kid": "sk_not_the_signer"}),
+    ):
+        record = dict(base)
+        record.update(outer)
+        path = tmp_path / name
+        path.write_text(json.dumps(record))
+        calls = load_recorded_calls(path, recorded_keys=_recorded_keys())
+        assert calls[0].signature_verified is False, name
+        result = replay_calls(calls, load_policy_bundle(_bundle(tmp_path, {})))
+        assert _claims(result.receipts[0])["recorded_signature_verified"] is False, name
 
 
 # --- 13. limits must be finite ------------------------------------------------
@@ -624,3 +758,27 @@ def test_load_policy_bundle_rejects_bad_shapes(tmp_path):
     bad.write_text(json.dumps(["not", "an", "object"]))
     with pytest.raises(ReplayError, match="must be a JSON object"):
         load_policy_bundle(bad)
+
+
+# --- 16. recorded money must be finite ---------------------------------------
+
+
+def test_replay_non_finite_recorded_money_denies(tmp_path):
+    # Non-finite recorded money denies with the live gateway's own reason
+    # (the shared decision core fails the comparison closed); both money
+    # inputs behave the same.
+    bundle = load_policy_bundle(_bundle(tmp_path, {}))
+    cases = 0
+    for field in ("credits_authorized", "daily_spend_used"):
+        for value in ("NaN", "Infinity", "-Infinity"):
+            payload = _record_payload(risk_tier="low")
+            payload[field] = value
+            calls = load_recorded_calls(
+                _record_file(tmp_path, payload, name=f"{field}-{cases}.json")
+            )
+            result = replay_calls(calls, bundle)
+            claims = _claims(result.receipts[0])
+            assert claims["new_decision"] == "deny", (field, value)
+            assert claims["new_reason"] == "policy_cost_invalid", (field, value)
+            cases += 1
+    assert cases == 6

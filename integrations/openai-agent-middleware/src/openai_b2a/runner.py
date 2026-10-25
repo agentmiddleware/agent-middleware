@@ -134,6 +134,8 @@ def operation_key_for(tool_call_id: str) -> str:
 
 def function_name_for(tool_name: str) -> str:
     """OpenAI function names are ``[a-zA-Z0-9_-]{1,64}``; MCP names may carry dots."""
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        raise ValueError("tool name must be a non-blank string")
     return _FUNCTION_NAME_INVALID.sub("_", tool_name)[:64]
 
 

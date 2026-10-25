@@ -26,11 +26,6 @@
     );
   }
 
-  function displayValue(field, claims, bundle) {
-    if (field === "kid") return bundle.kid;
-    return claims[field];
-  }
-
   Promise.all([
     fetch("/proof/receipt.json", { credentials: "omit" }).then(function (response) {
       if (!response.ok) throw new Error("receipt unavailable");
@@ -48,15 +43,18 @@
         throw new Error("missing signed payload");
       }
       const claims = JSON.parse(bundle.signing_input);
+      if (typeof claims.kid !== "string" || !claims.kid) {
+        throw new Error("signed key id absent");
+      }
       const matchingKey = Array.isArray(keyDocument.keys)
         ? keyDocument.keys.some(function (key) {
-            return (key.kid || key.key_id) === bundle.kid;
+            return (key.kid || key.key_id) === claims.kid;
           })
         : false;
       if (!matchingKey) throw new Error("matching key absent");
 
       fieldNodes.forEach(function (node) {
-        const value = displayValue(node.dataset.proofField, claims, bundle);
+        const value = claims[node.dataset.proofField];
         node.textContent = value === undefined || value === null ? "not signed" : String(value);
       });
       setStatus(

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -106,6 +107,9 @@ def local_font_css() -> str:
         raise RenderError(
             f"fonts.css is missing; run vendor_fonts.py first ({error})"
         ) from error
+    for name in re.findall(r'url\("/fonts/([^"/]+\.woff2)"\)', stylesheet):
+        if not (SITE_ROOT / "fonts" / name).is_file():
+            raise RenderError(f"fonts/{name} is missing; run vendor_fonts.py first")
     return stylesheet.replace('url("/fonts/', f'url("{(SITE_ROOT / "fonts").as_uri()}/')
 
 

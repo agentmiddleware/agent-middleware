@@ -1084,7 +1084,7 @@
   }
 
   function scheduleFrame() {
-    if (!rafId && !dead && inView && !document.hidden) {
+    if (!rafId && !dead && !contextSuspended && inView && !document.hidden) {
       rafId = window.requestAnimationFrame(frame);
     }
   }
@@ -1122,8 +1122,11 @@
 
   /* ---- context loss ------------------------------------------------------ */
 
+  var contextSuspended = false;
+
   canvas.addEventListener("webglcontextlost", function (event) {
     event.preventDefault();
+    contextSuspended = true;
     if (rafId) {
       window.cancelAnimationFrame(rafId);
       rafId = 0;
@@ -1151,6 +1154,7 @@
       gridBuffer = gl.createBuffer();
       buildGrid();
       needResize = true;
+      contextSuspended = false;
       scheduleFrame();
     } catch (error) {
       // Stay dead: without this flag a later scheduled frame would issue

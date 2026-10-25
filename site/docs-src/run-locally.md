@@ -7,7 +7,7 @@ description: Run the local AMW quickstart and continue to the governed Call walk
 
 # Run locally
 
-Use the repository quickstart for local work. It starts a strict trust server on loopback, prepares the local signing material and database, and enables local key self provisioning. This mode is for a machine you control. Production deployments refuse to start with local self provisioning enabled.
+Use the repository quickstart for local work. It starts a strict trust server on loopback, prepares the local signing material and database, and enables local key self-provisioning. This mode is for a machine you control. Production deployments refuse to start with local self-provisioning enabled.
 
 From the [repository](https://github.com/agentmiddleware/agent-middleware) root:
 

@@ -4,7 +4,7 @@
       "title": "Start",
       "pages": [
         {"title": "What is AMW", "slug": "what-is-amw"},
-        {"title": "3 minute quickstart", "slug": "three-minute-quickstart"},
+        {"title": "3-minute quickstart", "slug": "three-minute-quickstart"},
         {"title": "Run locally", "slug": "run-locally"}
       ]
     },

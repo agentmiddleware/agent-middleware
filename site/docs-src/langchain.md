@@ -14,7 +14,7 @@ python3 -m pip install -e ./sdk/python
 python3 -m pip install -e ./integrations/langchain-agent-middleware
 ```
 
-With the [local quickstart](/docs/run-locally/) running and a wallet scoped key, invoke its `partner.notes.write` tool:
+With the [local quickstart](/docs/run-locally/) running and a wallet-scoped key, invoke its `partner.notes.write` tool:
 
 ```python
 import asyncio
@@ -36,4 +36,4 @@ async def main():
 asyncio.run(main())
 ```
 
-Both keys are caller supplied. Keep each key and the arguments unchanged for a retry: a retry with the same key returns the original receipt instead of dispatching again. A new key is a new request. The wrapper keeps its Permit request snapshot in process memory, so this example does not establish crash recovery across a process restart. See the [wrapper source](https://github.com/agentmiddleware/agent-middleware/tree/main/integrations/langchain-agent-middleware).
+Both keys are caller-supplied. Keep each key and the arguments unchanged for a retry: a retry with the same key returns the original receipt instead of dispatching again. A new key is a new request. The wrapper keeps its Permit request snapshot in process memory, so this example does not establish crash recovery across a process restart. See the [wrapper source](https://github.com/agentmiddleware/agent-middleware/tree/main/integrations/langchain-agent-middleware).

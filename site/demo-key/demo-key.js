@@ -166,8 +166,8 @@ issueButton.addEventListener("click", async () => {
   walletId.textContent = data.wallet_id;
   budgetCredits.textContent = String(data.budget_credits);
   commands.textContent = commandTemplate
-    .replace("KEY='YOUR_DEMO_KEY'", `KEY=${shellQuote(data.api_key)}`)
-    .replace("WALLET='YOUR_WALLET_ID'", `WALLET=${shellQuote(data.wallet_id)}`);
+    .replace("KEY='YOUR_DEMO_KEY'", () => `KEY=${shellQuote(data.api_key)}`)
+    .replace("WALLET='YOUR_WALLET_ID'", () => `WALLET=${shellQuote(data.wallet_id)}`);
   result.hidden = false;
   status.textContent = "Demo key ready. Copy and store it now.";
 });

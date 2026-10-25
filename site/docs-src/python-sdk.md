@@ -32,4 +32,4 @@ async def main():
 asyncio.run(main())
 ```
 
-`create_permit` and `invoke_tool` both require a caller supplied, nonblank Request key. `invoke_tool` returns a Receipt on success. A changed request under the same key raises `IdempotencyConflictError`; an uncertain upstream outcome raises `DeliveryUncertainError` with a `receipt_id`. See the [SDK example](https://github.com/agentmiddleware/agent-middleware/blob/main/sdk/python/README.md#governed-tool-call) for the full Permit and Call sequence and [Receipts](/docs/receipts/) for offline verification.
+`create_permit` and `invoke_tool` both require a caller-supplied, nonblank Request key. `invoke_tool` returns a Receipt on success. A changed request under the same key raises `IdempotencyConflictError`; an uncertain upstream outcome raises `DeliveryUncertainError` with a `receipt_id`. See the [SDK example](https://github.com/agentmiddleware/agent-middleware/blob/main/sdk/python/README.md#governed-tool-call) for the full Permit and Call sequence and [Receipts](/docs/receipts/) for offline verification.

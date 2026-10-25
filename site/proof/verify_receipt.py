@@ -64,7 +64,12 @@ REJECTED = ("invalid", "mismatch")
 
 
 def canonical_json(payload):
-    """Sorted-key compact JSON, the byte layout the gateway signs."""
+    """Sorted-key compact JSON, the byte layout the gateway signs.
+
+    This is not RFC 8785 JCS: Python sorts by Unicode code point and escapes
+    non-ASCII text, while JCS uses UTF-16 key order and UTF-8 output. Number
+    serialization can also differ.
+    """
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
@@ -243,25 +248,6 @@ def verify_bundle(bundle, key_set, expected_issuer=None):
     if not isinstance(key_id, str) or not key_id:
         return ("malformed", "signed payload has no kid", None, envelope_key_id, {})
 
-    if payload.get("alg", "Ed25519") != "Ed25519":
-        return (
-            "unsupported",
-            "unsupported signature algorithm: %r" % (payload.get("alg"),),
-            None,
-            key_id,
-            {},
-        )
-    signed_canon = payload.get("canonicalization")
-    if isinstance(signed_canon, str) and signed_canon != CANONICALIZATION:
-        return (
-            "unsupported",
-            "unsupported canonicalization: %r (this verifier "
-            "implements %r)" % (signed_canon, CANONICALIZATION),
-            None,
-            key_id,
-            {},
-        )
-
     signature_scheme, encoded_signature = split_signature(signature_b64)
     if signature_scheme not in (SIGNATURE_ALG, SIGNATURE_ENVELOPE_ALG):
         # The tag sits outside the signed bytes, so an unknown one is a
@@ -347,6 +333,25 @@ def verify_bundle(bundle, key_set, expected_issuer=None):
         return (
             "invalid",
             "signature does not verify over signing_input",
+            None,
+            key_id,
+            {},
+        )
+
+    if payload.get("alg", "Ed25519") != "Ed25519":
+        return (
+            "unsupported",
+            "unsupported signature algorithm: %r" % (payload.get("alg"),),
+            None,
+            key_id,
+            {},
+        )
+    signed_canon = payload.get("canonicalization")
+    if isinstance(signed_canon, str) and signed_canon != CANONICALIZATION:
+        return (
+            "unsupported",
+            "unsupported canonicalization: %r (this verifier "
+            "implements %r)" % (signed_canon, CANONICALIZATION),
             None,
             key_id,
             {},
@@ -451,12 +456,12 @@ def main(argv=None):
 
     try:
         bundle = _read_json(args.bundle)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         print("could not read bundle: %s" % (exc,), file=sys.stderr)
         return EXIT_UNDETERMINED
     try:
         key_set = key_set_from_document(_read_json(args.keys))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         print("could not load key set: %s" % (exc,), file=sys.stderr)
         return EXIT_UNDETERMINED
 

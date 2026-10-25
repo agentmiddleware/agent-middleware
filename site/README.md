@@ -76,17 +76,13 @@ example remain readable without JavaScript. The $35 example is conditional on
 100,000 actions, 0.1% duplicates, 80% reduction, and $2,800 total monthly cost;
 it is neither a universal threshold nor a service quote.
 
-Browser regression checks use the existing optional Playwright tooling after
-building and serving `dist` locally:
+The checked-in Node suites cover site JavaScript behavior:
 
 ```bash
-node tests/test_site_pilot_fit.mjs http://127.0.0.1:8765 /absolute/path/to/playwright/index.mjs
-node tests/test_site_design.mjs http://127.0.0.1:8765 /absolute/path/to/playwright/index.mjs
+node --test site/test_*.mjs
 ```
 
-Run this command from the repository root. The optional second argument locates
-an already installed Playwright module outside normal Node resolution. No
-additional runtime dependency is required by the website.
+Run this command from the repository root.
 
 ```bash
 cd site
@@ -149,13 +145,9 @@ typed into the HTML. `build_site.py` expands three tokens from
 - `@@LIVE_VERIFICATION@@` — `b2a-verify-receipt` run against the published
   `receipt.json` and `trust-keys.json`, in the proof section
 
-`transcript.json` is **generated**. `scripts/record_site_transcript.py` runs
-the same proof as `make prove-trust-plane` against a throwaway local SQLite
-gateway, records every HTTP exchange the demo makes through its helpers, keeps
-the ones the page shows, and runs the SDK verifier twice — on the demo's
-portable receipt and on the live one. The operator key and the minted agent
-key are replaced with `$OPERATOR_API_KEY` and `$AGENT_API_KEY` before anything
-is written.
+`transcript.json` is a committed recording. This repository currently has no
+transcript recorder or `site-transcript` Makefile targets. The build checks
+that its published receipt and key hashes match the recorded verification.
 
 The steps are kept in **loop order, not run order**. The demo denies the
 out-of-scope call before it verifies the audit chain; the page walks the
@@ -180,15 +172,9 @@ transcript without the block rather than rendering a blank panel, and the
 timing values are exempt from the staleness comparison because they
 legitimately differ on every run.
 
-```bash
-make site-transcript          # re-record (≈30s; needs the app's requirements)
-make site-transcript-check    # fail if the committed file is stale or hand-edited
-```
-
-Re-record whenever the demo, a router's response shape, or `receipt.json`
-changes. The build refuses a transcript whose live verification names a
-different receipt than the one published, so republishing the receipt without
-re-recording cannot ship a verdict for the wrong artifact. The panels say in
+The build refuses a transcript whose live verification names a
+different receipt than the one published, so republishing the receipt requires
+a matching verified transcript. The panels say in
 their own footer that the loop was recorded from a local gateway run, not the
 live API; the published sample receipt's verdict is the only line on the page
 that comes from production, and the page dates that receipt as the historical
@@ -224,8 +210,7 @@ entity-escaped for HTML targets, and entity escapes are not decoded inside a
 - `va-init.js` — the Vercel Web Analytics queue shim, emitted only when
   `PUBLIC_ENABLE_VERCEL_ANALYTICS=true`.
 
-If you ever add an executable inline `<script>` to a page, the CSP will block
-it and `test_pages_carry_no_inline_scripts` will fail. Put the code in a
+The CSP blocks executable inline `<script>` elements. Put executable code in a
 same-origin file instead.
 
 The shared CSS and JS assets are served with `max-age=604800`, so cache busting is a **manual
@@ -244,7 +229,7 @@ stylesheet uses an independent `?v=concept-N` token: bump it when
 The pilot calculator uses its own `?v=pilot-2` token and the default revalidating
 cache policy; bump its token when `pilot-fit.js` changes.
 
-The demo key page's script uses its own `?v=demo-key-4` token; bump it when
+The demo key page's script uses its own `?v=demo-key-5` token; bump it when
 `demo-key/demo-key.js` changes. `utm-capture.js` uses `?v=utm-1`; bump it when
 that file changes. It is loaded on every page, including 404, so a landing URL's
 `utm_*` parameters survive a later click to `/demo-key/`.
@@ -289,8 +274,7 @@ every other reference.
 The cabinets are declared in one `CABINETS` table, each with an `id`, a `name`,
 a `genre`, a `family`, a tagline, a controls line and a `pad` layout. Every one
 is a failure mode of this product's own domain played straight as a game, and
-none of them names anybody's franchise — `test_arcade_cabinets_are_generic_and_unbranded`
-fails the build if one ever does.
+none of them names anybody's franchise.
 
 **Families, not genres, drive the filter row.** A hundred cabinets carry about
 ninety distinct genres between them; ninety chips would be a worse maze than
@@ -320,10 +304,9 @@ Each cabinet also declares the touch layout it wants. The layouts are named
 after the *inputs a cabinet reads* rather than its genre — `dpad+fire`,
 `lr+fire`, `ud+fire`, `dpad`, `lr`, `ud`, `lanes`, `tap` — so two cabinets that
 read the same keys always feel the same under a thumb.
-`test_arcade_pads_are_layouts_the_shell_can_build` checks each one against the
-layouts the shell can actually build, and cross-checks the pad against the
-controls line in both directions: a cabinet naming SPACE must have an action
-key, and one that never mentions the vertical arrows must not be given them.
+Each pad must use a layout the shell can build and agree with the controls line:
+a cabinet naming SPACE needs an action key, and one that never mentions the
+vertical arrows should not be given them.
 
 ## The cabinet toolkit
 
@@ -432,14 +415,11 @@ Rules it is built to:
 
 - **Generic by construction.** No arcade trademark, character, or company name
   appears in either file. Every cabinet is named after a failure mode of this
-  product's own domain instead, and
-  `test_arcade_cabinets_are_generic_and_unbranded` fails the build if a brand
-  name is ever added.
+  product's own domain instead.
 - **Fake receipts must look fake.** A run ends by issuing a prop receipt that
   says `SIMULATED · NOT A REAL RECEIPT` in its own body and links to `/proof/`
   for a real one. This site's only real claim is that a receipt is verifiable;
-  a convincing fake would undercut it, so
-  `test_arcade_receipts_are_marked_simulated` guards the disclaimer.
+  a convincing fake would undercut it.
 - **Progressive enhancement.** The launcher ships with `hidden` and is revealed
   only once `arcade.js` runs, so a visitor without JavaScript never sees a
   control that does nothing.
@@ -520,10 +500,9 @@ closes the page and inside the arcade overlay, both far below the fold. A preloa
 same-origin, or the browser discards it and fetches the file twice. The `404`
 page preloads nothing on purpose — it is `noindex` and mostly serves scanners.
 
-Adding a family or weight to `styles.css` without adding it to `FAMILIES` fails
-`test_font_stylesheet_and_files_agree` rather than letting the browser
-synthesise the weight. An interrupted vendoring run that empties `fonts/` fails
-the launch gate rather than deploying a stylesheet whose every `src` 404s.
+When adding a family or weight to `styles.css`, update `FAMILIES` so the browser
+does not synthesise the weight. An interrupted vendoring run that empties
+`fonts/` fails the launch gate rather than deploying missing font files.
 
 ## Brand graphics
 
@@ -534,11 +513,8 @@ brand carries). The favicon is a 16×16 pixel letterform, because a favicon
 is a pixel grid whatever the page looks like; the social card is set in the
 page's own Instrument Serif and IBM Plex Mono on soft corners, matching the
 pages it previews.
-`test_brand_graphics_use_the_design_system_palette` fails if either file
-reintroduces an off-system color; that is how the original graphics
-drifted, keeping a retired charcoal-and-ember palette long after the pages
-moved on, so tab icon and link preview advertised a different product than the
-page that loaded.
+Keep both graphics on the design system palette; a retired palette would make
+the tab icon and link preview disagree with the page that loaded.
 
 `social-card.png` — the 1200×630 raster the `og:image`/`twitter:image` tags
 serve, because link crawlers do not rasterize SVG — is **generated**:
@@ -562,12 +538,10 @@ change, and commit the SVG and PNG together. Neither the SVG nor the script
 deploys; `dist/` gets only the PNG.
 
 The same tokens are resolved into the two surfaces that cannot import
-`styles.css`: `static/dashboard.html` (the API origin's self-contained
-operator index) and `app/services/approval_card.py` (permit-approval email
+`styles.css`: `gateway/static/dashboard.html` (the API origin's self-contained
+operator index) and `gateway/app/services/approval_card.py` (permit-approval email
 and hosted card, where mail clients drop `:root` and custom properties).
-When the palette moves, re-resolve both —
-`test_resolved_palette_surfaces_stay_within_the_stylesheet` fails on any
-literal hex or rgba hue the stylesheet does not itself use. `/concept/` imports
+When the palette moves, re-resolve both. `/concept/` imports
 the shared design system directly, including the accessibility controls.
 
 ## Analytics

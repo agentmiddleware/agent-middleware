@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createContext, runInContext, runInNewContext } from "node:vm";
@@ -103,6 +104,25 @@ test("issuance uses an empty credential-free POST and renders one key as text", 
   assert.equal(page.requests.length, 1);
   assert.equal(page.session.size, 0);
   assert.equal([...page.session.values()].some((value) => value.includes(key)), false);
+});
+
+test("dollar sequences in response values remain literal in commands", async () => {
+  const replacementTokens = ["$&", "$`", "$$"].join("");
+  const key = randomUUID() + replacementTokens;
+  const wallet = randomUUID() + replacementTokens;
+  const page = makePage(async () => ({
+    status: 201,
+    async json() {
+      return { api_key: key, wallet_id: wallet, budget_credits: 25 };
+    },
+  }));
+
+  await page.click("get-demo-key");
+  assert.equal(
+    page.elements.get("demo-commands").textContent,
+    commandTemplate.replace("KEY='YOUR_DEMO_KEY'", () => `KEY='${key}'`)
+      .replace("WALLET='YOUR_WALLET_ID'", () => `WALLET='${wallet}'`),
+  );
 });
 
 test("issuance sends stored UTM overridden by the page URL plus referrer", async () => {

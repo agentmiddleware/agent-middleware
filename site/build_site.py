@@ -521,16 +521,13 @@ def load_transcript() -> dict:
     The page renders this file verbatim, so a missing, malformed, or stale
     transcript is a launch error, not a blank panel. Stale means the live
     verifier output was recorded against a different receipt than the one
-    published beside it: republishing ``receipt.json`` without re-running
-    ``scripts/record_site_transcript.py`` fails here instead of shipping a
-    verdict for the wrong artifact.
+    published beside it.
     """
     try:
         transcript = json.loads(TRANSCRIPT.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise LaunchConfigurationError(
-            "site/proof/transcript.json is missing; run "
-            "python scripts/record_site_transcript.py"
+            "site/proof/transcript.json is missing"
         ) from exc
     except json.JSONDecodeError as exc:
         raise LaunchConfigurationError(
@@ -613,7 +610,7 @@ def load_transcript() -> dict:
             "transcript's live verifier output is for "
             f"{live['output'].splitlines()[0]!r} (recorded as "
             f"{live['receipt_id']}), but receipt.json publishes {published_id}; "
-            "re-run python scripts/record_site_transcript.py"
+            "restore a transcript verified against the published receipt"
         )
     # Same id is not enough: the verdict must have been produced from the
     # exact bytes being published, or a re-signed or edited bundle under
@@ -621,8 +618,7 @@ def load_transcript() -> dict:
     if live.get("bundle_sha256") != hashlib.sha256(bundle_bytes).hexdigest():
         raise LaunchConfigurationError(
             "transcript's live verifier output was recorded against different "
-            "receipt.json bytes than the ones being published; re-run "
-            "python scripts/record_site_transcript.py"
+            "receipt.json bytes than the ones being published"
         )
     # The same holds for the key set the verifier checked the signature
     # against: the command beside the verdict names trust-keys.json, so the
@@ -630,8 +626,7 @@ def load_transcript() -> dict:
     if live.get("trust_document_sha256") != hashlib.sha256(keys_bytes).hexdigest():
         raise LaunchConfigurationError(
             "transcript's live verifier output was recorded against different "
-            "trust-keys.json bytes than the ones being published; re-run "
-            "python scripts/record_site_transcript.py"
+            "trust-keys.json bytes than the ones being published"
         )
     # The latency line beside the loop is read from the recording like every
     # other number on the page. A transcript without the demo's timed run is
@@ -651,8 +646,7 @@ def load_transcript() -> dict:
     ):
         raise LaunchConfigurationError(
             "transcript lacks the demo's gateway latency sample (samples, p50_ms, "
-            "p95_ms, path, tool, transport); re-run "
-            "python scripts/record_site_transcript.py"
+            "p95_ms, path, tool, transport)"
         )
     return transcript
 
@@ -798,7 +792,9 @@ def render_live_verification(transcript: dict) -> str:
     )
 
 
-def faq_jsonld(markup: str, *, indent: str = " " * 10) -> str:
+def faq_jsonld(
+    markup: str, replacements: dict[str, str] | None = None, *, indent: str = " " * 10
+) -> str:
     """Render the FAQPage node for a page from its own visible Q&A markup."""
 
     parser = _FaqListParser()
@@ -820,18 +816,23 @@ def faq_jsonld(markup: str, *, indent: str = " " * 10) -> str:
         raise LaunchConfigurationError(
             "FAQ answers must not be empty: " + "; ".join(empty)
         )
+    def resolve(value: str) -> str:
+        for token, replacement in (replacements or {}).items():
+            value = value.replace(token, replacement)
+        return value
+
     node = {
         "@type": "FAQPage",
         "mainEntity": [
             {
                 "@type": "Question",
-                "name": question,
-                "acceptedAnswer": {"@type": "Answer", "text": answer},
+                "name": resolve(question),
+                "acceptedAnswer": {"@type": "Answer", "text": resolve(answer)},
             }
             for question, answer in zip(questions, answers)
         ],
     }
-    body = json.dumps(node, indent=2, ensure_ascii=False)
+    body = json.dumps(node, indent=2, ensure_ascii=False).replace("<", "\\u003c")
     # Re-indent so the node sits inside the surrounding @graph array rather
     # than flush against the left margin.
     first, *rest = body.split("\n")
@@ -985,7 +986,9 @@ def render_site(output: Path, environment: dict[str, str]) -> None:
             rendered = rendered.replace(FONT_PRELOAD_TOKEN, font_preload_tags())
             rendered = rendered.replace(FONTS_CSS_VERSION_TOKEN, fonts_css_version())
             if FAQ_JSONLD_TOKEN in rendered:
-                rendered = rendered.replace(FAQ_JSONLD_TOKEN, faq_jsonld(rendered))
+                rendered = rendered.replace(
+                    FAQ_JSONLD_TOKEN, faq_jsonld(rendered, text_replacements)
+                )
             if any(
                 token in rendered
                 for token in (

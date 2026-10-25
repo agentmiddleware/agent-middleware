@@ -69,7 +69,7 @@
   };
 
   var BOOT_LINES = [
-    "AGENT MIDDLEWARE API — HUMAN WAITING ROOM v1.0",
+    "AGENT MIDDLEWARE API: HUMAN WAITING ROOM v1.0",
     "PURPOSE: OCCUPY THE PARTY NOT DOING THE WORK",
     "PROVISIONING ENTERTAINMENT PERMIT ....... GRANTED",
     "  SCOPE: fun:play   TTL: UNTIL YOU GET BORED",
@@ -94,7 +94,7 @@
   ];
 
   var PAUSE_LINES = [
-    "PAUSED — HUMAN IDLE.",
+    "PAUSED: HUMAN IDLE.",
     "AGENTS UNAFFECTED.",
     "PRESS P TO RESUME BEING BUSY."
   ];
@@ -162,10 +162,10 @@
   }
 
   var RECEIPT_VERDICTS = [
-    "ALLOWED — NOBODY CHECKED",
-    "ALLOWED — POLICY WAS ASLEEP",
-    "ALLOWED — RETROACTIVELY, WHICH IS THE BEST KIND",
-    "ALLOWED — THE AGENTS VOTED AND YOU LOST"
+    "ALLOWED: NOBODY CHECKED",
+    "ALLOWED: POLICY WAS ASLEEP",
+    "ALLOWED: RETROACTIVELY, WHICH IS THE BEST KIND",
+    "ALLOWED: THE AGENTS VOTED AND YOU LOST"
   ];
 
   function buildReceipt(cabinet, score, random) {
@@ -180,9 +180,9 @@
       ["action", "arcade.play"],
       ["tool", "cabinet/" + cabinet.id],
       ["units", score + " RECEIPTS SCORED"],
-      ["amount", "0.00 CREDITS — HUMAN LABOR IS UNBILLABLE"],
+      ["amount", "0.00 CREDITS: HUMAN LABOR IS UNBILLABLE"],
       ["verdict", RECEIPT_VERDICTS[Math.floor(random() * RECEIPT_VERDICTS.length)]],
-      ["signature", "—— UNSIGNED · UNVERIFIABLE · THEATRE ——"]
+      ["signature", "UNSIGNED. UNVERIFIABLE. THEATRE."]
     ];
 
     var list = el("dl", "arcade-receipt-rows");
@@ -194,7 +194,7 @@
 
     var note = el("p", "arcade-receipt-note");
     note.appendChild(
-      doc.createTextNode("This artifact is a prop. Real receipts are signed and verify offline — ")
+      doc.createTextNode("This artifact is a prop. Real receipts are signed and verify offline: ")
     );
     var link = el("a", null, "see one at /proof/");
     link.href = "/proof/";
@@ -2011,7 +2011,7 @@
                 tier: d.tier - 1
               });
             }
-            message = "RETRIED — NOW THERE ARE TWO";
+            message = "RETRIED: NOW THERE ARE TWO";
             messageAge = 0;
           } else {
             // A tier-1 shot is just noise; it neither clears nor splits.
@@ -2030,7 +2030,7 @@
         if (d.tier === 1) {
           d.hit = true;
           game.score += 30;
-          message = "KEYED — ABSORBED";
+          message = "KEYED: ABSORBED";
           messageAge = 0;
         } else if (invuln <= 0) {
           invuln = 1.5;
@@ -2479,7 +2479,7 @@
     game.draw = function (ctx, ink) {
       ctx.font = '7px "IBM Plex Mono", monospace';
       ctx.fillStyle = ink.dim;
-      ctx.fillText("BURN EACH NONCE ONCE — BEFORE IT EXPIRES", 6, 32);
+      ctx.fillText("BURN EACH NONCE ONCE: BEFORE IT EXPIRES", 6, 32);
 
       for (var y = 0; y < ROWS; y += 1) {
         for (var x = 0; x < COLS; x += 1) {
@@ -2932,7 +2932,7 @@
       cam = { x: 8.5, y: 4.5, dirX: 0, dirY: -1, angle: -Math.PI / 2 };
       armour = 100;
       loadout = LOADOUTS[round % LOADOUTS.length];
-      say("ROUND " + round + " — " + loadout);
+      say("ROUND " + round + ": " + loadout);
     }
 
     game.reset = function () {
@@ -3007,7 +3007,7 @@
         if (!alive().length) {
           game.score += 100 + round * 20;
           round += 1;
-          say("CREW ELIMINATED PRE-PLANT — ROUND WON");
+          say("CREW ELIMINATED PRE-PLANT: ROUND WON");
           startRound();
           return;
         }
@@ -3022,12 +3022,12 @@
             var there = Math.abs(site.x - planter.x) + Math.abs(site.y - planter.y);
             if (here < there) site = candidate;
           });
-          say("UNSIGNED ACTION PLANTED — " + site.name);
+          say("UNSIGNED ACTION PLANTED: " + site.name);
         }
       } else if (phase === "planted") {
         fuse -= dt;
         if (fuse <= 0) {
-          loseRound("FUSE EXPIRED — THE ACTION EXECUTED UNSIGNED");
+          loseRound("FUSE EXPIRED: THE ACTION EXECUTED UNSIGNED");
           return;
         }
 
@@ -3100,7 +3100,7 @@
           game.over = true;
           return;
         }
-        say("TAKEN — RETRY, SAME ROUND");
+        say("TAKEN: RETRY, SAME ROUND");
         startRound();
       });
     };
@@ -3258,7 +3258,7 @@
       stage = 1;
       messageAge = 0;
       buildStage();
-      say("STAGE 1 — SHIP IT");
+      say("STAGE 1: SHIP IT");
     };
 
     function fall() {
@@ -3286,7 +3286,7 @@
           return;
         }
         buildStage();
-        say("TIMED OUT — THE RELEASE SLIPPED");
+        say("TIMED OUT: THE RELEASE SLIPPED");
         return;
       }
 
@@ -3362,7 +3362,7 @@
         stage += 1;
         game.score += 120;
         buildStage();
-        say("STAGE " + stage + " — THE PATH GOT LONGER");
+        say("STAGE " + stage + ": THE PATH GOT LONGER");
       }
 
       camX = clamp(runner.x - 96, 0, Math.max(0, flagX - W + 60));
@@ -3571,7 +3571,7 @@
       hurt = 0;
       messageAge = 0;
       buildFloor();
-      say("FLOOR 1 — FIND TWO PERMITS, THEN THE VAULT");
+      say("FLOOR 1: FIND TWO PERMITS, THEN THE VAULT");
     };
 
     function enter(dx, dy) {
@@ -3672,7 +3672,7 @@
         room.key = false;
         keys += 1;
         game.score += 40;
-        say("SCOPED PERMIT " + keys + " — EXPIRES ON USE");
+        say("SCOPED PERMIT " + keys + ": EXPIRES ON USE");
       }
 
       if (room.vault && !room.opened) {
@@ -3682,7 +3682,7 @@
           floorNo += 1;
           game.score += 200;
           buildFloor();
-          say("VAULT SIGNED — FLOOR " + floorNo);
+          say("VAULT SIGNED: FLOOR " + floorNo);
         } else if (messageAge > 1.6) {
           say("VAULT NEEDS TWO PERMITS. YOU HAVE " + keys + ".");
         }
@@ -4040,7 +4040,7 @@
       foe = fighter(240, -1);
       clock = 45;
       freeze = 0.8;
-      say("ROUND " + round + " — ARGUE");
+      say("ROUND " + round + ": ARGUE");
     }
 
     game.reset = function () {
@@ -4086,7 +4086,7 @@
         losses = 0;
         round = 1;
         game.score += 150;
-        say("MATCH WON — NEXT ARBITER");
+        say("MATCH WON: NEXT ARBITER");
         newRound();
         return;
       }
@@ -4099,7 +4099,7 @@
           game.over = true;
           return;
         }
-        say("MATCH LOST — RETRY");
+        say("MATCH LOST: RETRY");
         newRound();
         return;
       }
@@ -4234,7 +4234,7 @@
       ctx.fillStyle = ink.brass;
       ctx.fillText(String(Math.max(0, Math.ceil(clock))), W / 2, 20);
       ctx.fillStyle = ink.dim;
-      ctx.fillText("YOU " + wins + " — " + losses + " ARBITER", W / 2, 32);
+      ctx.fillText("YOU " + wins + ": " + losses + " ARBITER", W / 2, 32);
       if (messageAge < 2 || freeze > 0) {
         ctx.fillStyle = ink.bright;
         ctx.fillText(message, W / 2, 48);
@@ -4339,7 +4339,7 @@
           pace: 34 + i * 6 + random() * 6
         });
       }
-      say("GREEN — HOLD YOUR BUDGET");
+      say("GREEN: HOLD YOUR BUDGET");
     };
 
     game.update = function (dt, input) {
@@ -4359,7 +4359,7 @@
         gate = 0;
         clock = 0;
         budget = 30;
-        say("BUDGET EXHAUSTED — BACK TO THE LINE");
+        say("BUDGET EXHAUSTED: BACK TO THE LINE");
         return;
       }
 
@@ -4393,7 +4393,7 @@
           game.score += 100;
           budget = Math.min(45, budget + 6);
           if (!best || clock < best) best = clock;
-          say("LAP " + lap + " — " + clock.toFixed(1) + "s · EXTENDED");
+          say("LAP " + lap + ": " + clock.toFixed(1) + "s · EXTENDED");
           clock = 0;
         }
       }
@@ -4479,7 +4479,7 @@
       if (best) ctx.fillText("BEST " + best.toFixed(1) + "s", W - 74, 12);
       if (!drivable(car.x, car.y)) {
         ctx.fillStyle = ink.danger;
-        ctx.fillText("OVER BUDGET — THROTTLED", W - 148, 22);
+        ctx.fillText("OVER BUDGET: THROTTLED", W - 148, 22);
       }
       if (messageAge < 2.2) {
         ctx.textAlign = "center";
@@ -4564,7 +4564,7 @@
       floorNo = 1;
       messageAge = 0;
       buildFloor();
-      say("FLOOR 1 — TAKE THE TOKEN, THEN EGRESS");
+      say("FLOOR 1: TAKE THE TOKEN, THEN EGRESS");
     };
 
     game.update = function (dt, input) {
@@ -4618,7 +4618,7 @@
       if (!token.taken && Math.abs(you.x - token.x) < 10 && Math.abs(you.y - token.y) < 10) {
         token.taken = true;
         game.score += 60;
-        say("TOKEN LIFTED — NOW LEAVE");
+        say("TOKEN LIFTED: NOW LEAVE");
       }
 
       var exitX = OX + exitCell.x * CELL + CELL / 2;
@@ -4627,7 +4627,7 @@
         floorNo += 1;
         game.score += 150;
         buildFloor();
-        say("EGRESS CLEAN — FLOOR " + floorNo);
+        say("EGRESS CLEAN: FLOOR " + floorNo);
       }
     };
 
@@ -4772,7 +4772,7 @@
       cooldown = 0;
       messageAge = 0;
       buildFloor();
-      say("B1 — THREE SHARDS, THEN THE STAIR");
+      say("B1: THREE SHARDS, THEN THE STAIR");
     };
 
     function shardsLeft() {
@@ -4867,7 +4867,7 @@
         game.score += 200;
         ammo += 4;
         buildFloor();
-        say("B" + depth + " — IT IS COLDER DOWN HERE");
+        say("B" + depth + ": IT IS COLDER DOWN HERE");
       }
     };
 
@@ -4994,7 +4994,7 @@
       actCool = 0;
       messageAge = 0;
       buildWorld();
-      say("DAY 1 — DIG. THE SCAN RUNS AT DUSK.");
+      say("DAY 1: DIG. THE SCAN RUNS AT DUSK.");
     };
 
     game.update = function (dt, input) {
@@ -5008,7 +5008,7 @@
         night = !night;
         dayClock = night ? 26 : 42;
         if (night) {
-          say("SCAN RUNNING — GET BEHIND SOMETHING");
+          say("SCAN RUNNING: GET BEHIND SOMETHING");
           var count = Math.min(4, 1 + cycle);
           for (var p = 0; p < count; p += 1) {
             prowlers.push({
@@ -5021,7 +5021,7 @@
           cycle += 1;
           prowlers = [];
           game.score += 80;
-          say("DAY " + cycle + " — YOU SURVIVED THE SCAN");
+          say("DAY " + cycle + ": YOU SURVIVED THE SCAN");
         }
       }
 
@@ -5203,7 +5203,7 @@
       shots = [];
       cooldown = 0;
       hurt = 0;
-      say("MATCH " + match + " — " + (count + 1) + " IN THE QUORUM");
+      say("MATCH " + match + ": " + (count + 1) + " IN THE QUORUM");
     }
 
     game.reset = function () {
@@ -5321,7 +5321,7 @@
           game.over = true;
           return;
         }
-        say("PARTITIONED OUT — " + (alive().length + 1) + "th");
+        say("PARTITIONED OUT: " + (alive().length + 1) + "th");
         startMatch();
         return;
       }
@@ -5329,7 +5329,7 @@
       if (!alive().length) {
         game.score += 300;
         match += 1;
-        say("LAST IN THE QUORUM — NOBODY LEFT TO OUTVOTE YOU");
+        say("LAST IN THE QUORUM: NOBODY LEFT TO OUTVOTE YOU");
         startMatch();
       }
     };
@@ -5511,7 +5511,7 @@
           // where the lanes are, and a miss is the service going unanswered.
           combo = 0;
           health -= 0.05;
-          judge("EARLY — NOTHING THERE");
+          judge("EARLY: NOTHING THERE");
           continue;
         }
         best.note.hit = true;
@@ -5522,7 +5522,7 @@
         } else if (best.off <= WINDOW) {
           combo += 1;
           game.score += 5;
-          judge("LATE — STILL COUNTS");
+          judge("LATE: STILL COUNTS");
         } else {
           drop("OFF BEAT");
         }
@@ -5624,7 +5624,7 @@
     function startWave() {
       crowd = [];
       spawnLeft = 4 + wave * 2;
-      say("WAVE " + wave + " — " + spawnLeft + " ATTEMPTS INBOUND");
+      say("WAVE " + wave + ": " + spawnLeft + " ATTEMPTS INBOUND");
     }
 
     game.reset = function () {
@@ -5715,7 +5715,7 @@
             game.over = true;
             return;
           }
-          say("STUFFED — ONE GOT THROUGH");
+          say("STUFFED: ONE GOT THROUGH");
         }
       });
       crowd = crowd.filter(function (c) { return !c.down; });
@@ -5841,7 +5841,7 @@
       messageAge = 0;
       held = false;
       buildEstate();
-      say("ESTATE 1 — SIX TOOLS TO REGISTER");
+      say("ESTATE 1: SIX TOOLS TO REGISTER");
     };
 
     function encounter() {
@@ -5879,14 +5879,14 @@
         if (off <= band / 2) {
           registered += 1;
           game.score += 40 + quarry.tier * 20;
-          say(quarry.name + " REGISTERED — SCOPE FITS");
+          say(quarry.name + " REGISTERED: SCOPE FITS");
           mode = "walk";
           quarry = null;
           if (registered >= 6) {
             estate += 1;
             game.score += 180;
             buildEstate();
-            say("ESTATE " + estate + " — MORE OF IT APPEARED");
+            say("ESTATE " + estate + ": MORE OF IT APPEARED");
           }
           return;
         }
@@ -5899,7 +5899,7 @@
           game.over = true;
           return;
         }
-        say("SCOPE TOO " + (sweep < 0.5 ? "NARROW" : "WIDE") + " — IT STAYS UNREGISTERED");
+        say("SCOPE TOO " + (sweep < 0.5 ? "NARROW" : "WIDE") + ": IT STAYS UNREGISTERED");
         return;
       }
 
@@ -6066,7 +6066,7 @@
       bird.tilt = clamp(bird.vy / 260, -1, 1);
 
       if (bird.y < 4 || bird.y > H - 10) {
-        crash(bird.y < 4 ? "CEILING — THAT IS ALSO A LIMIT" : "FLOOR — REQUEST DROPPED");
+        crash(bird.y < 4 ? "CEILING: THAT IS ALSO A LIMIT" : "FLOOR: REQUEST DROPPED");
         return;
       }
 
@@ -6371,7 +6371,7 @@
           quota = Math.floor(quota * 3.4);
           quotaLeft = 30;
           fx.flash("verify", 1);
-          message = "QUOTA MET — ERA " + era;
+          message = "QUOTA MET: ERA " + era;
           messageAge = 0;
         } else {
           game.lives -= 1;
@@ -7805,7 +7805,7 @@
       if (solved()) {
         level += 1;
         game.score += 100;
-        message = "FILED — LEVEL " + level;
+        message = "FILED: LEVEL " + level;
         messageAge = 0;
         fx.flash("verify", 1);
         build();
@@ -7813,7 +7813,7 @@
         // The soft failure the genre lacks: no undo, so a wedged board has to
         // end on a clock rather than on the player noticing.
         game.lives -= 1;
-        message = "WEDGED — RESHUFFLING";
+        message = "WEDGED: RESHUFFLING";
         messageAge = 0;
         fx.shake(8);
         if (game.lives <= 0) { game.over = true; return; }
@@ -7848,7 +7848,7 @@
       ctx.fillStyle = ink.bright;
       ctx.fillRect(OX + hero.x * CELL + 4, OY + hero.y * CELL + 3, CELL - 9, CELL - 6);
 
-      centreText(ctx, ink, "COLD MOVE — NO UNDO", 20, "dim");
+      centreText(ctx, ink, "COLD MOVE: NO UNDO", 20, "dim");
       ctx.font = '8px "IBM Plex Mono", monospace';
       ctx.fillStyle = ink.dim;
       ctx.fillText("LEVEL " + level, 6, 32);
@@ -7928,7 +7928,7 @@
         if (cells.every(function (c) { return c; })) {
           round += 1;
           game.score += 120 - Math.min(100, taps * 4);
-          message = "QUORUM — ROUND " + round;
+          message = "QUORUM: ROUND " + round;
           messageAge = 0;
           fx.flash("verify", 1);
           deal();
@@ -8042,7 +8042,7 @@
           if (cards.every(function (c) { return c.done; })) {
             round += 1;
             game.score += 150 - Math.min(120, tries * 5);
-            message = "ALL PAIRS — ROUND " + round;
+            message = "ALL PAIRS: ROUND " + round;
             messageAge = 0;
             deal();
           }
@@ -9019,7 +9019,7 @@
         if (onPad && gentle) {
           level += 1;
           game.score += 150 + Math.floor(fuel);
-          message = "TOUCHDOWN — " + Math.floor(fuel) + " FUEL LEFT";
+          message = "TOUCHDOWN: " + Math.floor(fuel) + " FUEL LEFT";
           messageAge = 0;
           fx.flash("verify", 1);
           build();
@@ -9554,7 +9554,7 @@
       ctx.fillStyle = ink.bg;
       ctx.fillRect(0, 0, W, H);
       fx.begin(ctx);
-      centreText(ctx, ink, "NIGHT " + night + " — HOLD TO WORK AN ALERT", 24, "dim");
+      centreText(ctx, ink, "NIGHT " + night + ": HOLD TO WORK AN ALERT", 24, "dim");
       services.forEach(function (s, i) {
         var x = OX + (i % COLS) * CELL;
         var y = OY + Math.floor(i / COLS) * CELL;
@@ -9670,7 +9670,7 @@
       ctx.fillStyle = ink.bg;
       ctx.fillRect(0, 0, W, H);
       fx.begin(ctx);
-      centreText(ctx, ink, "SEASON " + season + " — BANK " + quota + " IN THE WINDOW", 22, "dim");
+      centreText(ctx, ink, "SEASON " + season + ": BANK " + quota + " IN THE WINDOW", 22, "dim");
       plots.forEach(function (p, i) {
         var x = OX + (i % COLS) * CELL;
         var y = OY + Math.floor(i / COLS) * CELL;
@@ -10604,7 +10604,7 @@
       ctx.fillStyle = ink.bg;
       ctx.fillRect(20, 40, W - 40, H - 90);
       var label = state === "wait" ? "COLD…" : state === "go" ? "GO" :
-                  state === "early" ? "EARLY — THAT IS A DENIAL" :
+                  state === "early" ? "EARLY: THAT IS A DENIAL" :
                   state === "slow" ? "TOO SLOW" : Math.round(reaction * 1000) + " ms";
       centreText(ctx, ink, label, H / 2 - 6, state === "go" ? "verify" : "ink", state === "go" ? 16 : 8);
       centreText(ctx, ink, "ROUND " + round, H / 2 + 18, "dim");
@@ -10724,7 +10724,7 @@
       ctx.fillStyle = ink.bg;
       ctx.fillRect(0, 0, W, H);
       fx.begin(ctx);
-      centreText(ctx, ink, "POP THE QUEUE — NOT THE POISONED ONES", 24, "dim", 7);
+      centreText(ctx, ink, "POP THE QUEUE: NOT THE POISONED ONES", 24, "dim", 7);
       slots.forEach(function (s, i) {
         var x = OX + (i % COLS) * CELL;
         var y = OY + Math.floor(i / COLS) * CELL;
@@ -11226,7 +11226,7 @@
                 foeHp = 3;
                 myHp = Math.min(3, myHp + 1);
                 buildTerrain();
-                message = "EMPLACEMENT DOWN — ROUND " + round;
+                message = "EMPLACEMENT DOWN: ROUND " + round;
               }
             } else {
               myHp -= 1;
@@ -11618,7 +11618,7 @@
         if (grid[COLS * ROWS - 1].wet) {
           level += 1;
           game.score += 140;
-          message = "SINK REACHED — LEVEL " + level;
+          message = "SINK REACHED: LEVEL " + level;
           messageAge = 0;
           fx.flash("verify", 1);
           build();
@@ -11766,7 +11766,7 @@
             if (done >= pads.length) {
               level += 1;
               game.score += 150;
-              message = "BOARD ROUTED — LEVEL " + level;
+              message = "BOARD ROUTED: LEVEL " + level;
               messageAge = 0;
               build();
             }
@@ -12156,7 +12156,7 @@
           if (solved()) {
             level += 1;
             game.score += 160;
-            message = "SORTED — LEVEL " + level;
+            message = "SORTED: LEVEL " + level;
             messageAge = 0;
             fx.flash("verify", 1);
             deal();
@@ -12298,7 +12298,7 @@
         var cell = cells[idx(cursor.x, cursor.y)];
         if (cell.mine) {
           game.lives -= 1;
-          message = "UNSIGNED CELL — BOARD LOST";
+          message = "UNSIGNED CELL: BOARD LOST";
           messageAge = 0;
           fx.shake(12);
           fx.flash("danger", 1);
@@ -12311,7 +12311,7 @@
         if (cells.filter(function (c) { return c.open; }).length >= safe) {
           level += 1;
           game.score += 200;
-          message = "SWEPT — LEVEL " + level;
+          message = "SWEPT: LEVEL " + level;
           messageAge = 0;
           fx.flash("verify", 1);
           deal();
@@ -12425,7 +12425,7 @@
         if (solvedIt) {
           round += 1;
           game.score += 200 - guesses.length * 20;
-          message = "LOCK OPEN — " + word;
+          message = "LOCK OPEN: " + word;
           messageAge = 0;
           fx.flash("verify", 1);
           newWord();
@@ -12573,7 +12573,7 @@
           if (tiles.every(function (t) { return t.gone; })) {
             level += 1;
             game.score += 200;
-            message = "STACK CLEARED — LEVEL " + level;
+            message = "STACK CLEARED: LEVEL " + level;
             messageAge = 0;
             deal();
           }
@@ -12682,7 +12682,7 @@
           if (!hand.length) {
             round += 1;
             game.score += 150;
-            message = "HAND CLEARED — ROUND " + round;
+            message = "HAND CLEARED: ROUND " + round;
             messageAge = 0;
             deal();
           }
@@ -12813,7 +12813,7 @@
           solvedCount += 1;
           level += 1;
           game.score += 120;
-          message = "MATE — THE FILE WAS THE ANSWER";
+          message = "MATE: THE FILE WAS THE ANSWER";
           messageAge = 0;
           fx.flash("verify", 1);
           build();
@@ -12976,7 +12976,7 @@
       bits.draw(ctx, ink);
       var label = state === "idle" ? "SPACE TO CAST" :
                   state === "waiting" ? "WAITING…" :
-                  state === "bite" ? "TUG — NOW" : "REEL: HOLD, BUT NOT TOO HARD";
+                  state === "bite" ? "TUG: NOW" : "REEL: HOLD, BUT NOT TOO HARD";
       centreText(ctx, ink, label, 22, state === "bite" ? "bright" : "dim");
       if (state === "reel") drawBar(ctx, ink, 40, 30, W - 80, 6, tension, tension > 0.75 ? "danger" : "verify");
       ctx.font = '8px "IBM Plex Mono", monospace';
@@ -13153,7 +13153,7 @@
         return;
       }
       if (value > remaining) {
-        message = "BUST — " + value + " OVER";
+        message = "BUST: " + value + " OVER";
         messageAge = 0;
         fx.shake(7);
         throwsLeft = 0;
@@ -13276,7 +13276,7 @@
         if (drowned) {
           strokes += 1;
           ball.x = 30; ball.y = H / 2; ball.vx = ball.vy = 0;
-          message = "IN THE WATER — PENALTY";
+          message = "IN THE WATER: PENALTY";
           messageAge = 0;
           fx.shake(7);
         }
@@ -13421,7 +13421,7 @@
               message = framePins === pins.length ? "STRIKE" : "QUOTA MET";
             } else {
               game.lives -= 1;
-              message = "QUOTA MISSED — " + framePins + "/" + quota;
+              message = "QUOTA MISSED: " + framePins + "/" + quota;
               fx.shake(9);
               if (game.lives <= 0) { game.over = true; return; }
             }
@@ -13574,7 +13574,7 @@
       ctx.fillStyle = ink.bg;
       ctx.fillRect(0, 0, W, H);
       fx.begin(ctx);
-      centreText(ctx, ink, "TICKET — IN THIS ORDER", 22, "dim");
+      centreText(ctx, ink, "TICKET: IN THIS ORDER", 22, "dim");
       order.forEach(function (p, i) {
         var x = W / 2 - (order.length * 34) / 2 + i * 34;
         ctx.fillStyle = i < built.length ? ink.verify : ink.wall[2];
@@ -14672,7 +14672,7 @@
       if (solvedIt) {
         level += 1;
         game.score += Math.max(60, 400 - moves * 4);
-        message = "IN ORDER — LEVEL " + level;
+        message = "IN ORDER: LEVEL " + level;
         messageAge = 0;
         fx.flash("verify", 1);
         shuffle();
@@ -15213,7 +15213,7 @@
       ctx.fillStyle = ink.bg;
       ctx.fillRect(0, 0, W, H);
       fx.begin(ctx);
-      centreText(ctx, ink, "SET " + set + " — HOLD THE MIX", 20, "dim");
+      centreText(ctx, ink, "SET " + set + ": HOLD THE MIX", 20, "dim");
 
       [deckA, deckB].forEach(function (deck, i) {
         var y = 46 + i * 62;
@@ -15490,7 +15490,7 @@
         ctx.fillRect(W / 2 - 16, 52, 32, 34);
       }
       bits.draw(ctx, ink);
-      centreText(ctx, ink, phase === "shoot" ? "YOUR KICK — PICK A CORNER" : "THEIR KICK — PICK A DIVE", 132, "dim");
+      centreText(ctx, ink, phase === "shoot" ? "YOUR KICK: PICK A CORNER" : "THEIR KICK: PICK A DIVE", 132, "dim");
       centreText(ctx, ink, "YOU " + scored + "   THEM " + conceded, 158, "ink", 16);
       ctx.font = '8px "IBM Plex Mono", monospace';
       ctx.fillStyle = ink.dim;
@@ -15708,7 +15708,7 @@
           if (!grabbed && crosses() === 0) {
             level += 1;
             game.score += 150 + Math.round(clock * 3);
-            message = "PLANAR — LEVEL " + level;
+            message = "PLANAR: LEVEL " + level;
             messageAge = 0;
             fx.flash("verify", 1);
             build();
@@ -15752,7 +15752,7 @@
       ctx.fillStyle = ink.dim;
       ctx.fillText("LEVEL " + level, W - 66, 14);
       drawBar(ctx, ink, 6, 18, W - 12, 3, clock / (40 + level * 4), clock < 10 ? "danger" : "brass");
-      centreText(ctx, ink, grabbed ? "MOVING — SPACE TO DROP" : "SPACE TO GRAB", H - 8, "dim", 7);
+      centreText(ctx, ink, grabbed ? "MOVING: SPACE TO DROP" : "SPACE TO GRAB", H - 8, "dim", 7);
       if (messageAge < 2) centreText(ctx, ink, message, H - 20, "bright");
       fx.end(ctx, ink);
     };
@@ -15846,7 +15846,7 @@
         if (solvedIt) {
           level += 1;
           game.score += 200;
-          message = "PROVEN — LEVEL " + level;
+          message = "PROVEN: LEVEL " + level;
           messageAge = 0;
           fx.flash("verify", 1);
           build();
@@ -17745,7 +17745,7 @@
     attract = { cabinet: cabinet, game: instance };
     attractTimer = 0;
     if (nodes.attractLabel) {
-      nodes.attractLabel.textContent = "ATTRACT MODE — " + cabinet.name + " · " + cabinet.genre;
+      nodes.attractLabel.textContent = "ATTRACT MODE: " + cabinet.name + " · " + cabinet.genre;
     }
   }
 
@@ -17847,7 +17847,7 @@
     nodes.hudName.textContent = cabinet.name;
     nodes.hint.textContent =
       cabinet.controls + touchHint(cabinet) + " · P pause · ESC exit";
-    nodes.canvas.setAttribute("aria-label", cabinet.name + " — " + cabinet.tagline);
+    nodes.canvas.setAttribute("aria-label", cabinet.name + ": " + cabinet.tagline);
     applyPad(cabinet.pad);
     resizeCanvas();
     updateHud();
@@ -17893,7 +17893,7 @@
     nodes.over.hidden = false;
     nodes.over.textContent = "";
 
-    var heading = el("p", "arcade-over-heading", "RUN COMPLETE — " + current.name);
+    var heading = el("p", "arcade-over-heading", "RUN COMPLETE: " + current.name);
     nodes.over.appendChild(heading);
     var bestState = recordBest(current.id, game.score);
     nodes.over.appendChild(
@@ -17905,8 +17905,8 @@
           "p",
           "arcade-over-best",
           bestState === "stored"
-            ? "NEW BEST ON " + current.name + " — STORED IN THIS BROWSER ONLY"
-            : "NEW BEST ON " + current.name + " — NOT SAVED, STORAGE IS UNAVAILABLE"
+            ? "NEW BEST ON " + current.name + ": STORED IN THIS BROWSER ONLY"
+            : "NEW BEST ON " + current.name + ": NOT SAVED, STORAGE IS UNAVAILABLE"
         )
       );
     }

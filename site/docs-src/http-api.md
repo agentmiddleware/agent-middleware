@@ -11,11 +11,13 @@ Read `GET /openapi.json` on your gateway for its current HTTP contract. Use `GET
 
 Send your wallet key in `X-API-Key`. Permit creation requires an `Idempotency-Key` header. A Call includes its Permit id, wallet id, and Request key in `mcpContext`; the same key can also be sent in the header. Replace the tool name and arguments below with values from discovery.
 
+Before running this snippet, run `export AMW_API_KEY='YOUR_WALLET_KEY'` with the placeholder replaced by your wallet key.
+
 ```bash
 API_URL='YOUR_API_URL'
 curl -sS -X POST "$API_URL/mcp/messages" \
   -H 'Content-Type: application/json' \
-  -H 'X-API-Key: $AMW_API_KEY' \
+  -H "X-API-Key: $AMW_API_KEY" \
   -H 'Idempotency-Key: YOUR_REQUEST_KEY' \
   -d '{"jsonrpc":"2.0","id":"YOUR_REQUEST_KEY","method":"tools/call","params":{"name":"YOUR_TOOL_NAME","arguments":{},"mcpContext":{"wallet_id":"YOUR_WALLET_ID","permit_id":"YOUR_PERMIT_ID","idempotency_key":"YOUR_REQUEST_KEY"}}}'
 ```

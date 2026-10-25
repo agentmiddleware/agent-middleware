@@ -101,7 +101,7 @@
   "authentication": {
     "type": "api_key",
     "header": "X-API-Key",
-    "note": "No public self-serve key mint on this marketing host. Operator-issued keys required."
+    "note": "Free sandbox demo keys are self-serve on this marketing host. Live keys are operator-issued to design partners."
   },
   "note": "This file is a pointer only. Do not treat this marketing origin as the API base URL."
 }

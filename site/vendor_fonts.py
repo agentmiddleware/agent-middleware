@@ -275,13 +275,12 @@ def write(files: dict[str, bytes], stylesheet: str, manifest: str) -> None:
     FONT_DIR.mkdir(parents=True, exist_ok=True)
     for name, blob in files.items():
         (FONT_DIR / name).write_bytes(blob)
-    # Delete only once every new file is on disk, so an interrupted run cannot
-    # leave the tree with a stylesheet pointing at files that no longer exist.
+    STYLESHEET.write_text(stylesheet, encoding="utf-8")
+    MANIFEST.write_text(manifest, encoding="utf-8")
+    # Delete only once the new files and their references are on disk.
     for stale in FONT_DIR.glob("*.woff2"):
         if stale.name not in files:
             stale.unlink()
-    STYLESHEET.write_text(stylesheet, encoding="utf-8")
-    MANIFEST.write_text(manifest, encoding="utf-8")
 
 
 def check(files: dict[str, bytes], stylesheet: str, manifest: str) -> list[str]:

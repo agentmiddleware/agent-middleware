@@ -57,7 +57,7 @@ Protected routes use the X-API-Key header. Free sandbox demo keys are available
 at https://www.agentmiddleware.dev/ with no account needed. Production keys
 are issued to design partners.
 
-## Three minute hosted demo
+## Three-minute hosted demo
 
 The homepage presents one Python path using https://github.com/agentmiddleware/amw-demo.
 Get a demo key inline, save both api_key and wallet_id, then clone the demo,
@@ -99,25 +99,25 @@ design partner key.
 
 No live API credentials are required. Clone
 https://github.com/agentmiddleware/agent-middleware. Install Python 3.11+,
-git, make, curl, and uv first; see docs/quickstart.md. Two local paths are
-self-contained:
+git, make, curl, and uv first. The guide is `gateway/docs/quickstart.md`
+from the repository root. Two local paths are self-contained:
 
 Drive it yourself (a real server, you hold the keys):
 
-1. Run `make quickstart` from the repository root.
-2. Follow docs/quickstart.md: mint your own wallet-scoped key, issue
+1. Run `cd gateway`, then `make quickstart`.
+2. From inside `gateway/`, follow `docs/quickstart.md`: mint your own wallet-scoped key, issue
    yourself a permit, invoke one governed tool, replay it, overspend it,
    and verify the signed receipt offline.
 
 Watch it prove itself (no server, one command):
 
-1. Run `make prove-trust-plane` from the repository root.
+1. Run `cd gateway`, then `make prove-trust-plane`.
 
 Both use a throwaway local SQLite database and real FastAPI routes. They
 demonstrate permit → invoke → charge → signed receipt → replay. For a finalized
 request, a retry with the same key returns the original receipt instead of
 dispatching again. An action outside the permit scope is denied. These are
-local proofs, not a partner owned consequential action, customer validation,
+local proofs, not a partner-owned consequential action, customer validation,
 production settlement, or compliance evidence.
 
 ## Humans and operators

@@ -17,8 +17,7 @@ from app.services.awi_playwright_bridge import AWIPlaywrightBridge, BridgeSessio
 @pytest.fixture
 def redirect_servers():
     state = {
-        "location": "",
-        "hop_location": "",
+        "redirect_case": "allowed",
         "iframe_url": "",
         "popup_url": "",
         "hits": [],
@@ -27,13 +26,20 @@ def redirect_servers():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             state["hits"].append((self.server.server_port, self.path))
-            if self.path in {"/entry", "/hop"}:
+            redirect_paths = {
+                "/entry": {
+                    "allowed": "/target",
+                    "blocked": "/blocked",
+                    "blocked_later": "/hop",
+                }[state["redirect_case"]],
+                "/hop": "/blocked",
+            }
+            if self.path in redirect_paths:
                 self.send_response(302)
                 self.send_header(
                     "Location",
-                    state["location"]
-                    if self.path == "/entry"
-                    else state["hop_location"],
+                    f"http://127.0.0.1:{servers[1].server_port}"
+                    f"{redirect_paths[self.path]}",
                 )
                 body = b""
             else:
@@ -90,12 +96,7 @@ async def test_redirected_child_document_origin(
     hop_url = f"http://127.0.0.1:{target.server_port}/hop"
     state["iframe_url"] = bootstrap_url if oopif else entry_url
     state["popup_url"] = entry_url
-    state["location"] = {
-        "allowed": target_url,
-        "blocked": blocked_url,
-        "blocked_later": hop_url,
-    }[redirect_case]
-    state["hop_location"] = blocked_url
+    state["redirect_case"] = redirect_case
     original_guard = awi_playwright_bridge.browser_request_block_reason
     checked_urls = []
 

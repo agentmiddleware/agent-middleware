@@ -260,10 +260,11 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
 
 
 def test_serve_async_repeats_caller_key_for_gateway_receipt_replay(monkeypatch, tmp_path):
-    from uuid import uuid4
-
     httpx = pytest.importorskip("httpx")
-    receipt = {"receipt_id": str(uuid4()), "permit_id": str(uuid4())}
+    receipt = {
+        "receipt_id": "00000000-0000-4000-8000-000000000001",
+        "permit_id": "00000000-0000-4000-8000-000000000002",
+    }
 
     def respond(request):
         return httpx.Response(
@@ -272,7 +273,7 @@ def test_serve_async_repeats_caller_key_for_gateway_receipt_replay(monkeypatch, 
         )
 
     _handler, requests, server, meta = _serve_tool_bridge(monkeypatch, tmp_path, respond)
-    key = str(uuid4())
+    key = "00000000-0000-4000-8000-000000000003"
     meta[_META_KEY] = key
     arguments = {"kwargs": {"query": "sample"}}
     first = asyncio.run(server.call_tool("partner.search", arguments))

@@ -223,7 +223,14 @@ class CrewAIB2ATool(BaseTool):
             if operation == "discover_tools":
                 tools = await client.discover_tools()
                 return str(
-                    [{"name": t.name, "description": t.description} for t in tools]
+                    [
+                        {
+                            "name": t.name,
+                            "description": t.description,
+                            "input_schema": t.input_schema,
+                        }
+                        for t in tools
+                    ]
                 )
 
             if operation == "call_tool":

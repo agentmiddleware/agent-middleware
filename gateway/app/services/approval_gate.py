@@ -17,7 +17,8 @@ Fail-closed rules:
 - ``requestState`` is HMAC-SHA256 sealed; missing secret fails closed.
 - Clients without ``input_required`` support are rejected, with a receipt.
 - Deny, timeout, tampering, and every retry mismatch each emit a receipt via
-  an injectable sink and never execute.
+  an injectable sink and never execute. A successful consume emits a
+  consumed receipt through the same sink.
 - Pending approvals, decisions, and consumption live in the database
   (``DbApprovalStore``), so a restart cannot replay an approval.
 """
@@ -167,13 +168,17 @@ class ApprovalStore:
     def get(self, nonce: str) -> ApprovalRecord | None:
         raise NotImplementedError
 
-    def list_pending(self) -> list[ApprovalRecord]:
+    def list_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
+        """Pending records, excluding ones past deadline when now is given."""
         raise NotImplementedError
 
     def decide(
         self, nonce: str, approved: bool, *, now: float
     ) -> ApprovalRecord | None:
-        """Flip pending to approved/denied; None when missing or not pending."""
+        """Flip pending to approved/denied.
+
+        None when missing, not pending, or past its deadline.
+        """
         raise NotImplementedError
 
     def consume(self, nonce: str, *, now: float) -> ApprovalRecord | None:
@@ -195,7 +200,7 @@ class ApprovalStore:
         """Async ``get`` for handlers already on the app event loop."""
         raise NotImplementedError
 
-    async def alist_pending(self) -> list[ApprovalRecord]:
+    async def alist_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
         """Async ``list_pending`` for handlers already on the app event loop."""
         raise NotImplementedError
 
@@ -230,12 +235,12 @@ class InMemoryApprovalStore(ApprovalStore):
             record = self._records.get(nonce)
             return replace(record) if record else None
 
-    def list_pending(self) -> list[ApprovalRecord]:
+    def list_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
         with self._lock:
             return [
                 replace(record)
                 for record in self._records.values()
-                if record.status == "pending"
+                if record.status == "pending" and (now is None or record.deadline > now)
             ]
 
     def decide(
@@ -244,6 +249,8 @@ class InMemoryApprovalStore(ApprovalStore):
         with self._lock:
             record = self._records.get(nonce)
             if record is None or record.status != "pending":
+                return None
+            if record.deadline <= now:
                 return None
             updated = replace(
                 record,
@@ -280,8 +287,8 @@ class InMemoryApprovalStore(ApprovalStore):
     async def aget(self, nonce: str) -> ApprovalRecord | None:
         return self.get(nonce)
 
-    async def alist_pending(self) -> list[ApprovalRecord]:
-        return self.list_pending()
+    async def alist_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
+        return self.list_pending(now=now)
 
     async def adecide(
         self, nonce: str, approved: bool, *, now: float
@@ -400,21 +407,27 @@ class DbApprovalStore(ApprovalStore):
             model = result.scalar_one_or_none()
             return _record_from_model(model) if model is not None else None
 
-    def list_pending(self) -> list[ApprovalRecord]:
-        return _run_sync(self.alist_pending())
+    def list_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
+        return _run_sync(self.alist_pending(now=now))
 
-    async def alist_pending(self) -> list[ApprovalRecord]:
+    async def alist_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
         factory = get_session_factory()
         async with factory() as session:
-            result = await session.execute(
-                select(ApprovalGateModel)
-                .where(
+            stmt = select(ApprovalGateModel).where(
+                cast(
+                    ColumnElement[bool],
+                    ApprovalGateModel.status == "pending",
+                )
+            )
+            if now is not None:
+                stmt = stmt.where(
                     cast(
                         ColumnElement[bool],
-                        ApprovalGateModel.status == "pending",
+                        ApprovalGateModel.deadline > _to_db_time(now),
                     )
                 )
-                .order_by(
+            result = await session.execute(
+                stmt.order_by(
                     col(ApprovalGateModel.created_at).asc(),
                     col(ApprovalGateModel.nonce).asc(),
                 )
@@ -429,6 +442,12 @@ class DbApprovalStore(ApprovalStore):
     async def adecide(
         self, nonce: str, approved: bool, *, now: float
     ) -> ApprovalRecord | None:
+        """Atomically decide a pending, unexpired approval.
+
+        The UPDATE condition carries deadline > now alongside the pending
+        status check, so an approval whose deadline passed between any read
+        and this write is refused instead of decided.
+        """
         factory = get_session_factory()
         async with factory() as session:
             result = await session.execute(
@@ -446,6 +465,10 @@ class DbApprovalStore(ApprovalStore):
                     cast(
                         ColumnElement[bool],
                         ApprovalGateModel.status == "pending",
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.deadline > _to_db_time(now),
                     ),
                 )
                 .values(
@@ -996,6 +1019,7 @@ class ApprovalGate:
         if consumed is None:
             self._emit("replayed", nonce=nonce, tool=tool, principal=caller)
             return ApprovalDecision(action="REJECT", reason="replayed", nonce=nonce)
+        self._emit("consumed", nonce=nonce, tool=tool, principal=caller)
         return ApprovalDecision(
             action="EXECUTE", idempotency_key=idempotency_key, nonce=nonce
         )
@@ -1091,6 +1115,7 @@ class ApprovalGate:
         if consumed is None:
             self._emit("replayed", nonce=nonce, tool=tool, principal=caller)
             return ApprovalDecision(action="REJECT", reason="replayed", nonce=nonce)
+        self._emit("consumed", nonce=nonce, tool=tool, principal=caller)
         return ApprovalDecision(
             action="EXECUTE", idempotency_key=idempotency_key, nonce=nonce
         )

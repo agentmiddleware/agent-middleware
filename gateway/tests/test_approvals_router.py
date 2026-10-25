@@ -10,6 +10,7 @@ import secrets
 import sys
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -163,6 +164,29 @@ def test_second_decision_is_404(client: TestClient) -> None:
     record = _seed()
     assert client.post(f"/v1/approvals/{record.nonce}/approve").status_code == 200
     assert client.post(f"/v1/approvals/{record.nonce}/deny").status_code == 404
+
+
+def _seed_expired() -> ApprovalRecord:
+    record = replace(_make_record(), deadline=time.time() - 1)
+    get_approval_store().save(record)
+    return record
+
+
+def test_pending_excludes_expired_record(client: TestClient) -> None:
+    live = _seed()
+    _seed_expired()
+    response = client.get("/v1/approvals/pending")
+    assert response.status_code == 200
+    assert [item["nonce"] for item in response.json()["approvals"]] == [live.nonce]
+
+
+def test_decide_expired_record_is_404(client: TestClient) -> None:
+    record = _seed_expired()
+    assert client.post(f"/v1/approvals/{record.nonce}/approve").status_code == 404
+    assert client.post(f"/v1/approvals/{record.nonce}/deny").status_code == 404
+    stored = get_approval_store().get(record.nonce)
+    assert stored is not None
+    assert stored.status == "pending"
 
 
 def test_unknown_nonce_is_404(client: TestClient) -> None:

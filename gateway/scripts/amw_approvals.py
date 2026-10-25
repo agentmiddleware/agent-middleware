@@ -3,6 +3,8 @@
 
 Talks to the gateway's local-only endpoints over loopback; run on the gateway
 host. In-process callers can use the approval store directly instead.
+Export VALID_API_KEYS with the gateway bootstrap admin key first; every
+request sends it. The key is never printed.
 
 Usage:
     python gateway/scripts/amw_approvals.py list
@@ -21,10 +23,25 @@ import httpx
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 BASE_URL_ENV = "AMW_GATEWAY_URL"
+# Same setting the gateway reads for its bootstrap admin keys
+# (app/core/config.py VALID_API_KEYS, comma-separated) and the same header
+# the auth dependency reads (app/core/auth.py, default X-API-Key).
+API_KEY_ENV = "VALID_API_KEYS"
+API_KEY_HEADER = "X-API-Key"
 
 
-def _client(base_url: str) -> httpx.Client:
-    return httpx.Client(base_url=base_url, timeout=10.0)
+def _read_api_key() -> str:
+    """First key from API_KEY_ENV; empty when unset or blank."""
+    for entry in os.environ.get(API_KEY_ENV, "").split(","):
+        if entry.strip():
+            return entry.strip()
+    return ""
+
+
+def _client(base_url: str, api_key: str) -> httpx.Client:
+    return httpx.Client(
+        base_url=base_url, timeout=10.0, headers={API_KEY_HEADER: api_key}
+    )
 
 
 def _format_time(value: float) -> str:
@@ -35,7 +52,7 @@ def _format_time(value: float) -> str:
 
 def cmd_list(args: argparse.Namespace) -> int:
     try:
-        response = _client(args.base_url).get("/v1/approvals/pending")
+        response = _client(args.base_url, args.api_key).get("/v1/approvals/pending")
         response.raise_for_status()
     except httpx.HTTPError as exc:
         print(
@@ -56,7 +73,9 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def _decide(args: argparse.Namespace, action: str) -> int:
     try:
-        response = _client(args.base_url).post(f"/v1/approvals/{args.nonce}/{action}")
+        response = _client(args.base_url, args.api_key).post(
+            f"/v1/approvals/{args.nonce}/{action}"
+        )
     except httpx.HTTPError as exc:
         print(
             f"error: gateway not reachable at {args.base_url}: {exc}", file=sys.stderr
@@ -101,6 +120,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    api_key = _read_api_key()
+    if not api_key:
+        print(
+            f"error: {API_KEY_ENV} is not set; export the gateway "
+            "bootstrap admin key first",
+            file=sys.stderr,
+        )
+        return 1
+    args.api_key = api_key
     if args.command == "list":
         return cmd_list(args)
     if args.command in ("approve", "deny"):

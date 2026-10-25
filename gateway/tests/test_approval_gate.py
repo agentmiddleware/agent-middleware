@@ -5,6 +5,7 @@ Every value comes from the real G1 gate recording
 made at runtime (secrets.token_hex / uuid.uuid4). Nothing here is hand-invented.
 """
 
+import asyncio
 import json
 import secrets
 import sys
@@ -229,7 +230,21 @@ def test_approved_retry_executes_exactly_once(
     second = _retry(gate, decision.payload["requestState"], decision.nonce)
     assert second.action == "REJECT"
     assert second.reason == "replayed"
-    assert [event for event, _ in receipts] == ["replayed"]
+    assert [event for event, _ in receipts] == ["consumed", "replayed"]
+
+
+def test_execute_emits_consumed_receipt(
+    gate: ApprovalGate, receipts: list[tuple[str, dict[str, Any]]]
+) -> None:
+    decision = _pause(gate)
+    assert decision.nonce is not None
+    gate.store.decide(decision.nonce, True, now=gate.clock())
+    executed = _retry(gate, decision.payload["requestState"], decision.nonce)
+    assert executed.action == "EXECUTE"
+    assert [event for event, _ in receipts] == ["consumed"]
+    assert receipts[0][1]["nonce"] == decision.nonce
+    assert receipts[0][1]["tool"] == TOOL
+    assert receipts[0][1]["principal"] == CALLER
 
 
 def test_pending_retry_repauses(gate: ApprovalGate) -> None:
@@ -482,6 +497,51 @@ def test_consume_rejects_expired_approval(gate: ApprovalGate, clock: _Clock) -> 
     assert record.consumed is False
 
 
+def test_decide_refuses_expired_approval(gate: ApprovalGate, clock: _Clock) -> None:
+    decision = _pause(gate)
+    assert decision.nonce is not None
+    clock.now += 3600 + 1
+    assert gate.store.decide(decision.nonce, True, now=clock()) is None
+    assert gate.store.decide(decision.nonce, False, now=clock()) is None
+    record = gate.store.get(decision.nonce)
+    assert record is not None
+    assert record.status == "pending"
+
+
+async def test_adecide_refuses_expired_approval(
+    gate: ApprovalGate, clock: _Clock
+) -> None:
+    decision = _pause(gate)
+    assert decision.nonce is not None
+    clock.now += 3600 + 1
+    assert await gate.store.adecide(decision.nonce, True, now=clock()) is None
+    record = await gate.store.aget(decision.nonce)
+    assert record is not None
+    assert record.status == "pending"
+
+
+def test_list_pending_excludes_expired(gate: ApprovalGate, clock: _Clock) -> None:
+    first = _pause(gate)
+    assert first.nonce is not None
+    clock.now += 3600 + 1
+    second = _pause(gate)
+    assert second.nonce is not None
+    pending = gate.store.list_pending(now=clock())
+    assert [record.nonce for record in pending] == [second.nonce]
+
+
+async def test_alist_pending_excludes_expired(
+    gate: ApprovalGate, clock: _Clock
+) -> None:
+    first = _pause(gate)
+    assert first.nonce is not None
+    clock.now += 3600 + 1
+    second = _pause(gate)
+    assert second.nonce is not None
+    pending = await gate.store.alist_pending(now=clock())
+    assert [record.nonce for record in pending] == [second.nonce]
+
+
 async def test_async_evaluate_executes_after_approval(
     gate: ApprovalGate, receipts: list[tuple[str, dict[str, Any]]]
 ) -> None:
@@ -496,7 +556,29 @@ async def test_async_evaluate_executes_after_approval(
     replayed = await _aretry(gate, decision.payload["requestState"], decision.nonce)
     assert replayed.action == "REJECT"
     assert replayed.reason == "replayed"
-    assert [event for event, _ in receipts] == ["replayed"]
+    assert [event for event, _ in receipts] == ["consumed", "replayed"]
+
+
+async def test_db_concurrent_retries_execute_exactly_once(
+    db_gate: ApprovalGate,
+    clock: _Clock,
+    receipts: list[tuple[str, dict[str, Any]]],
+    clean_database: Any,
+    purge_approval_gate_table: Any,
+) -> None:
+    """Two retries racing on one approval spend it exactly once."""
+    decision = await _apause(db_gate)
+    assert decision.nonce is not None
+    state: str = decision.payload["requestState"]
+    await db_gate.store.adecide(decision.nonce, True, now=clock())
+    first, second = await asyncio.gather(
+        _aretry(db_gate, state, decision.nonce),
+        _aretry(db_gate, state, decision.nonce),
+    )
+    assert sorted([first.action, second.action]) == ["EXECUTE", "REJECT"]
+    loser = first if first.action == "REJECT" else second
+    assert loser.reason == "replayed"
+    assert sorted(event for event, _ in receipts) == ["consumed", "replayed"]
 
 
 def test_missing_secret_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -561,7 +643,7 @@ async def test_db_consumed_nonce_stays_consumed_across_restart(
     replayed = await _aretry(db_gate, state, decision.nonce)
     assert replayed.action == "REJECT"
     assert replayed.reason == "replayed"
-    assert [event for event, _ in receipts] == ["replayed"]
+    assert [event for event, _ in receipts] == ["consumed", "replayed"]
 
 
 async def test_db_denied_decision_visible_across_instances(
@@ -616,3 +698,36 @@ async def test_db_sync_store_refuses_running_loop() -> None:
     store = DbApprovalStore()
     with pytest.raises(RuntimeError, match="running event loop"):
         store.get(_fresh_id())
+
+
+async def test_db_adecide_refuses_expired_approval(
+    db_gate: ApprovalGate,
+    clock: _Clock,
+    clean_database: Any,
+    purge_approval_gate_table: Any,
+) -> None:
+    """The atomic decide UPDATE refuses an approval past its deadline."""
+    decision = await _apause(db_gate)
+    assert decision.nonce is not None
+    store = DbApprovalStore()
+    clock.now += 3600 + 1
+    assert await store.adecide(decision.nonce, True, now=clock()) is None
+    assert await store.adecide(decision.nonce, False, now=clock()) is None
+    record = await store.aget(decision.nonce)
+    assert record is not None
+    assert record.status == "pending"
+
+
+async def test_db_alist_pending_excludes_expired(
+    db_gate: ApprovalGate,
+    clock: _Clock,
+    clean_database: Any,
+    purge_approval_gate_table: Any,
+) -> None:
+    first = await _apause(db_gate)
+    assert first.nonce is not None
+    clock.now += 3600 + 1
+    second = await _apause(db_gate)
+    assert second.nonce is not None
+    pending = await DbApprovalStore().alist_pending(now=clock())
+    assert [record.nonce for record in pending] == [second.nonce]

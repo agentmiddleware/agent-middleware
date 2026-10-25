@@ -74,7 +74,7 @@ async def list_pending(
             created_at=record.created_at,
             deadline=record.deadline,
         )
-        for record in await get_approval_store().alist_pending()
+        for record in await get_approval_store().alist_pending(now=time.time())
     ]
     return PendingApprovalsResponse(approvals=approvals)
 

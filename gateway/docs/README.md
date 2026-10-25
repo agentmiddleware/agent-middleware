@@ -52,7 +52,9 @@ use them as product onboarding or a public capability list:
 - [Pods](pods.md) are a dormant trust feature, not part of the supported pilot.
 - `server.json` at the repository root is the official MCP registry
   manifest. It advertises the standard MCP endpoint
-  (`https://api.thisisatest.tech/mcp`). `ENABLE_STANDARD_MCP_ENDPOINT`
+  (`https://api.agentmiddleware.dev/mcp`). To connect,
+  [get an API key](https://www.agentmiddleware.dev/demo-key/).
+  `ENABLE_STANDARD_MCP_ENDPOINT`
   defaults to on; a host that sets it false answers 404 after authentication.
   Before requesting owner approval to publish, send an authenticated MCP
   `initialize` request to that exact host with a valid wallet-scoped API key.

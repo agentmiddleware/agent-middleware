@@ -60,6 +60,8 @@ Any Streamable HTTP MCP client can connect to `http://127.0.0.1:8000/mcp`
 with an `X-API-Key` header. An example client configuration is in
 [`examples/mcp-client/mcp.json`](examples/mcp-client/mcp.json).
 
+To use the hosted endpoint `https://api.agentmiddleware.dev/mcp` instead, [get an API key](https://www.agentmiddleware.dev/demo-key/) and send it as the `X-API-Key` header.
+
 Standard MCP clients cannot send permit context, so the gateway mints a
 bounded permit for one tool with a short expiry from your wallet. Send an
 `Idempotency-Key` header or `io.agentmiddleware/idempotency_key` in

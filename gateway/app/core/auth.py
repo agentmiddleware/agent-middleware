@@ -101,7 +101,9 @@ class AuthContext:
         )
 
 
-async def _key_tenant_for_auth(key_tenant: str | None, wallet_id: str) -> str | None:
+async def _key_tenant_for_auth(
+    key_tenant: str | None, wallet_id: str, key_id: str | None = None
+) -> str | None:
     """Apply demo confinement to the key and its owning wallet."""
     from ..services.demo_tenant_boundary import (
         DEMO_KEY_ROUTE_FORBIDDEN,
@@ -113,6 +115,11 @@ async def _key_tenant_for_auth(key_tenant: str | None, wallet_id: str) -> str | 
     )
 
     tenant = await resolve_effective_tenant(key_tenant, wallet_id)
+    if key_id is not None:
+        acceptance = CREDENTIAL_ACCEPTANCE.get()
+        if acceptance is not None:
+            acceptance.key_id = key_id
+            acceptance.tenant = tenant
     if tenant != DEMO_TENANT_LABEL:
         return tenant
     if not get_settings().ENABLE_DEMO_TENANT:
@@ -149,9 +156,11 @@ _CREDENTIAL_REJECTED = {CREDENTIAL_REJECTED_HEADER: "1"}
 
 @dataclass
 class CredentialAcceptance:
-    """Whether ``get_auth_context`` accepted credentials during one request."""
+    """Accepted credentials and any database key resolved for the request."""
 
     accepted: bool = False
+    key_id: str | None = None
+    tenant: str | None = None
 
 
 # The converse signal, for RateLimitMiddleware's shared pre-auth bucket. A
@@ -200,6 +209,8 @@ async def get_auth_context(
     acceptance = CREDENTIAL_ACCEPTANCE.get()
     if acceptance is not None:
         acceptance.accepted = True
+        acceptance.key_id = context.key_id
+        acceptance.tenant = context.tenant
     return context
 
 
@@ -370,7 +381,9 @@ async def _resolve_auth_context(
 
     if candidate:
         if _key_is_live(candidate, utc_now()):
-            await _key_tenant_for_auth(candidate.tenant, candidate.wallet_id)
+            await _key_tenant_for_auth(
+                candidate.tenant, candidate.wallet_id, candidate.key_id
+            )
         try:
             db_key = await key_service.validate_key(stripped)
         except RuntimeError:
@@ -381,7 +394,9 @@ async def _resolve_auth_context(
     if db_key:
         from ..services.demo_tenant_boundary import parse_allowlist
 
-        tenant = await _key_tenant_for_auth(db_key.tenant, db_key.wallet_id)
+        tenant = await _key_tenant_for_auth(
+            db_key.tenant, db_key.wallet_id, db_key.key_id
+        )
         return AuthContext(
             source="db",
             raw_key=stripped,
@@ -545,7 +560,9 @@ async def _auth_from_jwt(token: str) -> AuthContext:
         and candidate.wallet_id == payload.sub
         and _key_is_live(candidate, utc_now())
     ):
-        await _key_tenant_for_auth(candidate.tenant, candidate.wallet_id)
+        await _key_tenant_for_auth(
+            candidate.tenant, candidate.wallet_id, candidate.key_id
+        )
 
     if not await key_service.consume_derived_key_use(payload.key_id, payload.sub):
         raise HTTPException(
@@ -588,7 +605,9 @@ async def _auth_from_jwt(token: str) -> AuthContext:
         )
     from ..services.demo_tenant_boundary import parse_allowlist
 
-    tenant = await _key_tenant_for_auth(key_row.tenant, key_row.wallet_id)
+    tenant = await _key_tenant_for_auth(
+        key_row.tenant, key_row.wallet_id, key_row.key_id
+    )
     return AuthContext(
         source="jwt",
         # Not a credential: a stable, non-secret handle for the API key that

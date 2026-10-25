@@ -30,6 +30,10 @@ class LLMResponse:
     finish_reason: str | None = None
 
 
+class UnsupportedAnthropicToolsError(ValueError):
+    """OpenAI-style tools cannot be sent to the Anthropic provider."""
+
+
 class LLMService:
     """
     Unified LLM client supporting multiple providers.
@@ -130,6 +134,13 @@ class LLMService:
             }
 
         if provider == "anthropic":
+            # Anthropic uses a different tool format, so OpenAI-style tools
+            # cannot be forwarded. Fail closed instead of silently dropping
+            # them and returning plain chat the caller did not ask for.
+            if tools:
+                raise UnsupportedAnthropicToolsError(
+                    "tools are not supported for the anthropic provider"
+                )
             # Anthropic format
             anthropic_messages = []
             for m in messages:
@@ -201,7 +212,12 @@ class LLMService:
             finish_reason=choice.get("finish_reason"),
         )
 
-    @retry_with_backoff(max_attempts=3, base_delay=1.0, max_delay=10.0)
+    @retry_with_backoff(
+        max_attempts=3,
+        base_delay=1.0,
+        max_delay=10.0,
+        non_retriable_exceptions=(UnsupportedAnthropicToolsError,),
+    )
     async def chat(
         self,
         messages: list[dict[str, str]],

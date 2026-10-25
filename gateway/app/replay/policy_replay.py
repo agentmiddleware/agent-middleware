@@ -252,6 +252,11 @@ def _record_to_call(source: str, record: Any) -> RecordedCall:
         raise ReplayError(
             f"{source}: recorded receipt field reason_code must be a string"
         )
+    approval_id = payload.get("approval_id")
+    if approval_id is not None and not (isinstance(approval_id, str) and approval_id):
+        raise ReplayError(
+            f"{source}: recorded receipt field approval_id must be a non-empty string"
+        )
     if payload["outcome"] not in RECORDED_KNOWN_OUTCOMES:
         raise ReplayError(
             f"{source}: recorded receipt has unknown outcome {payload['outcome']!r}"

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import importlib.util
 import secrets
-import uuid
 from pathlib import Path
 
 import pytest
@@ -119,69 +118,59 @@ def test_unreachable_gateway_error_hides_key(
     assert PLACEHOLDER_KEY not in out.err
 
 
-def _random_port() -> int:
-    return 1024 + secrets.randbelow(65535 - 1024 + 1)
-
-
-def _random_10_host() -> str:
-    return (
-        f"10.{secrets.randbelow(256)}.{secrets.randbelow(256)}"
-        f".{1 + secrets.randbelow(254)}"
-    )
-
-
-def _random_192_168_host() -> str:
-    return f"192.168.{secrets.randbelow(256)}.{1 + secrets.randbelow(254)}"
-
-
-def _random_invalid_host() -> str:
-    return f"{uuid.uuid4().hex}.invalid"
-
-
-def _random_127_host() -> str:
-    return (
-        f"127.{secrets.randbelow(256)}.{secrets.randbelow(256)}"
-        f".{secrets.randbelow(256)}"
-    )
+# Fixed documentation-only fixtures. Every host below is reserved and
+# never routes to a real peer; no test in this file opens a real socket
+# for refused URLs (see _ExplodingClient).
+EXAMPLE_COM = "example.com"  # RFC 2606, reserved example domain
+EXAMPLE_INVALID = "example.invalid"  # RFC 2606, invalid TLD never resolves
+LOCALHOST_NAME = "localhost"  # RFC 6761, special-use loopback name
+TEST_NET_1 = "192.0.2.1"  # RFC 5737, TEST-NET-1 documentation-only
+TEST_NET_2 = "198.51.100.7"  # RFC 5737, TEST-NET-2 documentation-only
+DOC_IPV6 = "2001:db8::1"  # RFC 3849, documentation-only IPv6
+LOOPBACK_V4 = "127.0.0.1"  # RFC 1122, IPv4 loopback
+LOOPBACK_V4_OTHER = "127.0.0.2"  # RFC 1122, same 127/8 loopback range
+LOOPBACK_V6 = "::1"  # RFC 4291, IPv6 loopback
+PRIVATE_10 = "10.0.0.1"  # RFC 1918, private-use address
+PRIVATE_192_168 = "192.168.0.1"  # RFC 1918, private-use address
+HTTPS_TEST_PORT = 8443  # fixed test port in the user range (RFC 6335)
+HTTP_TEST_PORT = 8080  # fixed test port in the user range (RFC 6335)
 
 
 def _allowed_url(case: str) -> str:
-    # Deterministic labels only; random hosts/ports are built in the body so
-    # xdist workers collecting independently see identical test ids.
     if case == "https-any-host":
-        return f"https://{_random_invalid_host()}:{_random_port()}"
+        return f"https://[{DOC_IPV6}]:{HTTPS_TEST_PORT}"
     if case == "https-no-port":
-        return f"https://{_random_invalid_host()}"
+        return f"https://{EXAMPLE_COM}"
     if case == "http-localhost":
-        return f"http://localhost:{_random_port()}"
+        return f"http://{LOCALHOST_NAME}:{HTTP_TEST_PORT}"
     if case == "http-127-1":
-        return f"http://127.0.0.1:{_random_port()}"
+        return f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}"
     if case == "http-127-range":
-        return f"http://{_random_127_host()}:{_random_port()}"
+        return f"http://{LOOPBACK_V4_OTHER}:{HTTP_TEST_PORT}"
     if case == "http-ipv6-loopback":
-        return f"http://[::1]:{_random_port()}"
+        return f"http://[{LOOPBACK_V6}]:{HTTP_TEST_PORT}"
     if case == "http-uppercase-localhost":
-        return f"HTTP://localhost:{_random_port()}"
+        return f"HTTP://{LOCALHOST_NAME}:{HTTP_TEST_PORT}"
     raise AssertionError(f"unknown allowed case: {case}")
 
 
 def _refused_url(case: str) -> str:
     if case == "http-rfc1918-10":
-        return f"http://{_random_10_host()}:{_random_port()}"
+        return f"http://{PRIVATE_10}:{HTTP_TEST_PORT}"
     if case == "http-rfc1918-192-168":
-        return f"http://{_random_192_168_host()}:{_random_port()}"
+        return f"http://{PRIVATE_192_168}:{HTTP_TEST_PORT}"
     if case == "http-public-hostname":
-        return f"http://{_random_invalid_host()}:{_random_port()}"
+        return f"http://{EXAMPLE_COM}:{HTTP_TEST_PORT}"
     if case == "http-userinfo-trick":
-        return f"http://127.0.0.1@{_random_invalid_host()}:{_random_port()}"
+        return f"http://{LOOPBACK_V4}@{EXAMPLE_INVALID}:{HTTP_TEST_PORT}"
     if case == "http-localhost-userinfo-trick":
-        return f"http://localhost@{_random_invalid_host()}:{_random_port()}/"
+        return f"http://{LOCALHOST_NAME}@{EXAMPLE_INVALID}:{HTTP_TEST_PORT}/"
     if case == "http-localhost-lookalike":
-        return f"http://localhost.{uuid.uuid4().hex}.invalid:{_random_port()}"
+        return f"http://{LOCALHOST_NAME}.{EXAMPLE_INVALID}:{HTTP_TEST_PORT}"
     if case == "http-ip-lookalike":
-        return f"http://127.0.0.1.{uuid.uuid4().hex}.invalid:{_random_port()}"
+        return f"http://{LOOPBACK_V4}.{EXAMPLE_INVALID}:{HTTP_TEST_PORT}"
     if case == "ftp-loopback":
-        return f"ftp://localhost:{_random_port()}/"
+        return f"ftp://{LOCALHOST_NAME}:{HTTP_TEST_PORT}/"
     if case == "file-scheme":
         return "file:///etc/hosts"
     if case == "missing-host":
@@ -189,7 +178,7 @@ def _refused_url(case: str) -> str:
     if case == "empty":
         return ""
     if case == "no-scheme":
-        return f"localhost:{_random_port()}"
+        return f"{LOCALHOST_NAME}:{HTTP_TEST_PORT}"
     raise AssertionError(f"unknown refused case: {case}")
 
 
@@ -255,7 +244,7 @@ def test_refused_base_url_makes_no_request(
     monkeypatch.setattr(amw_approvals.httpx, "Client", _ExplodingClient)
     monkeypatch.setenv("VALID_API_KEYS", PLACEHOLDER_KEY)
     base_url = _refused_url(case)
-    nonce = uuid.uuid4().hex
+    nonce = "test-nonce"
     for argv in (["list"], ["approve", nonce], ["deny", nonce]):
         assert amw_approvals.main(["--base-url", base_url, *argv]) == 1
         err = capsys.readouterr().err
@@ -268,7 +257,7 @@ def test_refusal_happens_before_key_check(
 ) -> None:
     monkeypatch.setattr(amw_approvals.httpx, "Client", _ExplodingClient)
     monkeypatch.delenv("VALID_API_KEYS", raising=False)
-    url = f"http://{_random_10_host()}:{_random_port()}"
+    url = f"http://{TEST_NET_1}:{HTTP_TEST_PORT}"
     assert amw_approvals.main(["--base-url", url, "list"]) == 1
     err = capsys.readouterr().err
     assert "refusing to send the API key" in err
@@ -282,7 +271,7 @@ def test_refused_env_base_url_makes_no_request(
     monkeypatch.setenv("VALID_API_KEYS", PLACEHOLDER_KEY)
     monkeypatch.setenv(
         amw_approvals.BASE_URL_ENV,
-        f"http://{_random_invalid_host()}:{_random_port()}",
+        f"http://{EXAMPLE_INVALID}:{HTTP_TEST_PORT}",
     )
     assert amw_approvals.main(["list"]) == 1
     out = capsys.readouterr()
@@ -292,6 +281,6 @@ def test_refused_env_base_url_makes_no_request(
 
 
 def test_client_refuses_disallowed_url_directly() -> None:
-    url = f"http://{_random_10_host()}:{_random_port()}"
+    url = f"http://{TEST_NET_2}:{HTTP_TEST_PORT}"
     with pytest.raises(ValueError, match="refusing to send the API key"):
         amw_approvals._client(url, PLACEHOLDER_KEY)

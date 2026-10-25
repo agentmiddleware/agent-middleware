@@ -178,6 +178,16 @@ class ApprovalStore:
         """
         raise NotImplementedError
 
+    def find_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        """Live spent record for a key: consumed with deadline after now.
+
+        Used at creation to refuse a fresh mint while a prior spend's
+        deadline is still live; None when no such record exists.
+        """
+        raise NotImplementedError
+
     def list_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
         """Pending records, excluding ones past deadline when now is given."""
         raise NotImplementedError
@@ -216,6 +226,12 @@ class ApprovalStore:
         self, idempotency_key: str, *, now: float
     ) -> ApprovalRecord | None:
         """Async ``find_active_by_key`` for handlers already on the app loop."""
+        raise NotImplementedError
+
+    async def afind_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        """Async ``find_consumed_by_key`` for handlers on the app loop."""
         raise NotImplementedError
 
     async def alist_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
@@ -272,6 +288,21 @@ class InMemoryApprovalStore(ApprovalStore):
                 return None
             return replace(min(candidates, key=lambda r: (r.created_at, r.nonce)))
 
+    def find_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        with self._lock:
+            candidates = [
+                record
+                for record in self._records.values()
+                if record.idempotency_key == idempotency_key
+                and record.consumed
+                and record.deadline > now
+            ]
+            if not candidates:
+                return None
+            return replace(min(candidates, key=lambda r: (r.created_at, r.nonce)))
+
     def list_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
         with self._lock:
             return [
@@ -311,6 +342,12 @@ class InMemoryApprovalStore(ApprovalStore):
                     and other.consumed
                     and other.deadline > now
                 ):
+                    # Spent sibling blocks this spend: terminalize to denied
+                    # under the same lock so the approval can never revive
+                    # past the sibling's deadline.
+                    self._records[nonce] = replace(
+                        record, status="denied", decided_at=now
+                    )
                     return None
             updated = replace(record, consumed=True)
             self._records[nonce] = updated
@@ -336,6 +373,11 @@ class InMemoryApprovalStore(ApprovalStore):
         self, idempotency_key: str, *, now: float
     ) -> ApprovalRecord | None:
         return self.find_active_by_key(idempotency_key, now=now)
+
+    async def afind_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        return self.find_consumed_by_key(idempotency_key, now=now)
 
     async def alist_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
         return self.list_pending(now=now)
@@ -523,6 +565,41 @@ class DbApprovalStore(ApprovalStore):
             model = result.scalar_one_or_none()
             return _record_from_model(model) if model is not None else None
 
+    def find_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        return _run_sync(self.afind_consumed_by_key(idempotency_key, now=now))
+
+    async def afind_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(ApprovalGateModel)
+                .where(
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.idempotency_key == idempotency_key,
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        cast(Any, ApprovalGateModel.consumed_at).is_not(None),
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.deadline > _to_db_time(now),
+                    ),
+                )
+                .order_by(
+                    col(ApprovalGateModel.created_at).asc(),
+                    col(ApprovalGateModel.nonce).asc(),
+                )
+                .limit(1)
+            )
+            model = result.scalar_one_or_none()
+            return _record_from_model(model) if model is not None else None
+
     def list_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
         return _run_sync(self.alist_pending(now=now))
 
@@ -611,7 +688,10 @@ class DbApprovalStore(ApprovalStore):
         between the gate's expiry check and this UPDATE still cannot spend.
         The ``NOT EXISTS`` sibling check extends the single spend to the
         whole idempotency key: a second nonce approved for the same key
-        cannot spend while the first spend's deadline has not passed.
+        cannot spend while the first spend's deadline has not passed. When
+        the sibling check is what blocks the spend, a second conditional
+        UPDATE terminalizes this nonce to denied so it can never revive
+        past the sibling's deadline.
         """
         factory = get_session_factory()
         async with factory() as session:
@@ -626,25 +706,28 @@ class DbApprovalStore(ApprovalStore):
             if key_model is None:
                 return None
             key = key_model.idempotency_key
-            sibling_consumed = (
-                select(1)
-                .where(
-                    cast(
-                        ColumnElement[bool],
-                        ApprovalGateModel.idempotency_key == key,
-                    ),
-                    cast(ColumnElement[bool], ApprovalGateModel.nonce != nonce),
-                    cast(
-                        ColumnElement[bool],
-                        cast(Any, ApprovalGateModel.consumed_at).is_not(None),
-                    ),
-                    cast(
-                        ColumnElement[bool],
-                        ApprovalGateModel.deadline > _to_db_time(now),
-                    ),
+
+            def _sibling_live() -> Any:
+                return (
+                    select(1)
+                    .where(
+                        cast(
+                            ColumnElement[bool],
+                            ApprovalGateModel.idempotency_key == key,
+                        ),
+                        cast(ColumnElement[bool], ApprovalGateModel.nonce != nonce),
+                        cast(
+                            ColumnElement[bool],
+                            cast(Any, ApprovalGateModel.consumed_at).is_not(None),
+                        ),
+                        cast(
+                            ColumnElement[bool],
+                            ApprovalGateModel.deadline > _to_db_time(now),
+                        ),
+                    )
+                    .exists()
                 )
-                .exists()
-            )
+
             updated = await session.execute(
                 update(ApprovalGateModel)
                 .where(
@@ -661,20 +744,45 @@ class DbApprovalStore(ApprovalStore):
                         ColumnElement[bool],
                         ApprovalGateModel.deadline > _to_db_time(now),
                     ),
-                    cast(ColumnElement[bool], ~sibling_consumed),
+                    cast(ColumnElement[bool], ~_sibling_live()),
                 )
                 .values(consumed_at=_to_db_time(now))
             )
-            await session.commit()
-            if cast(Any, updated).rowcount != 1:
-                return None
-            result = await session.execute(
-                select(ApprovalGateModel).where(
-                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
+            if cast(Any, updated).rowcount == 1:
+                await session.commit()
+                result = await session.execute(
+                    select(ApprovalGateModel).where(
+                        cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
+                    )
                 )
+                model = result.scalar_one_or_none()
+                return _record_from_model(model) if model is not None else None
+            # Spend lost: when a live spent sibling is the blocker, move this
+            # nonce to denied in one conditional UPDATE so it stays refused
+            # even after the sibling's deadline passes. Other losses
+            # (missing, denied, consumed, expired) match no row here.
+            await session.execute(
+                update(ApprovalGateModel)
+                .where(
+                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.status == "approved",
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        cast(Any, ApprovalGateModel.consumed_at).is_(None),
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.deadline > _to_db_time(now),
+                    ),
+                    cast(ColumnElement[bool], _sibling_live()),
+                )
+                .values(status="denied", decided_at=_to_db_time(now))
             )
-            model = result.scalar_one_or_none()
-            return _record_from_model(model) if model is not None else None
+            await session.commit()
+            return None
 
     def mark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
         return _run_sync(self.amark_expired(nonce, now=now))
@@ -1051,6 +1159,18 @@ class ApprovalGate:
                 nonce=existing.nonce,
                 payload=_pause_payload(tool, existing.nonce, state),
             )
+        spent = self.store.find_consumed_by_key(idempotency_key, now=now)
+        if spent is not None:
+            # Key already spent and the spend window is still live: refuse
+            # without minting so no second spendable nonce exists.
+            self._emit(
+                "replayed",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="replayed")
         nonce = secrets.token_urlsafe(16)
         deadline = now + self._ttl
         self.store.save(
@@ -1122,6 +1242,18 @@ class ApprovalGate:
                 nonce=existing.nonce,
                 payload=_pause_payload(tool, existing.nonce, state),
             )
+        spent = await self.store.afind_consumed_by_key(idempotency_key, now=now)
+        if spent is not None:
+            # Key already spent and the spend window is still live: refuse
+            # without minting so no second spendable nonce exists.
+            self._emit(
+                "replayed",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="replayed")
         nonce = secrets.token_urlsafe(16)
         deadline = now + self._ttl
         await self.store.asave(

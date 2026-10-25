@@ -843,20 +843,16 @@ def test_first_call_reuses_approved_unconsumed_record(
     assert executed.action == "EXECUTE"
 
 
-@pytest.mark.parametrize("terminal", ["denied", "consumed", "expired"])
+@pytest.mark.parametrize("terminal", ["denied", "expired"])
 def test_first_call_mints_after_terminal_record(
     gate: ApprovalGate, clock: _Clock, terminal: str
 ) -> None:
-    """Denied, spent, and expired records are not reused for a fresh call."""
+    """Denied and expired records are not reused for a fresh call."""
     first = _pause(gate)
     assert first.nonce is not None
     assert first.payload is not None
     if terminal == "denied":
         assert gate.store.decide(first.nonce, False, now=gate.clock()) is not None
-    elif terminal == "consumed":
-        assert gate.store.decide(first.nonce, True, now=gate.clock()) is not None
-        executed = _retry(gate, first.payload["requestState"], first.nonce)
-        assert executed.action == "EXECUTE"
     else:
         clock.now += 3600 + 1
     second = gate.evaluate(CALLER, TOOL, ARGS, SESSION, True)
@@ -974,7 +970,10 @@ def test_default_sink_routes_consumed_like_other_events(
         assert gate.store.decide(first.nonce, True, now=gate.clock()) is not None
         executed = _retry(gate, first.payload["requestState"], first.nonce)
         assert executed.action == "EXECUTE"
-        # The spent record is terminal, so this mints a fresh pause to deny.
+        # Past the spend window a fresh pause mints normally to deny.
+        spent = gate.store.get(first.nonce)
+        assert spent is not None
+        clock.now = spent.deadline + 1
         second = gate.evaluate(CALLER, TOOL, ARGS, SESSION, True)
         assert second.nonce is not None
         assert second.nonce != first.nonce
@@ -991,3 +990,177 @@ def test_default_sink_routes_consumed_like_other_events(
     assert any("event=consumed" in line for line in lines)
     assert any("event=denied" in line for line in lines)
     assert all(line.startswith("approval_receipt event=") for line in lines)
+
+
+def test_first_call_refuses_while_spent_live(
+    gate: ApprovalGate, clock: _Clock, receipts: list[tuple[str, dict[str, Any]]]
+) -> None:
+    """Within the spend window a fresh call refuses without minting."""
+    first = _pause(gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    assert gate.store.decide(first.nonce, True, now=gate.clock()) is not None
+    executed = _retry(gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    second = gate.evaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert second.action == "REJECT"
+    assert second.reason == "replayed"
+    assert second.nonce is None
+    assert gate.store.list_pending(now=clock()) == []
+    assert [event for event, _ in receipts] == ["consumed", "replayed"]
+
+
+async def test_async_first_call_refuses_while_spent_live(
+    gate: ApprovalGate, clock: _Clock, receipts: list[tuple[str, dict[str, Any]]]
+) -> None:
+    """Async pause path refuses a fresh mint while the spend is live."""
+    first = await _apause(gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    assert await gate.store.adecide(first.nonce, True, now=gate.clock()) is not None
+    executed = await _aretry(gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    second = await gate.aevaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert second.action == "REJECT"
+    assert second.reason == "replayed"
+    assert second.nonce is None
+    assert await gate.store.alist_pending(now=clock()) == []
+    assert [event for event, _ in receipts] == ["consumed", "replayed"]
+
+
+async def test_db_first_call_refuses_while_spent_live(
+    db_gate: ApprovalGate,
+    clock: _Clock,
+    receipts: list[tuple[str, dict[str, Any]]],
+    clean_database: Any,
+    purge_approval_gate_table: Any,
+) -> None:
+    """DB pause path refuses a fresh mint while the spend is live."""
+    first = await _apause(db_gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    store = DbApprovalStore()
+    assert await store.adecide(first.nonce, True, now=clock()) is not None
+    executed = await _aretry(db_gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    second = await db_gate.aevaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert second.action == "REJECT"
+    assert second.reason == "replayed"
+    assert second.nonce is None
+    assert await store.alist_pending(now=clock()) == []
+    assert [event for event, _ in receipts] == ["consumed", "replayed"]
+
+
+def test_sibling_refused_stays_refused_past_spent_deadline(
+    gate: ApprovalGate, clock: _Clock
+) -> None:
+    """A sibling blocked by a live spend stays refused past that deadline."""
+    first = _pause(gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    record = gate.store.get(first.nonce)
+    assert record is not None
+    duplicate = _duplicate_nonce(first.nonce)
+    gate.store.save(
+        replace(record, nonce=duplicate, deadline=record.deadline + 500),
+        now=gate.clock(),
+    )
+    assert gate.store.decide(first.nonce, True, now=gate.clock()) is not None
+    assert gate.store.decide(duplicate, True, now=gate.clock()) is not None
+    executed = _retry(gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    assert gate.store.consume(duplicate, now=clock()) is None
+    blocked = gate.store.get(duplicate)
+    assert blocked is not None
+    assert blocked.status == "denied"
+    spent = gate.store.get(first.nonce)
+    assert spent is not None
+    clock.now = spent.deadline + 1
+    assert clock() < blocked.deadline
+    assert gate.store.consume(duplicate, now=clock()) is None
+    assert gate.store.get(duplicate) is not None
+    assert gate.store.get(duplicate).status == "denied"  # type: ignore[union-attr]
+
+
+async def test_db_sibling_refused_stays_refused_past_spent_deadline(
+    db_gate: ApprovalGate,
+    clock: _Clock,
+    clean_database: Any,
+    purge_approval_gate_table: Any,
+) -> None:
+    """DB sibling blocked by a live spend stays refused past that deadline."""
+    first = await _apause(db_gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    store = DbApprovalStore()
+    record = await store.aget(first.nonce)
+    assert record is not None
+    duplicate = _duplicate_nonce(first.nonce)
+    await store.asave(
+        replace(record, nonce=duplicate, deadline=record.deadline + 500),
+        now=clock(),
+    )
+    assert await store.adecide(first.nonce, True, now=clock()) is not None
+    assert await store.adecide(duplicate, True, now=clock()) is not None
+    executed = await _aretry(db_gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    assert await store.aconsume(duplicate, now=clock()) is None
+    blocked = await store.aget(duplicate)
+    assert blocked is not None
+    assert blocked.status == "denied"
+    spent = await store.aget(first.nonce)
+    assert spent is not None
+    clock.now = spent.deadline + 1
+    assert clock() < blocked.deadline
+    assert await store.aconsume(duplicate, now=clock()) is None
+    refused = await store.aget(duplicate)
+    assert refused is not None
+    assert refused.status == "denied"
+
+
+def test_first_call_mints_after_spent_window(gate: ApprovalGate, clock: _Clock) -> None:
+    """Past the spend window a brand-new call mints and spends normally."""
+    first = _pause(gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    assert gate.store.decide(first.nonce, True, now=gate.clock()) is not None
+    executed = _retry(gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    spent = gate.store.get(first.nonce)
+    assert spent is not None
+    clock.now = spent.deadline + 1
+    second = gate.evaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert second.action == "PAUSE"
+    assert second.nonce is not None
+    assert second.nonce != first.nonce
+    assert second.payload is not None
+    assert gate.store.decide(second.nonce, True, now=gate.clock()) is not None
+    replay = _retry(gate, second.payload["requestState"], second.nonce)
+    assert replay.action == "EXECUTE"
+
+
+async def test_db_first_call_mints_after_spent_window(
+    db_gate: ApprovalGate,
+    clock: _Clock,
+    clean_database: Any,
+    purge_approval_gate_table: Any,
+) -> None:
+    """DB path mints and spends normally past the spend window."""
+    first = await _apause(db_gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    store = DbApprovalStore()
+    assert await store.adecide(first.nonce, True, now=clock()) is not None
+    executed = await _aretry(db_gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    spent = await store.aget(first.nonce)
+    assert spent is not None
+    clock.now = spent.deadline + 1
+    second = await db_gate.aevaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert second.action == "PAUSE"
+    assert second.nonce is not None
+    assert second.nonce != first.nonce
+    assert second.payload is not None
+    assert await store.adecide(second.nonce, True, now=clock()) is not None
+    replay = await _aretry(db_gate, second.payload["requestState"], second.nonce)
+    assert replay.action == "EXECUTE"

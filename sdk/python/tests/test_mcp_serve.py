@@ -474,8 +474,8 @@ def test_serve_async_unkeyed_gateway_5xx_is_not_retryable(monkeypatch, tmp_path)
     """Without a caller key the gateway mints a fresh one per call.
 
     A retry would be a new call that can execute and charge again, so the
-    result is not retryable and hints to supply an idempotency_key. A missing
-    correlation id is reported as null, never invented.
+    result is not retryable and warns that the call may already have run.
+    A missing correlation id is reported as null, never invented.
     """
     httpx = pytest.importorskip("httpx")
 
@@ -490,7 +490,10 @@ def test_serve_async_unkeyed_gateway_5xx_is_not_retryable(monkeypatch, tmp_path)
         "correlation_id": None,
         "http_status": 500,
         "retryable": False,
-        "hint": "Supply an idempotency_key to retry safely.",
+        "hint": (
+            "The outcome is unknown; this call may already have run and charged. "
+            "Verify the outcome before retrying. Use an idempotency_key on future calls."
+        ),
     }
 
     direct = asyncio.run(handler(kwargs={"query": "sample"}))

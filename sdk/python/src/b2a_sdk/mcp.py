@@ -70,7 +70,10 @@ def _gateway_server_error(response: httpx.Response, keyed: bool) -> dict[str, An
     sources = [body]
     error = body.get("error")
     if isinstance(error, dict):
-        sources = [error.get("data") if isinstance(error.get("data"), dict) else {}, error, body]
+        sources = [error, body]
+        data = error.get("data")
+        if isinstance(data, dict):
+            sources.insert(0, data)
 
     def first_str(field: str) -> str | None:
         for source in sources:
@@ -94,7 +97,10 @@ def _gateway_server_error(response: httpx.Response, keyed: bool) -> dict[str, An
         "retryable": keyed,
     }
     if not keyed:
-        structured["hint"] = "Supply an idempotency_key to retry safely."
+        structured["hint"] = (
+            "The outcome is unknown; this call may already have run and charged. "
+            "Verify the outcome before retrying. Use an idempotency_key on future calls."
+        )
     return structured
 
 

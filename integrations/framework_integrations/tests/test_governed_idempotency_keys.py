@@ -9,6 +9,7 @@ These tests use a fake session (no server, no database): the key choice
 happens in the wrapper before ``session.invoke`` is called.
 """
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -103,14 +104,13 @@ def test_derive_helper_rejects_blank_inputs():
         )
 
 
-@pytest.mark.asyncio
-async def test_wrapper_retry_of_same_tool_call_reuses_key():
+def test_wrapper_retry_of_same_tool_call_reuses_key():
     """Retrying the same logical call sends the same derived key twice."""
     session = _FakeSession()
     echo = _echo_tool(session)
 
-    await echo(message="hello")
-    await echo(message="hello")
+    asyncio.run(echo(message="hello"))
+    asyncio.run(echo(message="hello"))
 
     assert len(session.keys) == 2
     assert session.keys[0] == session.keys[1]
@@ -121,66 +121,63 @@ async def test_wrapper_retry_of_same_tool_call_reuses_key():
     )
 
 
-@pytest.mark.asyncio
-async def test_wrapper_distinct_arguments_get_distinct_keys():
+def test_wrapper_distinct_arguments_get_distinct_keys():
     """Two different actions get different keys: no accidental replay."""
     session = _FakeSession()
     echo = _echo_tool(session)
 
-    await echo(message="hello")
-    await echo(message="goodbye")
+    asyncio.run(echo(message="hello"))
+    asyncio.run(echo(message="goodbye"))
 
     assert len(session.keys) == 2
     assert session.keys[0] != session.keys[1]
 
 
-@pytest.mark.asyncio
-async def test_wrapper_action_id_disambiguates_identical_arguments():
+def test_wrapper_action_id_disambiguates_identical_arguments():
     """Identical arguments with different action ids bill separately."""
     session = _FakeSession()
     echo = _echo_tool(session)
 
-    await echo(message="hello", action_id="framework-call-1")
-    await echo(message="hello", action_id="framework-call-2")
-    await echo(message="hello", action_id="framework-call-1")
+    asyncio.run(echo(message="hello", action_id="framework-call-1"))
+    asyncio.run(echo(message="hello", action_id="framework-call-2"))
+    asyncio.run(echo(message="hello", action_id="framework-call-1"))
 
     assert len(session.keys) == 3
     assert session.keys[0] != session.keys[1]
     assert session.keys[0] == session.keys[2]
 
 
-@pytest.mark.asyncio
-async def test_wrapper_explicit_key_wins_over_derivation():
+def test_wrapper_explicit_key_wins_over_derivation():
     """A caller-supplied key is used as-is, even with an action id present."""
     session = _FakeSession()
     echo = _echo_tool(session)
 
-    await echo(message="hello", idempotency_key="caller-key-1", action_id="call-9")
+    asyncio.run(
+        echo(message="hello", idempotency_key="caller-key-1", action_id="call-9")
+    )
 
     assert session.keys == ["caller-key-1"]
 
 
-@pytest.mark.asyncio
-async def test_wrapper_rejects_blank_key_and_blank_action_id():
+def test_wrapper_rejects_blank_key_and_blank_action_id():
     """Blank key material is a caller bug: reject before dispatch."""
     session = _FakeSession()
     echo = _echo_tool(session)
 
     with pytest.raises(ValueError, match="idempotency_key"):
-        await echo(message="hello", idempotency_key="   ")
+        asyncio.run(echo(message="hello", idempotency_key="   "))
     with pytest.raises(ValueError, match="action_id"):
-        await echo(message="hello", action_id="  ")
+        asyncio.run(echo(message="hello", action_id="  "))
     assert session.keys == []
 
 
-@pytest.mark.asyncio
-async def test_wrapper_coerces_non_string_action_id():
+def test_wrapper_coerces_non_string_action_id():
     """A numeric framework run id still derives a stable key."""
     session = _FakeSession()
     echo = _echo_tool(session)
 
-    await echo(message="hello", action_id=7)
-    await echo(message="hello", action_id=7)
+    asyncio.run(echo(message="hello", action_id=7))
+    asyncio.run(echo(message="hello", action_id=7))
 
     assert len(session.keys) == 2
     assert session.keys[0] == session.keys[1]

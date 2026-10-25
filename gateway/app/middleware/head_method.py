@@ -42,6 +42,7 @@ class HeadMethodMiddleware:
         # Copy before mutating: the original scope belongs to the server.
         get_scope = dict(scope)
         get_scope["method"] = "GET"
+        get_scope["amw_original_method"] = "HEAD"
 
         async def send_without_body(message: dict[str, Any]) -> None:
             if message["type"] == "http.response.body":

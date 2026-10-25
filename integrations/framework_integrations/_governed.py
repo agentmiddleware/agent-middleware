@@ -166,6 +166,9 @@ def governed_tool(
        instead of minting a fresh random one. Pass ``action_id`` (for
        example the framework's tool call id) when two distinct actions
        can carry identical arguments but must bill separately;
+       a stub that declares an ``idempotency_key`` parameter (keyword or
+       positional) has it consumed the same way and never sent to the
+       server;
     2. binds the remaining arguments to the stub's signature **with the
        stub's declared defaults applied**, so an omitted parameter travels
        to the server as the stub's contractual default rather than letting
@@ -181,6 +184,8 @@ def governed_tool(
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        if tool_name is not None and not tool_name.strip():
+            raise ValueError("tool_name must not be blank")
         name = tool_name or func.__name__
         signature = inspect.signature(func)
         receipt_var: contextvars.ContextVar[Receipt | None] = contextvars.ContextVar(
@@ -189,16 +194,6 @@ def governed_tool(
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            supplied_key: str | None = None
-            if "idempotency_key" in kwargs:
-                supplied = kwargs.pop("idempotency_key")
-                if supplied is not None:
-                    supplied_key = str(supplied)
-                    if not supplied_key.strip():
-                        raise ValueError(
-                            "idempotency_key must not be blank; omit it to "
-                            "derive a stable key"
-                        )
             action_id: str | None = None
             if "action_id" in kwargs:
                 supplied_action = kwargs.pop("action_id")
@@ -208,12 +203,42 @@ def governed_tool(
                         raise ValueError(
                             "action_id must not be blank; omit it to derive without one"
                         )
+            missing = object()
+            declared = signature.parameters.get("idempotency_key")
+            accepts_keyword = declared is not None and declared.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+            supplied = (
+                kwargs.get("idempotency_key", missing)
+                if accepts_keyword
+                else kwargs.pop("idempotency_key", missing)
+            )
             bound = signature.bind(*args, **kwargs)
+            positional = bound.arguments.get("idempotency_key", missing)
+            if (
+                supplied is not missing
+                and positional is not missing
+                and not accepts_keyword
+            ):
+                raise TypeError("multiple values for idempotency_key")
+            if supplied is missing:
+                supplied = positional
+            idempotency_key: str | None = None
+            if supplied is not missing and supplied is not None:
+                idempotency_key = str(supplied)
+                if not idempotency_key.strip():
+                    raise ValueError(
+                        "idempotency_key must not be blank; omit it to "
+                        "derive a stable key"
+                    )
             bound.apply_defaults()
             arguments = dict(bound.arguments)
-            if supplied_key is not None:
-                idempotency_key = supplied_key
-            else:
+            # idempotency_key is reserved for the governed loop (consumed
+            # above); a stub that declares a parameter of the same name must
+            # not leak it into the tool arguments sent to the server.
+            arguments.pop("idempotency_key", None)
+            if idempotency_key is None:
                 idempotency_key = derive_governed_idempotency_key(
                     permit_id=session.permit_id,
                     tool_name=name,

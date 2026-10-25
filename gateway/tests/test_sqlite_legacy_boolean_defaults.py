@@ -37,7 +37,7 @@ def test_upgrade_repairs_legacy_sqlite_defaults(tmp_path, monkeypatch):
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     assert script.get_heads() == ["047_sqlite_boolean_defaults"]
     assert script.get_revision("047_sqlite_boolean_defaults").down_revision == (
-        "045_approval_gate_approvals"
+        "046_api_key_usage_events"
     )
 
     db_path = tmp_path / "legacy-defaults.db"
@@ -139,7 +139,7 @@ def test_upgrade_repairs_legacy_sqlite_defaults(tmp_path, monkeypatch):
     with pytest.raises(
         RuntimeError, match="sqlite_boolean_defaults_downgrade_unsupported"
     ):
-        command.downgrade(Config("alembic.ini"), "045_approval_gate_approvals")
+        command.downgrade(Config("alembic.ini"), "046_api_key_usage_events")
     asyncio.set_event_loop(asyncio.new_event_loop())
     with sqlite3.connect(db_path) as connection:
         assert connection.execute(

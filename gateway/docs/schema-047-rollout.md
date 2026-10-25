@@ -1,7 +1,7 @@
 # Schema 047: SQLite boolean defaults and rollback boundary
 
 Migration `047_sqlite_boolean_defaults` revises
-`045_approval_gate_approvals` from PR #216. PR #61 must merge after PR #216.
+`046_api_key_usage_events` from PR #195. PR #61 must merge after PR #195.
 On SQLite it repairs legacy text booleans in refresh tokens, human approvals,
 and permits, then replaces their text defaults with integer false defaults.
 PostgreSQL schema and data are unchanged.

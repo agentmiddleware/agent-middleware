@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     api_key = _read_api_key()
     if not api_key:
         print(
-            f"error: {API_KEY_ENV} is not set; export the gateway "
+            "error: VALID_API_KEYS is not set; export the gateway "
             "bootstrap admin key first",
             file=sys.stderr,
         )

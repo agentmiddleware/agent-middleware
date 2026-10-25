@@ -135,7 +135,7 @@ def _redact_secret(body: dict) -> dict:
 )
 async def create_api_key(
     request: CreateAPIKeyRequest,
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ):
     """
@@ -152,7 +152,7 @@ async def create_api_key(
     await _refuse_bounded_minter(auth)
     await _require_wallet_exists(wallet_id)
     guard, replay = await begin_http_idempotency(
-        idempotency_key=idempotency_key,
+        idempotency_key_lines=idempotency_key_lines,
         wallet_id=wallet_id,
         endpoint="/v1/api-keys",
         request_payload={**request.model_dump(mode="json"), "wallet_id": wallet_id},
@@ -232,7 +232,7 @@ async def list_api_keys(
 async def rotate_api_key(
     request: RotateAPIKeyRequest,
     http_request: Request,
-    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ):
     """
@@ -254,7 +254,7 @@ async def rotate_api_key(
         await _refuse_bounded_minter(auth)
     await _require_wallet_exists(wallet_id)
     guard, replay = await begin_http_idempotency(
-        idempotency_key=idempotency_key,
+        idempotency_key_lines=idempotency_key_lines,
         wallet_id=wallet_id,
         endpoint="/v1/api-keys/rotate",
         request_payload={**request.model_dump(mode="json"), "wallet_id": wallet_id},

@@ -89,9 +89,11 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
                 pass
         if failed_restores:
             kept = ", ".join(str(path) for path in failed_restores)
-            raise OSError(
-                f"{original}; rollback restore failed, backup(s) preserved at: {kept}"
-            ) from original
+            message = f"rollback restore failed, backup(s) preserved at: {kept}"
+            if isinstance(original, OSError):
+                raise OSError(f"{original}; {message}") from original
+            original.add_note(message)
+            raise
         raise
     else:
         for backup in backups.values():

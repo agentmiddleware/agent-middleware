@@ -1240,6 +1240,7 @@ def test_cli_restore_failure_keeps_backup_and_mentions_it(
     }
     for name, content in old.items():
         (out / name).write_bytes(content.encode("utf-8"))
+    old_bytes = {name: (out / name).read_bytes() for name in old}
 
     real_replace = os.replace
     renames = {"count": 0}
@@ -1268,3 +1269,108 @@ def test_cli_restore_failure_keeps_backup_and_mentions_it(
     assert len(backups) == 1
     assert str(backups[0]) in err
     assert backups[0].is_file()
+    assert backups[0].read_bytes() == old_bytes["receipts.jsonl"]
+    assert sorted(p.name for p in out.glob("*.tmp")) == [backups[0].name]
+
+
+def test_cli_copy_fallback_with_rename_failure_restores_previous_outputs(
+    tmp_path, capsys, monkeypatch
+):
+    import os
+
+    argv, out = _replay_out_argv(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_bytes(content.encode("utf-8"))
+    old_bytes = {name: (out / name).read_bytes() for name in old}
+
+    def _no_link(_src, _dst):
+        raise OSError("hardlinks unsupported")
+
+    monkeypatch.setattr(os, "link", _no_link)
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _fail_second_temp_rename(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and dst_path.name in old
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 2:
+                raise OSError("rename failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_second_temp_rename)
+    assert replay_main(argv) == 2
+    assert "amw-replay: rename failed" in capsys.readouterr().err
+    assert renames["count"] == 2
+    for name, data in old_bytes.items():
+        assert (out / name).read_bytes() == data
+    assert sorted(p.name for p in out.iterdir()) == sorted(old)
+    assert list(out.glob("*.tmp")) == []
+
+
+def test_cli_non_oserror_with_failed_restore_reraises_with_note(tmp_path, monkeypatch):
+    import os
+
+    from app.replay.cli import _write_outputs_atomically
+
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_bytes(content.encode("utf-8"))
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _fail_temp_rename_then_restore(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and dst_path.name in old
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 2:
+                raise RuntimeError("boom")
+        if src_str.endswith(".bak.tmp") and dst_path.parent == out:
+            raise OSError("restore failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_temp_rename_then_restore)
+    with pytest.raises(RuntimeError, match="boom") as excinfo:
+        _write_outputs_atomically(
+            out,
+            {
+                "receipts.jsonl": "new receipts\n",
+                "summary.json": "new summary\n",
+                "keys.json": "new keys\n",
+            },
+        )
+    assert type(excinfo.value) is RuntimeError
+    assert renames["count"] == 2
+    backups = list(out.glob("*.bak.tmp"))
+    assert len(backups) == 1
+    notes = getattr(excinfo.value, "__notes__", [])
+    assert len(notes) == 1
+    assert "rollback restore failed" in notes[0]
+    assert str(backups[0]) in notes[0]
+    assert sorted(p.name for p in out.glob("*.tmp")) == [backups[0].name]

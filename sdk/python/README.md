@@ -44,6 +44,17 @@ The extra pins `mcp` below 2.x, which renamed the class the server imports:
 python -m pip install -e './sdk/python[mcp]'
 ```
 
+`mcp serve` sends each tool call through the gateway's standard `POST /mcp`
+`tools/call` flow. Authenticate with a wallet-scoped `B2A_API_KEY`; the gateway
+mints a bounded permit for the call. The tool does not accept `permit_id`.
+Supply `idempotency_key` as a tool argument using a stable logical call ID,
+such as the LLM `tool_call.id`. The bridge forwards it as `Idempotency-Key`.
+A retry with the same idempotency key must return the original receipt instead
+of dispatching again. The gateway also reuses the original permit for that
+key. Calls without a caller key get a new permit and cannot be safely retried
+as the same logical call. Action-bound tools that require trusted issuance
+return `action_permit_required` on this flow.
+
 ### Historical release
 
 Version `0.4.0` was released under

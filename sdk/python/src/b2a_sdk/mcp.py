@@ -134,67 +134,57 @@ async def serve_async(
     async def call_tool(
         service_id: str,
         input_data: dict,
-        wallet_id: str,
         api_key: str,
-        permit_id: str | None,
         idempotency_key: str | None,
     ) -> Any:
-        mcp_context = {"wallet_id": wallet_id}
-        if permit_id is not None:
-            mcp_context["permit_id"] = permit_id
+        headers = {
+            "X-API-Key": api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
         if idempotency_key is not None:
-            mcp_context["idempotency_key"] = idempotency_key
+            headers["Idempotency-Key"] = idempotency_key
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{api_url}/mcp/tools/{service_id}/invoke",
-                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                f"{api_url}/mcp",
+                headers=headers,
                 json={
-                    "name": service_id,
-                    "arguments": input_data,
-                    "mcp_context": mcp_context,
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": service_id, "arguments": input_data},
                 },
                 timeout=30.0,
                 follow_redirects=False,
             )
-            if response.status_code in {400, 403, 202}:
+            if 400 <= response.status_code < 500:
                 try:
-                    detail = response.json().get("detail")
-                except (ValueError, AttributeError):
-                    detail = None
+                    body = response.json()
+                except ValueError:
+                    body = {"detail": response.text}
+                detail = body.get("detail") if isinstance(body, dict) else body
                 error = detail.get("error") if isinstance(detail, dict) else detail
-                if response.status_code == 403 and error == "permit_required":
-                    guidance = "Supply permit_id and idempotency_key as MCP tool arguments."
-                    return CallToolResult(
-                        content=[TextContent(type="text", text=f"permit_required: {guidance}")],
-                        isError=True,
-                        structuredContent={"error": "permit_required", "guidance": guidance},
-                    )
-                if response.status_code == 400 and error == "idempotency_key_required":
-                    guidance = "Supply idempotency_key with permit_id as MCP tool arguments."
-                    return CallToolResult(
-                        content=[TextContent(type="text", text=f"{error}: {guidance}")],
-                        isError=True,
-                        structuredContent={"error": error, "guidance": guidance},
-                    )
-                if response.status_code == 202 and error == "human_approval_pending":
-                    approval = detail.get("approval", {}) if isinstance(detail, dict) else {}
-                    guidance = "Retry with the same permit_id and idempotency_key after approval."
-                    return CallToolResult(
-                        content=[
-                            TextContent(
-                                type="text",
-                                text=f"{error}: {json.dumps(approval)}. {guidance}",
-                            )
-                        ],
-                        isError=True,
-                        structuredContent={
-                            "error": error,
-                            "approval": approval,
-                            "guidance": guidance,
-                        },
-                    )
+                structured = dict(body) if isinstance(body, dict) else {"detail": body}
+                if isinstance(error, str):
+                    structured["error"] = error
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
             response.raise_for_status()
-            result = response.json()
+            envelope = response.json()
+            if "error" in envelope:
+                error = envelope["error"]
+                structured = {"error": error["message"], "code": error["code"]}
+                if "data" in error:
+                    structured["data"] = error["data"]
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
+            result = envelope["result"]
             return result if legacy_result_format else CallToolResult.model_validate(result)
 
     for tool in tools:
@@ -203,16 +193,13 @@ async def serve_async(
 
         async def create_handler(svc_id: str, svc_name: str):
             async def handler(
-                permit_id: str | None = None,
                 idempotency_key: str | None = None,
                 **kwargs: dict[str, Any],
             ) -> Any:
                 return await call_tool(
                     service_id=svc_id,
                     input_data=kwargs.pop("kwargs", kwargs),
-                    wallet_id=os.getenv("B2A_WALLET_ID", ""),
                     api_key=os.getenv("B2A_API_KEY", ""),
-                    permit_id=permit_id,
                     idempotency_key=idempotency_key,
                 )
 
@@ -228,7 +215,6 @@ async def serve_async(
     print(file=output)
     print("Configure with:", file=output)
     print("  export B2A_API_KEY=<your-key>", file=output)
-    print("  export B2A_WALLET_ID=<your-wallet>", file=output)
     print(f"  export B2A_API_URL={api_url}", file=output)
     print(file=output)
 

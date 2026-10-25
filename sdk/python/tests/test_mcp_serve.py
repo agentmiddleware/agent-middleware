@@ -43,45 +43,63 @@ def test_serve_async_registers_tool_and_starts_transport(monkeypatch, tmp_path, 
     assert [(tool.name, tool.description) for tool in registered_tools] == [
         ("partner.search", "Search")
     ]
-    assert {"permit_id", "idempotency_key"} <= registered_tools[0].inputSchema["properties"].keys()
-    assert not {"permit_id", "idempotency_key"} & set(
-        registered_tools[0].inputSchema.get("required", [])
-    )
+    assert "permit_id" not in registered_tools[0].inputSchema["properties"]
+    assert "idempotency_key" in registered_tools[0].inputSchema["properties"]
+    assert "idempotency_key" not in registered_tools[0].inputSchema.get("required", [])
     assert registered_tools[0].inputSchema["properties"]["kwargs"]["type"] == "object"
     if transport == "sse":
         assert server.settings.port == 8765
 
 
 @pytest.mark.parametrize(
-    "status_code, detail, permit_id, idempotency_key, legacy_result_format",
+    "status_code, body, idempotency_key, legacy_result_format",
     [
-        (200, None, None, None, False),
-        (200, None, "permit-123", "invoke-123", False),
-        (200, None, None, None, True),
-        (403, "other_denial", None, None, False),
-        (403, "permit_required", None, None, False),
-        (403, {"error": "permit_required"}, None, None, False),
-        (400, "idempotency_key_required", "permit-123", None, False),
+        (200, {"result": {"content": [{"type": "text", "text": "ok"}]}}, None, False),
+        (200, {"result": {"content": [{"type": "text", "text": "ok"}]}}, "invoke-123", False),
+        (200, {"result": {"content": [{"type": "text", "text": "ok"}]}}, None, True),
+        (403, {"detail": "other_denial"}, None, False),
         (
-            202,
+            403,
+            {"detail": {"error": "permit_scope_denied", "receipt": {"outcome": "denied"}}},
+            None,
+            False,
+        ),
+        (429, {"detail": {"error": "rate_limited", "retry_after": 1}}, None, False),
+        (400, {"detail": "idempotency_key_required"}, None, False),
+        (
+            400,
             {
-                "error": "human_approval_pending",
-                "approval": {"approval_id": "approval-123", "expires_at": "2026-10-24T00:00:00Z"},
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {
+                    "code": -32602,
+                    "message": "invalid_idempotency_key",
+                    "data": {"reason": "blank"},
+                },
             },
-            "permit-123",
+            None,
+            False,
+        ),
+        (
+            200,
+            {
+                "error": {
+                    "code": -32003,
+                    "message": "human_approval_pending",
+                    "data": {"approval": {"approval_id": "approval-123"}},
+                }
+            },
             "invoke-123",
             False,
         ),
-        (202, "human_approval_pending", "permit-123", "invoke-123", False),
     ],
 )
 def test_serve_async_tool_invokes_gateway_with_arguments(
-    monkeypatch, tmp_path, status_code, detail, permit_id, idempotency_key, legacy_result_format
+    monkeypatch, tmp_path, status_code, body, idempotency_key, legacy_result_format
 ):
     fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
     httpx = pytest.importorskip("httpx")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("B2A_WALLET_ID", "test-wallet")
     monkeypatch.setenv("B2A_API_KEY", "test-key")
     monkeypatch.setattr(
         mcp,
@@ -102,9 +120,6 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
 
     def respond(request):
         requests.append(request)
-        body = (
-            {"content": [{"type": "text", "text": "ok"}]} if detail is None else {"detail": detail}
-        )
         return httpx.Response(status_code, json=body)
 
     client_type = httpx.AsyncClient
@@ -118,67 +133,96 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
     )
     assert len(registered) == 1
     assert len(started) == 1
-    caller_context = {}
-    if permit_id is not None:
-        caller_context = {"permit_id": permit_id, "idempotency_key": idempotency_key}
-    if status_code == 200:
+    caller_context = {"idempotency_key": idempotency_key} if idempotency_key else {}
+    if "result" in body:
         result = asyncio.run(
             started[0].call_tool(
                 "partner.search", {"kwargs": {"query": "sample"}, **caller_context}
             )
         )
         if legacy_result_format:
-            assert json.loads(result[0].text) == {"content": [{"type": "text", "text": "ok"}]}
+            assert json.loads(result[0].text) == body["result"]
         else:
             assert result.isError is False
             assert result.content[0].text == "ok"
-    elif detail == "permit_required" or detail == {"error": "permit_required"}:
-        result = asyncio.run(
-            started[0].call_tool("partner.search", {"kwargs": {"query": "sample"}})
-        )
-        assert result.isError is True
-        assert result.structuredContent["error"] == "permit_required"
-        assert "permit_id" in result.content[0].text
-        assert "idempotency_key" in result.content[0].text
-        assert "idempotency_key" in result.structuredContent["guidance"]
-    elif status_code == 400:
-        result = asyncio.run(registered[0](query="sample", **caller_context))
-        assert result.isError is True
-        assert result.structuredContent["error"] == "idempotency_key_required"
-        assert "idempotency_key" in result.content[0].text
-        assert "idempotency_key" in result.structuredContent["guidance"]
-    elif status_code == 202:
+    else:
         result = asyncio.run(
             started[0].call_tool(
                 "partner.search", {"kwargs": {"query": "sample"}, **caller_context}
             )
         )
         assert result.isError is True
-        assert result.structuredContent["error"] == "human_approval_pending"
-        approval = detail["approval"] if isinstance(detail, dict) else {}
-        assert result.structuredContent["approval"] == approval
-        if approval:
-            assert "approval-123" in result.content[0].text
-        assert "invoke-123" not in result.content[0].text
-        assert "same permit_id and idempotency_key" in result.structuredContent["guidance"]
-    else:
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            asyncio.run(registered[0](query="sample", **caller_context))
-        assert exc_info.value.response.status_code == 403
+        if status_code >= 400 and "error" in body:
+            assert result.structuredContent == body
+        elif "error" in body:
+            assert result.structuredContent == {
+                "error": body["error"]["message"],
+                "code": body["error"]["code"],
+                "data": body["error"]["data"],
+            }
+        else:
+            assert result.structuredContent["detail"] == body["detail"]
+            assert result.structuredContent["error"] == (
+                body["detail"].get("error") if isinstance(body["detail"], dict) else body["detail"]
+            )
+        assert json.loads(result.content[0].text) == result.structuredContent
     assert len(requests) == 1
     assert requests[0].method == "POST"
-    assert str(requests[0].url) == "https://unused.invalid/mcp/tools/partner.search/invoke"
+    assert str(requests[0].url) == "https://unused.invalid/mcp"
     assert requests[0].headers["X-API-Key"] == "test-key"
-    mcp_context = {"wallet_id": "test-wallet"}
-    if permit_id is not None:
-        mcp_context["permit_id"] = permit_id
-    if idempotency_key is not None:
-        mcp_context["idempotency_key"] = idempotency_key
+    assert requests[0].headers["Accept"] == "application/json, text/event-stream"
+    assert requests[0].headers.get("Idempotency-Key") == idempotency_key
     assert json.loads(requests[0].content) == {
-        "name": "partner.search",
-        "arguments": {"query": "sample"},
-        "mcp_context": mcp_context,
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "partner.search", "arguments": {"query": "sample"}},
     }
+
+
+def test_serve_async_repeats_caller_key_for_gateway_receipt_replay(monkeypatch, tmp_path):
+    from uuid import uuid4
+
+    fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
+    httpx = pytest.importorskip("httpx")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("B2A_API_KEY", "test-key")
+    monkeypatch.setattr(
+        mcp,
+        "generate_manifest",
+        lambda **kwargs: {"tools": [{"name": "partner.search", "description": "Search"}]},
+    )
+    started = []
+    requests = []
+    receipt = {"receipt_id": str(uuid4()), "permit_id": str(uuid4())}
+
+    async def run_stdio(self):
+        started.append(self)
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"result": {"content": [{"type": "text", "text": "ok"}], "receipt": receipt}},
+        )
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda: client_type(transport=httpx.MockTransport(respond))
+    )
+    monkeypatch.setattr(fastmcp, "run_stdio_async", run_stdio)
+    asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
+
+    key = str(uuid4())
+    arguments = {"kwargs": {"query": "sample"}, "idempotency_key": key}
+    first = asyncio.run(started[0].call_tool("partner.search", arguments))
+    replay = asyncio.run(started[0].call_tool("partner.search", arguments))
+
+    assert first.receipt == replay.receipt == receipt
+    assert len(requests) == 2
+    assert [request.headers["Idempotency-Key"] for request in requests] == [key, key]
+    assert requests[0].content == requests[1].content
+    assert all("permit_id" not in json.loads(request.content)["params"] for request in requests)
 
 
 def test_serve_async_rejects_unknown_transport(monkeypatch, tmp_path):

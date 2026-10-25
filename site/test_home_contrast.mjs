@@ -40,10 +40,12 @@ test("homepage high contrast palette has readable text, accents, and boundaries"
   assert.ok(contrast(color("--home-error"), background) >= 4.5);
 
   assert.equal(home["--home-line"], "var(--line-strong)");
-  const [, red, green, blue, alpha] = root["--line-strong"].match(/^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/);
-  const line = [red, green, blue].map((channel, index) =>
+  assert.equal(home["--home-control-line"], "var(--line-strong)");
+  const controlLineToken = home["--home-control-line"].slice(4, -1);
+  const [, red, green, blue, alpha] = root[controlLineToken].match(/^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/);
+  const controlLine = [red, green, blue].map((channel, index) =>
     Number(channel) * Number(alpha) + panel[index] * (1 - Number(alpha)));
-  assert.ok(contrast(line, panel) >= 3);
+  assert.ok(contrast(controlLine, panel) >= 3);
 });
 
 test("homepage surfaces and controls use the contrast aware palette", () => {
@@ -61,14 +63,15 @@ test("homepage surfaces and controls use the contrast aware palette", () => {
     ["body.home-light .hero-v2-intro > p", "color", "var(--home-muted)"],
     ["body.home-light .hero-v2-intro > .hero-v2-boundary", "font-size", "0.875rem"],
     ["body.home-light .home-key-drawer", "background", "var(--home-bg)"],
-    ["body.home-light .home-key-field-row", "border", "1px solid var(--home-line)"],
+    ["body.home-light .home-key-field-row", "border", "1px solid var(--home-control-line)"],
+    ["body.home-light .home-key-field-row button + button", "border-left", "1px solid var(--home-control-line)"],
     ["body.home-light .home-key-field-row button", "color", "var(--home-muted)"],
     ["body.home-light .home-v2-glossary", "background", "var(--home-soft)"],
   ]) {
     assert.equal(rule(selector)[property], value, `${selector} ${property}`);
   }
   assert.equal(rule('html[data-a11y-contrast="high"] body.home-light .home-key-drawer')["border-left"], "1px solid var(--home-line)");
-  assert.equal(rule('html[data-a11y-contrast="high"] body.home-light .home-key-field-row button')["border-left"], "1px solid var(--home-line)");
+  assert.equal(rule('html[data-a11y-contrast="high"] body.home-light .home-key-field-row button')["border-left"], "1px solid var(--home-control-line)");
 });
 
 test("site light text, controls, and status colors meet AA on light surfaces", () => {
@@ -83,5 +86,6 @@ test("site light text, controls, and status colors meet AA on light surfaces", (
   assert.ok(contrast(color("--home-primary-text"), color("--home-blue")) >= 4.5);
   assert.ok(contrast(color("--home-blue-hover"), background) >= 4.5);
   assert.ok(contrast(color("--home-control-line"), background) >= 3);
+  assert.ok(contrast(color("--home-control-line"), panel) >= 3);
   assert.ok(contrast(color("--home-verify"), panel) >= 4.5);
 });

@@ -2957,7 +2957,7 @@ body.home-light .home-key-field-row {
   gap: 0;
   height: 56px;
   padding: 0 8px 0 13px;
-  border: 1px solid var(--home-line);
+  border: 1px solid var(--home-control-line);
   border-radius: 7px;
   background: var(--home-soft);
 }
@@ -2982,7 +2982,7 @@ body.home-light .home-key-field-row button {
   font-weight: 600;
   cursor: pointer;
 }
-body.home-light .home-key-field-row button + button { border-left: 1px solid var(--home-line); }
+body.home-light .home-key-field-row button + button { border-left: 1px solid var(--home-control-line); }
 body.home-light .home-key-warning { color: var(--home-muted); }
 body.home-light .home-key-drawer .button-primary {
   background: var(--home-blue);
@@ -3003,7 +3003,7 @@ html[data-a11y-contrast="high"] body.home-light .home-key-drawer {
   box-shadow: none;
 }
 html[data-a11y-contrast="high"] body.home-light .home-key-field-row button {
-  border-left: 1px solid var(--home-line);
+  border-left: 1px solid var(--home-control-line);
 }
 
 body.home-light .home-v2-glossary {

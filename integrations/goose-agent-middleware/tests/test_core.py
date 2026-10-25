@@ -336,3 +336,14 @@ def test_write_error_result_is_failed_unknown_and_not_rerun(tmp_path):
     assert calls == [W["tool"]]
     rows = gw.ledger._db.execute("SELECT status FROM calls").fetchall()
     assert rows == [("failed_unknown",)]
+
+
+def test_relative_and_home_paths_are_denied(tmp_path, monkeypatch):
+    allowed, policy = _policy(tmp_path)
+    monkeypatch.chdir(allowed)
+    name = fresh()
+    for raw in (name, f"./{name}", f"~/{name}"):
+        decision = permits.check(policy, W["tool"], {"path": raw})
+        assert not decision.allowed
+        assert "must be absolute" in decision.reason
+    assert permits.check(policy, W["tool"], {"path": str(allowed / name)}).allowed

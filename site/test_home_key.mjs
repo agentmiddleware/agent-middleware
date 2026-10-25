@@ -17,7 +17,7 @@ function makePage(fetchResponse, { copyFails = false, capture = true, search = "
     "home-key-value", "home-wallet-value", "home-key-reveal", "home-wallet-reveal",
     "home-key-copy", "home-wallet-copy", "home-key-copy-both", "home-key-budget",
     "home-key-retry", "home-key-email", "home-hero-python-copy",
-    "home-hero-python", "home-hero-copy-status",
+    "home-hero-curl-copy", "home-hero-python", "home-hero-curl", "home-hero-copy-status",
   ];
   const elements = new Map(ids.map((id) => [id, {
     id,
@@ -25,6 +25,7 @@ function makePage(fetchResponse, { copyFails = false, capture = true, search = "
       "home-key-retry", "home-key-email"].includes(id),
     disabled: id === "home-hero-python-copy",
     textContent: id === "home-hero-python" ? heroTemplate :
+      id === "home-hero-curl" ? "curl -s -X POST https://api.thisisatest.tech/v1/demo/keys" :
       id === "home-key-trigger" ? "Get a free demo key" : "",
     value: "",
     type: id === "home-key-value" || id === "home-wallet-value" ? "password" : "button",
@@ -99,13 +100,29 @@ test("hero Python copy requires an issued demo key and wallet", async () => {
   assert.match(heroTemplate, /export AMW_API_KEY='YOUR_DEMO_KEY'\nexport AMW_WALLET_ID='YOUR_WALLET_ID'\npython examples\/permit_echo_retry\.py$/);
   assert.match(homeHtml, /id="home-hero-python-copy"[^>]*disabled/);
   assert.equal(homeHtml.match(/git clone https:\/\/github.com\/agentmiddleware\/amw-demo\.git/g)?.length, 1);
-  assert.match(homeHtml, /hero-v2-tab-disabled"><code>curl<\/code><span>coming soon<\/span>/);
-  assert.doesNotMatch(homeHtml, /id="home-hero-curl(?:-copy)?"|curl -s -X POST/);
+  assert.match(homeHtml, /class="hero-v2-tab"><code>curl<\/code><\/span>/);
+  assert.match(homeHtml, /<pre id="home-hero-curl"[^>]*><code>curl -s -X POST https:\/\/api\.thisisatest\.tech\/v1\/demo\/keys<\/code><\/pre>/);
+  assert.match(homeHtml, /id="home-hero-curl-copy"[^>]*aria-label="Copy curl command"/);
+  assert.doesNotMatch(homeHtml, /curl<\/code><span>coming soon<\/span>/);
   assert.doesNotMatch(homeHtml, /id="home-quickstart-code"|id="home-copy-quickstart"/);
   const page = makePage(() => { throw new Error("unexpected key request"); });
   await page.click("home-hero-python-copy");
-  assert.deepEqual(page.copies, []);
+  await page.click("home-hero-curl-copy");
+  assert.deepEqual(page.copies, [
+    "curl -s -X POST https://api.thisisatest.tech/v1/demo/keys",
+  ]);
+  assert.equal(page.elements.get("home-hero-copy-status").textContent, "Commands copied.");
   assert.equal(page.requests.length, 0);
+});
+
+test("homepage receipt matches the published proof", () => {
+  const receipt = JSON.parse(readFileSync(new URL("./proof/receipt.json", import.meta.url), "utf8"));
+  const transcript = JSON.parse(readFileSync(new URL("./proof/transcript.json", import.meta.url), "utf8"));
+  assert.equal(receipt.receipt_id, "rcpt-9daf745e477d45ab");
+  assert.equal(transcript.live_receipt_verification.receipt_id, receipt.receipt_id);
+  assert.match(transcript.live_receipt_verification.output, /VERIFIED\s+rcpt-9daf745e477d45ab/);
+  assert.equal(homeHtml.split(receipt.receipt_id).length - 1, 3);
+  assert.doesNotMatch(homeHtml, /rcpt_[A-Za-z0-9]+/);
 });
 
 test("idle, loading, and success issue one empty POST and fill the live quickstart", async () => {

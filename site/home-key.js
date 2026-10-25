@@ -182,7 +182,15 @@
     copy(`export AMW_API_KEY=${shellQuote(key.value)}\nexport AMW_WALLET_ID=${shellQuote(wallet.value)}`,
       "Key and wallet commands copied.", key, status,
       "Copy was unavailable. Copy Key and Wallet separately."));
-  copyHeroQuickstart.addEventListener("click", () =>
-    copy(heroQuickstart.textContent, "Commands copied.", heroQuickstart,
-      byId("home-hero-copy-status")));
+  for (const [buttonId, codeId] of [
+    ["home-hero-python-copy", "home-hero-python"],
+    ["home-hero-curl-copy", "home-hero-curl"],
+  ]) {
+    const button = byId(buttonId);
+    const code = byId(codeId);
+    if (button && code) {
+      button.addEventListener("click", () =>
+        copy(code.textContent, "Commands copied.", code, byId("home-hero-copy-status")));
+    }
+  }
 })();

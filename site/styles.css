@@ -2777,6 +2777,12 @@ body.home-light .hero-v2-command-row button {
   cursor: pointer;
 }
 body.home-light .hero-v2-command-row button:disabled { cursor: not-allowed; opacity: 0.55; }
+body.home-light .hero-v2-curl-row {
+  margin: 18px 23px 0;
+  border-top: 1px solid var(--home-line);
+}
+body.home-light .hero-v2-curl-row pre { padding: 14px 64px 0 0; line-height: 1.375rem; }
+body.home-light .hero-v2-curl-row button { top: 6px; right: -8px; }
 body.home-light .hero-v2-output {
   margin: 16px 23px 0;
   border-top: 1px solid var(--home-line);
@@ -3097,6 +3103,7 @@ body.home-light .home-v2-source a { overflow-wrap: anywhere; }
     align-self: flex-end;
     margin: 8px 14px 0;
   }
+  body.home-light .hero-v2-curl-row { margin-top: 12px; }
   body.home-light .hero-v2-code-note { margin-top: 12px; }
   body.home-light .hero-v2-flow { grid-template-columns: minmax(0, 1fr); }
   body.home-light .hero-v2-step { min-height: 0; }

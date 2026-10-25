@@ -207,7 +207,7 @@
           <section class="hero-v2-code" aria-label="Quickstart commands">
             <div class="hero-v2-tabs">
               <span class="hero-v2-tab hero-v2-tab-active">Python</span>
-              <span class="hero-v2-tab hero-v2-tab-disabled"><code>curl</code><span>coming soon</span></span>
+              <span class="hero-v2-tab"><code>curl</code></span>
             </div>
             <div class="hero-v2-command-row">
               <pre id="home-hero-python" tabindex="0"><code>git clone https://github.com/agentmiddleware/amw-demo.git
@@ -220,12 +220,16 @@ export AMW_WALLET_ID='YOUR_WALLET_ID'
 python examples/permit_echo_retry.py</code></pre>
               <button id="home-hero-python-copy" type="button" aria-label="Copy Python commands" disabled>Copy</button>
             </div>
+            <div class="hero-v2-command-row hero-v2-curl-row">
+              <pre id="home-hero-curl" tabindex="0"><code>curl -s -X POST https://api.thisisatest.tech/v1/demo/keys</code></pre>
+              <button id="home-hero-curl-copy" type="button" aria-label="Copy curl command">Copy</button>
+            </div>
             <div class="hero-v2-command-row hero-v2-output" aria-label="Example output">
               <p>Example output</p>
-              <pre tabindex="0"><code>receipt_id: rcpt_7Kq2mX9
+              <pre tabindex="0"><code>receipt_id: rcpt-9daf745e477d45ab
 Same receipt. The tool did not run again.</code></pre>
             </div>
-            <p class="hero-v2-code-note">Get a demo key to fill the Python commands with your key and wallet ID.</p>
+            <p class="hero-v2-code-note">The button above fills these Python commands with a demo key. With curl, replace both export placeholders using <code>api_key</code> and <code>wallet_id</code> from the response.</p>
             <p class="hero-v2-copy-status" id="home-hero-copy-status" role="status" aria-live="polite"></p>
           </section>
           <section class="hero-v2-flow" aria-label="Four step request flow">
@@ -235,11 +239,11 @@ Same receipt. The tool did not run again.</code></pre>
             </article>
             <article class="hero-v2-step">
               <div class="hero-v2-step-heading"><span>2</span><h2>Call</h2></div>
-              <p>accepted request key <code>order-123</code>, at most one gateway dispatch and debit; the gateway returns receipt <code>rcpt_7Kq2mX9</code></p>
+              <p>accepted request key <code>order-123</code>, at most one gateway dispatch and debit; the gateway returns receipt <code>rcpt-9daf745e477d45ab</code></p>
             </article>
             <article class="hero-v2-step hero-v2-step-retry">
               <div class="hero-v2-step-heading"><span>3</span><h2>Retry</h2></div>
-              <p>same request key <code>order-123</code> returns its linked receipt <code>rcpt_7Kq2mX9</code></p>
+              <p>same request key <code>order-123</code> returns its linked receipt <code>rcpt-9daf745e477d45ab</code></p>
               <div class="hero-v2-retry-confirm"><span aria-hidden="true">✓</span>The gateway does not dispatch again.</div>
             </article>
             <article class="hero-v2-step">

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from app.core.time import utc_now
 from decimal import Decimal
 import json
 import logging
@@ -10,6 +9,7 @@ import uuid
 
 from sqlalchemy import select
 
+from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import PolicyBundleModel
 from app.schemas.policies import (

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Get a demo key | Agent Middleware API</title>
+    <meta
+      name="description"
+      content="Get a demo key and try the permit, partner.echo invocation, and portable receipt flow with synthetic credits."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="canonical" href="https://www.agentmiddleware.dev/demo-key/" />
+    <link rel="alternate" hreflang="en" href="https://www.agentmiddleware.dev/demo-key/" />
+    <link rel="alternate" hreflang="x-default" href="https://www.agentmiddleware.dev/demo-key/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/json" title="Agent manifest" href="/.well-known/agent.json" />
+    <link rel="alternate" type="text/plain" title="Instructions for autonomous agents" href="/llms.txt" />
+    <link rel="alternate" type="text/plain" title="Extended briefing for autonomous agents" href="/llms-full.txt" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="Agent Middleware API" />
+    <meta property="og:title" content="Get a demo key" />
+    <meta property="og:description" content="Try the permit, invoke, and portable receipt loop in the demo tenant." />
+    <meta property="og:url" content="https://www.agentmiddleware.dev/demo-key/" />
+    <meta property="og:image" content="https://www.agentmiddleware.dev/social-card.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Get a demo key" />
+    <meta name="twitter:description" content="Try the permit, invoke, and portable receipt loop in the demo tenant." />
+    <meta name="twitter:image" content="https://www.agentmiddleware.dev/social-card.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebPage",
+            "@id": "https://www.agentmiddleware.dev/demo-key/#webpage",
+            "name": "Get a demo key",
+            "url": "https://www.agentmiddleware.dev/demo-key/",
+            "description": "Try the permit, invoke, and portable receipt loop in the demo tenant.",
+            "inLanguage": "en",
+            "isPartOf": { "@id": "https://www.agentmiddleware.dev/#website" },
+            "about": { "@id": "https://www.agentmiddleware.dev/#software" },
+            "breadcrumb": { "@id": "https://www.agentmiddleware.dev/demo-key/#breadcrumb" }
+          },
+          {
+            "@type": "BreadcrumbList",
+            "@id": "https://www.agentmiddleware.dev/demo-key/#breadcrumb",
+            "itemListElement": [
+              { "@type": "ListItem", "position": 1, "name": "Agent Middleware API", "item": "https://www.agentmiddleware.dev/" },
+              { "@type": "ListItem", "position": 2, "name": "Demo key", "item": "https://www.agentmiddleware.dev/demo-key/" }
+            ]
+          }
+        ]
+      }
+    </script>
+    @@FONT_PRELOADS@@
+    <link rel="stylesheet" href="/fonts.css?v=@@FONTS_CSS_VERSION@@" />
+    <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
+    <script src="/a11y-preload.js?v=gateway-19"></script>
+    @@VERCEL_ANALYTICS_SCRIPTS@@
+    <script defer src="/analytics.js?v=gateway-19"></script>
+    <script defer src="/utm-capture.js?v=utm-1"></script>
+    <script defer src="/a11y.js?v=gateway-19"></script>
+    <script defer src="/demo-key/demo-key.js?v=demo-key-5"></script>
+  </head>
+  <body class="site-light">
+    <a class="skip-link" href="#main">Skip to content</a>
+    @@SITE_NAV@@
+
+    <main id="main">
+      <section class="section demo-key-page" aria-labelledby="demo-key-title">
+        <p class="section-kicker">Try the one-tool loop</p>
+        <h1 id="demo-key-title">Get a demo key.</h1>
+        <p class="proof-page-lead">
+          Free sandbox demo keys, no account needed. Create a permit, invoke
+          <code>partner.echo</code>, and fetch the portable receipt with synthetic
+          credits. Production keys are issued to design partners.
+        </p>
+
+        <div class="demo-key-panel">
+          <button class="button button-primary" id="get-demo-key" type="button">Get a demo key</button>
+          <p id="demo-key-status" role="status" aria-live="polite">No account or payment needed.</p>
+          <div id="demo-key-result" hidden>
+            <label for="demo-api-key">API key</label>
+            <div class="demo-key-copy-row">
+              <input id="demo-api-key" type="text" readonly autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="demo-key-note" />
+              <button class="button button-secondary" id="copy-demo-key" type="button">Copy</button>
+            </div>
+            <dl class="demo-key-details">
+              <div><dt>Wallet ID</dt><dd id="demo-wallet-id"></dd></div>
+              <div><dt>Budget credits</dt><dd id="demo-budget-credits"></dd></div>
+            </dl>
+            <p id="demo-key-note">Shown once. Store it now. Confined to the demo tenant (synthetic credits, no real money)</p>
+          </div>
+        </div>
+
+        <section class="demo-key-next" aria-labelledby="demo-next-title">
+          <h2 id="demo-next-title">Next: permit → invoke → portable receipt</h2>
+          <p>After issuance, your key and wallet ID appear in these copy-paste commands. Run them in a terminal with Python 3 and curl.</p>
+          <pre><code id="demo-commands">API=https://api.thisisatest.tech
+KEY='YOUR_DEMO_KEY'
+WALLET='YOUR_WALLET_ID'
+PERMIT_IDEM=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
+EXPIRES=$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)+timedelta(minutes=15)).isoformat())')
+
+# 1. Create a permit for partner.echo.
+PERMIT=$(curl -fsS -X POST "$API/v1/permits" \
+  -H "X-API-Key: $KEY" -H "Idempotency-Key: $PERMIT_IDEM" \
+  -H 'Content-Type: application/json' \
+  -d "{\"issuer_wallet_id\":\"$WALLET\",\"subject_wallet_id\":\"$WALLET\",\"allowed_tools\":[\"partner.echo\"],\"scopes\":[\"tool:partner.echo:invoke\",\"billing:charge\"],\"max_credits\":\"5\",\"expires_at\":\"$EXPIRES\"}" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["permit_id"])')
+
+# 2. Invoke once with a fresh idempotency key.
+CALL_IDEM=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
+INVOKE=$(curl -fsS -X POST "$API/mcp/tools/partner.echo/invoke" \
+  -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"partner.echo\",\"arguments\":{\"message\":\"hello from demo\"},\"mcpContext\":{\"wallet_id\":\"$WALLET\",\"permit_id\":\"$PERMIT\",\"idempotency_key\":\"$CALL_IDEM\"}}")
+RECEIPT=$(printf '%s' "$INVOKE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["receipt"]["receipt_id"])')
+
+# 3. Fetch the portable receipt and public trust keys.
+curl -fsS "$API/v1/receipts/$RECEIPT/portable" -H "X-API-Key: $KEY"
+curl -fsS "$API/.well-known/trust-keys.json"</code></pre>
+          <p>Terminal-only fallback for getting a key:</p>
+          <pre><code>curl -s -X POST https://api.thisisatest.tech/v1/demo/keys</code></pre>
+        </section>
+      </section>
+    </main>
+
+    @@SITE_FOOTER@@
+  </body>
+</html>

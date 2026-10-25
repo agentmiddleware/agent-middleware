@@ -6,9 +6,12 @@ governed-loop calls as blocking methods with no event-loop management:
 
 ``discover -> permit -> invoke -> receipt -> evidence``
 
-The async client stays authoritative; every method here runs exactly one
-event loop per call and delegates to it. For concurrent or long-lived
-work, use :class:`b2a_sdk.client.AgentMiddlewareClient` directly.
+The async client stays authoritative; every method here delegates to it
+on one event loop the wrapper owns for its lifetime. A fresh loop per call
+(``asyncio.run``) would break the second call: the HTTP connection pool
+keeps keep-alive connections bound to the first, already-closed loop. For
+concurrent or long-lived work, use
+:class:`b2a_sdk.client.AgentMiddlewareClient` directly.
 """
 
 from __future__ import annotations
@@ -69,6 +72,23 @@ class SyncAgentMiddlewareClient:
             transport=transport,
             bearer_token=bearer_token,
         )
+        self._loop: asyncio.AbstractEventLoop | None = asyncio.new_event_loop()
+
+    def _run(self, coro: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            coro.close()
+            raise RuntimeError(
+                "SyncAgentMiddlewareClient cannot run inside an event loop; "
+                "use AgentMiddlewareClient"
+            )
+        if self._loop is None or self._loop.is_closed():
+            coro.close()
+            raise RuntimeError("SyncAgentMiddlewareClient is closed")
+        return self._loop.run_until_complete(coro)
 
     @property
     def base_url(self) -> str:
@@ -82,7 +102,7 @@ class SyncAgentMiddlewareClient:
 
     def discover_tools(self) -> list[ToolDefinition]:
         """Return the executable tools advertised by the MCP gateway."""
-        return asyncio.run(self._client.discover_tools())
+        return self._run(self._client.discover_tools())
 
     def create_permit(
         self,
@@ -91,7 +111,7 @@ class SyncAgentMiddlewareClient:
         idempotency_key: str,
     ) -> Permit:
         """Create a signed permit using a caller-owned idempotency key."""
-        return asyncio.run(self._client.create_permit(request, idempotency_key=idempotency_key))
+        return self._run(self._client.create_permit(request, idempotency_key=idempotency_key))
 
     @overload
     def invoke_tool(
@@ -131,7 +151,7 @@ class SyncAgentMiddlewareClient:
         exclude: list[str] | tuple[str, ...] | None = None,
     ) -> InvocationResult:
         """Invoke one MCP tool through the governed permit and receipt loop."""
-        return asyncio.run(
+        return self._run(
             self._client.invoke_tool(
                 name,
                 arguments,
@@ -146,19 +166,36 @@ class SyncAgentMiddlewareClient:
 
     def get_receipt(self, receipt_id: str) -> Receipt:
         """Fetch a wallet-authorized signed receipt."""
-        return asyncio.run(self._client.get_receipt(receipt_id))
+        return self._run(self._client.get_receipt(receipt_id))
 
     def verify_receipt(self, receipt_id: str) -> ReceiptVerification:
         """Ask the trust plane to verify a receipt signature and linkage."""
-        return asyncio.run(self._client.verify_receipt(receipt_id))
+        return self._run(self._client.verify_receipt(receipt_id))
 
     def get_evidence(self, receipt_id: str) -> EvidenceBundle:
         """Fetch the buyer-facing verification bundle for a receipt."""
-        return asyncio.run(self._client.get_evidence(receipt_id))
+        return self._run(self._client.get_evidence(receipt_id))
 
     def close(self) -> None:
-        """Close the underlying HTTP client."""
-        asyncio.run(self._client.close())
+        """Close the underlying HTTP client and the owned loop. Idempotent."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            self._loop = None
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "SyncAgentMiddlewareClient.close() cannot run inside an event loop; "
+                "call close() from synchronous code"
+            )
+        self._loop = None
+        try:
+            loop.run_until_complete(self._client.close())
+        finally:
+            loop.close()
 
     def __enter__(self) -> SyncAgentMiddlewareClient:
         return self

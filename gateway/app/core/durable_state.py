@@ -152,6 +152,7 @@ class DurableStateStore:
         self._state_backend = settings.STATE_BACKEND.strip().lower()
         self._redis_url = settings.REDIS_URL.strip()
         self._database_url = settings.DATABASE_URL.strip()
+        self._production_like = is_production_like_environment(settings.ENVIRONMENT)
         # SQLITE_URL is documented as a filesystem path (see .env.example),
         # but the name invites the SQLAlchemy URL form, and handing a URL to
         # aiosqlite.connect would create a file with that literal name while
@@ -192,14 +193,29 @@ class DurableStateStore:
         # setting. Without this, auto-resolution below would see a non-empty
         # DATABASE_URL, choose the postgres backend, hand a sqlite DSN to
         # asyncpg, and silently degrade to in-memory state after the failure.
-        if not self._sqlite_url:
+        uses_database_sqlite = not self._production_like and (
+            self._state_backend == "sqlite"
+            or (
+                self._state_backend not in ("postgres", "postgresql", "redis", "memory")
+                and not is_postgres_url(self._database_url)
+                and not self._redis_url
+            )
+        )
+        if not self._sqlite_url and uses_database_sqlite:
             self._sqlite_url = sqlite_path_from_url(self._database_url)
             if "?" in self._sqlite_url:
                 raise DurableStateConfigError(
                     "SQLite URL query parameters are not supported for durable state"
                 )
-        self._production_like = is_production_like_environment(settings.ENVIRONMENT)
-
+            if (
+                self._database_url
+                and is_sqlite_url(self._database_url)
+                and not self._sqlite_url
+                and not is_in_memory_sqlite_url(self._database_url)
+            ):
+                raise DurableStateConfigError(
+                    "DATABASE_URL is a SQLite URL that could not be parsed"
+                )
         self._init_lock = asyncio.Lock()
         self._initialized = False
         self._backend: str = "memory"

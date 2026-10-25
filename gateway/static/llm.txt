@@ -161,7 +161,7 @@ Install the SDK from source in `sdk/python/`. The agent manifest's
 `integrations.python_sdk` reports both the source version and the available
 release tag; do not infer a package-index install from this document. The SDK
 is **not** published to PyPI. Install from a clone of
-https://github.com/PetrefiedThunder/agent-middleware (repository root):
+https://github.com/agentmiddleware/agent-middleware (repository root):
 
 ```bash
 pip install -e ./sdk/python
@@ -223,4 +223,4 @@ clients require `/mcp` after the operator enables the Streamable HTTP transport.
 - OpenAPI Spec: `/openapi.json`
 - Wedge: `/WEDGE.md`
 - Security limitations: `/SECURITY_LIMITATIONS.md`
-- GitHub: https://github.com/PetrefiedThunder/agent-middleware
+- GitHub: https://github.com/agentmiddleware/agent-middleware

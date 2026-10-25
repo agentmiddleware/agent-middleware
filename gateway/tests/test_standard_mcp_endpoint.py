@@ -998,3 +998,64 @@ async def test_simultaneous_identical_unkeyed_calls_dispatch_once(
         assert len(receipts) == 1
     finally:
         get_service_registry().unregister_local("echo-concurrent")
+
+
+@pytest.mark.anyio
+async def test_stalled_lock_holder_taken_over_neither_dispatches_nor_frees_new_lock(
+    client, standard_mcp_enabled, clean_database, monkeypatch
+):
+    """Codex re-review blocker: a stalled holder whose lock was reclaimed as
+    stale must not mint/dispatch, and its release must not delete the lock now
+    held by the worker that took over."""
+    from app.routers import mcp_standard
+    from app.services.idempotency import get_idempotency_service
+
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    invocations: list[str] = []
+    _register_counting_tool("echo-takeover", invocations)
+    idem = get_idempotency_service()
+    real_check = mcp_standard._still_holds_unkeyed_retry_lock
+    taken: dict[str, str] = {}
+
+    async def _stall_then_take_over(wid, lock_key, record_id):
+        # Worker B reclaims the "stale" lock while A is stalled mid-section.
+        await idem.abandon(
+            wallet_id=wid,
+            endpoint=mcp_standard._UNKEYED_RETRY_LOCK_ENDPOINT,
+            idempotency_key=lock_key,
+            expected_record_id=record_id,
+        )
+        taken["key"] = lock_key
+        taken["id"] = await mcp_standard._acquire_unkeyed_retry_lock(wid, lock_key)
+        return await real_check(wid, lock_key, record_id)
+
+    monkeypatch.setattr(
+        mcp_standard, "_still_holds_unkeyed_retry_lock", _stall_then_take_over
+    )
+    try:
+        stalled = await _call(client, headers, "echo-takeover", 1)
+        assert stalled.json()["error"]["code"] == -32005, stalled.text
+        assert invocations == []
+
+        held = await idem.get_record(
+            wallet_id=wallet_id,
+            endpoint=mcp_standard._UNKEYED_RETRY_LOCK_ENDPOINT,
+            idempotency_key=taken["key"],
+        )
+        assert held is not None and held.record_id == taken["id"]
+
+        # Once B releases, the retry goes through exactly once.
+        monkeypatch.setattr(mcp_standard, "_still_holds_unkeyed_retry_lock", real_check)
+        await idem.abandon(
+            wallet_id=wallet_id,
+            endpoint=mcp_standard._UNKEYED_RETRY_LOCK_ENDPOINT,
+            idempotency_key=taken["key"],
+            expected_record_id=taken["id"],
+        )
+        retry = await _call(client, headers, "echo-takeover", 2)
+        assert "result" in retry.json(), retry.text
+        assert invocations == ["hi"]
+    finally:
+        get_service_registry().unregister_local("echo-takeover")

@@ -286,7 +286,8 @@ def _auto_permit_mint_key(client_key: str) -> str:
 
 _UNKEYED_RETRY_LOCK_ENDPOINT = "/mcp#unkeyed-retry-lock"
 _UNKEYED_RETRY_LOCK_WAIT_SECONDS = 5.0
-_UNKEYED_RETRY_LOCK_STALE_SECONDS = 30
+# Far above the worst-case hold (a few DB round trips plus one permit mint).
+_UNKEYED_RETRY_LOCK_STALE_SECONDS = 120
 # A pre-dispatch (no side effect) failure rolls the call forward to a fresh
 # attempt slot; bounded so a permanently failing upstream eventually replays
 # its failure instead of being re-run forever.
@@ -298,24 +299,30 @@ def _unkeyed_clock() -> float:
     return time.time()
 
 
-async def _acquire_unkeyed_retry_lock(wallet_id: str, lock_key: str) -> None:
-    """Serialize slot selection for one call identity.
+async def _acquire_unkeyed_retry_lock(wallet_id: str, lock_key: str) -> str:
+    """Serialize slot selection for one call identity; return the lock row id.
 
     The lock is an uncompleted idempotency row: the unique insert is the
     mutex, ``abandon`` releases it. A row left by a crashed holder is
-    released once it is older than the stale threshold.
+    released once it is older than the stale threshold, so a holder that
+    merely stalls can lose the lock: it must re-check ownership with
+    ``_still_holds_unkeyed_retry_lock`` before acting and release only its own
+    row (``expected_record_id``).
     """
     idem = get_idempotency_service()
     deadline = time.monotonic() + _UNKEYED_RETRY_LOCK_WAIT_SECONDS
     while True:
         try:
-            await idem.begin(
+            begun = await idem.begin_with_record(
                 wallet_id=wallet_id,
                 endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
                 idempotency_key=lock_key,
                 request_payload={"kind": "unkeyed-retry-lock"},
             )
-            return
+            if begun.replay is not None:
+                # Never expected for a lock row (it is never completed).
+                raise IdempotencyInProgressError("idempotency_in_progress")
+            return begun.record_id
         except IdempotencyInProgressError:
             held = await idem.get_record(
                 wallet_id=wallet_id,
@@ -335,6 +342,17 @@ async def _acquire_unkeyed_retry_lock(wallet_id: str, lock_key: str) -> None:
             if time.monotonic() >= deadline:
                 raise
             await anyio.sleep(0.02)
+
+
+async def _still_holds_unkeyed_retry_lock(
+    wallet_id: str, lock_key: str, record_id: str
+) -> bool:
+    held = await get_idempotency_service().get_record(
+        wallet_id=wallet_id,
+        endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
+        idempotency_key=lock_key,
+    )
+    return held is not None and held.record_id == record_id
 
 
 async def _resolve_unkeyed_retry(
@@ -382,7 +400,7 @@ async def _resolve_unkeyed_retry(
     idem = get_idempotency_service()
     lock_key = "ulock-" + identity[:48]
     try:
-        await _acquire_unkeyed_retry_lock(wallet_id, lock_key)
+        lock_record_id = await _acquire_unkeyed_retry_lock(wallet_id, lock_key)
     except IdempotencyInProgressError as exc:
         if map_mcp_errors:
             raise _mcp_error(-32005, "idempotency_in_progress") from exc
@@ -411,6 +429,14 @@ async def _resolve_unkeyed_retry(
             )
             if stored is None or not is_no_effect_failure(stored.response_json):
                 break
+        if not await _still_holds_unkeyed_retry_lock(
+            wallet_id, lock_key, lock_record_id
+        ):
+            # Stalled past the stale threshold and taken over: the new holder
+            # owns slot selection now, so do not mint or dispatch.
+            if map_mcp_errors:
+                raise _mcp_error(-32005, "idempotency_in_progress")
+            raise IdempotencyInProgressError("idempotency_in_progress")
         permit_id = await _mint_auto_permit(
             auth=auth,
             tool_name=tool_name,
@@ -425,6 +451,7 @@ async def _resolve_unkeyed_retry(
             wallet_id=wallet_id,
             endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
             idempotency_key=lock_key,
+            expected_record_id=lock_record_id,
         )
 
 

@@ -332,8 +332,15 @@ class ServiceRegistry:
         upstream_origin: str,
         credits_per_unit_exact: str | None = None,
         action_binding: ActionToolBinding | None = None,
+        read_only: bool = False,
     ) -> dict[str, Any]:
-        """Register one runtime-backed remote MCP tool without persisting secrets."""
+        """Register one runtime-backed remote MCP tool without persisting secrets.
+
+        ``read_only`` is an operator declaration (never taken from the
+        upstream's own ``readOnlyHint``, which a remote server could set to
+        dodge retry dedupe). It exempts the tool from the deterministic
+        unkeyed retry key; the default treats the tool as mutating.
+        """
         existing = self._local_registry.get(service_id)
         if existing and existing.get("execution_backend") != "upstream_mcp":
             raise ValueError(f"Service ID already registered: {service_id}")
@@ -350,6 +357,7 @@ class ServiceRegistry:
             "output_schema": output_schema,
             "owner_wallet_id": None,
             "require_permit": True,
+            "read_only": bool(read_only),
             "is_active": True,
             "is_local": False,
             "external": True,

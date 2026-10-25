@@ -7,8 +7,10 @@ auth-adjacent tests; it is never a real credential.
 from __future__ import annotations
 
 import importlib.util
+import json
 import secrets
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -57,8 +59,14 @@ def test_first_comma_separated_entry_wins(
 
 def test_client_attaches_key_header(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VALID_API_KEYS", PLACEHOLDER_KEY)
-    client = amw_approvals._client("http://127.0.0.1:9", amw_approvals._read_api_key())
-    assert client.headers["X-API-Key"] == PLACEHOLDER_KEY
+    # RFC 1122 loopback, RFC 6335 fixed port: allowed http loopback URL.
+    client = amw_approvals._client(
+        f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}", amw_approvals._read_api_key()
+    )
+    try:
+        assert client.headers["X-API-Key"] == PLACEHOLDER_KEY
+    finally:
+        client.close()
 
 
 class _StubResponse:
@@ -113,11 +121,15 @@ def test_every_command_sends_key_and_never_prints_it(
 def test_unreachable_gateway_error_hides_key(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("VALID_API_KEYS", PLACEHOLDER_KEY)
-    assert amw_approvals.main(["--base-url", "http://127.0.0.1:9", "list"]) == 1
+    key = secrets.token_hex(16)
+    monkeypatch.setenv("VALID_API_KEYS", key)
+    # RFC 1122 loopback; port 9 (discard) is closed, so connect fails.
+    base_url = f"http://{LOOPBACK_V4}:9"
+    assert amw_approvals.main(["--base-url", base_url, "list"]) == 1
     out = capsys.readouterr()
-    assert PLACEHOLDER_KEY not in out.out
-    assert PLACEHOLDER_KEY not in out.err
+    assert "gateway unreachable at" in out.err
+    assert base_url in out.err
+    _assert_no_key_leak(key, out.out, out.err)
 
 
 # Fixed documentation-only fixtures. Every host below is reserved and
@@ -404,8 +416,11 @@ def test_http_error_hides_key(
         out = capsys.readouterr()
         assert "Traceback" not in out.err
         assert "Traceback" not in out.out
-        assert "gateway request failed" in out.err
+        assert "gateway unreachable at" in out.err
+        assert base_url in out.err
         assert "ConnectError" in out.err
+        assert "dial boom" not in out.err
+        assert "dial boom" not in out.out
         _assert_no_key_leak(key, out.out, out.err)
 
 
@@ -414,23 +429,20 @@ def test_status_error_hides_key(
 ) -> None:
     key = secrets.token_hex(16)
 
-    class _StatusLeakResponse:
-        status_code = 500
+    def _unauthorized(
+        request: Any,
+    ) -> Any:
+        assert request.headers["X-API-Key"] == key
+        return amw_approvals.httpx.Response(401, json={"detail": "unauthorized"})
 
-        def raise_for_status(self) -> None:
-            raise amw_approvals.httpx.ConnectError(f"status boom {key} quoted")
+    transport = amw_approvals.httpx.MockTransport(_unauthorized)
+    _real_client = amw_approvals.httpx.Client
 
-    class _StatusLeakClient:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
+    def _mock_client(*args: Any, **kwargs: Any) -> Any:
+        kwargs["transport"] = transport
+        return _real_client(*args, **kwargs)
 
-        def get(self, path: str) -> _StatusLeakResponse:
-            return _StatusLeakResponse()
-
-        def post(self, path: str) -> _StatusLeakResponse:
-            return _StatusLeakResponse()
-
-    monkeypatch.setattr(amw_approvals.httpx, "Client", _StatusLeakClient)
+    monkeypatch.setattr(amw_approvals.httpx, "Client", _mock_client)
     monkeypatch.setenv("VALID_API_KEYS", key)
     base_url = f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}"
     nonce = "test-nonce"
@@ -439,6 +451,60 @@ def test_status_error_hides_key(
         out = capsys.readouterr()
         assert "Traceback" not in out.err
         assert "Traceback" not in out.out
-        assert "gateway request failed" in out.err
-        assert "ConnectError" in out.err
+        assert "HTTP 401" in out.err
+        assert "gateway request failed: HTTP 401" in out.err
+        assert base_url not in out.err
+        _assert_no_key_leak(key, out.out, out.err)
+
+
+def test_trailing_newline_key_accepted_and_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = secrets.token_hex(16)
+    monkeypatch.setenv("VALID_API_KEYS", f"{key}\n")
+    assert amw_approvals._read_api_key() == key
+    # RFC 1122 loopback, RFC 6335 fixed port: allowed http loopback URL.
+    client = amw_approvals._client(
+        f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}", amw_approvals._read_api_key()
+    )
+    try:
+        assert client.headers["X-API-Key"] == key
+    finally:
+        client.close()
+
+
+def test_non_json_response_prints_fixed_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = secrets.token_hex(16)
+
+    class _NonJsonResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            raise json.JSONDecodeError("Expecting value", "not json", 0)
+
+    class _NonJsonClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def get(self, path: str) -> _NonJsonResponse:
+            return _NonJsonResponse()
+
+        def post(self, path: str) -> _NonJsonResponse:
+            return _NonJsonResponse()
+
+    monkeypatch.setattr(amw_approvals.httpx, "Client", _NonJsonClient)
+    monkeypatch.setenv("VALID_API_KEYS", key)
+    base_url = f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}"
+    nonce = "test-nonce"
+    for argv in (["list"], ["approve", nonce], ["deny", nonce]):
+        assert amw_approvals.main(["--base-url", base_url, *argv]) == 1
+        out = capsys.readouterr()
+        assert "Traceback" not in out.err
+        assert "Traceback" not in out.out
+        assert "gateway returned a non-JSON response" in out.err
         _assert_no_key_leak(key, out.out, out.err)

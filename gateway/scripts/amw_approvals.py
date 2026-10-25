@@ -137,9 +137,9 @@ def _read_api_key() -> str:
     characters. The message never includes the value.
     """
     for entry in os.environ.get(API_KEY_ENV, "").split(","):
-        if entry.strip():
-            candidate = entry.strip()
-            if _has_control_chars(entry) or _has_control_chars(candidate):
+        candidate = entry.strip()
+        if candidate:
+            if _has_control_chars(candidate):
                 raise ValueError("invalid API key in VALID_API_KEYS")
             return candidate
     return ""
@@ -180,13 +180,30 @@ def cmd_list(args: argparse.Namespace) -> int:
     except httpx.InvalidURL:
         print("error: invalid gateway URL", file=sys.stderr)
         return 1
+    except httpx.HTTPStatusError as exc:
+        print(
+            f"gateway request failed: HTTP {exc.response.status_code}",
+            file=sys.stderr,
+        )
+        return 1
+    except httpx.TransportError as exc:
+        print(
+            f"gateway unreachable at {args.base_url} ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 1
     except httpx.HTTPError as exc:
         print(
             f"error: gateway request failed ({type(exc).__name__})",
             file=sys.stderr,
         )
         return 1
-    approvals = response.json().get("approvals", [])
+    try:
+        approvals = response.json().get("approvals", [])
+    except ValueError:
+        # ValueError covers json.JSONDecodeError from a non-JSON body.
+        print("gateway returned a non-JSON response", file=sys.stderr)
+        return 1
     if not approvals:
         print("no pending approvals")
         return 0
@@ -209,6 +226,18 @@ def _decide(args: argparse.Namespace, action: str) -> int:
     except httpx.InvalidURL:
         print("error: invalid gateway URL", file=sys.stderr)
         return 1
+    except httpx.HTTPStatusError as exc:
+        print(
+            f"gateway request failed: HTTP {exc.response.status_code}",
+            file=sys.stderr,
+        )
+        return 1
+    except httpx.TransportError as exc:
+        print(
+            f"gateway unreachable at {args.base_url} ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 1
     except httpx.HTTPError as exc:
         print(
             f"error: gateway request failed ({type(exc).__name__})",
@@ -227,13 +256,25 @@ def _decide(args: argparse.Namespace, action: str) -> int:
         return 1
     try:
         response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        print(
+            f"gateway request failed: HTTP {exc.response.status_code}",
+            file=sys.stderr,
+        )
+        return 1
     except httpx.HTTPError as exc:
         print(
             f"error: gateway request failed ({type(exc).__name__})",
             file=sys.stderr,
         )
         return 1
-    print(f"{args.nonce}: {response.json().get('status')}")
+    try:
+        status = response.json().get("status")
+    except ValueError:
+        # ValueError covers json.JSONDecodeError from a non-JSON body.
+        print("gateway returned a non-JSON response", file=sys.stderr)
+        return 1
+    print(f"{args.nonce}: {status}")
     return 0
 
 

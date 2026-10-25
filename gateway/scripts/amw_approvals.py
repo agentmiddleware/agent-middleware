@@ -19,7 +19,6 @@ import ipaddress
 import os
 import sys
 from datetime import datetime, timezone
-from urllib.parse import urlparse
 
 import httpx
 
@@ -35,31 +34,73 @@ _LOOPBACK_V4 = ipaddress.ip_network("127.0.0.0/8")
 _LOOPBACK_V6 = ipaddress.ip_address("::1")
 
 
+def _raw_authority(base_url: str) -> str | None:
+    """Authority after '://' up to / ? #; None when there is no '://'."""
+    sep = base_url.find("://")
+    if sep == -1:
+        return None
+    rest = base_url[sep + 3 :]
+    for i, ch in enumerate(rest):
+        if ch in "/?#":
+            return rest[:i]
+    return rest
+
+
+def _raw_port(authority: str) -> str | None:
+    """Port substring from a raw authority; None when absent or malformed."""
+    hostport = authority.rsplit("@", 1)[-1]
+    if hostport.startswith("["):
+        end = hostport.find("]")
+        if end == -1:
+            return None
+        after = hostport[end + 1 :]
+        if not after:
+            return None
+        if after.startswith(":"):
+            return after[1:]
+        return None
+    if ":" not in hostport:
+        return None
+    return hostport.rsplit(":", 1)[-1]
+
+
 def _refusal_reason(base_url: str) -> str | None:
     """Why the API key must not be sent to base_url; None when allowed.
 
     Allowed: any https URL, or http only on loopback (localhost, 127.0.0.0/8,
-    ::1). Any userinfo (username or password) refuses before the allowed
-    returns, so http://guest@localhost still refuses. Otherwise the host
-    comes from parsed.hostname, so userinfo tricks such as
+    ::1). Control characters, whitespace, and non-numeric ports refuse
+    before the allowed returns. Any userinfo (username or password) refuses
+    before the allowed returns, so http://guest@localhost still refuses.
+    Otherwise the host comes from httpx.URL.host, so userinfo tricks such as
     http://127.0.0.1@evil resolve to the real host (evil), and look-alikes
     such as localhost.example or 127.0.0.1.nip.io fail both the exact
     localhost match and the IP parse. Unknown schemes and empty hosts refuse.
+    The check uses httpx.URL, the same parser as the request.
     """
+    for ch in base_url:
+        if ord(ch) < 32 or ord(ch) == 127 or ch.isspace():
+            return "invalid characters in URL"
     try:
-        parsed = urlparse(base_url)
-        host = parsed.hostname or ""
-    except ValueError:
+        parsed = httpx.URL(base_url)
+    except httpx.InvalidURL:
         return "unparseable URL"
     scheme = parsed.scheme.lower()
     if scheme not in ("http", "https"):
         if parsed.scheme:
             return f"unsupported scheme {parsed.scheme!r}"
         return "missing URL scheme"
+    host = parsed.host or ""
     if not host:
         return "missing host"
-    if parsed.username is not None or parsed.password is not None:
+    if parsed.username or parsed.password or parsed.userinfo:
         return "userinfo not allowed"
+    authority = _raw_authority(base_url)
+    if authority is not None and "@" in authority:
+        return "userinfo not allowed"
+    if authority is not None:
+        port_str = _raw_port(authority)
+        if port_str and not (port_str.isascii() and port_str.isdigit()):
+            return f"invalid port {port_str!r}"
     if scheme == "https":
         return None
     if host == "localhost":
@@ -87,12 +128,15 @@ def _client(base_url: str, api_key: str) -> httpx.Client:
         raise ValueError(f"refusing to send the API key: {reason}")
     # trust_env=False: httpx honors ambient HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
     # by default, which would hand the bootstrap admin key to a proxy.
-    return httpx.Client(
-        base_url=base_url,
-        timeout=10.0,
-        headers={API_KEY_HEADER: api_key},
-        trust_env=False,
-    )
+    try:
+        return httpx.Client(
+            base_url=base_url,
+            timeout=10.0,
+            headers={API_KEY_HEADER: api_key},
+            trust_env=False,
+        )
+    except httpx.InvalidURL:
+        raise ValueError("refusing to send the API key: unparseable URL") from None
 
 
 def _format_time(value: float) -> str:
@@ -105,6 +149,12 @@ def cmd_list(args: argparse.Namespace) -> int:
     try:
         response = _client(args.base_url, args.api_key).get("/v1/approvals/pending")
         response.raise_for_status()
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except httpx.InvalidURL as exc:
+        print(f"error: invalid gateway URL: {exc}", file=sys.stderr)
+        return 1
     except httpx.HTTPError as exc:
         print(
             f"error: gateway not reachable at {args.base_url}: {exc}", file=sys.stderr
@@ -127,6 +177,12 @@ def _decide(args: argparse.Namespace, action: str) -> int:
         response = _client(args.base_url, args.api_key).post(
             f"/v1/approvals/{args.nonce}/{action}"
         )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except httpx.InvalidURL as exc:
+        print(f"error: invalid gateway URL: {exc}", file=sys.stderr)
+        return 1
     except httpx.HTTPError as exc:
         print(
             f"error: gateway not reachable at {args.base_url}: {exc}", file=sys.stderr

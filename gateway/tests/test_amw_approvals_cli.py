@@ -190,6 +190,15 @@ def _refused_url(case: str) -> str:
         return ""
     if case == "no-scheme":
         return f"{LOCALHOST_NAME}:{HTTP_TEST_PORT}"
+    if case == "http-tab-in-host":
+        # RFC 6761 localhost variant with a tab; control char refuses.
+        return f"http://local\thost:{HTTP_TEST_PORT}"
+    if case == "http-non-numeric-port":
+        # RFC 6761 localhost; non-numeric port refuses.
+        return f"http://{LOCALHOST_NAME}:abc"
+    if case == "https-newline":
+        # RFC 2606 example.com; newline refuses even on https.
+        return f"https://{EXAMPLE_COM}\n/"
     raise AssertionError(f"unknown refused case: {case}")
 
 
@@ -250,6 +259,9 @@ class _ExplodingClient:
         "missing-host",
         "empty",
         "no-scheme",
+        "http-tab-in-host",
+        "http-non-numeric-port",
+        "https-newline",
     ],
 )
 def test_refused_base_url_makes_no_request(
@@ -261,9 +273,12 @@ def test_refused_base_url_makes_no_request(
     nonce = "test-nonce"
     for argv in (["list"], ["approve", nonce], ["deny", nonce]):
         assert amw_approvals.main(["--base-url", base_url, *argv]) == 1
-        err = capsys.readouterr().err
-        assert "refusing to send the API key" in err
-        assert PLACEHOLDER_KEY not in err
+        out = capsys.readouterr()
+        assert "refusing to send the API key" in out.err
+        assert "Traceback" not in out.err
+        assert "Traceback" not in out.out
+        assert PLACEHOLDER_KEY not in out.err
+        assert PLACEHOLDER_KEY not in out.out
 
 
 def test_refusal_happens_before_key_check(

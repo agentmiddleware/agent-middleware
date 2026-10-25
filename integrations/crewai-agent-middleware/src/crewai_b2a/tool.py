@@ -175,13 +175,12 @@ class CrewAIB2ATool(BaseTool):
                 and asyncio.get_running_loop() is self._sync_runner_loop
             ):
                 if self._sync_client is None:
-                    if self.sync_client_factory is not None:
-                        self._sync_client = self.sync_client_factory()
-                    else:
-                        self._sync_client = B2AClient(
-                            api_key=self.api_key,
-                            base_url=self.base_url,
+                    if self.sync_client_factory is None:
+                        raise ValueError(
+                            "sync_client_factory is required for sync calls "
+                            "with a borrowed client"
                         )
+                    self._sync_client = self.sync_client_factory()
                 return self._sync_client
             if self.client is None:
                 self.client = B2AClient(

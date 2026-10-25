@@ -49,3 +49,31 @@ def test_sync_run_uses_configured_url_timeout_and_transport():
     finally:
         tool.close()
         asyncio.run(borrowed_client.close())
+
+
+def test_sync_run_refuses_borrowed_client_without_runner_factory():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(503)
+
+    borrowed_client = B2AClient(
+        api_key="test-key",
+        base_url="https://caller.example.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    tool = CrewAIB2ATool(
+        api_key="test-key",
+        wallet_id="wallet",
+        base_url="https://tool.example.invalid",
+        client=borrowed_client,
+    )
+    try:
+        assert tool._run(operation="balance") == (
+            "Error: sync_client_factory is required for sync calls with a borrowed client"
+        )
+        assert requests == []
+    finally:
+        tool.close()
+        asyncio.run(borrowed_client.close())

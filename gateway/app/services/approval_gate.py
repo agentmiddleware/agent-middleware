@@ -561,7 +561,7 @@ def _pause_payload(tool: str, nonce: str, request_state: str) -> dict[str, Any]:
     ``inputRequests`` is a map keyed by request id; each value is the client
     request the server wants answered, here an ``elicitation/create`` asking
     a human to approve the paused tool call. The client answers with an
-    ``inputResponses`` map keyed by the same id.
+    MCP inputResponses map keyed by the same id.
     """
     return {
         "resultType": "input_required",
@@ -752,7 +752,7 @@ class ApprovalGate:
     ) -> ApprovalDecision | None:
         """Reject when the retry answers no input request for this pause.
 
-        SEP-2322 keys ``inputResponses`` by the same request id the pause
+        SEP-2322 keys MCP inputResponses by the same request id the pause
         carried in ``inputRequests``. The response content itself is ignored:
         only the local human decision in the store can approve.
         """

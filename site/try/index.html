@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Try Agent Middleware | Agent Middleware API</title>
+    <meta name="description" content="Get a free test key and try the Agent Middleware demo with synthetic credits." />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="canonical" href="https://www.agentmiddleware.dev/try/" />
+    <link rel="alternate" hreflang="en" href="https://www.agentmiddleware.dev/try/" />
+    <link rel="alternate" hreflang="x-default" href="https://www.agentmiddleware.dev/try/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="alternate" type="application/json" title="Agent manifest" href="/.well-known/agent.json" />
+    <link rel="alternate" type="text/plain" title="Instructions for autonomous agents" href="/llms.txt" />
+    <link rel="alternate" type="text/plain" title="Extended briefing for autonomous agents" href="/llms-full.txt" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="Agent Middleware API" />
+    <meta property="og:title" content="Try Agent Middleware" />
+    <meta property="og:description" content="Get a free test key for the demo tenant with synthetic credits." />
+    <meta property="og:url" content="https://www.agentmiddleware.dev/try/" />
+    <meta property="og:image" content="https://www.agentmiddleware.dev/social-card.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Try Agent Middleware" />
+    <meta name="twitter:description" content="Get a free test key for the demo tenant with synthetic credits." />
+    <meta name="twitter:image" content="https://www.agentmiddleware.dev/social-card.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebPage",
+            "@id": "https://www.agentmiddleware.dev/try/#webpage",
+            "name": "Try Agent Middleware",
+            "url": "https://www.agentmiddleware.dev/try/",
+            "description": "Get a free test key for the demo tenant with synthetic credits.",
+            "inLanguage": "en",
+            "isPartOf": { "@id": "https://www.agentmiddleware.dev/#website" },
+            "about": { "@id": "https://www.agentmiddleware.dev/#software" },
+            "breadcrumb": { "@id": "https://www.agentmiddleware.dev/try/#breadcrumb" }
+          },
+          {
+            "@type": "BreadcrumbList",
+            "@id": "https://www.agentmiddleware.dev/try/#breadcrumb",
+            "itemListElement": [
+              { "@type": "ListItem", "position": 1, "name": "Agent Middleware API", "item": "https://www.agentmiddleware.dev/" },
+              { "@type": "ListItem", "position": 2, "name": "Try", "item": "https://www.agentmiddleware.dev/try/" }
+            ]
+          }
+        ]
+      }
+    </script>
+    @@FONT_PRELOADS@@
+    <link rel="stylesheet" href="/fonts.css?v=@@FONTS_CSS_VERSION@@" />
+    <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
+    <link rel="stylesheet" href="/try/try.css?v=try-3" />
+    <script src="/a11y-preload.js?v=gateway-19"></script>
+    @@VERCEL_ANALYTICS_SCRIPTS@@
+    <script defer src="/analytics.js?v=gateway-19"></script>
+    <script defer src="/utm-capture.js?v=utm-1"></script>
+    <script defer src="/a11y.js?v=gateway-19"></script>
+    <script defer src="/try/try.js?v=try-2"></script>
+  </head>
+  <body class="site-light">
+    <a class="skip-link" href="#main">Skip to content</a>
+    @@SITE_NAV@@
+    <main id="main" class="section try-page">
+      <div class="page-intro">
+        <p class="eyebrow">Free demo access</p>
+        <h1>Try one governed tool call.</h1>
+        <p>Get a key, then use the quickstart to create a permit, call a tool, and check its receipt. This key uses synthetic credits in the demo tenant.</p>
+      </div>
+
+      <section class="key-panel" aria-label="Get your test key">
+        <label for="try-email">Email (optional)</label>
+        <input id="try-email" class="email-input" type="email" autocomplete="email" aria-describedby="try-email-help try-email-error" />
+        <p id="try-email-help" class="email-help">Add your email if you want updates from us about AMW. Leave it blank to continue without sharing an email.</p>
+        <p id="try-email-error" class="email-error" role="status" hidden></p>
+        <button id="get-try-key" class="button button-primary primary-button" type="button">Get a free test key</button>
+        <p id="try-key-status" role="status" aria-live="polite">No account or payment needed.</p>
+
+        <div id="try-key-result" hidden>
+          <p class="result-heading">Your test key is ready.</p>
+          <p class="result-note">The key appears once. Copy it now.</p>
+
+          <label for="try-api-key">API key</label>
+          <div class="copy-row">
+            <input id="try-api-key" type="text" readonly autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <button id="copy-try-key" class="button button-secondary copy-button" type="button" aria-label="Copy API key">Copy</button>
+          </div>
+
+          <label for="try-wallet-id">Wallet ID</label>
+          <div class="copy-row">
+            <input id="try-wallet-id" type="text" readonly autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <button id="copy-try-wallet" class="button button-secondary copy-button" type="button" aria-label="Copy wallet ID">Copy</button>
+          </div>
+
+          <a id="quickstart-link" class="quickstart-link" href="https://github.com/agentmiddleware/amw-demo#quickstart-under-5-minutes" rel="noopener noreferrer">Continue with the quickstart</a>
+        </div>
+      </section>
+    </main>
+    @@SITE_FOOTER@@
+  </body>
+</html>

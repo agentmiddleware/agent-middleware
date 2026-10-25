@@ -465,10 +465,18 @@ async def _governed_tools_call(
     # require a prior tools/list before they resolve here.
     _ensure_local_mcp_tools_registered()
     record = get_service_registry().get_local(tool_name)
-    if record is None:
+    if record is None and not permit_id:
+        # No permit is minted for a tool that does not exist. With an explicit
+        # permit the governed pipeline decides instead: it checks the permit's
+        # allowlist first, so an unnamed tool is a -32003 permit denial with a
+        # receipt, and only a tool the permit names falls back to -32001.
         raise _mcp_error(-32001, f"Tool not found: {tool_name}")
 
-    if get_service_registry().get_action_binding(record) is not None and not permit_id:
+    if (
+        record is not None
+        and get_service_registry().get_action_binding(record) is not None
+        and not permit_id
+    ):
         raise _mcp_error(-32003, "action_permit_required")
 
     # Wallet policy shapes the permit this surface mints. A policy demanding a

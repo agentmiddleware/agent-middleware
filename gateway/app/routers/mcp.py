@@ -1197,6 +1197,112 @@ async def _assert_action_current_access(
         raise ToolPermissionDenied(policy.reason or "policy_denied")
 
 
+async def _deny_unregistered_tool_outside_permit(
+    *,
+    idem: Any,
+    idem_begin: IdempotencyBegin | None,
+    idem_started: bool,
+    permit_id: str,
+    wallet_id: str | None,
+    auth: AuthContext,
+    tool_name: str,
+    arguments: dict[str, Any],
+    endpoint: str,
+    idempotency_endpoint: str,
+    idempotency_key: str | None,
+    transport: str,
+    request_id: str | None,
+    effective_request_payload: dict[str, Any],
+    effective_request_hash: str,
+) -> None:
+    """Refuse an unregistered tool the explicit permit does not name.
+
+    Returns without effect when the permit is unknown or names the tool, so
+    the caller falls through to its unchanged "Tool not found" handling.
+    Otherwise the permit's own validation decides the reason (normally
+    ``permit_tool_not_allowed``; an earlier failure such as a wallet or key
+    mismatch keeps its narrower code) and a signed denial receipt is issued
+    through the same path as every other governed permit denial. Nothing is
+    reserved, charged, or dispatched.
+    """
+    async with get_session_factory()() as session:
+        model = await session.get(PermitModel, permit_id)
+    if model is None:
+        return
+    try:
+        allowed_tools = json.loads(model.allowed_tools_json or "[]")
+    except (TypeError, ValueError):
+        allowed_tools = []
+    if isinstance(allowed_tools, list) and tool_name in allowed_tools:
+        return
+    validation = await get_permit_service().validate_for_action(
+        permit_id=permit_id,
+        wallet_id=wallet_id or "",
+        tool_name=tool_name,
+        estimated_credits=Decimal("0"),
+        key_id=auth.key_id,
+        arguments=arguments,
+    )
+    if validation.allowed:  # pragma: no cover - allowlist already excludes it
+        return
+    reason = validation.reason or "permit_tool_not_allowed"
+    decision = evaluate_tool_invocation(
+        auth=auth,
+        wallet_id=wallet_id,
+        tool_name=tool_name,
+        estimated_cost=None,
+        request_id=request_id,
+    )
+    audit_event = await _audit_mcp_invocation(
+        effects_committed=False,
+        decision=decision,
+        endpoint=endpoint,
+        transport=transport,
+        ok=False,
+        error=reason,
+        extra_metadata={
+            "permit_id": permit_id,
+            "idempotency_key": idempotency_key,
+            "request_hash": effective_request_hash,
+            "tool_registered": False,
+        },
+    )
+    receipt_payload = None
+    if validation.permit is not None and wallet_id:
+        receipt_payload = await _finalize_governed_denial(
+            unaccepted_action_owner_id=None,
+            idem=idem,
+            effects_committed=False,
+            approval_consumed=False,
+            permit_model=validation.permit,
+            wallet_id=wallet_id,
+            key_id=auth.key_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+            tool_name=tool_name,
+            request_payload=effective_request_payload,
+            arguments=arguments,
+            registered_cost=Decimal("0"),
+            audit_event_id=audit_event.event_id,
+            reason=reason,
+            reason_code=reason,
+            outcome="denied",
+            status_code=403,
+        )
+    else:
+        await _complete_governed_denial_idempotency(
+            idem=idem,
+            idem_started=idem_started,
+            wallet_id=wallet_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+            reason=reason,
+        )
+    raise ToolPermissionDenied(
+        reason, receipt=receipt_payload, details=validation.details
+    )
+
+
 async def _execute_registered_tool_inner(
     *,
     tool_name: str,
@@ -1367,6 +1473,29 @@ async def _execute_registered_tool_inner(
                     )
                 await _raise_replayed_error(replay)
                 return replay.response_json
+        if governed_call and permit_id:
+            # A permit is the caller's declared authority. Its allowlist is
+            # checked before the registry so a tool the permit never named is
+            # refused as out of scope (-32003 / 403 with a denial receipt)
+            # whether or not the gateway has it registered; "not found" is
+            # kept for tools the permit does name but the registry lacks.
+            await _deny_unregistered_tool_outside_permit(
+                idem=idem,
+                idem_begin=idem_begin,
+                idem_started=idem_started,
+                permit_id=permit_id,
+                wallet_id=wallet_id,
+                auth=auth,
+                tool_name=tool_name,
+                arguments=arguments,
+                endpoint=endpoint,
+                idempotency_endpoint=idempotency_endpoint,
+                idempotency_key=idempotency_key,
+                transport=transport,
+                request_id=request_id,
+                effective_request_payload=effective_request_payload,
+                effective_request_hash=effective_request_hash,
+            )
         reason = f"Tool not found: {tool_name}"
         await _complete_governed_denial_idempotency(
             idem=idem,

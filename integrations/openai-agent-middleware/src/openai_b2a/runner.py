@@ -22,6 +22,11 @@ and the complete permit request is recorded in the store before the permit
 request goes out, so any later attempt — a retry after a crash, or the next
 tool call in a resumed process — re-sends the identical request and the server
 replays the permit instead of rejecting a fresh timestamp under the same key.
+
+The arguments are part of the saved record. A retry whose JSON arguments are
+not the same object is refused before any network call. Comparison uses
+canonical JSON text, because Python treats ``True == 1``. A receipt is kept
+only when its wallet, tool, permit, and receipt id match the call.
 """
 
 from __future__ import annotations
@@ -58,6 +63,42 @@ def _validate_identifier(value: str, label: str) -> str:
     if len(value) > MAX_IDEMPOTENCY_KEY_LENGTH:
         raise ValueError(f"{label} is too long (limit {MAX_IDEMPOTENCY_KEY_LENGTH} characters)")
     return value
+
+
+def _credit_amount_is_issuable(amount: Decimal) -> bool:
+    """A permit budget the trust plane will accept.
+
+    Creation rejects zero, negative, and amounts Numeric(20, 8) cannot store
+    without rounding. Snapshotting one of those would stick the failure to
+    this run and tool, because retries resend the saved request.
+    """
+    return (
+        amount.is_finite()
+        and Decimal(0) < amount < Decimal(1000000000000)
+        and Decimal(f"{float(amount):.8f}") == amount
+    )
+
+
+def _canonical_arguments_json(arguments: Mapping[str, Any]) -> str:
+    """Stable JSON text for one tool call's arguments.
+
+    Key order and insignificant whitespace are the same action. Python
+    equality is not: ``True == 1`` and ``1 == 1.0`` would hide a different body.
+    """
+    try:
+        encoded = json.dumps(
+            arguments,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise TypeError("tool call arguments must be JSON-serializable") from exc
+    parsed = json.loads(encoded)
+    if not isinstance(parsed, dict):
+        raise TypeError("tool call arguments must be a JSON object")
+    return encoded
 
 
 # ── Tool calls ───────────────────────────────────────────────────────────────
@@ -134,6 +175,8 @@ def operation_key_for(tool_call_id: str) -> str:
 
 def function_name_for(tool_name: str) -> str:
     """OpenAI function names are ``[a-zA-Z0-9_-]{1,64}``; MCP names may carry dots."""
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        raise ValueError("tool name must be a non-blank string")
     return _FUNCTION_NAME_INVALID.sub("_", tool_name)[:64]
 
 
@@ -142,7 +185,11 @@ def function_name_for(tool_name: str) -> str:
 
 @dataclass(slots=True)
 class OperationRecord:
-    """What must survive a crash for a tool call to be retried as *one* action."""
+    """What must survive a crash for a tool call to be retried as one action.
+
+    ``arguments_json`` is the canonical JSON object for this call. It is
+    absent on records written before argument snapshots existed.
+    """
 
     tool_call_id: str
     tool_name: str
@@ -151,6 +198,7 @@ class OperationRecord:
     permit_id: str | None = None
     receipt_id: str | None = None
     wallet_id: str | None = None
+    arguments_json: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -352,6 +400,22 @@ class GovernedToolRunner:
         if not isinstance(run_id, str):
             raise TypeError("run_id must be a string")
         _validate_identifier(run_id, "run_id")
+        if not isinstance(wallet_id, str):
+            raise TypeError("wallet_id must be a string")
+        if not wallet_id.strip():
+            raise ValueError("wallet_id must be a non-blank string")
+        if isinstance(permit_budget, bool) or not isinstance(permit_budget, Decimal | int):
+            raise TypeError("permit_budget must be a positive Decimal")
+        if not isinstance(permit_budget, Decimal):
+            permit_budget = Decimal(permit_budget)
+        if not _credit_amount_is_issuable(permit_budget):
+            raise ValueError("permit_budget must be a positive amount the trust plane can store")
+        if (
+            isinstance(permit_ttl_minutes, bool)
+            or not isinstance(permit_ttl_minutes, int)
+            or permit_ttl_minutes <= 0
+        ):
+            raise ValueError("permit_ttl_minutes must be a positive integer")
         self._client = client
         self._wallet_id = wallet_id
         self._run_id = run_id
@@ -409,14 +473,15 @@ class GovernedToolRunner:
     # -- execution ---------------------------------------------------------
 
     async def run(self, tool_call: Any) -> GovernedToolResult:
-        """Execute one tool call as exactly one governed action.
+        """Execute one tool call as one governed action.
 
-        Retrying the same tool call — same id — reuses the recorded key and
-        permit, so the trust plane replays the original receipt instead of
-        charging again.
+        Retrying the same tool call, the same id and the same JSON arguments,
+        reuses the recorded key and permit, so the trust plane replays the
+        original receipt instead of charging again.
         """
         call = normalize_tool_call(tool_call)
         tool_name = self.tool_name_for(call.name)
+        arguments_json = _canonical_arguments_json(call.arguments)
         operation_key = operation_key_for(call.id)
         permit_key = self.permit_key_for(tool_name)
 
@@ -428,6 +493,7 @@ class GovernedToolRunner:
                 idempotency_key=operation_key,
                 permit_idempotency_key=permit_key,
                 wallet_id=self._wallet_id,
+                arguments_json=arguments_json,
             )
         elif record.tool_name != tool_name:
             raise ValueError(
@@ -442,10 +508,22 @@ class GovernedToolRunner:
             raise ValueError("recorded operation identity does not match this call, run, and tool")
         if record.wallet_id is not None and record.wallet_id != self._wallet_id:
             raise ValueError("operation was recorded for a different wallet")
+        # Canonical text, not Python equality: True == 1 would hide a new body.
+        if record.arguments_json is not None and record.arguments_json != arguments_json:
+            raise ValueError(
+                f"tool call {call.id!r} was first recorded with different arguments; "
+                "refusing to replay it as a different action"
+            )
 
         permit = self._key_store.get_permit(record.permit_idempotency_key)
         if permit is not None:
             if permit.permit_idempotency_key != permit_key or permit.tool_name != tool_name:
+                raise ValueError("recorded permit identity does not match this run and tool")
+            if (
+                record.permit_id is not None
+                and permit.permit_id is not None
+                and record.permit_id != permit.permit_id
+            ):
                 raise ValueError("recorded permit identity does not match this run and tool")
             if permit.request_payload is not None:
                 if any(
@@ -461,14 +539,29 @@ class GovernedToolRunner:
         # Durable before any network call, after local validation succeeds.
         self._key_store.put_operation(record)
         permit_id = await self._ensure_permit(record, permit)
+        if record.arguments_json is None:
+            # Legacy records have no argument snapshot. The server still
+            # rejects a changed body once it has seen the original call.
+            invoke_arguments = call.arguments
+        else:
+            invoke_arguments = json.loads(record.arguments_json)
         result = await self._client.invoke_tool(
             tool_name,
-            call.arguments,
+            invoke_arguments,
             wallet_id=self._wallet_id,
             permit_id=permit_id,
             idempotency_key=record.idempotency_key,
         )
-        record.receipt_id = result.receipt.receipt_id
+        receipt = result.receipt
+        if (
+            receipt.tool != tool_name
+            or receipt.wallet_id != self._wallet_id
+            or receipt.permit_id != permit_id
+        ):
+            raise ValueError("receipt does not match this wallet, tool, and permit")
+        if record.receipt_id is not None and record.receipt_id != receipt.receipt_id:
+            raise ValueError("receipt does not match the recorded action")
+        record.receipt_id = receipt.receipt_id
         self._key_store.put_operation(record)
         return GovernedToolResult(
             tool_call_id=call.id,

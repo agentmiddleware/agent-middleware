@@ -21,6 +21,7 @@ def retry_with_backoff(
     max_delay: float = 10.0,
     exponential_base: float = 2.0,
     retriable_exceptions: tuple = (Exception,),
+    non_retriable_exceptions: tuple = (),
 ):
     """
     Decorator for async functions with exponential backoff retry.
@@ -31,6 +32,7 @@ def retry_with_backoff(
         max_delay: Maximum delay between retries.
         exponential_base: Base for exponential backoff.
         retriable_exceptions: Tuple of exception types to retry on.
+        non_retriable_exceptions: Tuple of exception types to raise immediately.
 
     Usage:
         @retry_with_backoff(max_attempts=3, base_delay=1.0)
@@ -49,6 +51,8 @@ def retry_with_backoff(
                 try:
                     return await func(*args, **kwargs)
                 except retriable_exceptions as e:
+                    if isinstance(e, non_retriable_exceptions):
+                        raise
                     last_exception = e
                     if attempt == max_attempts:
                         logger.warning(

@@ -35,8 +35,9 @@ def audit_payload(
     error: str | None,
     metadata_json: str | None,
     previous_hash: str | None,
+    seq: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "event_id": event_id,
         "created_at": created_at,
         "event": event,
@@ -52,6 +53,53 @@ def audit_payload(
         "metadata_json": metadata_json,
         "previous_hash": previous_hash,
     }
+    # None omits the field. Sequence 0 is a real stored value on rows signed
+    # before seq was covered, so it must not mean "leave seq out".
+    if seq is not None:
+        payload["seq"] = seq
+    return payload
+
+
+def _event_audit_payload(
+    event: ControlPlaneAuditEventModel,
+    *,
+    seq: int | None,
+) -> dict[str, Any]:
+    return audit_payload(
+        event_id=event.event_id,
+        created_at=event.created_at,
+        event=event.event,
+        wallet_id=event.wallet_id,
+        tool=event.tool,
+        endpoint=event.endpoint,
+        auth_source=event.auth_source,
+        key_id=event.key_id,
+        policy_decision_id=event.policy_decision_id,
+        request_id=event.request_id,
+        ok=event.ok,
+        error=event.error,
+        metadata_json=event.metadata_json,
+        previous_hash=event.previous_hash,
+        seq=seq,
+    )
+
+
+def _payload_matching_stored_hash(
+    event: ControlPlaneAuditEventModel,
+) -> dict[str, Any] | None:
+    """Return the body that produces ``event.payload_hash``, or None.
+
+    New signatures include ``seq``. Rows signed before that still match the
+    body that omits it. A rewritten sequence on a new signature matches
+    neither, which is what makes the number tamper-evident.
+    """
+    current = _event_audit_payload(event, seq=event.seq)
+    if event.payload_hash == sha256_hex(current):
+        return current
+    legacy = _event_audit_payload(event, seq=None)
+    if event.payload_hash == sha256_hex(legacy):
+        return legacy
+    return None
 
 
 def _chain_wallet_filter(wallet_id: str | None) -> ColumnElement[bool]:
@@ -94,33 +142,21 @@ def _sign_with_previous(
     """Sign ``model`` as the successor of ``previous_hash`` (seq set by caller).
 
     Pure (no DB I/O) so it can run inside an open chain-head transaction. The
-    active signing key must be ensured by the caller beforehand. seq is
-    deliberately NOT part of the signed payload, so events signed before that
-    column existed still verify.
+    active signing key must be ensured by the caller beforehand. ``model.seq``
+    is part of the signed payload, so a later edit of the sequence number
+    fails verification. Rows signed before seq was covered still verify:
+    their payload hash omits it, and verification accepts that older shape.
     """
-    payload = audit_payload(
-        event_id=model.event_id,
-        created_at=model.created_at,
-        event=model.event,
-        wallet_id=model.wallet_id,
-        tool=model.tool,
-        endpoint=model.endpoint,
-        auth_source=model.auth_source,
-        key_id=model.key_id,
-        policy_decision_id=model.policy_decision_id,
-        request_id=model.request_id,
-        ok=model.ok,
-        error=model.error,
-        metadata_json=model.metadata_json,
-        previous_hash=previous_hash,
-    )
+    # The caller passes the predecessor. Copy it onto the model before hashing
+    # so a retry against a newer head does not sign the previous attempt.
+    model.previous_hash = previous_hash
+    payload = _event_audit_payload(model, seq=model.seq)
     payload_hash = sha256_hex(payload)
     payload["payload_hash"] = payload_hash
     signature, signature_key_id, _ = get_signing_key_service().sign_payload_with_key_id(
         payload, signing_key_id
     )
     model.payload_hash = payload_hash
-    model.previous_hash = previous_hash
     model.chain_hash = sha256_hex(
         {
             "previous_hash": previous_hash,
@@ -220,24 +256,8 @@ def _assert_same_audit_intent(
     ):
         raise AuditEventConflictError("audit_event_id_conflict")
 
-    payload = audit_payload(
-        event_id=existing.event_id,
-        created_at=existing.created_at,
-        event=existing.event,
-        wallet_id=existing.wallet_id,
-        tool=existing.tool,
-        endpoint=existing.endpoint,
-        auth_source=existing.auth_source,
-        key_id=existing.key_id,
-        policy_decision_id=existing.policy_decision_id,
-        request_id=existing.request_id,
-        ok=existing.ok,
-        error=existing.error,
-        metadata_json=existing.metadata_json,
-        previous_hash=existing.previous_hash,
-    )
     if (
-        existing.payload_hash != sha256_hex(payload)
+        _payload_matching_stored_hash(existing) is None
         or existing.signature is None
         or existing.signature_key_id is None
         or existing.chain_hash
@@ -570,24 +590,8 @@ async def _verify_single_chain(
     first_event_id = events[0].event_id if events else None
     last_event_id = events[-1].event_id if events else None
     for event in events:
-        payload = audit_payload(
-            event_id=event.event_id,
-            created_at=event.created_at,
-            event=event.event,
-            wallet_id=event.wallet_id,
-            tool=event.tool,
-            endpoint=event.endpoint,
-            auth_source=event.auth_source,
-            key_id=event.key_id,
-            policy_decision_id=event.policy_decision_id,
-            request_id=event.request_id,
-            ok=event.ok,
-            error=event.error,
-            metadata_json=event.metadata_json,
-            previous_hash=event.previous_hash,
-        )
-        payload_hash = sha256_hex(payload)
-        if event.payload_hash != payload_hash:
+        payload = _payload_matching_stored_hash(event)
+        if payload is None:
             return AuditChainVerification(
                 False,
                 len(events),

@@ -348,3 +348,97 @@ def test_client_disables_trust_env_and_ignores_proxies(
             proving.close()
     finally:
         client.close()
+
+
+def _assert_no_key_leak(key: str, out: str, err: str) -> None:
+    assert key not in out
+    assert key not in err
+    for start in range(len(key) - 7):
+        part = key[start : start + 8]
+        assert part not in out
+        assert part not in err
+
+
+@pytest.mark.parametrize("injected", ["\n", "\r", "\x85", "\x7f"])
+def test_control_char_key_rejected_without_request(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    injected: str,
+) -> None:
+    token = secrets.token_hex(16)
+    key = f"{token[:16]}{injected}{token[16:]}"
+    monkeypatch.setattr(amw_approvals.httpx, "Client", _ExplodingClient)
+    monkeypatch.setenv("VALID_API_KEYS", key)
+    base_url = f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}"
+    nonce = "test-nonce"
+    for argv in (["list"], ["approve", nonce], ["deny", nonce]):
+        assert amw_approvals.main(["--base-url", base_url, *argv]) == 1
+        out = capsys.readouterr()
+        assert "Traceback" not in out.err
+        assert "Traceback" not in out.out
+        assert "invalid API key" in out.err
+        _assert_no_key_leak(key, out.out, out.err)
+
+
+def test_http_error_hides_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = secrets.token_hex(16)
+
+    class _LeakingClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def get(self, path: str) -> _StubResponse:
+            raise amw_approvals.httpx.ConnectError(f"dial boom {key} quoted")
+
+        def post(self, path: str) -> _StubResponse:
+            raise amw_approvals.httpx.ConnectError(f"dial boom {key} quoted")
+
+    monkeypatch.setattr(amw_approvals.httpx, "Client", _LeakingClient)
+    monkeypatch.setenv("VALID_API_KEYS", key)
+    base_url = f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}"
+    nonce = "test-nonce"
+    for argv in (["list"], ["approve", nonce], ["deny", nonce]):
+        assert amw_approvals.main(["--base-url", base_url, *argv]) == 1
+        out = capsys.readouterr()
+        assert "Traceback" not in out.err
+        assert "Traceback" not in out.out
+        assert "gateway request failed" in out.err
+        assert "ConnectError" in out.err
+        _assert_no_key_leak(key, out.out, out.err)
+
+
+def test_status_error_hides_key(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = secrets.token_hex(16)
+
+    class _StatusLeakResponse:
+        status_code = 500
+
+        def raise_for_status(self) -> None:
+            raise amw_approvals.httpx.ConnectError(f"status boom {key} quoted")
+
+    class _StatusLeakClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def get(self, path: str) -> _StatusLeakResponse:
+            return _StatusLeakResponse()
+
+        def post(self, path: str) -> _StatusLeakResponse:
+            return _StatusLeakResponse()
+
+    monkeypatch.setattr(amw_approvals.httpx, "Client", _StatusLeakClient)
+    monkeypatch.setenv("VALID_API_KEYS", key)
+    base_url = f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}"
+    nonce = "test-nonce"
+    for argv in (["list"], ["approve", nonce], ["deny", nonce]):
+        assert amw_approvals.main(["--base-url", base_url, *argv]) == 1
+        out = capsys.readouterr()
+        assert "Traceback" not in out.err
+        assert "Traceback" not in out.out
+        assert "gateway request failed" in out.err
+        assert "ConnectError" in out.err
+        _assert_no_key_leak(key, out.out, out.err)

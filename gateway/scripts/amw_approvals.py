@@ -121,11 +121,27 @@ def _refusal_reason(base_url: str) -> str | None:
     return f"non-loopback http host {host!r}"
 
 
+def _has_control_chars(value: str) -> bool:
+    """True when value holds C0, DEL, or C1 controls."""
+    for ch in value:
+        code = ord(ch)
+        if code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F:
+            return True
+    return False
+
+
 def _read_api_key() -> str:
-    """First key from API_KEY_ENV; empty when unset or blank."""
+    """First key from API_KEY_ENV; empty when unset or blank.
+
+    Raises ValueError with a fixed message when the key holds control
+    characters. The message never includes the value.
+    """
     for entry in os.environ.get(API_KEY_ENV, "").split(","):
         if entry.strip():
-            return entry.strip()
+            candidate = entry.strip()
+            if _has_control_chars(entry) or _has_control_chars(candidate):
+                raise ValueError("invalid API key in VALID_API_KEYS")
+            return candidate
     return ""
 
 
@@ -158,15 +174,16 @@ def cmd_list(args: argparse.Namespace) -> int:
     try:
         response = _client(args.base_url, args.api_key).get("/v1/approvals/pending")
         response.raise_for_status()
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except ValueError:
+        print("error: refusing to send the API key", file=sys.stderr)
         return 1
-    except httpx.InvalidURL as exc:
-        print(f"error: invalid gateway URL: {exc}", file=sys.stderr)
+    except httpx.InvalidURL:
+        print("error: invalid gateway URL", file=sys.stderr)
         return 1
     except httpx.HTTPError as exc:
         print(
-            f"error: gateway not reachable at {args.base_url}: {exc}", file=sys.stderr
+            f"error: gateway request failed ({type(exc).__name__})",
+            file=sys.stderr,
         )
         return 1
     approvals = response.json().get("approvals", [])
@@ -186,15 +203,16 @@ def _decide(args: argparse.Namespace, action: str) -> int:
         response = _client(args.base_url, args.api_key).post(
             f"/v1/approvals/{args.nonce}/{action}"
         )
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except ValueError:
+        print("error: refusing to send the API key", file=sys.stderr)
         return 1
-    except httpx.InvalidURL as exc:
-        print(f"error: invalid gateway URL: {exc}", file=sys.stderr)
+    except httpx.InvalidURL:
+        print("error: invalid gateway URL", file=sys.stderr)
         return 1
     except httpx.HTTPError as exc:
         print(
-            f"error: gateway not reachable at {args.base_url}: {exc}", file=sys.stderr
+            f"error: gateway request failed ({type(exc).__name__})",
+            file=sys.stderr,
         )
         return 1
     if response.status_code == 404:
@@ -210,7 +228,10 @@ def _decide(args: argparse.Namespace, action: str) -> int:
     try:
         response.raise_for_status()
     except httpx.HTTPError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(
+            f"error: gateway request failed ({type(exc).__name__})",
+            file=sys.stderr,
+        )
         return 1
     print(f"{args.nonce}: {response.json().get('status')}")
     return 0
@@ -247,7 +268,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    api_key = _read_api_key()
+    try:
+        api_key = _read_api_key()
+    except ValueError:
+        print("error: invalid API key in VALID_API_KEYS", file=sys.stderr)
+        return 1
     if not api_key:
         print(
             "error: VALID_API_KEYS is not set; export the gateway "

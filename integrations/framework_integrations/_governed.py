@@ -165,9 +165,10 @@ def governed_tool(
        when given, so retrying the same logical tool call reuses the key
        instead of minting a fresh random one. Pass ``action_id`` (for
        example the framework's tool call id) when two distinct actions
-       can carry identical arguments but must bill separately;
-       a stub that declares an ``idempotency_key`` parameter (keyword or
-       positional) has it consumed the same way and never sent to the
+       can carry identical arguments but must bill separately.
+       A stub that declares an ``idempotency_key`` or ``action_id``
+       parameter (keyword or positional, required or optional) has it
+       bound normally, then consumed the same way and never sent to the
        server;
     2. binds the remaining arguments to the stub's signature **with the
        stub's declared defaults applied**, so an omitted parameter travels
@@ -194,50 +195,64 @@ def governed_tool(
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            action_id: str | None = None
-            if "action_id" in kwargs:
-                supplied_action = kwargs.pop("action_id")
-                if supplied_action is not None:
-                    action_id = str(supplied_action)
-                    if not action_id.strip():
-                        raise ValueError(
-                            "action_id must not be blank; omit it to derive without one"
-                        )
+            # idempotency_key and action_id are both reserved and consumed by
+            # the wrapper with one rule: whether passed as an extra keyword
+            # or declared by the stub (keyword or positional, required or
+            # optional), the value is used as key material and stripped from
+            # the arguments sent to session.invoke. A declared parameter is
+            # left in kwargs so signature.bind sees required parameters.
             missing = object()
-            declared = signature.parameters.get("idempotency_key")
-            accepts_keyword = declared is not None and declared.kind in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            )
-            supplied = (
-                kwargs.get("idempotency_key", missing)
-                if accepts_keyword
-                else kwargs.pop("idempotency_key", missing)
-            )
+            reserved = ("idempotency_key", "action_id")
+            accepts_keyword: dict[str, bool] = {}
+            supplied: dict[str, Any] = {}
+            for reserved_name in reserved:
+                declared = signature.parameters.get(reserved_name)
+                keyword_kinds = (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+                accepts_keyword[reserved_name] = (
+                    declared is not None and declared.kind in keyword_kinds
+                )
+                supplied[reserved_name] = (
+                    kwargs.get(reserved_name, missing)
+                    if accepts_keyword[reserved_name]
+                    else kwargs.pop(reserved_name, missing)
+                )
             bound = signature.bind(*args, **kwargs)
-            positional = bound.arguments.get("idempotency_key", missing)
-            if (
-                supplied is not missing
-                and positional is not missing
-                and not accepts_keyword
-            ):
-                raise TypeError("multiple values for idempotency_key")
-            if supplied is missing:
-                supplied = positional
-            idempotency_key: str | None = None
-            if supplied is not missing and supplied is not None:
-                idempotency_key = str(supplied)
-                if not idempotency_key.strip():
-                    raise ValueError(
-                        "idempotency_key must not be blank; omit it to "
-                        "derive a stable key"
-                    )
+            consumed: dict[str, str | None] = {}
+            for reserved_name in reserved:
+                value = supplied[reserved_name]
+                positional = bound.arguments.get(reserved_name, missing)
+                if (
+                    value is not missing
+                    and positional is not missing
+                    and not accepts_keyword[reserved_name]
+                ):
+                    raise TypeError(f"multiple values for {reserved_name}")
+                if value is missing:
+                    value = positional
+                consumed[reserved_name] = None
+                if value is not missing and value is not None:
+                    text = str(value)
+                    if not text.strip():
+                        hint = (
+                            "derive a stable key"
+                            if reserved_name == "idempotency_key"
+                            else "derive without one"
+                        )
+                        raise ValueError(
+                            f"{reserved_name} must not be blank; omit it to {hint}"
+                        )
+                    consumed[reserved_name] = text
+            idempotency_key = consumed["idempotency_key"]
+            action_id = consumed["action_id"]
             bound.apply_defaults()
             arguments = dict(bound.arguments)
-            # idempotency_key is reserved for the governed loop (consumed
-            # above); a stub that declares a parameter of the same name must
-            # not leak it into the tool arguments sent to the server.
-            arguments.pop("idempotency_key", None)
+            # Reserved names are for the governed loop (consumed above); a
+            # stub that declares either must not leak it to the server.
+            for reserved_name in reserved:
+                arguments.pop(reserved_name, None)
             if idempotency_key is None:
                 idempotency_key = derive_governed_idempotency_key(
                     permit_id=session.permit_id,

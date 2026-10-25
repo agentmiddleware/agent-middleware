@@ -181,3 +181,45 @@ def test_wrapper_coerces_non_string_action_id():
 
     assert len(session.keys) == 2
     assert session.keys[0] == session.keys[1]
+
+
+def test_wrapper_declared_required_action_id_binds_by_keyword():
+    """A stub declaring a required action_id accepts it by keyword."""
+    session = _FakeSession()
+
+    @governed_tool(session, tool_name="echo-tool")
+    async def echo(message: str, action_id: str) -> dict[str, Any]:
+        raise AssertionError("stub body must never run locally")
+
+    asyncio.run(echo(message="hello", action_id="framework-call-1"))
+    asyncio.run(echo("hello", "framework-call-1"))
+    asyncio.run(echo(message="hello", action_id="framework-call-2"))
+    assert session.keys[0] == session.keys[1]
+    assert session.keys[0] != session.keys[2]
+    assert session.keys[0] == derive_governed_idempotency_key(
+        permit_id=session.permit_id,
+        tool_name="echo-tool",
+        arguments={"message": "hello"},
+        action_id="framework-call-1",
+    )
+    assert all(args == {"message": "hello"} for _, args in session.calls)
+
+
+def test_wrapper_declared_action_id_is_stripped_from_invoke_arguments():
+    """A declared action_id feeds the key but never reaches session.invoke."""
+    session = _FakeSession()
+    plain_session = _FakeSession()
+
+    @governed_tool(session, tool_name="echo-tool")
+    async def echo(message: str, action_id: str | None = None) -> dict[str, Any]:
+        raise AssertionError("stub body must never run locally")
+
+    plain = _echo_tool(plain_session)
+    asyncio.run(echo(message="hello", action_id="framework-call-1"))
+    asyncio.run(plain(message="hello", action_id="framework-call-1"))
+    asyncio.run(echo(message="hello"))
+    asyncio.run(plain(message="hello"))
+    assert session.calls == [("echo-tool", {"message": "hello"})] * 2
+    assert session.keys == plain_session.keys
+    with pytest.raises(ValueError, match="action_id"):
+        asyncio.run(echo(message="hello", action_id="  "))

@@ -3305,7 +3305,7 @@
           "MCP"
         ],
         "summary": "Mcp Tools Manifest",
-        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned JSON-RPC subset. Clients can obtain the same list by\nsending ``tools/list`` to ``/mcp/messages``; that endpoint does not\nimplement the complete MCP initialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
+        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned tool surfaces. New integrations should invoke tools through\nthe standard Streamable HTTP endpoint at POST /mcp and can obtain the\nsame list via its ``tools/list`` method. Clients can also obtain the\nlist by sending ``tools/list`` to the legacy ``/mcp/messages``\nendpoint; that endpoint does not implement the complete MCP\ninitialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
         "operationId": "MCP_Tools_Manifest_mcp_tools_json_get",
         "parameters": [
           {
@@ -5663,6 +5663,104 @@
         }
       }
     },
+    "/v1/admin/api-keys/usage/daily": {
+      "get": {
+        "tags": [
+          "API Key Management"
+        ],
+        "summary": "Admin: daily usage by API key",
+        "description": "Read daily call counts and latency for a bounded UTC window.",
+        "operationId": "admin_api_key_usage_daily_v1_admin_api_keys_usage_daily_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Key Id"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 30,
+              "title": "Days"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIKeyUsageDailyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/demo/keys": {
       "get": {
         "tags": [
@@ -6076,6 +6174,7 @@
           "use_count": {
             "type": "integer",
             "title": "Use Count",
+            "description": "Bounded-key budget uses, not total calls. See api_key_usage_daily.",
             "default": 0
           }
         },
@@ -6100,6 +6199,78 @@
           "suspended"
         ],
         "title": "APIKeyStatus"
+      },
+      "APIKeyUsageDailyResponse": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/APIKeyUsageDailyRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "APIKeyUsageDailyResponse"
+      },
+      "APIKeyUsageDailyRow": {
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "title": "Key Id"
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "calls": {
+            "type": "integer",
+            "title": "Calls"
+          },
+          "calls_4xx": {
+            "type": "integer",
+            "title": "Calls 4Xx"
+          },
+          "calls_5xx": {
+            "type": "integer",
+            "title": "Calls 5Xx"
+          },
+          "p50_latency_ms": {
+            "type": "number",
+            "title": "P50 Latency Ms"
+          },
+          "p95_latency_ms": {
+            "type": "number",
+            "title": "P95 Latency Ms"
+          },
+          "first_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Call At"
+          },
+          "last_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Call At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key_id",
+          "day",
+          "calls",
+          "calls_4xx",
+          "calls_5xx",
+          "p50_latency_ms",
+          "p95_latency_ms",
+          "first_call_at",
+          "last_call_at"
+        ],
+        "title": "APIKeyUsageDailyRow"
       },
       "APIKeyWithSecret": {
         "properties": {

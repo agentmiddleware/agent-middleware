@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .core.auth import AuthContext, get_auth_context
+from .core.api_key_usage import APIKeyUsageMiddleware
 from .core.build_metadata import get_build_commit_sha, get_build_provenance
 from .core.config import get_settings
 from .core.durable_state import (
@@ -582,6 +583,10 @@ app = FastAPI(
 
 # --- Middleware Stack ---
 
+# Run inside the rate limiter so its accepted-credential holder is shared
+# with auth; this records at most one event after the routed call completes.
+app.add_middleware(APIKeyUsageMiddleware)
+
 # Rate limiting (enforces documented 120 req/min per API key)
 app.add_middleware(RateLimitMiddleware)
 
@@ -800,6 +805,7 @@ for router_module in CORE_TRUST_ROUTERS:
             else True
         ),
     )
+app.include_router(api_keys.admin_router)
 
 # Self-serve dev keys: the handler is triple-gated at runtime (its own
 # ENABLE_DEV_KEY_SELF_PROVISION flag answers 404, production-like environments
@@ -1047,12 +1053,23 @@ async def root(request: Request):
                 "description": (
                     "Model Context Protocol (MCP) gateway for governed tool "
                     "discovery and execution (permit → meter → dispatch → "
-                    "receipt)."
+                    "receipt). "
+                    + (
+                        "New integrations should invoke tools through the "
+                        "standard Streamable HTTP endpoint at POST /mcp; "
+                        if get_settings().ENABLE_STANDARD_MCP_ENDPOINT
+                        else "New integrations should invoke tools through "
+                        "POST /mcp/tools/{service_id}/invoke; "
+                    )
+                    + "POST /mcp/messages and "
+                    "POST /mcp/tools/{service_id}/invoke are legacy and kept "
+                    "for existing clients. Transports are stateless JSON "
+                    "only: no SSE, no server-initiated streams."
                 ),
                 "endpoints": [
                     "GET /mcp/tools.json",
                     "GET /.well-known/mcp/tools.json",
-                    "POST /mcp/messages",
+                    "POST /mcp/messages (legacy)",
                     *(
                         ["POST /mcp"]
                         if get_settings().ENABLE_STANDARD_MCP_ENDPOINT
@@ -1060,7 +1077,7 @@ async def root(request: Request):
                     ),
                     "GET /mcp/tools",
                     "GET /mcp/tools/{service_id}",
-                    "POST /mcp/tools/{service_id}/invoke",
+                    "POST /mcp/tools/{service_id}/invoke (legacy)",
                 ],
             },
             "red_team_security": {

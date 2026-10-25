@@ -304,10 +304,11 @@ def _integration_manifest() -> dict[str, Any]:
             "version": "0.5.0",
             "path": "sdk/python/",
             "install": "pip install -e ./sdk/python",
-            "latest_release_tag": None,
+            "latest_release_tag": "python-sdk-v0.4.0",
             "note": (
-                "Install from source in sdk/python/. No release has been cut "
-                "from this repository yet. Not published to PyPI."
+                "Install from source in sdk/python/ (import package "
+                "b2a_sdk), which yields 0.5.0 pre-release. Latest cut "
+                "release is tag python-sdk-v0.4.0. Not published to PyPI."
             ),
         },
         "typescript_sdk": {

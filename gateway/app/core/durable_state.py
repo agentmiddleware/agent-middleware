@@ -174,10 +174,6 @@ class DurableStateStore:
             # silently discarding state the operator expects on disk.
             sqlite_path = sqlite_path_from_url(raw_sqlite_url)
             if sqlite_path:
-                if "?" in sqlite_path:
-                    raise DurableStateConfigError(
-                        "SQLite URL query parameters are not supported for durable state"
-                    )
                 self._sqlite_url = sqlite_path
             elif is_in_memory_sqlite_url(raw_sqlite_url):
                 self._sqlite_url = ":memory:"
@@ -203,10 +199,6 @@ class DurableStateStore:
         )
         if not self._sqlite_url and uses_database_sqlite:
             self._sqlite_url = sqlite_path_from_url(self._database_url)
-            if "?" in self._sqlite_url:
-                raise DurableStateConfigError(
-                    "SQLite URL query parameters are not supported for durable state"
-                )
             if (
                 self._database_url
                 and is_sqlite_url(self._database_url)

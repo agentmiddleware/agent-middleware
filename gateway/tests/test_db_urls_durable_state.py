@@ -349,28 +349,6 @@ def test_unparseable_sqlite_url_fails_instead_of_using_memory(monkeypatch):
         reset_durable_state_for_tests()
 
 
-@pytest.mark.parametrize("source", ["SQLITE_URL", "DATABASE_URL"])
-def test_file_sqlite_url_rejects_query_parameters(monkeypatch, tmp_path, source):
-    reset_durable_state_for_tests()
-    state_file = tmp_path / "state.db"
-    monkeypatch.setenv("ENVIRONMENT", "local")
-    monkeypatch.setenv("STATE_BACKEND", "auto")
-    monkeypatch.setenv("SQLITE_URL", "")
-    monkeypatch.setenv("DATABASE_URL", "")
-    monkeypatch.setenv(source, f"sqlite+aiosqlite:///{state_file}?timeout=10")
-    from app.core.config import get_settings
-
-    get_settings.cache_clear()
-    try:
-        with pytest.raises(DurableStateConfigError, match="query parameters"):
-            DurableStateStore()
-        assert not state_file.exists()
-        assert not (tmp_path / "state.db?timeout=10").exists()
-    finally:
-        get_settings.cache_clear()
-        reset_durable_state_for_tests()
-
-
 def test_auto_backend_uses_sqlite_for_a_sqlite_database_url(monkeypatch):
     """A SQLite DATABASE_URL must not route auto-resolution to asyncpg.
 

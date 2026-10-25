@@ -63,12 +63,16 @@ class B2AFunctionTool:
             permit_idempotency_key: Caller-supplied permit idempotency key (required)
             arguments: Tool arguments
         """
-        if arguments is None:
-            arguments = {}
         if not idempotency_key or not idempotency_key.strip():
             raise ValueError("idempotency_key is required and must not be blank")
         if not permit_idempotency_key or not permit_idempotency_key.strip():
             raise ValueError("permit_idempotency_key is required and must not be blank")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            raise ValueError("tool_name is required and must not be blank")
+        if arguments is None:
+            arguments = {}
+        elif not isinstance(arguments, dict):
+            raise ValueError("arguments must be an object")
 
         # Retain the body before the first await: a lost acknowledgement must
         # replay the original expiry under the same caller-owned key.

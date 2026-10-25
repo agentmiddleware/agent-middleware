@@ -165,19 +165,27 @@ def _client(base_url: str, api_key: str) -> httpx.Client:
 
 
 def _format_time(value: float) -> str:
+    if isinstance(value, bool):
+        raise TypeError("bool is not a valid deadline")
     return datetime.fromtimestamp(value, tz=timezone.utc).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
 
 
 def _is_pending_item(item: object) -> bool:
-    """True when item has the keys cmd_list prints, with a numeric deadline."""
+    """True when item has the keys cmd_list prints, with a renderable deadline."""
     if not isinstance(item, dict):
         return False
     if "nonce" not in item or "tool" not in item or "principal" not in item:
         return False
     deadline = item.get("deadline")
-    return isinstance(deadline, (int, float)) and not isinstance(deadline, bool)
+    if not isinstance(deadline, (int, float)):
+        return False
+    try:
+        _format_time(deadline)
+    except (ValueError, OverflowError, OSError, TypeError):
+        return False
+    return True
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -217,7 +225,10 @@ def cmd_list(args: argparse.Namespace) -> int:
     if not isinstance(payload, dict):
         print("gateway returned an unexpected response", file=sys.stderr)
         return 1
-    approvals = payload.get("approvals", [])
+    if "approvals" not in payload:
+        print("gateway returned an unexpected response", file=sys.stderr)
+        return 1
+    approvals = payload["approvals"]
     if not isinstance(approvals, list) or any(
         not _is_pending_item(item) for item in approvals
     ):
@@ -227,9 +238,14 @@ def cmd_list(args: argparse.Namespace) -> int:
         print("no pending approvals")
         return 0
     for item in approvals:
+        try:
+            rendered = _format_time(item["deadline"])
+        except (ValueError, OverflowError, OSError, TypeError):
+            print("gateway returned an unexpected response", file=sys.stderr)
+            return 1
         print(
             f"{item['nonce']} tool={item['tool']} principal={item['principal']} "
-            f"deadline={_format_time(item['deadline'])}"
+            f"deadline={rendered}"
         )
     return 0
 
@@ -297,6 +313,9 @@ def _decide(args: argparse.Namespace, action: str) -> int:
         print("gateway returned an unexpected response", file=sys.stderr)
         return 1
     status = payload.get("status")
+    if not isinstance(status, str) or not status:
+        print("gateway returned an unexpected response", file=sys.stderr)
+        return 1
     print(f"{args.nonce}: {status}")
     return 0
 

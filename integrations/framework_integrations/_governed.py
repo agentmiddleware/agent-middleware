@@ -25,8 +25,9 @@ import contextvars
 import functools
 import inspect
 import uuid
+from collections.abc import Callable
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 try:
     from b2a_sdk.edge_client import GovernedEdgeSession
@@ -99,7 +100,7 @@ def governed_tool(
     raises ``RuntimeError`` at call time (matching ``b2a_sdk.decorators
     .billable``'s established behavior). On each call the wrapper:
 
-    1. consumes an ``idempotency_key`` keyword: a supplied non-blank key is
+    1. consumes an ``idempotency_key`` argument: a supplied non-blank key is
        used as-is (retries that must replay — same receipt, no double
        charge — need a caller-owned key); a supplied blank/whitespace key
        raises ``ValueError`` rather than being silently replaced; when the
@@ -120,6 +121,8 @@ def governed_tool(
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        if tool_name is not None and not tool_name.strip():
+            raise ValueError("tool_name must not be blank")
         name = tool_name or func.__name__
         signature = inspect.signature(func)
         receipt_var: contextvars.ContextVar[Receipt | None] = contextvars.ContextVar(
@@ -128,22 +131,42 @@ def governed_tool(
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            if "idempotency_key" in kwargs:
-                supplied = kwargs.pop("idempotency_key")
-                if supplied is None:
-                    idempotency_key = uuid.uuid4().hex
-                else:
-                    idempotency_key = str(supplied)
-                    if not idempotency_key.strip():
-                        raise ValueError(
-                            "idempotency_key must not be blank; omit it to "
-                            "derive a fresh key"
-                        )
-            else:
-                idempotency_key = uuid.uuid4().hex
+            missing = object()
+            declared = signature.parameters.get("idempotency_key")
+            accepts_keyword = declared is not None and declared.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+            supplied = (
+                kwargs.get("idempotency_key", missing)
+                if accepts_keyword
+                else kwargs.pop("idempotency_key", missing)
+            )
             bound = signature.bind(*args, **kwargs)
+            positional = bound.arguments.get("idempotency_key", missing)
+            if (
+                supplied is not missing
+                and positional is not missing
+                and not accepts_keyword
+            ):
+                raise TypeError("multiple values for idempotency_key")
+            if supplied is missing:
+                supplied = positional
+            if supplied is missing or supplied is None:
+                idempotency_key = uuid.uuid4().hex
+            else:
+                idempotency_key = str(supplied)
+                if not idempotency_key.strip():
+                    raise ValueError(
+                        "idempotency_key must not be blank; omit it to "
+                        "derive a fresh key"
+                    )
             bound.apply_defaults()
             arguments = dict(bound.arguments)
+            # idempotency_key is reserved for the governed loop (consumed
+            # above); a stub that declares a parameter of the same name must
+            # not leak it into the tool arguments sent to the server.
+            arguments.pop("idempotency_key", None)
             result = await session.invoke(
                 name,
                 arguments,

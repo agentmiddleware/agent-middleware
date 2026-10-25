@@ -68,12 +68,13 @@ _LAZY_ATTRS = {
     "billable": "decorators",
     "combined": "decorators",
     "monitored": "decorators",
+    "new_idempotency_key": "client",
     "parse_402_response": "x402",
     "SyncAgentMiddlewareClient": "sync_client",
 }
 
 if TYPE_CHECKING:  # let type checkers and IDEs resolve the lazy names statically
-    from .client import AgentMiddlewareClient, B2AClient
+    from .client import AgentMiddlewareClient, B2AClient, new_idempotency_key
     from .decorators import billable, combined, monitored
     from .edge_client import (
         B2AEdgeClient,
@@ -138,6 +139,7 @@ __all__ = [
     "billable",
     "combined",
     "monitored",
+    "new_idempotency_key",
     "key_set_from_document",
     "parse_402_response",
     "request_key",

@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+import uuid
 from typing import Any, Literal
 from urllib.parse import urlencode
 
@@ -104,6 +105,52 @@ def list_tools(
     print("=" * 60)
 
 
+async def invoke_service(
+    service_id: str,
+    input_data: dict,
+    wallet_id: str,
+    api_key: str,
+    *,
+    api_url: str = DEFAULT_API_URL,
+    idempotency_key: str | None = None,
+) -> dict:
+    """Invoke a marketplace service over the MCP tool route.
+
+    Sends an ``Idempotency-Key`` header: the caller key when given,
+    otherwise one minted for this call. Callers that retry one logical
+    invocation must reuse the key, or the retry is a second invocation.
+    Reusing a key lets the server deduplicate retries.
+
+    Raises:
+        ValueError: if a supplied key is blank, overlong, or contains control
+            characters (nothing is sent).
+    """
+    if idempotency_key is None:
+        key = uuid.uuid4().hex
+    else:
+        from .client import AgentMiddlewareClient
+
+        key = AgentMiddlewareClient._validate_idempotency_key(idempotency_key)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{api_url}/mcp/tools/{service_id}/invoke",
+            headers={
+                "X-API-Key": api_key,
+                "Content-Type": "application/json",
+                "Idempotency-Key": key,
+            },
+            json={
+                "name": service_id,
+                "arguments": input_data,
+                "mcp_context": {"wallet_id": wallet_id},
+            },
+            timeout=30.0,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 async def serve_async(
     transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
@@ -120,7 +167,7 @@ async def serve_async(
         legacy_result_format: Wrap successful gateway responses as JSON text
     """
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import Context, FastMCP
         from mcp.types import CallToolResult, TextContent
     except ImportError:
         print('Error: mcp package required. Install: pip install "amw-sdk[mcp]"')
@@ -139,15 +186,36 @@ async def serve_async(
         permit_id: str | None,
         idempotency_key: str | None,
     ) -> Any:
+        if idempotency_key is None:
+            if permit_id is not None:
+                guidance = "Supply io.agentmiddleware/idempotency_key in request _meta."
+                return CallToolResult(
+                    content=[
+                        TextContent(type="text", text=f"idempotency_key_required: {guidance}")
+                    ],
+                    isError=True,
+                    structuredContent={
+                        "error": "idempotency_key_required",
+                        "guidance": guidance,
+                    },
+                )
+            key = uuid.uuid4().hex
+        else:
+            from .client import AgentMiddlewareClient
+
+            key = AgentMiddlewareClient._validate_idempotency_key(idempotency_key)
         mcp_context = {"wallet_id": wallet_id}
         if permit_id is not None:
             mcp_context["permit_id"] = permit_id
-        if idempotency_key is not None:
-            mcp_context["idempotency_key"] = idempotency_key
+        mcp_context["idempotency_key"] = key
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{api_url}/mcp/tools/{service_id}/invoke",
-                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                headers={
+                    "X-API-Key": api_key,
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": key,
+                },
                 json={
                     "name": service_id,
                     "arguments": input_data,
@@ -163,14 +231,17 @@ async def serve_async(
                     detail = None
                 error = detail.get("error") if isinstance(detail, dict) else detail
                 if response.status_code == 403 and error == "permit_required":
-                    guidance = "Supply permit_id and idempotency_key as MCP tool arguments."
+                    guidance = (
+                        "Supply permit_id as an MCP tool argument and "
+                        "io.agentmiddleware/idempotency_key in request _meta."
+                    )
                     return CallToolResult(
                         content=[TextContent(type="text", text=f"permit_required: {guidance}")],
                         isError=True,
                         structuredContent={"error": "permit_required", "guidance": guidance},
                     )
                 if response.status_code == 400 and error == "idempotency_key_required":
-                    guidance = "Supply idempotency_key with permit_id as MCP tool arguments."
+                    guidance = "Supply io.agentmiddleware/idempotency_key in request _meta."
                     return CallToolResult(
                         content=[TextContent(type="text", text=f"{error}: {guidance}")],
                         isError=True,
@@ -178,7 +249,10 @@ async def serve_async(
                     )
                 if response.status_code == 202 and error == "human_approval_pending":
                     approval = detail.get("approval", {}) if isinstance(detail, dict) else {}
-                    guidance = "Retry with the same permit_id and idempotency_key after approval."
+                    guidance = (
+                        "Retry with the same permit_id and "
+                        "io.agentmiddleware/idempotency_key after approval."
+                    )
                     return CallToolResult(
                         content=[
                             TextContent(
@@ -203,10 +277,15 @@ async def serve_async(
 
         async def create_handler(svc_id: str, svc_name: str):
             async def handler(
-                permit_id: str | None = None,
-                idempotency_key: str | None = None,
-                **kwargs: dict[str, Any],
+                ctx: Context, permit_id: str | None = None, **kwargs: dict[str, Any]
             ) -> Any:
+                meta = ctx.request_context.meta
+                metadata = (
+                    meta.model_dump(mode="json", by_alias=True, exclude_none=True)
+                    if meta is not None
+                    else {}
+                )
+                idempotency_key = metadata.get("io.agentmiddleware/idempotency_key")
                 return await call_tool(
                     service_id=svc_id,
                     input_data=kwargs.pop("kwargs", kwargs),

@@ -1253,6 +1253,21 @@ class McpDispatchAttemptModel(SQLModel, table=True):
     completed_at: Optional[datetime] = Field(
         sa_type=NaiveUTCDateTime, default=None, index=True
     )
+    # Provider-status reconciliation (047_dispatch_reconcile_lease, ported from
+    # the agent-middleware-api chain). Nothing in this service writes them yet;
+    # they are mapped so the model matches databases migrated by either chain.
+    reconcile_status: Optional[str] = Field(default=None, max_length=32, index=True)
+    reconcile_lease_owner: Optional[str] = Field(default=None, max_length=64)
+    reconcile_lease_expires_at: Optional[datetime] = Field(
+        sa_type=NaiveUTCDateTime, default=None, index=True
+    )
+    reconcile_next_probe_at: Optional[datetime] = Field(
+        sa_type=NaiveUTCDateTime, default=None, index=True
+    )
+    reconcile_probe_count: int = Field(
+        default=0, sa_column_kwargs={"server_default": "0"}
+    )
+    reconciled_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
 
     model_config = {"arbitrary_types_allowed": True}
 

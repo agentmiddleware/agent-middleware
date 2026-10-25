@@ -386,6 +386,7 @@ def mount_dormant_surfaces_for_marked_tests(request):
 async def setup_database():
     """Set up database tables before any tests run."""
     require_disposable_test_database()
+    import app.db.approval_gate_models  # noqa: F401 -- registers table on SQLModel.metadata
     from app.core.durable_state import close_durable_state
     from app.db.database import init_db, close_db
 
@@ -423,6 +424,7 @@ async def setup_database():
 #: tests/test_clean_database_coverage.py's exemption set fails that test, so a
 #: new trust-plane table cannot silently escape per-test cleanup.
 CLEAN_DATABASE_TABLES = (
+    "approval_gate_approvals",
     "receipt_resolutions",
     "resolution_chain_heads",
     "receipts",

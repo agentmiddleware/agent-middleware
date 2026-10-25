@@ -107,8 +107,7 @@ class NetworkSealedError(RuntimeError):
 #: seven outcomes; only ``denied`` and ``insufficient_funds`` refuse the call
 #: before dispatch. ``failed_*``, ``delivery_uncertain`` and
 #: ``response_rejected`` were authorized first, so replay re-evaluates them
-#: under the new bundle instead of short-circuiting as a recorded deny. Any
-#: other value fails closed as a deny.
+#: under the new bundle instead of short-circuiting as a recorded deny.
 RECORDED_ALLOW_OUTCOMES = frozenset(
     {
         "success",
@@ -117,6 +116,12 @@ RECORDED_ALLOW_OUTCOMES = frozenset(
         "delivery_uncertain",
         "response_rejected",
     }
+)
+
+#: Every outcome ``ReceiptService`` can record. Anything else is rejected at
+#: load time with ``ReplayError`` (fail closed).
+RECORDED_KNOWN_OUTCOMES = frozenset(
+    RECORDED_ALLOW_OUTCOMES | {"denied", "insufficient_funds"}
 )
 
 
@@ -247,6 +252,15 @@ def _record_to_call(source: str, record: Any) -> RecordedCall:
         raise ReplayError(
             f"{source}: recorded receipt field reason_code must be a string"
         )
+    if payload["outcome"] not in RECORDED_KNOWN_OUTCOMES:
+        raise ReplayError(
+            f"{source}: recorded receipt has unknown outcome {payload['outcome']!r}"
+        )
+    simulation = payload.get("simulation")
+    if simulation is not None and not isinstance(simulation, bool):
+        raise ReplayError(
+            f"{source}: recorded receipt field simulation must be a boolean"
+        )
     if canonical_json(payload) != signing_input:
         raise ReplayError(f"{source}: signing_input is not canonical gateway JSON")
     signature = record.get("signature") or record.get("signature_b64_over_test_seed")
@@ -261,16 +275,15 @@ def _record_to_call(source: str, record: Any) -> RecordedCall:
 
 
 def _verify_recorded(call: RecordedCall, recorded_keys: dict[str, Any]) -> bool:
-    """Verify one recording; True only for verified claims under a true label.
+    """Verify one recording; any failure raises.
 
     The envelope's ``receipt_id``/``kid`` are passed through as the
     unauthenticated labels ``verify_bundle`` checks against the signed
-    claims, so a record that mislabels valid gateway bytes reports
-    ``MISMATCH``. That record's claims are still authentic, only wrongly
-    labelled, so it replays with degraded provenance (False) instead of
-    refusing to load. Any other failure still raises.
+    claims. A record that mislabels valid gateway bytes reports ``MISMATCH``,
+    which fails closed here: a wrong label is a wrong recording, not degraded
+    provenance.
     """
-    from b2a_sdk.receipt_verifier import VerificationStatus, verify_bundle
+    from b2a_sdk.receipt_verifier import verify_bundle
 
     if not call.signature:
         raise ReplayError(f"{call.source}: recorded receipt has no signature")
@@ -293,8 +306,6 @@ def _verify_recorded(call: RecordedCall, recorded_keys: dict[str, Any]) -> bool:
         },
         recorded_keys,
     )
-    if result.status is VerificationStatus.MISMATCH:
-        return False
     if not result.ok:
         raise ReplayError(
             f"{call.source}: recorded receipt signature {result.status.value}"
@@ -471,14 +482,28 @@ def _decide(
         if model.is_active and (not model.wallet_id or model.wallet_id == wallet_id)
     ]
     unevaluated = _unknown_inputs(call, models)
-    if call.old_decision == DENY and call.old_reason not in POLICY_REASON_CODES:
-        # Denied before or outside policy evaluation; a bundle cannot undo it.
+    outcome = call.payload["outcome"]
+    reason = call.payload.get("reason_code")
+
+    def _recorded_deny() -> tuple[str, str, str | None, list[str]]:
         return (
             DENY,
-            f"recorded_denial:{call.old_reason or call.payload['outcome']}",
+            f"recorded_denial:{reason or outcome}",
             None,
             unevaluated,
         )
+
+    if outcome not in RECORDED_KNOWN_OUTCOMES:
+        # Unreachable via load_recorded_calls (unknown outcomes raise at
+        # load); fail closed if a RecordedCall is built by hand.
+        return _recorded_deny()
+    if outcome == "insufficient_funds":
+        # A funds refusal is never a policy-bundle decision, whatever its
+        # reason_code claims.
+        return _recorded_deny()
+    if outcome == "denied" and reason not in POLICY_REASON_CODES:
+        # Denied before or outside policy evaluation; a bundle cannot undo it.
+        return _recorded_deny()
     evaluation = evaluate_policy_models(
         models,
         tool_name=call.payload["tool"],

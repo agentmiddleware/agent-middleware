@@ -531,6 +531,32 @@ def test_replay_recorded_insufficient_funds_never_flips(tmp_path):
     assert claims["new_reason"] == "recorded_denial:insufficient_funds"
 
 
+def test_replay_insufficient_funds_with_policy_reason_stays_denied(tmp_path):
+    # A funds refusal is never a policy decision, even when its reason_code
+    # names one: a permissive bundle cannot flip it.
+    payload = _record_payload(
+        outcome="insufficient_funds",
+        reason_code="tool_not_allowed",
+        risk_tier="low",
+    )
+    calls = load_recorded_calls(_record_file(tmp_path, payload))
+    assert calls[0].old_decision == "deny"
+    result = replay_calls(calls, load_policy_bundle(_bundle(tmp_path, {})))
+    claims = _claims(result.receipts[0])
+    assert claims["old_decision"] == "deny"
+    assert claims["new_decision"] == "deny"
+    assert claims["new_reason"] == "recorded_denial:tool_not_allowed"
+    assert claims["change"] == "unchanged"
+
+
+def test_load_recorded_calls_rejects_unknown_outcome(tmp_path):
+    payload = _record_payload(
+        outcome="cancelled", reason_code="tool_not_allowed", risk_tier="low"
+    )
+    with pytest.raises(ReplayError, match="unknown outcome"):
+        load_recorded_calls(_record_file(tmp_path, payload))
+
+
 def test_replay_post_authorization_outcomes_reevaluated(tmp_path):
     # Post-authorization outcomes ran past the policy gate when recorded, so
     # they replay as allows; a stricter bundle flips them to deny with the
@@ -676,7 +702,7 @@ def test_replay_receipt_marks_unverified_recordings(tmp_path):
     ] * 6
 
 
-def test_recorded_envelope_mismatch_yields_unverified(tmp_path):
+def test_recorded_envelope_mismatch_raises(tmp_path):
     base = json.loads((GOLDEN_DIR / "success_legacy.json").read_text())
     signed = json.loads(base["signing_input"])
     # An envelope that repeats the signed claims still verifies.
@@ -691,7 +717,7 @@ def test_recorded_envelope_mismatch_yields_unverified(tmp_path):
         ].signature_verified
         is True
     )
-    # An envelope that mislabels them degrades provenance instead of raising.
+    # An envelope that mislabels them fails closed instead of degrading.
     for name, outer in (
         ("bad-id.json", {"receipt_id": "rcpt_not_the_signed_one"}),
         ("bad-kid.json", {"kid": "sk_not_the_signer"}),
@@ -700,10 +726,8 @@ def test_recorded_envelope_mismatch_yields_unverified(tmp_path):
         record.update(outer)
         path = tmp_path / name
         path.write_text(json.dumps(record))
-        calls = load_recorded_calls(path, recorded_keys=_recorded_keys())
-        assert calls[0].signature_verified is False, name
-        result = replay_calls(calls, load_policy_bundle(_bundle(tmp_path, {})))
-        assert _claims(result.receipts[0])["recorded_signature_verified"] is False, name
+        with pytest.raises(ReplayError, match="mismatch"):
+            load_recorded_calls(path, recorded_keys=_recorded_keys())
 
 
 # --- 13. limits must be finite ------------------------------------------------
@@ -824,6 +848,15 @@ def test_load_recorded_calls_rejects_non_string_fields(tmp_path):
     payload["reason_code"] = 12345
     with pytest.raises(ReplayError, match="reason_code.*must be a string"):
         load_recorded_calls(_record_file(tmp_path, payload, name="bad-reason.json"))
+
+
+def test_load_recorded_calls_rejects_non_bool_simulation(tmp_path):
+    for i, value in enumerate(("true", "false", 1, 0, 1.0, [], {})):
+        payload = _record_payload(simulation=value, risk_tier="low")
+        with pytest.raises(ReplayError, match="simulation.*must be a boolean"):
+            load_recorded_calls(
+                _record_file(tmp_path, payload, name=f"bad-sim-{i}.json")
+            )
 
 
 # --- 19. bundle string fields are validated -----------------------------------

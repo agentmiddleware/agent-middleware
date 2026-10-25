@@ -64,6 +64,12 @@ def test_committed_vectors_match_the_generator():
     assert json.loads((HERE / "receipts.json").read_text()) == json.loads(
         generate.render_receipts()
     )
+    assert json.loads((HERE / "rotation.json").read_text()) == json.loads(
+        generate.render_rotation()
+    )
+    assert json.loads((HERE / "permits.json").read_text()) == json.loads(
+        generate.render_permits()
+    )
 
 
 def test_reference_verifier_matches_every_committed_case():
@@ -87,7 +93,9 @@ def test_disabled_key_stays_in_the_document_and_is_not_a_verification_key():
     case = _by_name(_load_cases())["synthetic.disabled_key"]
     kids = [entry["kid"] for entry in case["keys"]["keys"]]
     assert case["bundle"]["kid"] in kids
-    disabled = [entry for entry in case["keys"]["keys"] if entry["status"] == "disabled"]
+    disabled = [
+        entry for entry in case["keys"]["keys"] if entry["status"] == "disabled"
+    ]
     assert [entry["kid"] for entry in disabled] == [case["bundle"]["kid"]]
     assert case["bundle"]["kid"] not in key_set_from_document(case["keys"])
 

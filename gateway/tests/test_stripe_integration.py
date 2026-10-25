@@ -194,6 +194,67 @@ async def test_prepare_top_up_creates_payment_intent(
         assert "idempotency_key" not in call_kwargs
 
 
+@pytest.fixture(autouse=True)
+def fake_payment_intent_retrieve():
+    """Replays re-fetch client_secret by id; never call real Stripe in tests."""
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.retrieve",
+        side_effect=lambda intent_id: MagicMock(
+            id=intent_id, client_secret=f"{intent_id}_secret"
+        ),
+    ) as mock_retrieve:
+        yield mock_retrieve
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_never_persists_client_secret(
+    client, sponsor_wallet, api_headers, fake_payment_intent_retrieve
+):
+    """CWE-312: the idempotency row must not hold the PaymentIntent secret.
+
+    Replay rebuilds the response by re-fetching the secret from Stripe.
+    """
+    from sqlalchemy import select
+
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "no-secret-at-rest"}
+    url = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0"
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_no_secret", client_secret="pi_no_secret_secret"
+        )
+        first = await client.post(url, headers=headers)
+        fake_payment_intent_retrieve.assert_not_called()
+        second = await client.post(url, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["client_secret"] == "pi_no_secret_secret"
+    assert second.json() == first.json()
+    mock_create.assert_called_once()
+    fake_payment_intent_retrieve.assert_called_once_with("pi_no_secret")
+
+    async with get_session_factory()() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(IdempotencyRecordModel).where(
+                        IdempotencyRecordModel.response_reference == "pi_no_secret"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    stored = rows[0].response_json or ""
+    assert "client_secret" not in stored
+    assert "pi_no_secret_secret" not in stored
+    assert "pi_no_secret" in stored
+
+
 @pytest.mark.anyio
 async def test_prepare_top_up_retry_sends_the_same_stripe_idempotency_key(
     client, sponsor_wallet, api_headers

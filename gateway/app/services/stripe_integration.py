@@ -61,6 +61,7 @@ stripe.default_http_client = stripe.new_default_http_client(
 )
 
 SUPPORTED_TOP_UP_CURRENCY = "usd"
+_SECRET_FIELDS = frozenset({"client_secret"})
 _TOP_UP_QUOTE_PREFIX = "topup-quote:"
 # Stripe can prune an idempotency result once it is at least 24 hours old.
 # Never resend a create request after this conservative window.
@@ -224,7 +225,9 @@ class StripeIntegration:
             else:
                 if begun.replay is not None:
                     assert begun.replay.response_json is not None
-                    return begun.replay.response_json
+                    return await self._rehydrate_top_up_replay(
+                        begun.replay.response_json
+                    )
                 # Persist the exact Stripe quote before network I/O. A retry
                 # must reuse it even when EXCHANGE_RATE changes meanwhile.
                 async with self._session_factory()() as session:
@@ -278,9 +281,24 @@ class StripeIntegration:
                 endpoint=replay_endpoint,
                 idempotency_key=validated_key,
                 response_reference=intent.id,
-                response_json=response,
+                # CWE-312: never persist the PaymentIntent client_secret in
+                # the idempotency store; replay re-fetches it from Stripe.
+                response_json={
+                    k: v for k, v in response.items() if k not in _SECRET_FIELDS
+                },
             )
         return response
+
+    async def _rehydrate_top_up_replay(self, stored: dict) -> dict:
+        """Rebuild a top-up replay, re-fetching the client_secret from Stripe."""
+        replay = {k: v for k, v in stored.items() if k not in _SECRET_FIELDS}
+        intent_id = replay.get("payment_intent_id")
+        if intent_id:
+            intent = await to_thread.run_sync(
+                lambda: stripe.PaymentIntent.retrieve(intent_id)
+            )
+            replay["client_secret"] = intent.client_secret
+        return replay
 
     async def charge_shared_payment_token(
         self,

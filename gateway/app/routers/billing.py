@@ -1167,15 +1167,15 @@ async def transfer_wallets(
         )
         await guard.complete({"error": "wallet_not_found", "message": str(e)}, 404)
         raise HTTPException(status_code=404, detail=str(e))
-    except CrossTenantTransferError as e:
+    except CrossTenantTransferError:
         refused_detail = {
             "error": "cross_tenant_transfer_refused",
-            "message": str(e),
+            "message": "The request could not be completed.",
         }
         await guard.complete(refused_detail, status.HTTP_403_FORBIDDEN)
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=refused_detail,
+            content=refused_detail,
         )
     except OwnershipDeniedError:
         await _record_billing_governance(

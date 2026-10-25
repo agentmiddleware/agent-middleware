@@ -244,11 +244,20 @@ asked for: every retry carrying the same malformed key would become a new
 charged operation (`test_mcp_idempotency_key_validation`).
 
 Only a genuinely **absent** key — no header, no body entry, or a JSON `null`
-entry — is treated as an un-keyed call. On the standard MCP endpoint that means
-a generated key, and every un-keyed call, retries included, is a new charged
-operation. Clients that retry must always send their own persistent key; a
-governed `/mcp/messages` call without one is refused with
-`idempotency_key_required`.
+entry — is treated as an un-keyed call. On the standard MCP endpoint (and the
+`/mcp/messages` demo auto-permit path) the gateway derives a deterministic
+`mcp-retry-` key from the caller's wallet and API key, the tool, the canonical
+JSON of the arguments, and a time bucket of `MCP_UNKEYED_RETRY_WINDOW_SECONDS`
+(default 300). The JSON-RPC id is not part of it, because retries carry fresh
+ids. An identical un-keyed retry inside the same bucket replays the original
+receipt with no second charge or dispatch; a concurrent duplicate gets the
+retryable `idempotency_in_progress`. Limits: a retry that crosses a bucket
+boundary is a new operation, and two deliberately identical un-keyed calls in
+one bucket collapse into one. Clients that need either guarantee must send
+their own key. Setting the window to `0` restores a random key per call. A
+governed `/mcp/messages` call without a key is still refused with
+`idempotency_key_required`, and a wallet that requires human approval still
+needs an explicit key.
 
 The governed AWI HTTP routes — `POST /v1/awi/execute`,
 `/v1/awi/passkey/challenge`, `/v1/awi/passkey/verify`, `/v1/awi/dom/sync`,

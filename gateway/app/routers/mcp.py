@@ -33,6 +33,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..audit.lightweight import record_audit
 from ..core.config import DuplicateGuardMode, get_settings
+from ..services.mcp_retry_key import derive_unkeyed_retry_key
 from ..policy.jev_guard import evaluate_jev_guard
 from ..services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
 from ..core.auth import (
@@ -4532,6 +4533,17 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
         raise ToolPermissionDenied("action_permit_required")
 
     from .mcp_standard import _mint_auto_permit, _permit_error
+
+    if not request.idempotency_key:
+        # Deterministic key for unkeyed calls so a retry resolves to the same
+        # auto permit and replays instead of dispatching twice (SEL-484).
+        request.idempotency_key = derive_unkeyed_retry_key(
+            wallet_id=request.auth.wallet_id,
+            key_id=request.auth.key_id,
+            tool_name=request.tool_name,
+            arguments=request.arguments,
+            window_seconds=get_settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS,
+        )
 
     try:
         permit_id = await _mint_auto_permit(

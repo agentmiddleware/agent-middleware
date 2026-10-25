@@ -288,6 +288,15 @@ class Settings(BaseSettings):
     ENABLE_STANDARD_MCP_ENDPOINT: bool = True
     STANDARD_MCP_PERMIT_TTL_SECONDS: int = 120
 
+    # Unkeyed tools/call retry safety (SEL-484 / G1, MCP issue #3394).
+    # A call without a client idempotency key gets a deterministic key derived
+    # from wallet, API key, tool and canonical arguments within this window, so
+    # a lost-response retry replays the original receipt instead of
+    # dispatching again. Identical unkeyed calls inside one window collapse to
+    # one dispatch; callers needing repeats must send distinct keys. 0 restores
+    # the old per-attempt random key (no retry protection).
+    MCP_UNKEYED_RETRY_WINDOW_SECONDS: int = 300
+
     # --- Public MCP endpoint (POST /mcp/public) ---
     # Unauthenticated, read-only Streamable HTTP surface for MCP clients
     # that cannot hold an API key (public plugin runtimes such as ChatGPT

@@ -683,3 +683,136 @@ async def test_malformed_json_is_still_the_sdks_parse_error(
     )
     assert resp.status_code == 400, resp.text
     assert resp.json()["error"]["code"] == -32700
+
+
+@pytest.mark.anyio
+async def test_unkeyed_tools_call_retry_replays_without_second_dispatch(
+    client, standard_mcp_enabled, clean_database
+):
+    """SEL-484: an unkeyed retry (fresh JSON-RPC id) must not dispatch twice."""
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    invocations: list[str] = []
+
+    def _echo(message="ok", n=0):
+        invocations.append(message)
+        return {"message": message}
+
+    registry = get_service_registry()
+    registry.register_local(
+        service_id="standard-echo-retry",
+        name="Standard Echo Retry",
+        description="Unkeyed retry test tool",
+        category=ServiceCategory.AGENT_COMMS,
+        func=_echo,
+        credits_per_unit=2.0,
+        unit_name="call",
+    )
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    try:
+        first = await client.post(
+            "/mcp",
+            json=_rpc(
+                "tools/call",
+                request_id=101,
+                params={
+                    "name": "standard-echo-retry",
+                    "arguments": {"message": "hi", "n": 1},
+                },
+            ),
+            headers=headers,
+        )
+        assert first.status_code == 200
+        receipt = first.json()["result"]["receipt"]
+
+        # Retry: new JSON-RPC id, same arguments in a different key order.
+        retry = await client.post(
+            "/mcp",
+            json=_rpc(
+                "tools/call",
+                request_id=102,
+                params={
+                    "name": "standard-echo-retry",
+                    "arguments": {"n": 1, "message": "hi"},
+                },
+            ),
+            headers=headers,
+        )
+        assert retry.status_code == 200
+        assert retry.json()["result"]["receipt"]["receipt_id"] == receipt["receipt_id"]
+        assert invocations == ["hi"]
+
+        # Different arguments are a distinct call and dispatch.
+        other = await client.post(
+            "/mcp",
+            json=_rpc(
+                "tools/call",
+                request_id=103,
+                params={
+                    "name": "standard-echo-retry",
+                    "arguments": {"message": "bye", "n": 1},
+                },
+            ),
+            headers=headers,
+        )
+        assert other.status_code == 200
+        assert other.json()["result"]["receipt"]["receipt_id"] != receipt["receipt_id"]
+        assert invocations == ["hi", "bye"]
+
+        ledger = await client.get(
+            f"/v1/billing/ledger/{wallet_id}", headers=provisioned["agent_headers"]
+        )
+        debits = [
+            e
+            for e in ledger.json()["entries"]
+            if "standard-echo-retry" in e["description"]
+        ]
+        assert len(debits) == 2
+    finally:
+        registry.unregister_local("standard-echo-retry")
+
+
+@pytest.mark.anyio
+async def test_unkeyed_retry_window_zero_restores_legacy_dispatch(
+    client, standard_mcp_enabled, clean_database, monkeypatch
+):
+    """With the window disabled each unkeyed attempt dispatches (legacy)."""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "MCP_UNKEYED_RETRY_WINDOW_SECONDS", 0)
+    provisioned = await provision_agent_wallet(client)
+    invocations: list[str] = []
+
+    def _echo(message="ok", n=0):
+        invocations.append(message)
+        return {"message": message}
+
+    registry = get_service_registry()
+    registry.register_local(
+        service_id="standard-echo-legacy",
+        name="Standard Echo Legacy",
+        description="Window disabled test tool",
+        category=ServiceCategory.AGENT_COMMS,
+        func=_echo,
+        credits_per_unit=2.0,
+        unit_name="call",
+    )
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    try:
+        for rid in (201, 202):
+            resp = await client.post(
+                "/mcp",
+                json=_rpc(
+                    "tools/call",
+                    request_id=rid,
+                    params={
+                        "name": "standard-echo-legacy",
+                        "arguments": {"message": "hi"},
+                    },
+                ),
+                headers=headers,
+            )
+            assert resp.status_code == 200
+        assert invocations == ["hi", "hi"]
+    finally:
+        registry.unregister_local("standard-echo-legacy")

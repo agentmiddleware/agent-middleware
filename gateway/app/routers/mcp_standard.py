@@ -84,6 +84,7 @@ from app.services.receipts import ReceiptWriteContendedError
 from app.services.billing_engine import LedgerWriteContendedError
 from app.core.config import get_settings
 from app.core.time import utc_now
+from app.services.mcp_retry_key import derive_unkeyed_retry_key
 from app.routers.mcp import (
     _MAX_JSON_NESTING_DEPTH,
     GovernedToolError,
@@ -498,12 +499,26 @@ async def _governed_tools_call(
         )
 
     auto_minted = permit_id is None
-    idempotency_key = client_idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
+    # Unkeyed calls get a deterministic key so a lost-response retry resolves
+    # to the same auto permit and replays the original receipt (SEL-484).
+    derived_key = (
+        None
+        if client_idempotency_key
+        else derive_unkeyed_retry_key(
+            wallet_id=auth.wallet_id,
+            key_id=auth.key_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            window_seconds=get_settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS,
+        )
+    )
+    effective_key = client_idempotency_key or derived_key
+    idempotency_key = effective_key or f"mcp-auto-{uuid.uuid4().hex}"
     permit_id = permit_id or await _mint_auto_permit(
         auth=auth,
         tool_name=tool_name,
         record=record,
-        client_key=client_idempotency_key,
+        client_key=effective_key,
         requires_human_approval=requires_human_approval,
     )
 

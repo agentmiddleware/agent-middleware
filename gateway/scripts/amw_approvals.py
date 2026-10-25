@@ -170,6 +170,16 @@ def _format_time(value: float) -> str:
     )
 
 
+def _is_pending_item(item: object) -> bool:
+    """True when item has the keys cmd_list prints, with a numeric deadline."""
+    if not isinstance(item, dict):
+        return False
+    if "nonce" not in item or "tool" not in item or "principal" not in item:
+        return False
+    deadline = item.get("deadline")
+    return isinstance(deadline, (int, float)) and not isinstance(deadline, bool)
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     try:
         response = _client(args.base_url, args.api_key).get("/v1/approvals/pending")
@@ -199,10 +209,19 @@ def cmd_list(args: argparse.Namespace) -> int:
         )
         return 1
     try:
-        approvals = response.json().get("approvals", [])
+        payload = response.json()
     except ValueError:
         # ValueError covers json.JSONDecodeError from a non-JSON body.
         print("gateway returned a non-JSON response", file=sys.stderr)
+        return 1
+    if not isinstance(payload, dict):
+        print("gateway returned an unexpected response", file=sys.stderr)
+        return 1
+    approvals = payload.get("approvals", [])
+    if not isinstance(approvals, list) or any(
+        not _is_pending_item(item) for item in approvals
+    ):
+        print("gateway returned an unexpected response", file=sys.stderr)
         return 1
     if not approvals:
         print("no pending approvals")
@@ -269,11 +288,15 @@ def _decide(args: argparse.Namespace, action: str) -> int:
         )
         return 1
     try:
-        status = response.json().get("status")
+        payload = response.json()
     except ValueError:
         # ValueError covers json.JSONDecodeError from a non-JSON body.
         print("gateway returned a non-JSON response", file=sys.stderr)
         return 1
+    if not isinstance(payload, dict):
+        print("gateway returned an unexpected response", file=sys.stderr)
+        return 1
+    status = payload.get("status")
     print(f"{args.nonce}: {status}")
     return 0
 

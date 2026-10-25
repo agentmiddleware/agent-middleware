@@ -508,3 +508,104 @@ def test_non_json_response_prints_fixed_message(
         assert "Traceback" not in out.out
         assert "gateway returned a non-JSON response" in out.err
         _assert_no_key_leak(key, out.out, out.err)
+
+
+@pytest.mark.parametrize("kind", ["list", "null", "string"])
+def test_unexpected_json_shape_prints_fixed_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
+    key = secrets.token_hex(16)
+    payload: Any
+    if kind == "list":
+        payload = []
+    elif kind == "null":
+        payload = None
+    else:
+        payload = f"unexpected-{secrets.token_hex(8)}"
+
+    class _UnexpectedResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> Any:
+            return payload
+
+    class _UnexpectedClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def get(self, path: str) -> _UnexpectedResponse:
+            return _UnexpectedResponse()
+
+        def post(self, path: str) -> _UnexpectedResponse:
+            return _UnexpectedResponse()
+
+    monkeypatch.setattr(amw_approvals.httpx, "Client", _UnexpectedClient)
+    monkeypatch.setenv("VALID_API_KEYS", key)
+    # RFC 1122 loopback, RFC 6335 fixed port: allowed http loopback URL.
+    base_url = f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}"
+    nonce = "test-nonce"
+    for argv in (["list"], ["approve", nonce], ["deny", nonce]):
+        assert amw_approvals.main(["--base-url", base_url, *argv]) == 1
+        out = capsys.readouterr()
+        assert "Traceback" not in out.err
+        assert "Traceback" not in out.out
+        assert "gateway returned an unexpected response" in out.err
+        if isinstance(payload, str):
+            assert payload not in out.out
+            assert payload not in out.err
+        _assert_no_key_leak(key, out.out, out.err)
+
+
+@pytest.mark.parametrize(
+    "approvals",
+    [
+        "not-a-list",
+        None,
+        ["not-a-dict"],
+        [{"nonce": "test-nonce"}],
+        [
+            {
+                "nonce": "test-nonce",
+                "tool": "test-tool",
+                "principal": "test-principal",
+                "deadline": "soon",
+            }
+        ],
+    ],
+)
+def test_malformed_approvals_list_prints_fixed_message(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    approvals: Any,
+) -> None:
+    key = secrets.token_hex(16)
+
+    class _MalformedResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> Any:
+            return {"approvals": approvals}
+
+    class _MalformedClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def get(self, path: str) -> _MalformedResponse:
+            return _MalformedResponse()
+
+    monkeypatch.setattr(amw_approvals.httpx, "Client", _MalformedClient)
+    monkeypatch.setenv("VALID_API_KEYS", key)
+    # RFC 1122 loopback, RFC 6335 fixed port: allowed http loopback URL.
+    base_url = f"http://{LOOPBACK_V4}:{HTTP_TEST_PORT}"
+    assert amw_approvals.main(["--base-url", base_url, "list"]) == 1
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err
+    assert "Traceback" not in out.out
+    assert "gateway returned an unexpected response" in out.err
+    _assert_no_key_leak(key, out.out, out.err)

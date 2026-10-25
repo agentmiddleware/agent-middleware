@@ -27,3 +27,6 @@ packages = ["src/autogen_b2a"]
 
 [tool.uv.sources]
 amw-sdk = { path = "../../sdk/python", editable = true }
+
+[tool.ruff.lint.isort]
+known-first-party = ["autogen_b2a"]

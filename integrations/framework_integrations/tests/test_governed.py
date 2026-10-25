@@ -17,6 +17,8 @@ _USE_DEFAULT_STRUCTURED = object()
 class FakeSession:
     """Duck-typed GovernedEdgeSession: records calls, returns canned results."""
 
+    permit_id = "permit-test-1"
+
     def __init__(self, receipt_id="rcpt-1", structured=_USE_DEFAULT_STRUCTURED):
         self.calls = []
         self.receipt_id = receipt_id

@@ -23,8 +23,9 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import hashlib
 import inspect
-import uuid
+import json
 from collections.abc import Callable
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -40,6 +41,57 @@ except ImportError as exc:  # pragma: no cover - depends on checkout layout
 
 if TYPE_CHECKING:  # imported for annotations only; no runtime coupling
     from b2a_sdk.models import Receipt
+
+
+def derive_governed_idempotency_key(
+    *,
+    permit_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    action_id: str | None = None,
+) -> str:
+    """Derive the idempotency key for one logical governed tool call.
+
+    Key rule: the key is a deterministic ``gov-`` prefixed SHA-256 hash of
+    the stable identity of the logical call: the session's permit id, the
+    tool name, the canonical (key-sorted JSON) bound arguments, and the
+    caller-supplied action id when one is given. Retrying the same logical
+    call therefore reuses the same key, and the server replays the original
+    receipt instead of charging again. No randomness is used, so a retry
+    can never mint a fresh key by accident.
+
+    A different action needs a different key. Arguments alone do not always
+    distinguish two actions: pass ``action_id`` (for example the
+    framework's tool call id) whenever two calls can carry identical
+    arguments but must bill separately. Without ``action_id``, two calls
+    with identical permit, tool, and arguments share a key and the second
+    replays the first.
+
+    Raises:
+        ValueError: if ``permit_id`` or ``tool_name`` is blank, or a
+            supplied ``action_id`` is blank.
+    """
+    if not isinstance(permit_id, str) or not permit_id.strip():
+        raise ValueError("permit_id must not be blank")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        raise ValueError("tool_name must not be blank")
+    if action_id is not None and (
+        not isinstance(action_id, str) or not action_id.strip()
+    ):
+        raise ValueError("action_id must not be blank; omit it to derive without one")
+    canonical = json.dumps(
+        {
+            "permit_id": permit_id,
+            "tool": tool_name,
+            "args": arguments,
+            "action_id": action_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"gov-{digest}"
 
 
 class GovernedToolWrapper:
@@ -100,12 +152,24 @@ def governed_tool(
     raises ``RuntimeError`` at call time (matching ``b2a_sdk.decorators
     .billable``'s established behavior). On each call the wrapper:
 
-    1. consumes an ``idempotency_key`` argument: a supplied non-blank key is
-       used as-is (retries that must replay — same receipt, no double
-       charge — need a caller-owned key); a supplied blank/whitespace key
-       raises ``ValueError`` rather than being silently replaced; when the
-       keyword is absent or ``None`` a fresh ``uuid4().hex`` is derived,
-       making that call a new invocation;
+    1. consumes an ``idempotency_key`` keyword and an ``action_id``
+       keyword (both are reserved: a stub parameter with either name is
+       consumed as key material, never sent to the server). A supplied
+       non-blank ``idempotency_key`` is used as-is: retries that must
+       replay (same receipt, no double charge) pass the same caller-owned
+       key. A supplied blank key raises ``ValueError`` rather than being
+       silently replaced. When the keyword is absent or ``None`` the key
+       is derived deterministically via
+       :func:`derive_governed_idempotency_key` from the session's permit
+       id, the tool name, the canonical bound arguments, and ``action_id``
+       when given, so retrying the same logical tool call reuses the key
+       instead of minting a fresh random one. Pass ``action_id`` (for
+       example the framework's tool call id) when two distinct actions
+       can carry identical arguments but must bill separately.
+       A stub that declares an ``idempotency_key`` or ``action_id``
+       parameter (keyword or positional, required or optional) has it
+       bound normally, then consumed the same way and never sent to the
+       server;
     2. binds the remaining arguments to the stub's signature **with the
        stub's declared defaults applied**, so an omitted parameter travels
        to the server as the stub's contractual default rather than letting
@@ -131,42 +195,71 @@ def governed_tool(
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            # idempotency_key and action_id are both reserved and consumed by
+            # the wrapper with one rule: whether passed as an extra keyword
+            # or declared by the stub (keyword or positional, required or
+            # optional), the value is used as key material and stripped from
+            # the arguments sent to session.invoke. A declared parameter is
+            # left in kwargs so signature.bind sees required parameters.
             missing = object()
-            declared = signature.parameters.get("idempotency_key")
-            accepts_keyword = declared is not None and declared.kind in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            )
-            supplied = (
-                kwargs.get("idempotency_key", missing)
-                if accepts_keyword
-                else kwargs.pop("idempotency_key", missing)
-            )
+            reserved = ("idempotency_key", "action_id")
+            accepts_keyword: dict[str, bool] = {}
+            supplied: dict[str, Any] = {}
+            for reserved_name in reserved:
+                declared = signature.parameters.get(reserved_name)
+                keyword_kinds = (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+                accepts_keyword[reserved_name] = (
+                    declared is not None and declared.kind in keyword_kinds
+                )
+                supplied[reserved_name] = (
+                    kwargs.get(reserved_name, missing)
+                    if accepts_keyword[reserved_name]
+                    else kwargs.pop(reserved_name, missing)
+                )
             bound = signature.bind(*args, **kwargs)
-            positional = bound.arguments.get("idempotency_key", missing)
-            if (
-                supplied is not missing
-                and positional is not missing
-                and not accepts_keyword
-            ):
-                raise TypeError("multiple values for idempotency_key")
-            if supplied is missing:
-                supplied = positional
-            if supplied is missing or supplied is None:
-                idempotency_key = uuid.uuid4().hex
-            else:
-                idempotency_key = str(supplied)
-                if not idempotency_key.strip():
-                    raise ValueError(
-                        "idempotency_key must not be blank; omit it to "
-                        "derive a fresh key"
-                    )
+            consumed: dict[str, str | None] = {}
+            for reserved_name in reserved:
+                value = supplied[reserved_name]
+                positional = bound.arguments.get(reserved_name, missing)
+                if (
+                    value is not missing
+                    and positional is not missing
+                    and not accepts_keyword[reserved_name]
+                ):
+                    raise TypeError(f"multiple values for {reserved_name}")
+                if value is missing:
+                    value = positional
+                consumed[reserved_name] = None
+                if value is not missing and value is not None:
+                    text = str(value)
+                    if not text.strip():
+                        hint = (
+                            "derive a stable key"
+                            if reserved_name == "idempotency_key"
+                            else "derive without one"
+                        )
+                        raise ValueError(
+                            f"{reserved_name} must not be blank; omit it to {hint}"
+                        )
+                    consumed[reserved_name] = text
+            idempotency_key = consumed["idempotency_key"]
+            action_id = consumed["action_id"]
             bound.apply_defaults()
             arguments = dict(bound.arguments)
-            # idempotency_key is reserved for the governed loop (consumed
-            # above); a stub that declares a parameter of the same name must
-            # not leak it into the tool arguments sent to the server.
-            arguments.pop("idempotency_key", None)
+            # Reserved names are for the governed loop (consumed above); a
+            # stub that declares either must not leak it to the server.
+            for reserved_name in reserved:
+                arguments.pop(reserved_name, None)
+            if idempotency_key is None:
+                idempotency_key = derive_governed_idempotency_key(
+                    permit_id=session.permit_id,
+                    tool_name=name,
+                    arguments=arguments,
+                    action_id=action_id,
+                )
             result = await session.invoke(
                 name,
                 arguments,
@@ -192,4 +285,4 @@ def governed_tool(
     return decorator
 
 
-__all__ = ["GovernedToolWrapper", "governed_tool"]
+__all__ = ["GovernedToolWrapper", "derive_governed_idempotency_key", "governed_tool"]

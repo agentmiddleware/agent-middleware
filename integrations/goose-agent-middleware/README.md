@@ -17,6 +17,17 @@ Every proxied call goes through permit -> idempotency -> invoke -> receipt.
 The proxy enforces the same permit rules server-side, so a client without the
 hook is still refused.
 
+## Upstream server
+
+The filesystem server is pinned: `AMW_FS_SERVER_PACKAGE` (default
+`@modelcontextprotocol/server-filesystem@2.0.0`) is passed to `npx -y`, so a
+new upstream release never runs without an explicit change.
+
+A failure before the tool call is sent (spawn, session setup, `initialize`)
+is safe to retry: AMW restores the idempotency key to its state before the
+attempt and issues a `not_dispatched` receipt. Only a failure after dispatch
+is recorded as `failed_unknown`.
+
 ## Permit policy
 
 ```json

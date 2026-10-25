@@ -52,12 +52,14 @@ def _printable_ascii_idempotency_key(idempotency_key: str) -> str:
     return idempotency_key
 
 
-def _gateway_server_error(response: httpx.Response) -> dict[str, Any]:
+def _gateway_server_error(response: httpx.Response, keyed: bool) -> dict[str, Any]:
     """Structured content for a gateway HTTP 5xx.
 
     FastMCP turns a raised exception into a bare ``ToolError`` string, which
     drops the gateway's error code and correlation id. Returning them as data
-    keeps both, and ``retryable`` tells the caller to retry with the same key.
+    keeps both. ``retryable`` is true only when the caller supplied an
+    idempotency key: an unkeyed call gets a fresh server-minted key on the
+    gateway, so retrying it is a new call that can execute and charge again.
     """
     try:
         body = response.json()
@@ -83,14 +85,17 @@ def _gateway_server_error(response: httpx.Response) -> dict[str, Any]:
         or response.headers.get("X-Correlation-ID")
         or response.headers.get("X-Request-ID")
     )
-    return {
+    structured: dict[str, Any] = {
         "error": code,
         "code": code,
         "message": first_str("message") or f"POST /mcp failed: HTTP {response.status_code}",
         "correlation_id": correlation_id,
         "http_status": response.status_code,
-        "retryable": True,
+        "retryable": keyed,
     }
+    if not keyed:
+        structured["hint"] = "Supply an idempotency_key to retry safely."
+    return structured
 
 
 def generate_manifest(
@@ -242,7 +247,7 @@ async def serve_async(
                     structuredContent=structured,
                 )
             if response.status_code >= 500:
-                structured = _gateway_server_error(response)
+                structured = _gateway_server_error(response, keyed=idempotency_key is not None)
                 return CallToolResult(
                     content=[TextContent(type="text", text=json.dumps(structured))],
                     isError=True,

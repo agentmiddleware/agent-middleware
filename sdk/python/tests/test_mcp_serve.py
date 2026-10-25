@@ -426,14 +426,14 @@ _CORRELATION_ID = "4f0c2a9e8b7d4c3fa1e2d3c4b5a69788"
         ),
     ],
 )
-def test_serve_async_gateway_5xx_returns_retryable_structured_error(
+def test_serve_async_keyed_gateway_5xx_returns_retryable_structured_error(
     monkeypatch, tmp_path, status_code, body, headers, expected_code, expected_message
 ):
     """HTTP 5xx is returned as data so FastMCP cannot flatten it into a ToolError.
 
-    The result keeps the gateway code and correlation id, and marks the call
-    retryable with the same key, both from the handler and through
-    ``FastMCP.call_tool``.
+    The result keeps the gateway code and correlation id. The caller supplied
+    an idempotency key, so the call is retryable with that same key, both from
+    the handler and through ``FastMCP.call_tool``.
     """
     httpx = pytest.importorskip("httpx")
 
@@ -470,16 +470,35 @@ def test_serve_async_gateway_5xx_returns_retryable_structured_error(
     ]
 
 
-def test_serve_async_gateway_5xx_without_correlation_id_reports_none(monkeypatch, tmp_path):
-    """No correlation id in body or headers is reported as null, never invented."""
+def test_serve_async_unkeyed_gateway_5xx_is_not_retryable(monkeypatch, tmp_path):
+    """Without a caller key the gateway mints a fresh one per call.
+
+    A retry would be a new call that can execute and charge again, so the
+    result is not retryable and hints to supply an idempotency_key. A missing
+    correlation id is reported as null, never invented.
+    """
     httpx = pytest.importorskip("httpx")
 
     def respond(request):
         return httpx.Response(500, json={"code": "internal_error"})
 
-    _handler, _requests, _httpx, server = _serve_tool_bridge(monkeypatch, tmp_path, respond)
-    result = asyncio.run(server.call_tool("partner.search", {"kwargs": {"query": "sample"}}))
+    handler, requests, _httpx, server = _serve_tool_bridge(monkeypatch, tmp_path, respond)
+    expected = {
+        "error": "internal_error",
+        "code": "internal_error",
+        "message": "POST /mcp failed: HTTP 500",
+        "correlation_id": None,
+        "http_status": 500,
+        "retryable": False,
+        "hint": "Supply an idempotency_key to retry safely.",
+    }
 
-    assert result.isError is True
-    assert result.structuredContent["correlation_id"] is None
-    assert result.structuredContent["retryable"] is True
+    direct = asyncio.run(handler(kwargs={"query": "sample"}))
+    via_fastmcp = asyncio.run(server.call_tool("partner.search", {"kwargs": {"query": "sample"}}))
+
+    for result in (direct, via_fastmcp):
+        assert result.isError is True
+        assert result.structuredContent == expected
+        assert json.loads(result.content[0].text) == expected
+    assert len(requests) == 2
+    assert all("Idempotency-Key" not in request.headers for request in requests)

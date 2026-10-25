@@ -16,6 +16,7 @@ Acceptance criteria (R&D spec V1):
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import socket
 import sys
@@ -1374,3 +1375,136 @@ def test_cli_non_oserror_with_failed_restore_reraises_with_note(tmp_path, monkey
     assert "rollback restore failed" in notes[0]
     assert str(backups[0]) in notes[0]
     assert sorted(p.name for p in out.glob("*.tmp")) == [backups[0].name]
+
+
+# --- 25. atomic-output review fixes -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("after_success", "exc_type", "message"),
+    [
+        (False, OSError, "rename failed"),
+        (True, KeyboardInterrupt, "interrupted"),
+    ],
+    ids=["raise-before-replace", "interrupt-after-replace"],
+)
+def test_cli_first_rename_race_restores_previous_outputs(
+    tmp_path, monkeypatch, after_success, exc_type, message
+):
+    """A failure on the first rename still rolls that target back.
+
+    The target is recorded before ``os.replace`` runs, so the rollback
+    covers both a rename that never happened (the untouched target needs
+    no restore) and an interrupt that lands after a successful rename
+    but before any later bookkeeping.
+    """
+    from app.replay.cli import _write_outputs_atomically
+
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_bytes(content.encode("utf-8"))
+    old_bytes = {name: (out / name).read_bytes() for name in old}
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _racy_replace(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and dst_path.name in old
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 1:
+                if after_success:
+                    real_replace(src, dst)
+                    raise KeyboardInterrupt(message)
+                raise OSError(message)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _racy_replace)
+    with pytest.raises(exc_type, match=message):
+        _write_outputs_atomically(
+            out,
+            {
+                "receipts.jsonl": "new receipts\n",
+                "summary.json": "new summary\n",
+                "keys.json": "new keys\n",
+            },
+        )
+    assert renames["count"] == 1
+    for name, data in old_bytes.items():
+        assert (out / name).read_bytes() == data
+    assert sorted(p.name for p in out.iterdir()) == sorted(old)
+    assert list(out.glob("*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+def test_cli_output_modes_match_target_or_umask(tmp_path):
+    import stat
+
+    from app.replay.cli import _write_outputs_atomically
+
+    out = tmp_path / "out"
+    out.mkdir()
+    existing = out / "summary.json"
+    existing.write_text("old summary\n")
+    existing.chmod(0o640)
+
+    current = os.umask(0)
+    os.umask(current)
+    expected_new = 0o666 & ~current
+
+    _write_outputs_atomically(
+        out,
+        {
+            "receipts.jsonl": "new receipts\n",
+            "summary.json": "new summary\n",
+            "keys.json": "new keys\n",
+        },
+    )
+
+    assert (out / "summary.json").read_text() == "new summary\n"
+    assert stat.S_IMODE((out / "summary.json").stat().st_mode) == 0o640
+    for name in ("receipts.jsonl", "keys.json"):
+        assert stat.S_IMODE((out / name).stat().st_mode) == expected_new
+
+
+def test_cli_rename_failure_in_fresh_out_dir_leaves_no_files(
+    tmp_path, capsys, monkeypatch
+):
+    argv, out = _replay_out_argv(tmp_path)
+    assert not out.exists()
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _fail_second_temp_rename(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 2:
+                raise OSError("rename failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_second_temp_rename)
+    assert replay_main(argv) == 2
+    assert "amw-replay: rename failed" in capsys.readouterr().err
+    assert renames["count"] == 2
+    assert not out.exists() or list(out.iterdir()) == []
+    if out.exists():
+        assert list(out.glob("*.tmp")) == []

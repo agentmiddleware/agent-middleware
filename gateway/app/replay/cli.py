@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 import sys
 import tempfile
@@ -19,19 +20,31 @@ from app.replay.policy_replay import (
 from app.services.signing_keys import SigningKeyError
 
 
+def _default_output_mode() -> int:
+    """Mode for new outputs: ``0o666`` masked by the process umask."""
+    current = os.umask(0)
+    os.umask(current)
+    return 0o666 & ~current
+
+
 def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
     """Write every output through a temp file in ``out``, then rename into place.
 
     Existing targets are preserved via same-dir hardlink backups before any
-    rename, falling back to a copy when hardlinks are unavailable. On any
-    failure, new temps are removed, overwritten targets are restored from
-    backups, and targets that did not previously exist are removed. Backups
+    rename, falling back to a copy when hardlinks are unavailable. Each temp
+    takes its target's mode when the target exists, else ``0o666 & ~umask``.
+    Targets are recorded before each rename so an interruption between the
+    rename and the bookkeeping still rolls back. On any failure, new temps
+    are removed, targets whose rename happened are restored from backups,
+    targets whose rename never happened keep their untouched contents, and
+    targets that did not previously exist are removed when present. Backups
     are deleted on success and after a clean rollback. A backup whose
     restore fails is kept and its path is included in the raised error.
     """
     temps: list[tuple[str, Path]] = []
     backups: dict[Path, Path] = {}
     placed: list[Path] = []
+    pre_existing: set[Path] = set()
     try:
         for name, content in files.items():
             fd, tmp_name = tempfile.mkstemp(prefix=f"{name}.", suffix=".tmp", dir=out)
@@ -41,6 +54,7 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
         for _, target in temps:
             if not target.exists():
                 continue
+            pre_existing.add(target)
             fd_bak, bak_name = tempfile.mkstemp(
                 prefix=f"{target.name}.", suffix=".bak.tmp", dir=out
             )
@@ -58,10 +72,21 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
                     pass
                 raise
             backups[target] = Path(bak_name)
+        default_mode = _default_output_mode()
         for tmp_name, target in temps:
-            os.replace(tmp_name, target)
+            try:
+                mode = stat.S_IMODE(os.stat(target).st_mode)
+            except FileNotFoundError:
+                mode = default_mode
+            os.chmod(tmp_name, mode)
             placed.append(target)
+            os.replace(tmp_name, target)
     except BaseException as original:
+        # A recorded target whose temp still exists was never replaced: the
+        # rename failed or an interrupt landed first, and the target keeps
+        # its untouched contents. A missing temp means the rename happened
+        # and the target must be restored from backup.
+        unreplaced = {target for tmp_name, target in temps if os.path.exists(tmp_name)}
         for tmp_name, _ in temps:
             try:
                 os.unlink(tmp_name)
@@ -70,16 +95,19 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
         failed_restores: list[Path] = []
         for target in placed:
             backup = backups.get(target)
-            if backup is not None:
+            if backup is None:
+                if target not in pre_existing and target.exists():
+                    try:
+                        target.unlink()
+                    except OSError:
+                        pass
+            elif target not in unreplaced:
                 try:
                     os.replace(backup, target)
                 except OSError:
                     failed_restores.append(backup)
-            else:
-                try:
-                    target.unlink()
-                except OSError:
-                    pass
+            # else: the rename never happened, so the untouched target needs
+            # no restore and its backup is removed with the rest below.
         for backup in backups.values():
             if backup in failed_restores:
                 continue

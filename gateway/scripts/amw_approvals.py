@@ -75,24 +75,31 @@ def _refusal_reason(base_url: str) -> str | None:
     http://127.0.0.1@evil resolve to the real host (evil), and look-alikes
     such as localhost.example or 127.0.0.1.nip.io fail both the exact
     localhost match and the IP parse. Unknown schemes and empty hosts refuse.
-    The check uses httpx.URL, the same parser as the request.
+    The check uses httpx.URL, the same parser as the request. IDNA decode
+    errors on host access (malformed punycode) refuse as unparseable.
     """
     for ch in base_url:
         if ord(ch) < 32 or ord(ch) == 127 or ch.isspace():
             return "invalid characters in URL"
     try:
         parsed = httpx.URL(base_url)
-    except httpx.InvalidURL:
+    except (httpx.InvalidURL, UnicodeError, ValueError):
         return "unparseable URL"
     scheme = parsed.scheme.lower()
     if scheme not in ("http", "https"):
         if parsed.scheme:
             return f"unsupported scheme {parsed.scheme!r}"
         return "missing URL scheme"
-    host = parsed.host or ""
+    try:
+        host = parsed.host or ""
+        has_userinfo = bool(parsed.username or parsed.password or parsed.userinfo)
+    except (UnicodeError, ValueError):
+        # httpx decodes IDNA on .host access, so malformed punycode
+        # (e.g. http://xn--) raises here, not at URL construction.
+        return "unparseable URL"
     if not host:
         return "missing host"
-    if parsed.username or parsed.password or parsed.userinfo:
+    if has_userinfo:
         return "userinfo not allowed"
     authority = _raw_authority(base_url)
     if authority is not None and "@" in authority:
@@ -135,7 +142,9 @@ def _client(base_url: str, api_key: str) -> httpx.Client:
             headers={API_KEY_HEADER: api_key},
             trust_env=False,
         )
-    except httpx.InvalidURL:
+    except (httpx.InvalidURL, UnicodeError, ValueError):
+        # All other arguments are constants, so any decode error here is
+        # URL-driven and refuses cleanly without ever printing the key.
         raise ValueError("refusing to send the API key: unparseable URL") from None
 
 

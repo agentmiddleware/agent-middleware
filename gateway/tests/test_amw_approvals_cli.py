@@ -199,6 +199,9 @@ def _refused_url(case: str) -> str:
     if case == "https-newline":
         # RFC 2606 example.com; newline refuses even on https.
         return f"https://{EXAMPLE_COM}\n/"
+    if case == "http-malformed-idna-label":
+        # RFC 3492/5891 punycode, malformed on purpose; .invalid is RFC 2606.
+        return f"http://xn--.{EXAMPLE_INVALID}:{HTTP_TEST_PORT}"
     raise AssertionError(f"unknown refused case: {case}")
 
 
@@ -262,6 +265,7 @@ class _ExplodingClient:
         "http-tab-in-host",
         "http-non-numeric-port",
         "https-newline",
+        "http-malformed-idna-label",
     ],
 )
 def test_refused_base_url_makes_no_request(
@@ -310,9 +314,15 @@ def test_refused_env_base_url_makes_no_request(
 
 
 def test_client_refuses_disallowed_url_directly() -> None:
-    url = f"http://{TEST_NET_2}:{HTTP_TEST_PORT}"
-    with pytest.raises(ValueError, match="refusing to send the API key"):
-        amw_approvals._client(url, PLACEHOLDER_KEY)
+    urls = [
+        f"http://{TEST_NET_2}:{HTTP_TEST_PORT}",
+        # RFC 3492/5891 punycode, malformed on purpose; .invalid is RFC 2606.
+        f"http://xn--.{EXAMPLE_INVALID}:{HTTP_TEST_PORT}",
+    ]
+    for url in urls:
+        with pytest.raises(ValueError, match="refusing to send the API key") as exc:
+            amw_approvals._client(url, PLACEHOLDER_KEY)
+        assert PLACEHOLDER_KEY not in str(exc.value)
 
 
 def test_client_disables_trust_env_and_ignores_proxies(

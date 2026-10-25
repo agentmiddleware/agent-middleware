@@ -442,6 +442,7 @@ CLEAN_DATABASE_TABLES = (
     "daily_balance_snapshots",
     "kyc_verifications",
     "refresh_tokens",
+    "api_key_usage_events",
     "api_keys",
     "key_rotation_logs",
     "service_registry",

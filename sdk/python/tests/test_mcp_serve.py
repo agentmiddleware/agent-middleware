@@ -7,11 +7,14 @@ import sys
 import pytest
 
 from b2a_sdk import mcp
-from b2a_sdk.errors import TransportError
 
 
 def _serve_tool_bridge(monkeypatch, tmp_path, respond):
-    """Start serve_async against a mock gateway and return the registered handler."""
+    """Start serve_async against a mock gateway.
+
+    Returns the registered handler, the captured requests, httpx, and the
+    FastMCP server so tests can also go through ``FastMCP.call_tool``.
+    """
     fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
     httpx = pytest.importorskip("httpx")
     monkeypatch.chdir(tmp_path)
@@ -23,6 +26,7 @@ def _serve_tool_bridge(monkeypatch, tmp_path, respond):
     )
     registered = []
     requests = []
+    servers = []
     add_tool = fastmcp.add_tool
 
     def capture_tool(self, handler, **kwargs):
@@ -30,7 +34,7 @@ def _serve_tool_bridge(monkeypatch, tmp_path, respond):
         return add_tool(self, handler, **kwargs)
 
     async def run_stdio(self):
-        return None
+        servers.append(self)
 
     def wrapped(request):
         requests.append(request)
@@ -43,7 +47,7 @@ def _serve_tool_bridge(monkeypatch, tmp_path, respond):
     monkeypatch.setattr(fastmcp, "add_tool", capture_tool)
     monkeypatch.setattr(fastmcp, "run_stdio_async", run_stdio)
     asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
-    return registered[0], requests, httpx
+    return registered[0], requests, httpx, servers[0]
 
 
 @pytest.mark.parametrize("transport", ["stdio", "sse"])
@@ -297,18 +301,58 @@ def test_serve_async_rejects_non_ascii_idempotency_key_before_send(monkeypatch, 
     def respond(request):
         return httpx.Response(200, json={"result": {"content": [{"type": "text", "text": "ok"}]}})
 
-    handler, requests, _httpx = _serve_tool_bridge(monkeypatch, tmp_path, respond)
+    handler, requests, _httpx, _server = _serve_tool_bridge(monkeypatch, tmp_path, respond)
 
     with pytest.raises(ValueError, match="printable ASCII"):
         asyncio.run(handler(idempotency_key="注文-123", kwargs={"query": "sample"}))
     with pytest.raises(ValueError, match="printable ASCII"):
-        asyncio.run(handler(idempotency_key="  café-1  ", kwargs={"query": "sample"}))
+        asyncio.run(handler(idempotency_key="café-1", kwargs={"query": "sample"}))
     assert requests == []
 
-    result = asyncio.run(handler(idempotency_key="  invoke-123  ", kwargs={"query": "sample"}))
+
+@pytest.mark.parametrize("key", ["  invoke-123", "invoke-123  ", "\tinvoke-123", "invoke-123\n"])
+def test_serve_async_rejects_edge_whitespace_idempotency_key(monkeypatch, tmp_path, key):
+    """The gateway compares keys verbatim, so edge whitespace is refused, not trimmed.
+
+    A trimmed retry would reach the gateway as a different key than the
+    caller believes it sent, and HTTP drops header-edge whitespace anyway.
+    """
+    httpx = pytest.importorskip("httpx")
+    tool_error = pytest.importorskip("mcp.server.fastmcp.exceptions").ToolError
+
+    def respond(request):
+        return httpx.Response(200, json={"result": {"content": [{"type": "text", "text": "ok"}]}})
+
+    handler, requests, _httpx, server = _serve_tool_bridge(monkeypatch, tmp_path, respond)
+
+    with pytest.raises(ValueError, match="leading or trailing whitespace"):
+        asyncio.run(handler(idempotency_key=key, kwargs={"query": "sample"}))
+    with pytest.raises(tool_error, match="leading or trailing whitespace"):
+        asyncio.run(
+            server.call_tool(
+                "partner.search", {"kwargs": {"query": "sample"}, "idempotency_key": key}
+            )
+        )
+    assert requests == []
+
+
+def test_serve_async_sends_interior_space_idempotency_key_exactly(monkeypatch, tmp_path):
+    """A key with interior spaces is valid and reaches the gateway byte for byte."""
+    httpx = pytest.importorskip("httpx")
+
+    def respond(request):
+        return httpx.Response(200, json={"result": {"content": [{"type": "text", "text": "ok"}]}})
+
+    _handler, requests, _httpx, server = _serve_tool_bridge(monkeypatch, tmp_path, respond)
+    result = asyncio.run(
+        server.call_tool(
+            "partner.search", {"kwargs": {"query": "sample"}, "idempotency_key": "order 42 retry"}
+        )
+    )
+
     assert result.isError is False
     assert len(requests) == 1
-    assert requests[0].headers["Idempotency-Key"] == "invoke-123"
+    assert requests[0].headers["Idempotency-Key"] == "order 42 retry"
 
 
 def test_serve_async_passes_jsonrpc_error_object_unchanged(monkeypatch, tmp_path):
@@ -324,7 +368,7 @@ def test_serve_async_passes_jsonrpc_error_object_unchanged(monkeypatch, tmp_path
     def respond(request):
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "error": error})
 
-    handler, requests, _httpx = _serve_tool_bridge(monkeypatch, tmp_path, respond)
+    handler, requests, _httpx, _server = _serve_tool_bridge(monkeypatch, tmp_path, respond)
     result = asyncio.run(handler(idempotency_key="invoke-123", kwargs={"query": "sample"}))
 
     assert result.isError is True
@@ -333,26 +377,109 @@ def test_serve_async_passes_jsonrpc_error_object_unchanged(monkeypatch, tmp_path
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("status_code", [500, 502, 503])
-def test_serve_async_gateway_5xx_is_retryable_transport_error(monkeypatch, tmp_path, status_code):
-    """HTTP 5xx is a transport failure so the caller can retry the same key."""
+_CORRELATION_ID = "4f0c2a9e8b7d4c3fa1e2d3c4b5a69788"
+
+
+@pytest.mark.parametrize(
+    "status_code, body, headers, expected_code, expected_message",
+    [
+        (
+            500,
+            {
+                "code": "internal_error",
+                "message": "The request could not be completed.",
+                "fix": "Try again later.",
+                "correlation_id": _CORRELATION_ID,
+            },
+            {},
+            "internal_error",
+            "The request could not be completed.",
+        ),
+        (
+            500,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {
+                    "code": -32603,
+                    "message": "Internal error",
+                    "data": {"correlation_id": _CORRELATION_ID},
+                },
+            },
+            {},
+            "internal_error",
+            "Internal error",
+        ),
+        (
+            503,
+            {"code": "service_unavailable", "message": "Gateway is restarting."},
+            {"X-Correlation-ID": _CORRELATION_ID},
+            "service_unavailable",
+            "Gateway is restarting.",
+        ),
+        (
+            502,
+            "<html>Bad Gateway</html>",
+            {"X-Request-ID": _CORRELATION_ID},
+            "internal_error",
+            "POST /mcp failed: HTTP 502",
+        ),
+    ],
+)
+def test_serve_async_gateway_5xx_returns_retryable_structured_error(
+    monkeypatch, tmp_path, status_code, body, headers, expected_code, expected_message
+):
+    """HTTP 5xx is returned as data so FastMCP cannot flatten it into a ToolError.
+
+    The result keeps the gateway code and correlation id, and marks the call
+    retryable with the same key, both from the handler and through
+    ``FastMCP.call_tool``.
+    """
     httpx = pytest.importorskip("httpx")
 
     def respond(request):
-        return httpx.Response(
-            status_code,
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "error": {"code": -32603, "message": "internal"},
-            },
+        if isinstance(body, dict):
+            return httpx.Response(status_code, json=body, headers=headers)
+        return httpx.Response(status_code, text=body, headers=headers)
+
+    handler, requests, _httpx, server = _serve_tool_bridge(monkeypatch, tmp_path, respond)
+    expected = {
+        "error": expected_code,
+        "code": expected_code,
+        "message": expected_message,
+        "correlation_id": _CORRELATION_ID,
+        "http_status": status_code,
+        "retryable": True,
+    }
+
+    direct = asyncio.run(handler(idempotency_key="invoke-123", kwargs={"query": "sample"}))
+    via_fastmcp = asyncio.run(
+        server.call_tool(
+            "partner.search", {"kwargs": {"query": "sample"}, "idempotency_key": "invoke-123"}
         )
+    )
 
-    handler, requests, _httpx = _serve_tool_bridge(monkeypatch, tmp_path, respond)
+    for result in (direct, via_fastmcp):
+        assert result.isError is True
+        assert result.structuredContent == expected
+        assert json.loads(result.content[0].text) == expected
+    assert len(requests) == 2
+    assert [request.headers["Idempotency-Key"] for request in requests] == [
+        "invoke-123",
+        "invoke-123",
+    ]
 
-    with pytest.raises(TransportError, match=str(status_code)) as exc_info:
-        asyncio.run(handler(idempotency_key="invoke-123", kwargs={"query": "sample"}))
 
-    assert exc_info.value.__class__ is TransportError
-    assert len(requests) == 1
-    assert requests[0].headers["Idempotency-Key"] == "invoke-123"
+def test_serve_async_gateway_5xx_without_correlation_id_reports_none(monkeypatch, tmp_path):
+    """No correlation id in body or headers is reported as null, never invented."""
+    httpx = pytest.importorskip("httpx")
+
+    def respond(request):
+        return httpx.Response(500, json={"code": "internal_error"})
+
+    _handler, _requests, _httpx, server = _serve_tool_bridge(monkeypatch, tmp_path, respond)
+    result = asyncio.run(server.call_tool("partner.search", {"kwargs": {"query": "sample"}}))
+
+    assert result.isError is True
+    assert result.structuredContent["correlation_id"] is None
+    assert result.structuredContent["retryable"] is True

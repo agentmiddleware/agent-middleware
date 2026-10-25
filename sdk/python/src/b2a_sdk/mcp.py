@@ -21,28 +21,76 @@ from urllib.parse import urlencode
 
 import httpx
 
-from .errors import TransportError
-
 DEFAULT_API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
 _ASCII_PRINTABLE_MIN = 32
 _ASCII_PRINTABLE_MAX = 126
 
 
 def _printable_ascii_idempotency_key(idempotency_key: str) -> str:
-    """Return a header-safe key, or raise before httpx encodes the request.
+    """Return the caller's key unchanged, or raise before anything is sent.
 
-    ``Idempotency-Key`` is an HTTP header. httpx encodes header values as
-    ASCII, so a non-ASCII key would raise ``UnicodeEncodeError``. Reject
-    anything outside printable ASCII after trim.
+    The gateway compares ``Idempotency-Key`` verbatim and never trims it
+    (``validate_client_idempotency_key`` in gateway/app/services/idempotency.py),
+    while HTTP servers drop leading and trailing header whitespace on the wire.
+    Silently trimming here, or letting the wire trim, would let ``" k"`` and
+    ``"k"`` alias to one key. So this bridge rejects edge whitespace instead
+    of trimming it, unlike ``AgentMiddlewareClient``, which trims. httpx
+    encodes header values as ASCII, so anything outside printable ASCII is
+    rejected too rather than failing with ``UnicodeEncodeError``.
     """
     if not isinstance(idempotency_key, str):
         raise ValueError("idempotency_key must be a string")
-    key = idempotency_key.strip()
-    if not key:
+    if not idempotency_key.strip():
         raise ValueError("idempotency_key must not be blank")
-    if any(ord(char) < _ASCII_PRINTABLE_MIN or ord(char) > _ASCII_PRINTABLE_MAX for char in key):
+    if idempotency_key != idempotency_key.strip():
+        raise ValueError("idempotency_key must not have leading or trailing whitespace")
+    if any(
+        ord(char) < _ASCII_PRINTABLE_MIN or ord(char) > _ASCII_PRINTABLE_MAX
+        for char in idempotency_key
+    ):
         raise ValueError("idempotency_key must be printable ASCII")
-    return key
+    return idempotency_key
+
+
+def _gateway_server_error(response: httpx.Response) -> dict[str, Any]:
+    """Structured content for a gateway HTTP 5xx.
+
+    FastMCP turns a raised exception into a bare ``ToolError`` string, which
+    drops the gateway's error code and correlation id. Returning them as data
+    keeps both, and ``retryable`` tells the caller to retry with the same key.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    sources = [body]
+    error = body.get("error")
+    if isinstance(error, dict):
+        sources = [error.get("data") if isinstance(error.get("data"), dict) else {}, error, body]
+
+    def first_str(field: str) -> str | None:
+        for source in sources:
+            value = source.get(field)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    code = first_str("code") or "internal_error"
+    correlation_id = (
+        first_str("correlation_id")
+        or response.headers.get("X-Correlation-ID")
+        or response.headers.get("X-Request-ID")
+    )
+    return {
+        "error": code,
+        "code": code,
+        "message": first_str("message") or f"POST /mcp failed: HTTP {response.status_code}",
+        "correlation_id": correlation_id,
+        "http_status": response.status_code,
+        "retryable": True,
+    }
 
 
 def generate_manifest(
@@ -194,7 +242,12 @@ async def serve_async(
                     structuredContent=structured,
                 )
             if response.status_code >= 500:
-                raise TransportError(f"POST /mcp failed: HTTP {response.status_code}")
+                structured = _gateway_server_error(response)
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
             response.raise_for_status()
             envelope = response.json()
             if "error" in envelope:

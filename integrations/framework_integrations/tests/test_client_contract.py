@@ -29,7 +29,12 @@ def _client(monkeypatch: pytest.MonkeyPatch, handler) -> B2AClient:
         return real(*args, **kwargs)
 
     monkeypatch.setattr("framework_integrations.client.httpx.AsyncClient", factory)
-    return B2AClient(api_url=_API, api_key="key-tenant-a", wallet_id="wallet-tenant-a")
+    return B2AClient(
+        api_url=_API,
+        api_key="key-tenant-a",
+        wallet_id="wallet-tenant-a",
+        agent_id="agent-tenant-a",
+    )
 
 
 def _capture(seen: list[httpx.Request]):
@@ -162,7 +167,7 @@ def test_send_message_matches_the_comms_request_contract(monkeypatch):
         asyncio.run(run())
     request = seen[0]
     assert request.url.path == "/v1/comms/messages"
-    assert request.url.params["from_agent"] == "wallet-tenant-a"
+    assert request.url.params["from_agent"] == "agent-tenant-a"
     assert request.headers["x-api-key"] == "key-tenant-a"
     assert json.loads(request.content) == {
         "to_agent": "agent-2",
@@ -184,6 +189,22 @@ def test_send_message_rejects_a_bad_priority_before_sending(monkeypatch):
             await client.close()
 
     with pytest.raises(ValueError, match="priority"):
+        asyncio.run(run())
+    assert seen == []
+
+
+def test_send_message_requires_sender_agent_id_before_sending(monkeypatch):
+    seen: list[httpx.Request] = []
+    client = _client(monkeypatch, _capture(seen))
+    client.config.agent_id = ""
+
+    async def run() -> None:
+        try:
+            await client.send_message("agent-2", {"text": "hello"})
+        finally:
+            await client.close()
+
+    with pytest.raises(ValueError, match="agent_id is required"):
         asyncio.run(run())
     assert seen == []
 
@@ -234,8 +255,9 @@ def test_create_awi_session_rejects_invalid_steps_before_sending(
     "payload",
     [
         {"wallet_id": "wallet-tenant-a"},
-        {"balance": True},
-        {"balance": "4"},
+        pytest.param({"balance": True}, id="bool"),
+        pytest.param({"balance": "4"}, id="string"),
+        pytest.param(b'{"balance": NaN}', id="nan"),
         [],
         b'{"balance": Infinity}',
     ],

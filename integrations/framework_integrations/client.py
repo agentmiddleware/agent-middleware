@@ -31,6 +31,7 @@ class B2AConfig:
     api_key: str = ""
     wallet_id: str = ""
     timeout: int = 30
+    agent_id: str = ""
 
 
 class B2AClient:
@@ -123,6 +124,11 @@ class B2AClient:
         priority: str = "normal",
     ) -> dict[str, Any]:
         """Send a message to another agent."""
+        if (
+            not isinstance(self.config.agent_id, str)
+            or not self.config.agent_id.strip()
+        ):
+            raise ValueError("agent_id is required to send messages")
         if priority not in _MESSAGE_PRIORITIES:
             raise ValueError("priority must be one of: critical, high, normal, low")
         subject = "message"
@@ -139,7 +145,7 @@ class B2AClient:
         response = await self._client.post(
             f"{self.config.api_url}/v1/comms/messages",
             headers=self._headers(),
-            params={"from_agent": self.config.wallet_id},
+            params={"from_agent": self.config.agent_id.strip()},
             json=payload,
         )
         response.raise_for_status()

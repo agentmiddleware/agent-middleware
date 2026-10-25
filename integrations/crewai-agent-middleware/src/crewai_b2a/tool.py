@@ -467,24 +467,27 @@ class CrewAIB2ATool(BaseTool):
         **kwargs: Any,
     ) -> str:
         """Asynchronous operation on the client's owning loop."""
-        replay_permit = self._begin_permit_call(operation, permit_idempotency_key)
-        coro = self._execute(
-            operation,
-            replay_permit=replay_permit,
-            tool_name=tool_name,
-            idempotency_key=idempotency_key,
-            permit_idempotency_key=permit_idempotency_key,
-            arguments=arguments,
-            **kwargs,
-        )
         try:
-            if self.client is not None and not self._owns_client:
-                return await coro
+            replay_permit = self._begin_permit_call(operation, permit_idempotency_key)
             try:
-                future = self._submit(coro)
-            except Exception:
-                coro.close()
-                raise
-            return await asyncio.wrap_future(future)
-        finally:
-            self._finish_permit_call(operation, permit_idempotency_key)
+                coro = self._execute(
+                    operation,
+                    replay_permit=replay_permit,
+                    tool_name=tool_name,
+                    idempotency_key=idempotency_key,
+                    permit_idempotency_key=permit_idempotency_key,
+                    arguments=arguments,
+                    **kwargs,
+                )
+                if self.client is not None and not self._owns_client:
+                    return await coro
+                try:
+                    future = self._submit(coro)
+                except Exception:
+                    coro.close()
+                    raise
+                return await asyncio.wrap_future(future)
+            finally:
+                self._finish_permit_call(operation, permit_idempotency_key)
+        except Exception as exc:  # noqa: BLE001
+            return _error_text(exc)

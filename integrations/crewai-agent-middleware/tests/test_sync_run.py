@@ -33,6 +33,34 @@ def _tool(handler, *, sync: bool = True) -> tuple[CrewAIB2ATool, B2AClient]:
     return tool, client
 
 
+@pytest.mark.asyncio
+async def test_async_run_returns_error_when_dispatch_fails(monkeypatch):
+    tool = CrewAIB2ATool(api_key="test-key", wallet_id="wallet-1")
+
+    def fail_submit(self, coro):
+        raise RuntimeError("runner unavailable")
+
+    monkeypatch.setattr(CrewAIB2ATool, "_submit", fail_submit)
+    result = await tool._arun("call_tool", permit_idempotency_key="permit-1")
+
+    assert result == "Error: runner unavailable"
+    assert tool._active_permit_calls == {}
+
+
+@pytest.mark.asyncio
+async def test_async_run_returns_error_when_permit_setup_fails(monkeypatch):
+    tool = CrewAIB2ATool(api_key="test-key", wallet_id="wallet-1")
+
+    def fail_begin(self, operation, permit_key):
+        raise RuntimeError("permit setup unavailable")
+
+    monkeypatch.setattr(CrewAIB2ATool, "_begin_permit_call", fail_begin)
+
+    assert await tool._arun("call_tool", permit_idempotency_key="permit-1") == (
+        "Error: permit setup unavailable"
+    )
+
+
 def test_sync_run_from_a_worker_thread_calls_the_api():
     seen: list[str] = []
 

@@ -9,7 +9,7 @@ from framework_integrations.client import B2AClient, B2AConfig
 
 
 def _client(handler):
-    client = B2AClient(B2AConfig(api_key="k", wallet_id="w1"))
+    client = B2AClient(B2AConfig(api_key="k", wallet_id="w1", agent_id="agent-1"))
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return client
 
@@ -165,6 +165,6 @@ def test_thin_wrappers_shape_and_auth():
         telemetry = captured["/v1/telemetry/events/single"]["body"]
         assert telemetry["message"] == "ev"
         assert telemetry["metadata"] == {"a": 1, "event": "ev"}
-        assert captured["/v1/comms/messages"]["params"]["from_agent"] == "w1"
+        assert captured["/v1/comms/messages"]["params"]["from_agent"] == "agent-1"
     finally:
         asyncio.run(_close(client))

@@ -2743,17 +2743,6 @@ body.home-light .hero-v2-tab-active::after {
   background: var(--home-blue);
   content: "";
 }
-body.home-light .hero-v2-tab-disabled {
-  min-width: 183px;
-  border-left: 1px solid var(--home-line);
-  color: var(--home-muted);
-}
-body.home-light .hero-v2-tab-disabled span {
-  padding: 3px 6px;
-  border: 1px solid #6b7280;
-  border-radius: 4px;
-  font-size: 0.625rem;
-}
 body.home-light .hero-v2-command-row { position: relative; }
 body.home-light .hero-v2-command-row pre {
   margin: 0;

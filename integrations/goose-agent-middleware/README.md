@@ -20,7 +20,7 @@ hook is still refused.
 ## Upstream server
 
 The filesystem server is pinned: `AMW_FS_SERVER_PACKAGE` (default
-`@modelcontextprotocol/server-filesystem@2.0.0`) is passed to `npx -y`, so a
+`@modelcontextprotocol/server-filesystem@2.0.1`) is passed to `npx -y`, so a
 new upstream release never runs without an explicit change.
 
 A failure before the tool call is sent (spawn, session setup, `initialize`)
@@ -107,3 +107,7 @@ real call log recorded by AMW during the G1 gate session.
 `tests/e2e/fault_proxy.py` is a test-only launcher that injects one fault into
 the shipped proxy to record the cut-stream and unknown-outcome sessions; it
 is not part of the package.
+
+An error result from the upstream server for a write is recorded as
+`failed_unknown`: the pinned server writes files in place, so the file may be
+partly written, and the write is never re-run automatically.

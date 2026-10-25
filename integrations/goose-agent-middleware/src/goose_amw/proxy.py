@@ -13,7 +13,7 @@ Configuration (environment):
 * ``AMW_CALLERS`` - JSON map of sha256(bearer token) -> caller id
 * ``AMW_FS_ROOT`` - root directory handed to the filesystem server
 * ``AMW_FS_SERVER_PACKAGE`` - pinned npm spec of the filesystem server,
-  default ``@modelcontextprotocol/server-filesystem@2.0.0``
+  default ``@modelcontextprotocol/server-filesystem@2.0.1``
 * ``AMW_IDEMPOTENCY_WINDOW_SECONDS`` - replay window, default 600
 * ``AMW_HOST`` / ``AMW_PORT`` - bind address, default 127.0.0.1:8791
 """
@@ -62,7 +62,7 @@ class UpstreamUnknown(Exception):
 Upstream = Callable[[str, dict[str, Any]], Awaitable[str]]
 
 
-FS_SERVER_PACKAGE = "@modelcontextprotocol/server-filesystem@2.0.0"
+FS_SERVER_PACKAGE = "@modelcontextprotocol/server-filesystem@2.0.1"
 
 
 def filesystem_upstream(fs_root: str, package: str | None = None) -> Upstream:
@@ -229,7 +229,15 @@ class Gateway:
             raise ToolError(f"upstream unavailable, safe to retry: {exc}") from exc
         except UpstreamError as exc:
             if key:
-                self.ledger.finish(key, "failed")
+                # The filesystem server writes in place, so an error result for a
+                # write may come after a partial write: never claim it had no effect.
+                self.ledger.finish(key, "failed_unknown")
+                self.signer.issue(
+                    tool=tool, args_hash=ahash, decision="allow", outcome="failed_unknown", **base
+                )
+                raise ToolError(
+                    f"upstream error; the write may be partly applied and will not re-run: {exc}"
+                ) from exc
             self.signer.issue(
                 tool=tool, args_hash=ahash, decision="allow", outcome="failed", **base
             )

@@ -17,6 +17,7 @@ from goose_amw.ledger import DEFAULT_WINDOW_SECONDS, Ledger
 from goose_amw.proxy import (
     Config,
     Gateway,
+    UpstreamError,
     UpstreamNotDispatched,
     stdio_upstream,
     verify_caller,
@@ -296,3 +297,42 @@ def test_server_that_dies_before_initialize_is_not_dispatched():
     call = stdio_upstream(StdioServerParameters(command=sys.executable, args=["-c", ""]))
     with pytest.raises(UpstreamNotDispatched):
         asyncio.run(asyncio.wait_for(call(W["tool"], ARGS), 30))
+
+
+def test_handle_denies_unpermitted_path_without_reaching_upstream(tmp_path):
+    calls = []
+
+    async def upstream(tool, arguments):
+        calls.append(tool)
+        return fresh()
+
+    gw, ctx, args = _gateway(tmp_path, upstream)
+    for path in (str(tmp_path / fresh()), f"{Path(args['path']).parent}/../{fresh()}"):
+        with pytest.raises(ToolError, match="permit denied"):
+            asyncio.run(gw.handle(W["tool"], {**args, "path": path}, ctx, write=True))
+    assert calls == []
+    assert gw.ledger._db.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
+    lines = (tmp_path / "state" / "receipts.jsonl").read_text().splitlines()
+    for line in lines:
+        receipt = json.loads(line)
+        assert receipt["body"]["decision"] == "deny"
+        assert receipt["body"]["outcome"] == "not_run"
+        assert verify(receipt, gw.signer.public_key_b64)
+    assert len(lines) == 2
+
+
+def test_write_error_result_is_failed_unknown_and_not_rerun(tmp_path):
+    calls = []
+
+    async def upstream(tool, arguments):
+        calls.append(tool)
+        raise UpstreamError(fresh())
+
+    gw, ctx, args = _gateway(tmp_path, upstream)
+    with pytest.raises(ToolError, match="partly applied"):
+        asyncio.run(gw.handle(W["tool"], args, ctx, write=True))
+    with pytest.raises(ToolError, match="will not run again"):
+        asyncio.run(gw.handle(W["tool"], args, ctx, write=True))
+    assert calls == [W["tool"]]
+    rows = gw.ledger._db.execute("SELECT status FROM calls").fetchall()
+    assert rows == [("failed_unknown",)]

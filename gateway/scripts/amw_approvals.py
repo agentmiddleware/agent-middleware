@@ -39,7 +39,9 @@ def _refusal_reason(base_url: str) -> str | None:
     """Why the API key must not be sent to base_url; None when allowed.
 
     Allowed: any https URL, or http only on loopback (localhost, 127.0.0.0/8,
-    ::1). The host comes from parsed.hostname, so userinfo tricks such as
+    ::1). Any userinfo (username or password) refuses before the allowed
+    returns, so http://guest@localhost still refuses. Otherwise the host
+    comes from parsed.hostname, so userinfo tricks such as
     http://127.0.0.1@evil resolve to the real host (evil), and look-alikes
     such as localhost.example or 127.0.0.1.nip.io fail both the exact
     localhost match and the IP parse. Unknown schemes and empty hosts refuse.
@@ -56,6 +58,8 @@ def _refusal_reason(base_url: str) -> str | None:
         return "missing URL scheme"
     if not host:
         return "missing host"
+    if parsed.username is not None or parsed.password is not None:
+        return "userinfo not allowed"
     if scheme == "https":
         return None
     if host == "localhost":
@@ -81,8 +85,13 @@ def _client(base_url: str, api_key: str) -> httpx.Client:
     reason = _refusal_reason(base_url)
     if reason is not None:
         raise ValueError(f"refusing to send the API key: {reason}")
+    # trust_env=False: httpx honors ambient HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
+    # by default, which would hand the bootstrap admin key to a proxy.
     return httpx.Client(
-        base_url=base_url, timeout=10.0, headers={API_KEY_HEADER: api_key}
+        base_url=base_url,
+        timeout=10.0,
+        headers={API_KEY_HEADER: api_key},
+        trust_env=False,
     )
 
 

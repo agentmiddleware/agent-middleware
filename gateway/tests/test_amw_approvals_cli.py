@@ -84,7 +84,9 @@ def test_every_command_sends_key_and_never_prints_it(
             base_url: str = "",
             timeout: float | None = None,
             headers: dict[str, str] | None = None,
+            trust_env: bool = True,
         ) -> None:
+            assert trust_env is False
             self._headers = dict(headers or {})
 
         def get(self, path: str) -> _StubResponse:
@@ -165,6 +167,15 @@ def _refused_url(case: str) -> str:
         return f"http://{LOOPBACK_V4}@{EXAMPLE_INVALID}:{HTTP_TEST_PORT}"
     if case == "http-localhost-userinfo-trick":
         return f"http://{LOCALHOST_NAME}@{EXAMPLE_INVALID}:{HTTP_TEST_PORT}/"
+    if case == "http-userinfo-localhost":
+        # RFC 6761 localhost, RFC 6335 fixed port; userinfo refuses outright.
+        return f"http://guest@{LOCALHOST_NAME}:{HTTP_TEST_PORT}"
+    if case == "https-userinfo-example":
+        # RFC 2606 example.com; userinfo refuses even on allowed https.
+        return f"https://guest@{EXAMPLE_COM}"
+    if case == "http-malformed-ipv6-bracket":
+        # RFC 3849 documentation IPv6, missing closing bracket: ValueError.
+        return f"http://[{DOC_IPV6}"
     if case == "http-localhost-lookalike":
         return f"http://{LOCALHOST_NAME}.{EXAMPLE_INVALID}:{HTTP_TEST_PORT}"
     if case == "http-ip-lookalike":
@@ -229,6 +240,9 @@ class _ExplodingClient:
         "http-public-hostname",
         "http-userinfo-trick",
         "http-localhost-userinfo-trick",
+        "http-userinfo-localhost",
+        "https-userinfo-example",
+        "http-malformed-ipv6-bracket",
         "http-localhost-lookalike",
         "http-ip-lookalike",
         "ftp-loopback",
@@ -284,3 +298,28 @@ def test_client_refuses_disallowed_url_directly() -> None:
     url = f"http://{TEST_NET_2}:{HTTP_TEST_PORT}"
     with pytest.raises(ValueError, match="refusing to send the API key"):
         amw_approvals._client(url, PLACEHOLDER_KEY)
+
+
+def test_client_disables_trust_env_and_ignores_proxies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # RFC 5737 TEST-NET-1, RFC 6335 fixed port: proxy decoy, never dialed.
+    monkeypatch.setenv("HTTP_PROXY", f"http://{TEST_NET_1}:{HTTP_TEST_PORT}")
+    # RFC 5737 TEST-NET-2, RFC 6335 fixed port: proxy decoy, never dialed.
+    monkeypatch.setenv("ALL_PROXY", f"http://{TEST_NET_2}:{HTTP_TEST_PORT}")
+    # RFC 6761 localhost, RFC 6335 fixed port: allowed http loopback URL.
+    client = amw_approvals._client(
+        f"http://{LOCALHOST_NAME}:{HTTP_TEST_PORT}", PLACEHOLDER_KEY
+    )
+    try:
+        assert client.trust_env is False
+        assert dict(client._mounts) == {}
+        # Same env with trust_env=True mounts proxies, proving the decoys
+        # above are live env httpx would otherwise honor. No request is sent.
+        proving = amw_approvals.httpx.Client(trust_env=True)
+        try:
+            assert len(proving._mounts) > 0
+        finally:
+            proving.close()
+    finally:
+        client.close()

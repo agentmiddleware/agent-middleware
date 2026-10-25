@@ -1140,6 +1140,18 @@ class ApprovalGate:
             return ApprovalDecision(action="REJECT", reason="unsupported_client")
         secret = self._require_secret()
         now = self.clock()
+        spent = self.store.find_consumed_by_key(idempotency_key, now=now)
+        if spent is not None:
+            # Key already spent and the spend window is still live: refuse
+            # without minting so no second spendable nonce exists.
+            self._emit(
+                "replayed",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="replayed")
         existing = self.store.find_active_by_key(idempotency_key, now=now)
         if existing is not None:
             # Same logical call already paused: reissue its pause instead of
@@ -1159,18 +1171,6 @@ class ApprovalGate:
                 nonce=existing.nonce,
                 payload=_pause_payload(tool, existing.nonce, state),
             )
-        spent = self.store.find_consumed_by_key(idempotency_key, now=now)
-        if spent is not None:
-            # Key already spent and the spend window is still live: refuse
-            # without minting so no second spendable nonce exists.
-            self._emit(
-                "replayed",
-                nonce=None,
-                tool=tool,
-                principal=caller,
-                session_id=session_id,
-            )
-            return ApprovalDecision(action="REJECT", reason="replayed")
         nonce = secrets.token_urlsafe(16)
         deadline = now + self._ttl
         self.store.save(
@@ -1223,6 +1223,18 @@ class ApprovalGate:
             return ApprovalDecision(action="REJECT", reason="unsupported_client")
         secret = self._require_secret()
         now = self.clock()
+        spent = await self.store.afind_consumed_by_key(idempotency_key, now=now)
+        if spent is not None:
+            # Key already spent and the spend window is still live: refuse
+            # without minting so no second spendable nonce exists.
+            self._emit(
+                "replayed",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="replayed")
         existing = await self.store.afind_active_by_key(idempotency_key, now=now)
         if existing is not None:
             # Same logical call already paused: reissue its pause instead of
@@ -1242,18 +1254,6 @@ class ApprovalGate:
                 nonce=existing.nonce,
                 payload=_pause_payload(tool, existing.nonce, state),
             )
-        spent = await self.store.afind_consumed_by_key(idempotency_key, now=now)
-        if spent is not None:
-            # Key already spent and the spend window is still live: refuse
-            # without minting so no second spendable nonce exists.
-            self._emit(
-                "replayed",
-                nonce=None,
-                tool=tool,
-                principal=caller,
-                session_id=session_id,
-            )
-            return ApprovalDecision(action="REJECT", reason="replayed")
         nonce = secrets.token_urlsafe(16)
         deadline = now + self._ttl
         await self.store.asave(

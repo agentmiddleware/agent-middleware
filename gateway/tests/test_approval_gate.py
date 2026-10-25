@@ -1164,3 +1164,89 @@ async def test_db_first_call_mints_after_spent_window(
     assert await store.adecide(second.nonce, True, now=clock()) is not None
     replay = await _aretry(db_gate, second.payload["requestState"], second.nonce)
     assert replay.action == "EXECUTE"
+
+
+def test_first_call_prefers_spent_over_live_active_sibling(
+    gate: ApprovalGate, clock: _Clock, receipts: list[tuple[str, dict[str, Any]]]
+) -> None:
+    """A live spend beats a live approved sibling on a fresh call."""
+    first = _pause(gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    record = gate.store.get(first.nonce)
+    assert record is not None
+    duplicate = _duplicate_nonce(first.nonce)
+    gate.store.save(replace(record, nonce=duplicate), now=gate.clock())
+    assert gate.store.decide(first.nonce, True, now=gate.clock()) is not None
+    assert gate.store.decide(duplicate, True, now=gate.clock()) is not None
+    executed = _retry(gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    key = goose_canonical.idempotency_key(
+        caller=CALLER, tool=TOOL, arguments=ARGS, session_id=SESSION
+    )
+    assert gate.store.find_consumed_by_key(key, now=clock()) is not None
+    assert gate.store.find_active_by_key(key, now=clock()) is not None
+    second = gate.evaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert second.action == "REJECT"
+    assert second.reason == "replayed"
+    assert second.nonce is None
+    assert [event for event, _ in receipts] == ["consumed", "replayed"]
+
+
+async def test_async_first_call_prefers_spent_over_live_active_sibling(
+    gate: ApprovalGate, clock: _Clock, receipts: list[tuple[str, dict[str, Any]]]
+) -> None:
+    """Async pause path also refuses when a live spend and sibling coexist."""
+    first = await _apause(gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    record = await gate.store.aget(first.nonce)
+    assert record is not None
+    duplicate = _duplicate_nonce(first.nonce)
+    await gate.store.asave(replace(record, nonce=duplicate), now=gate.clock())
+    assert await gate.store.adecide(first.nonce, True, now=gate.clock()) is not None
+    assert await gate.store.adecide(duplicate, True, now=gate.clock()) is not None
+    executed = await _aretry(gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    key = goose_canonical.idempotency_key(
+        caller=CALLER, tool=TOOL, arguments=ARGS, session_id=SESSION
+    )
+    assert await gate.store.afind_consumed_by_key(key, now=clock()) is not None
+    assert await gate.store.afind_active_by_key(key, now=clock()) is not None
+    second = await gate.aevaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert second.action == "REJECT"
+    assert second.reason == "replayed"
+    assert second.nonce is None
+    assert [event for event, _ in receipts] == ["consumed", "replayed"]
+
+
+async def test_db_first_call_prefers_spent_over_live_active_sibling(
+    db_gate: ApprovalGate,
+    clock: _Clock,
+    receipts: list[tuple[str, dict[str, Any]]],
+    clean_database: Any,
+    purge_approval_gate_table: Any,
+) -> None:
+    """DB pause path refuses when a live spend and sibling coexist."""
+    first = await _apause(db_gate)
+    assert first.nonce is not None
+    assert first.payload is not None
+    store = DbApprovalStore()
+    record = await store.aget(first.nonce)
+    assert record is not None
+    duplicate = _duplicate_nonce(first.nonce)
+    await store.asave(replace(record, nonce=duplicate), now=clock())
+    assert await store.adecide(first.nonce, True, now=clock()) is not None
+    assert await store.adecide(duplicate, True, now=clock()) is not None
+    executed = await _aretry(db_gate, first.payload["requestState"], first.nonce)
+    assert executed.action == "EXECUTE"
+    key = goose_canonical.idempotency_key(
+        caller=CALLER, tool=TOOL, arguments=ARGS, session_id=SESSION
+    )
+    assert await store.afind_consumed_by_key(key, now=clock()) is not None
+    assert await store.afind_active_by_key(key, now=clock()) is not None
+    second = await db_gate.aevaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert second.action == "REJECT"
+    assert second.reason == "replayed"
+    assert second.nonce is None
+    assert [event for event, _ in receipts] == ["consumed", "replayed"]

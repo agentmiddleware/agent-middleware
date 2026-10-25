@@ -279,10 +279,10 @@ class Settings(BaseSettings):
     # Spec-compliant stateless Streamable HTTP surface for standard MCP
     # clients. tools/call mints a bounded single-tool permit from the
     # caller's wallet before entering the governed invoke path, so the
-    # permit -> meter -> receipt -> audit loop is unchanged. Off by default:
-    # do not advertise (or registry-publish) a transport that is not
-    # deliberately enabled.
-    ENABLE_STANDARD_MCP_ENDPOINT: bool = False
+    # permit -> meter -> receipt -> audit loop is unchanged. On by default
+    # (owner decision); it always requires an API key. Set false to stop
+    # serving and advertising it.
+    ENABLE_STANDARD_MCP_ENDPOINT: bool = True
     STANDARD_MCP_PERMIT_TTL_SECONDS: int = 120
 
     # --- Public MCP endpoint (POST /mcp/public) ---

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -41,7 +42,7 @@ async def prune_api_key_usage_events(
             {"cutoff": cutoff, "batch_size": batch_size},
         )
         await session.commit()
-        return result.rowcount
+        return cast(Any, result).rowcount
 
 
 async def record_api_key_usage_event(

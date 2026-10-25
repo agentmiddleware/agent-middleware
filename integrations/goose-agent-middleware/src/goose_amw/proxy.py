@@ -79,15 +79,20 @@ def stdio_upstream(params: Any) -> Upstream:
 
     async def call(tool: str, arguments: dict[str, Any]) -> str:
         dispatched = False
+        res = None
         try:
             async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
                 await session.initialize()
                 dispatched = True
                 res = await session.call_tool(tool, arguments)
         except BaseException as exc:
-            if not dispatched:
+            if res is not None and isinstance(exc, Exception):
+                # The server already answered; a teardown error does not change that.
+                log.warning("ignoring stdio teardown error after a result: %r", exc)
+            elif not dispatched:
                 raise UpstreamNotDispatched(f"filesystem server unavailable: {exc!r}") from exc
-            raise UpstreamUnknown(f"{type(exc).__name__}: {exc}") from exc
+            else:
+                raise UpstreamUnknown(f"{type(exc).__name__}: {exc}") from exc
         text = "\n".join(getattr(c, "text", "") for c in res.content)
         if res.is_error:
             raise UpstreamError(text)

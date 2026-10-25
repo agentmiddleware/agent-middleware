@@ -19,6 +19,7 @@ from goose_amw.proxy import (
     Gateway,
     UpstreamError,
     UpstreamNotDispatched,
+    UpstreamUnknown,
     stdio_upstream,
     verify_caller,
 )
@@ -347,3 +348,48 @@ def test_relative_and_home_paths_are_denied(tmp_path, monkeypatch):
         assert not decision.allowed
         assert "must be absolute" in decision.reason
     assert permits.check(policy, W["tool"], {"path": str(allowed / name)}).allowed
+
+
+def _fake_stdio(monkeypatch, result, *, fail_on_exit):
+    import contextlib
+
+    import mcp.client.session
+    import mcp.client.stdio
+
+    @contextlib.asynccontextmanager
+    async def client(params):
+        yield (None, None)
+        if fail_on_exit:
+            raise OSError(fresh())
+
+    class Session:
+        def __init__(self, read, write):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, tool, arguments):
+            return result
+
+    monkeypatch.setattr(mcp.client.stdio, "stdio_client", client)
+    monkeypatch.setattr(mcp.client.session, "ClientSession", Session)
+
+
+def test_teardown_error_after_result_keeps_the_result(monkeypatch):
+    text = fresh()
+    result = SimpleNamespace(content=[SimpleNamespace(text=text)], is_error=False)
+    _fake_stdio(monkeypatch, result, fail_on_exit=True)
+    assert asyncio.run(stdio_upstream(object())(W["tool"], ARGS)) == text
+
+
+def test_teardown_error_without_result_is_unknown(monkeypatch):
+    _fake_stdio(monkeypatch, None, fail_on_exit=True)
+    with pytest.raises(UpstreamUnknown):
+        asyncio.run(stdio_upstream(object())(W["tool"], ARGS))

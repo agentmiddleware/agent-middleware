@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import sys
+import uuid
 from typing import Any, Literal
 from urllib.parse import urlencode
 
@@ -99,7 +100,8 @@ def _gateway_server_error(response: httpx.Response, keyed: bool) -> dict[str, An
     if not keyed:
         structured["hint"] = (
             "The outcome is unknown; this call may already have run and charged. "
-            "Verify the outcome before retrying. Use an idempotency_key on future calls."
+            "Verify the outcome before retrying. Supply io.agentmiddleware/idempotency_key "
+            "in request _meta on future calls."
         )
     return structured
 
@@ -184,6 +186,52 @@ def list_tools(
     print("=" * 60)
 
 
+async def invoke_service(
+    service_id: str,
+    input_data: dict,
+    wallet_id: str,
+    api_key: str,
+    *,
+    api_url: str = DEFAULT_API_URL,
+    idempotency_key: str | None = None,
+) -> dict:
+    """Invoke a marketplace service over the MCP tool route.
+
+    Sends an ``Idempotency-Key`` header: the caller key when given,
+    otherwise one minted for this call. Callers that retry one logical
+    invocation must reuse the key, or the retry is a second invocation.
+    Reusing a key lets the server deduplicate retries.
+
+    Raises:
+        ValueError: if a supplied key is blank, overlong, or contains control
+            characters (nothing is sent).
+    """
+    if idempotency_key is None:
+        key = uuid.uuid4().hex
+    else:
+        from .client import AgentMiddlewareClient
+
+        key = AgentMiddlewareClient._validate_idempotency_key(idempotency_key)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{api_url}/mcp/tools/{service_id}/invoke",
+            headers={
+                "X-API-Key": api_key,
+                "Content-Type": "application/json",
+                "Idempotency-Key": key,
+            },
+            json={
+                "name": service_id,
+                "arguments": input_data,
+                "mcp_context": {"wallet_id": wallet_id},
+            },
+            timeout=30.0,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 async def serve_async(
     transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
@@ -200,7 +248,7 @@ async def serve_async(
         legacy_result_format: Wrap successful gateway responses as JSON text
     """
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import Context, FastMCP
         from mcp.types import CallToolResult, TextContent
     except ImportError:
         print('Error: mcp package required. Install: pip install "amw-sdk[mcp]"')
@@ -277,10 +325,14 @@ async def serve_async(
         desc = tool.get("description", "")
 
         async def create_handler(svc_id: str, svc_name: str):
-            async def handler(
-                idempotency_key: str | None = None,
-                **kwargs: dict[str, Any],
-            ) -> Any:
+            async def handler(ctx: Context, **kwargs: dict[str, Any]) -> Any:
+                meta = ctx.request_context.meta
+                metadata = (
+                    meta.model_dump(mode="json", by_alias=True, exclude_none=True)
+                    if meta is not None
+                    else {}
+                )
+                idempotency_key = metadata.get("io.agentmiddleware/idempotency_key")
                 return await call_tool(
                     service_id=svc_id,
                     input_data=kwargs.pop("kwargs", kwargs),

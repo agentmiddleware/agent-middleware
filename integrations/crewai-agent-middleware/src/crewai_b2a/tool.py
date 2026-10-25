@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Self
@@ -103,7 +104,12 @@ class CrewAIB2ATool(BaseTool):
     )
     args_schema: type[BaseModel] = CrewAIB2AToolInput
 
+    # Async calls use a borrowed client directly. Sync calls use a separate
+    # runner-loop client; configure it with sync_client_factory when borrowing.
     client: B2AClient | None = None
+    sync_client_factory: Callable[[], B2AClient] | None = Field(
+        default=None, exclude=True, repr=False
+    )
     base_url: str = "https://api.thisisatest.tech"
     api_key: str = Field(repr=False, exclude=True)
     wallet_id: str
@@ -169,10 +175,13 @@ class CrewAIB2ATool(BaseTool):
                 and asyncio.get_running_loop() is self._sync_runner_loop
             ):
                 if self._sync_client is None:
-                    self._sync_client = B2AClient(
-                        api_key=self.api_key,
-                        base_url=self.base_url,
-                    )
+                    if self.sync_client_factory is not None:
+                        self._sync_client = self.sync_client_factory()
+                    else:
+                        self._sync_client = B2AClient(
+                            api_key=self.api_key,
+                            base_url=self.base_url,
+                        )
                 return self._sync_client
             if self.client is None:
                 self.client = B2AClient(

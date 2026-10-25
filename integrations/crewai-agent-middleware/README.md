@@ -51,6 +51,12 @@ Call `b2a_tool.close()` when the agent is finished to close its HTTP client
 and private event loop. The tool also supports `with CrewAIB2ATool(...) as tool`
 for scoped use.
 
+When passing a borrowed `client`, async calls use it on the caller's event loop.
+Sync calls use a separate client on the tool's private event loop. Pass
+`sync_client_factory` to create that client with the same URL, timeout, transport,
+and authentication settings. The tool owns and closes the sync client; the caller
+still closes the borrowed client.
+
 ## Operations
 
 ### Discover Tools

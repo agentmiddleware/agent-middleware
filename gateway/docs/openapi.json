@@ -4,8 +4,8 @@
     "title": "Agent Middleware API",
     "description": "## Agent Transaction Integrity\n\n**Make consequential agent actions transactional.**\n\nTransaction-integrity boundary for consequential autonomous actions on the configured upstream-MCP path: one logical action binds scoped authority and configured consumption to at most one gateway dispatch and debit, records delivery_uncertain instead of automatically redispatching, and links gateway evidence for required external reconciliation.\n\nIt is not a full agent middleware platform. This is a durable gateway state machine, not one distributed ACID transaction and not proof of the downstream effect. It is not exactly-once: a remote side effect is deduplicated only when the upstream honors the forwarded idempotency key. See `/WEDGE.md` and `/SECURITY_LIMITATIONS.md`.\n\n### Canonical Loop\n\n`logical action -> authorize -> reserve allowance -> debit -> claim dispatch -> confirmed outcome | delivery_uncertain -> receipt/audit -> authoritative external reconciliation required`\n\n### Product Surface\n\n- **Logical action identity** — accepted key bound to one payload\n- **Bounded authority consumption** — scoped permit and configured allowance\n- **One-shot gateway dispatch/debit** — at most once per accepted action\n- **Explicit uncertainty** — `delivery_uncertain` is not auto-redispatched\n- **Linked gateway evidence** — receipt and audit data for reconciliation\n- **Discovery** — `.well-known/agent.json`, `/mcp/tools.json`, `/llms.txt`, `/v1/discover`\n\n### Proof Surfaces\n\nAgentic-web, browser, content, oracle, sandbox, media, IoT, red-team, and telemetry demos are labeled scaffolding. They mount only when `ENABLE_PROOF_SURFACES=true` and do not define the product.\n\n### Authentication\n\nProtected endpoints require an API key via the `X-API-Key` header.\n\n### For Agents\n\nStart at `/.well-known/agent.json`, then `/llms.txt` and `/mcp/tools.json`. Prefer `PUBLIC_URL` over any localhost server entry.",
     "license": {
-      "name": "Business Source License 1.1",
-      "url": "https://github.com/PetrefiedThunder/agent-middleware/blob/main/LICENSE"
+      "name": "Functional Source License 1.1, Apache-2.0 future license (FSL-1.1-ALv2)",
+      "url": "https://github.com/agentmiddleware/agent-middleware/blob/main/gateway/LICENSE.md"
     },
     "version": "1.3.0"
   },
@@ -3305,7 +3305,7 @@
           "MCP"
         ],
         "summary": "Mcp Tools Manifest",
-        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned JSON-RPC subset. Clients can obtain the same list by\nsending ``tools/list`` to ``/mcp/messages``; that endpoint does not\nimplement the complete MCP initialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
+        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned tool surfaces. New integrations should invoke tools through\nthe standard Streamable HTTP endpoint at POST /mcp and can obtain the\nsame list via its ``tools/list`` method. Clients can also obtain the\nlist by sending ``tools/list`` to the legacy ``/mcp/messages``\nendpoint; that endpoint does not implement the complete MCP\ninitialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
         "operationId": "MCP_Tools_Manifest_mcp_tools_json_get",
         "parameters": [
           {
@@ -5663,6 +5663,104 @@
         }
       }
     },
+    "/v1/admin/api-keys/usage/daily": {
+      "get": {
+        "tags": [
+          "API Key Management"
+        ],
+        "summary": "Admin: daily usage by API key",
+        "description": "Read daily call counts and latency for a bounded UTC window.",
+        "operationId": "admin_api_key_usage_daily_v1_admin_api_keys_usage_daily_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Key Id"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 30,
+              "title": "Days"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIKeyUsageDailyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/demo/keys": {
       "get": {
         "tags": [
@@ -6076,6 +6174,7 @@
           "use_count": {
             "type": "integer",
             "title": "Use Count",
+            "description": "Bounded-key budget uses, not total calls. See api_key_usage_daily.",
             "default": 0
           }
         },
@@ -6100,6 +6199,78 @@
           "suspended"
         ],
         "title": "APIKeyStatus"
+      },
+      "APIKeyUsageDailyResponse": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/APIKeyUsageDailyRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "APIKeyUsageDailyResponse"
+      },
+      "APIKeyUsageDailyRow": {
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "title": "Key Id"
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "calls": {
+            "type": "integer",
+            "title": "Calls"
+          },
+          "calls_4xx": {
+            "type": "integer",
+            "title": "Calls 4Xx"
+          },
+          "calls_5xx": {
+            "type": "integer",
+            "title": "Calls 5Xx"
+          },
+          "p50_latency_ms": {
+            "type": "number",
+            "title": "P50 Latency Ms"
+          },
+          "p95_latency_ms": {
+            "type": "number",
+            "title": "P95 Latency Ms"
+          },
+          "first_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Call At"
+          },
+          "last_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Call At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key_id",
+          "day",
+          "calls",
+          "calls_4xx",
+          "calls_5xx",
+          "p50_latency_ms",
+          "p95_latency_ms",
+          "first_call_at",
+          "last_call_at"
+        ],
+        "title": "APIKeyUsageDailyRow"
       },
       "APIKeyWithSecret": {
         "properties": {

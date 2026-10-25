@@ -3,8 +3,9 @@
 ``POST /v1/dev-keys/self-provision`` lets an agent working against a local
 instance mint its own wallet-scoped API key with no pre-shared secret. It
 provisions the same shape ``scripts/partner_api_key_bootstrap.py`` produces
-with a bootstrap admin — sponsor wallet → agent wallet → DB-backed key — so
-self-served agents exercise the real credential class, not a special one.
+with a bootstrap admin (sponsor wallet, then agent wallet, then a DB-backed
+key), so self-served agents exercise the real credential class, not a special
+one.
 
 Local-only by three independent layers, mirroring STATIC_DEV_API_KEYS:
 
@@ -15,13 +16,14 @@ Local-only by three independent layers, mirroring STATIC_DEV_API_KEYS:
   (``validate_trust_mode_guardrails``), and the handler independently fails
   closed with 403 there, so the endpoint stays unreachable in production
   even if the boot gate were bypassed.
-- A cross-origin ``Origin`` header is rejected (403). The endpoint takes no
-  auth and returns a live secret in its body, so under the default wildcard
-  CORS a page the developer merely visits could otherwise ``fetch`` this
-  route against ``localhost`` and read the minted key cross-origin (a
-  browser confused-deputy). Real dev agents — CLIs, SDKs, curl — send no
-  ``Origin`` and pass through; only browser script from a foreign origin is
-  refused. Same DNS-rebinding hardening the standard MCP endpoint uses.
+- A browser ``Origin`` is rejected unless it is this gateway's own origin
+  (scheme, host, and port). The endpoint takes no auth and returns a live
+  secret, so under the default wildcard CORS a page the developer merely
+  visits could otherwise ``fetch`` this route against ``localhost`` and read
+  the minted key. Real dev agents (CLIs, SDKs, curl) send no ``Origin`` and
+  pass through. When ``PUBLIC_URL`` is set, the request Host must match it
+  too. Otherwise browser requests require a loopback Host. This is the same
+  check the standard MCP endpoint uses.
 
 The minted key is wallet-scoped, never bootstrap-admin: a credential anyone
 can mint must not read the audit plane or touch other tenants' wallets. The
@@ -32,12 +34,12 @@ loop cannot mint an absurd balance. See docs/static-dev-api-keys.md.
 from __future__ import annotations
 
 from decimal import Decimal
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from ..core.browser_origin import validate_browser_origin
 from ..core.config import get_settings
 from ..core.trust_mode import is_production_like_environment
 from ..services.agent_money import get_agent_money
@@ -101,26 +103,23 @@ def _refuse_production_like() -> None:
 
 
 def _reject_cross_origin(request: Request) -> None:
-    """Reject cross-origin browser calls (DNS-rebinding hardening).
+    """Reject a browser call whose origin is not this gateway.
 
-    This endpoint is unauthenticated and returns a live secret in its body,
-    so under the default wildcard CORS an attacker page could ``fetch`` it
-    against the developer's localhost and read the minted key cross-origin.
-    A browser always sends ``Origin`` on such a request; non-browser dev
-    agents send none and pass through. Mirrors
-    ``app.routers.mcp_standard._validate_origin``.
+    Scheme, host, and port all count. When PUBLIC_URL is set, the request
+    Host must be that host and a present Origin must match it exactly.
+    Without PUBLIC_URL, browser requests require a loopback Host. Clients
+    that send no Origin pass through. Same rule as
+    ``app.core.browser_origin.validate_browser_origin``.
     """
-    origin = request.headers.get("origin")
-    if not origin:
-        return
-    origin_host = urlsplit(origin).hostname
-    allowed = {request.url.hostname}
-    public_url = get_settings().PUBLIC_URL
-    if public_url:
-        allowed.add(urlsplit(public_url).hostname)
-    if origin_host not in allowed:
+    try:
+        validate_browser_origin(request)
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_403_FORBIDDEN or exc.detail != {
+            "error": "origin_not_allowed"
+        }:
+            raise
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
+            status_code=exc.status_code,
             detail={
                 "error": "origin_not_allowed",
                 "message": (
@@ -128,7 +127,7 @@ def _reject_cross_origin(request: Request) -> None:
                     "endpoint. Call it from a CLI, SDK, or server-side client."
                 ),
             },
-        )
+        ) from exc
 
 
 @router.post(

@@ -271,7 +271,10 @@ async def test_governed_tool_sends_declared_defaults_and_owns_key_handling(
     Declared-default parameters must travel to the server (the stub's
     default, not the server implementation's); a supplied blank idempotency
     key is rejected rather than silently replaced; an omitted (or None) key
-    derives a fresh one per call, making each call a new invocation.
+    is derived deterministically from the permit, tool, and arguments, so
+    retrying the same logical call replays the original receipt instead of
+    executing and charging again; a distinct action needs a distinct key,
+    supplied either explicitly or via ``action_id``.
     """
     registry = get_service_registry()
     calls = 0
@@ -334,21 +337,39 @@ async def test_governed_tool_sends_declared_defaults_and_owns_key_handling(
                     await defaults_stub(message="explicit", idempotency_key=blank)
             assert calls == 1  # the rejected calls never reached the server
 
-            # Omitted key: a fresh uuid per call, so each call is a new
-            # invocation with its own receipt. Explicit None behaves the same.
+            async def wallet_balance() -> Decimal:
+                response = await client.get(
+                    f"/v1/billing/wallets/{wallet_id}",
+                    headers=provisioned["agent_headers"],
+                )
+                assert response.status_code == 200
+                return Decimal(response.json()["balance_exact"])
+
+            # Omitted key: derived deterministically from the permit, tool,
+            # and arguments, so repeating the same logical call replays the
+            # original receipt without re-executing or charging again.
+            # Explicit None behaves the same.
+            balance_before = await wallet_balance()
             await defaults_stub(message="explicit")
             first_receipt = defaults_stub.last_receipt
+            balance_after_first = await wallet_balance()
+            assert balance_before - balance_after_first == Decimal("1")
             await defaults_stub(message="explicit")
             second_receipt = defaults_stub.last_receipt
+            assert await wallet_balance() == balance_after_first
             await defaults_stub(message="explicit", idempotency_key=None)
             third_receipt = defaults_stub.last_receipt
-            assert calls == 4
-            receipt_ids = {
-                first_receipt.receipt_id,
-                second_receipt.receipt_id,
-                third_receipt.receipt_id,
-            }
-            assert len(receipt_ids) == 3
+            assert await wallet_balance() == balance_after_first
+            assert calls == 2
+            assert second_receipt.receipt_id == first_receipt.receipt_id
+            assert third_receipt.receipt_id == first_receipt.receipt_id
+
+            # A distinct action needs a distinct key: the same arguments
+            # with a caller action id execute and bill separately.
+            await defaults_stub(message="explicit", action_id="inproc-action-2")
+            assert calls == 3
+            assert defaults_stub.last_receipt.receipt_id != first_receipt.receipt_id
+            assert balance_after_first - await wallet_balance() == Decimal("1")
         finally:
             await sdk.close()
     finally:

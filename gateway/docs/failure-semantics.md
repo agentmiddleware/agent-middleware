@@ -245,16 +245,31 @@ charged operation (`test_mcp_idempotency_key_validation`).
 
 Only a genuinely **absent** key — no header, no body entry, or a JSON `null`
 entry — is treated as an un-keyed call. On the standard MCP endpoint (and the
-`/mcp/messages` demo auto-permit path) the gateway derives a deterministic
-`mcp-retry-` key from the caller's wallet and API key, the tool, the canonical
-JSON of the arguments, and a time bucket of `MCP_UNKEYED_RETRY_WINDOW_SECONDS`
-(default 300). The JSON-RPC id is not part of it, because retries carry fresh
-ids. An identical un-keyed retry inside the same bucket replays the original
-receipt with no second charge or dispatch; a concurrent duplicate gets the
-retryable `idempotency_in_progress`. Limits: a retry that crosses a bucket
-boundary is a new operation, and two deliberately identical un-keyed calls in
-one bucket collapse into one. Clients that need either guarantee must send
-their own key. Setting the window to `0` restores a random key per call. A
+`/mcp/messages` demo auto-permit path) an un-keyed call to a mutating tool
+gets a deterministic `mcp-retry-` key from the caller's wallet and API key,
+the verified enterprise principal (provider, issuer, subject) when an IGA
+bearer is present, the tool, and the canonical JSON of the arguments. The
+JSON-RPC id is not part of it, because retries carry fresh ids.
+
+- **Sliding window.** Slot selection and the auto-permit mint run under a
+  per-identity lock row. A slot first minted less than
+  `MCP_UNKEYED_RETRY_WINDOW_SECONDS` (default 300) ago is joined even if the
+  clock bucket has rolled over, so a retry or concurrent twin straddling the
+  edge resolves to one dispatch. A concurrent duplicate either replays the
+  same receipt or gets the retryable `idempotency_in_progress`.
+- **IGA before replay.** A replay of a stored governed result re-runs the IGA
+  check (without spending a use) first, and the principal is part of the key,
+  so one human never receives another's stored result.
+- **Mutating tools only.** Tools registered `read_only` (for example
+  `partner.notes.count`) keep a fresh key per call. Undeclared tools are
+  treated as mutating.
+- **No-effect failures retry.** If the stored result is a refunded
+  pre-dispatch failure, the retry moves to the next attempt slot and runs
+  again (up to three attempts per window) instead of replaying the failure.
+
+Two deliberately identical un-keyed calls inside one window still collapse
+into one; clients that need repeats must send their own key. Setting the
+window to `0` restores a random key per call. A
 governed `/mcp/messages` call without a key is still refused with
 `idempotency_key_required`, and a wallet that requires human approval still
 needs an explicit key.

@@ -8,6 +8,8 @@ validation, server-minted permits, exactly-once replay, and signed receipts.
 
 from __future__ import annotations
 
+import json
+
 import hashlib
 
 import pytest
@@ -816,3 +818,183 @@ async def test_unkeyed_retry_window_zero_restores_legacy_dispatch(
         assert invocations == ["hi", "hi"]
     finally:
         registry.unregister_local("standard-echo-legacy")
+
+
+def _register_counting_tool(service_id: str, invocations: list, **extra):
+    def _echo(message="ok", n=0):
+        invocations.append(message)
+        return {"message": message}
+
+    get_service_registry().register_local(
+        service_id=service_id,
+        name=service_id,
+        description="SEL-484 unkeyed retry test tool",
+        category=ServiceCategory.AGENT_COMMS,
+        func=_echo,
+        credits_per_unit=2.0,
+        unit_name="call",
+        **extra,
+    )
+
+
+async def _call(client, headers, tool, request_id, arguments=None):
+    return await client.post(
+        "/mcp",
+        json=_rpc(
+            "tools/call",
+            request_id=request_id,
+            params={"name": tool, "arguments": arguments or {"message": "hi"}},
+        ),
+        headers=headers,
+    )
+
+
+@pytest.mark.anyio
+async def test_unkeyed_retry_straddling_window_boundary_dispatches_once(
+    client, standard_mcp_enabled, clean_database, monkeypatch
+):
+    """Codex blocking 1: a retry across a fixed bucket edge must still replay."""
+    import time as _time
+
+    from app.core.config import get_settings
+    from app.routers import mcp_standard
+
+    window = get_settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS
+    edge = (int(_time.time() // window) + 1) * window
+    provisioned = await provision_agent_wallet(client)
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    invocations: list[str] = []
+    _register_counting_tool("echo-boundary", invocations)
+    try:
+        monkeypatch.setattr(mcp_standard, "_unkeyed_clock", lambda: edge - 0.001)
+        first = await _call(client, headers, "echo-boundary", 1)
+        monkeypatch.setattr(mcp_standard, "_unkeyed_clock", lambda: edge + 0.001)
+        retry = await _call(client, headers, "echo-boundary", 2)
+        assert first.status_code == retry.status_code == 200
+        assert (
+            retry.json()["result"]["receipt"]["receipt_id"]
+            == first.json()["result"]["receipt"]["receipt_id"]
+        )
+        assert invocations == ["hi"]
+    finally:
+        get_service_registry().unregister_local("echo-boundary")
+
+
+@pytest.mark.anyio
+async def test_unkeyed_read_only_tool_is_not_deduped(
+    client, standard_mcp_enabled, clean_database
+):
+    """Codex blocking 3: only mutating tools get the deterministic key."""
+    provisioned = await provision_agent_wallet(client)
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    invocations: list[str] = []
+    _register_counting_tool("echo-read-only", invocations, read_only=True)
+    try:
+        for rid in (1, 2):
+            resp = await _call(client, headers, "echo-read-only", rid)
+            assert resp.status_code == 200
+        assert invocations == ["hi", "hi"]
+    finally:
+        get_service_registry().unregister_local("echo-read-only")
+
+
+def test_dogfood_notes_count_is_declared_read_only(monkeypatch):
+    from app.services import dogfood_tool
+
+    monkeypatch.setattr(dogfood_tool, "_second_registered", False)
+    registry = get_service_registry()
+    existed = registry.get_local(dogfood_tool.DOGFOOD_SECOND_TOOL_ID) is not None
+    dogfood_tool.register_dogfood_second_tool()
+    try:
+        record = registry.get_local(dogfood_tool.DOGFOOD_SECOND_TOOL_ID)
+        assert record is not None and record["read_only"] is True
+    finally:
+        if not existed:
+            registry.unregister_local(dogfood_tool.DOGFOOD_SECOND_TOOL_ID)
+
+
+@pytest.mark.anyio
+async def test_unkeyed_retry_after_no_effect_failure_runs_again(
+    client, standard_mcp_enabled, clean_database
+):
+    """Codex non-blocking 1: a refunded pre-dispatch failure is retried."""
+    from sqlalchemy import select
+
+    from app.db.models import IdempotencyRecordModel
+    from app.db import get_session_factory
+    from app.services.idempotency import GOVERNED_MCP_IDEMPOTENCY_ENDPOINT
+
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    invocations: list[str] = []
+    _register_counting_tool("echo-no-effect", invocations)
+    try:
+        first = await _call(client, headers, "echo-no-effect", 1)
+        assert first.status_code == 200
+        # Rewrite the stored result into the shape the pre-dispatch failure
+        # path persists (nothing reached the tool, charge refunded).
+        async with get_session_factory()() as session:
+            row = (
+                await session.execute(
+                    select(IdempotencyRecordModel).where(
+                        IdempotencyRecordModel.wallet_id == wallet_id,
+                        IdempotencyRecordModel.endpoint
+                        == GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
+                        IdempotencyRecordModel.idempotency_key.like("mcp-retry-%"),
+                    )
+                )
+            ).scalar_one()
+            row.response_json = json.dumps(
+                {
+                    "error": "upstream_unreachable",
+                    "upstream_result": {
+                        "error": "failed_refunded",
+                        "error_code": "upstream_unreachable",
+                    },
+                    "receipt": {"outcome": "failed_refunded"},
+                }
+            )
+            await session.commit()
+
+        retry = await _call(client, headers, "echo-no-effect", 2)
+        assert retry.status_code == 200
+        assert "result" in retry.json(), retry.text
+        assert invocations == ["hi", "hi"]
+        again = await _call(client, headers, "echo-no-effect", 3)
+        assert (
+            again.json()["result"]["receipt"]["receipt_id"]
+            == retry.json()["result"]["receipt"]["receipt_id"]
+        )
+        assert invocations == ["hi", "hi"]
+    finally:
+        get_service_registry().unregister_local("echo-no-effect")
+
+
+@pytest.mark.anyio
+async def test_simultaneous_identical_unkeyed_calls_dispatch_once(
+    client, standard_mcp_enabled, clean_database
+):
+    """Codex non-blocking 2: two concurrent identical calls are one operation."""
+    import asyncio
+
+    provisioned = await provision_agent_wallet(client)
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    invocations: list[str] = []
+    _register_counting_tool("echo-concurrent", invocations)
+    try:
+        a, b = await asyncio.gather(
+            _call(client, headers, "echo-concurrent", 1),
+            _call(client, headers, "echo-concurrent", 2),
+        )
+        assert invocations == ["hi"]
+        receipts = set()
+        for resp in (a, b):
+            body = resp.json()
+            if "result" in body:
+                receipts.add(body["result"]["receipt"]["receipt_id"])
+            else:
+                assert body["error"]["code"] == -32005, resp.text
+        assert len(receipts) == 1
+    finally:
+        get_service_registry().unregister_local("echo-concurrent")

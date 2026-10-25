@@ -33,7 +33,6 @@ from sqlalchemy.exc import IntegrityError
 
 from ..audit.lightweight import record_audit
 from ..core.config import DuplicateGuardMode, get_settings
-from ..services.mcp_retry_key import derive_unkeyed_retry_key
 from ..policy.jev_guard import evaluate_jev_guard
 from ..services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
 from ..core.auth import (
@@ -940,6 +939,27 @@ def _verified_enterprise_principal(
     return parse_enterprise_token(enterprise_bearer_token)
 
 
+async def _assert_replay_iga_access(*, auth: AuthContext, tool_name: str) -> None:
+    """Run the enterprise IGA gate before serving any stored result.
+
+    A replay must not hand one human principal another's result (or a result
+    it is no longer entitled to). The check spends no use (``consume=False``):
+    the original call already did.
+    """
+    try:
+        principal = _verified_enterprise_principal(auth.enterprise_bearer_token)
+        if principal is None:
+            return
+        decision = await enforce_tool_call(principal, tool_name, consume=False)
+    except IGAError as exc:
+        raise ToolPermissionDenied(exc.reason) from exc
+    if not decision.allowed:
+        raise ToolPermissionDenied(
+            decision.reason,
+            details={"reason_code": decision.reason, **decision.details},
+        )
+
+
 async def _execute_registered_tool(
     *,
     tool_name: str,
@@ -1637,6 +1657,7 @@ async def _execute_registered_tool_inner(
                 tool_name=tool_name,
                 key_id=auth.key_id,
             )
+            await _assert_replay_iga_access(auth=auth, tool_name=tool_name)
             await _raise_replayed_error(replay)
             return replay.response_json
 
@@ -4532,30 +4553,38 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
     if registry.get_action_binding(record) is not None:
         raise ToolPermissionDenied("action_permit_required")
 
-    from .mcp_standard import _mint_auto_permit, _permit_error
-
-    if not request.idempotency_key:
-        # Deterministic key for unkeyed calls so a retry resolves to the same
-        # auto permit and replays instead of dispatching twice (SEL-484).
-        request.idempotency_key = derive_unkeyed_retry_key(
-            wallet_id=request.auth.wallet_id,
-            key_id=request.auth.key_id,
-            tool_name=request.tool_name,
-            arguments=request.arguments,
-            window_seconds=get_settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS,
-        )
+    from .mcp_standard import (
+        _mint_auto_permit,
+        _permit_error,
+        _resolve_unkeyed_retry,
+    )
 
     try:
-        permit_id = await _mint_auto_permit(
-            auth=request.auth,
-            tool_name=request.tool_name,
-            record=record,
-            client_key=request.idempotency_key,
-            requires_human_approval=await wallet_human_approval_required(
-                request.auth.wallet_id
-            ),
-            map_mcp_errors=False,
-        )
+        requires_approval = await wallet_human_approval_required(request.auth.wallet_id)
+        resolved = None
+        if not request.idempotency_key:
+            # Deterministic retry slot for unkeyed calls so a retry resolves
+            # to the same auto permit and replays instead of dispatching
+            # twice (SEL-484).
+            resolved = await _resolve_unkeyed_retry(
+                auth=request.auth,
+                tool_name=request.tool_name,
+                record=record,
+                arguments=request.arguments,
+                requires_human_approval=requires_approval,
+                map_mcp_errors=False,
+            )
+        if resolved is not None:
+            request.idempotency_key, permit_id = resolved
+        else:
+            permit_id = await _mint_auto_permit(
+                auth=request.auth,
+                tool_name=request.tool_name,
+                record=record,
+                client_key=request.idempotency_key,
+                requires_human_approval=requires_approval,
+                map_mcp_errors=False,
+            )
     except PermitWriteContendedError:
         raise
     except PermitError as exc:

@@ -28,13 +28,17 @@ earlier during auto-permit minting with JSON-RPC code `-32003` and the same
 message. Billing charge uses HTTP 409 with `detail.error` set to the code;
 permit creation uses HTTP 409 with string `detail`.
 
-When the caller supplies no key, standard `/mcp` and the legacy
-`/mcp/messages` demo auto-permit path derive an `mcp-retry-` key from wallet,
-API key, tool, canonical arguments, and a `MCP_UNKEYED_RETRY_WINDOW_SECONDS`
-time bucket (default 300). An identical retry in the same bucket replays the
-first receipt. A retry across a bucket boundary is a new call, and identical
-deliberate calls in one bucket collapse into one, so send your own key when
-either matters. A window of `0` restores a fresh `mcp-auto-` key per call. The SDK's `invoke_tool`
+When the caller supplies no key to a mutating tool, standard `/mcp` and the
+legacy `/mcp/messages` demo auto-permit path derive an `mcp-retry-` key from
+wallet, API key, verified enterprise principal, tool, and canonical arguments.
+An identical retry within `MCP_UNKEYED_RETRY_WINDOW_SECONDS` (default 300) of
+the first call replays its receipt; the window slides from that first call,
+so a retry across a clock bucket edge still replays. If the stored result is
+a refunded pre-dispatch failure (nothing reached the tool), the retry runs
+again instead. Tools registered `read_only` keep a fresh key per call.
+Identical deliberate calls inside one window collapse into one, so send your
+own key when that matters. A window of `0` restores a fresh `mcp-auto-` key
+per call. The SDK's `invoke_tool`
 requires a key; its `"auto"` option derives one from arguments and is
 unsuitable when distinct calls can have the same arguments.
 

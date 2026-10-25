@@ -289,12 +289,16 @@ class Settings(BaseSettings):
     STANDARD_MCP_PERMIT_TTL_SECONDS: int = 120
 
     # Unkeyed tools/call retry safety (SEL-484 / G1, MCP issue #3394).
-    # A call without a client idempotency key gets a deterministic key derived
-    # from wallet, API key, tool and canonical arguments within this window, so
-    # a lost-response retry replays the original receipt instead of
-    # dispatching again. Identical unkeyed calls inside one window collapse to
-    # one dispatch; callers needing repeats must send distinct keys. 0 restores
-    # the old per-attempt random key (no retry protection).
+    # A mutating call without a client idempotency key gets a deterministic
+    # key derived from wallet, API key, verified enterprise principal, tool and
+    # canonical arguments. The window slides from the first call (a retry that
+    # crosses a bucket edge still joins it), so a lost-response retry within
+    # this many seconds replays the original receipt instead of dispatching
+    # again; a refunded pre-dispatch failure is retried, not replayed.
+    # Read-only tools keep a fresh key per call. Identical deliberate unkeyed
+    # calls inside one window collapse to one dispatch; callers needing
+    # repeats must send distinct keys. 0 restores the old per-attempt random
+    # key (no retry protection).
     MCP_UNKEYED_RETRY_WINDOW_SECONDS: int = 300
 
     # --- Public MCP endpoint (POST /mcp/public) ---

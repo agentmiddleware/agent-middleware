@@ -257,6 +257,7 @@ class ServiceRegistry:
         unit_name: str = "call",
         owner_wallet_id: str | None = None,
         require_permit: bool = False,
+        read_only: bool = False,
     ) -> dict:
         """
         Register a service locally (in-memory) for immediate use.
@@ -267,6 +268,12 @@ class ServiceRegistry:
         When ``require_permit`` is True, governed MCP invocation always
         requires a signed permit + idempotency key — even if legacy
         unpermitted MCP is otherwise allowed.
+
+        ``read_only`` declares the tool free of side effects. Unkeyed
+        standard ``/mcp`` calls to it keep a fresh key per call instead of the
+        deterministic retry key (a replay would serve a stale read). The
+        default is False: an undeclared tool is treated as mutating, which
+        fails safe (deduped, never double-dispatched).
         """
         input_schema = pydantic_to_mcp_schema(input_model)
         output_schema = pydantic_to_mcp_schema(output_model)
@@ -294,6 +301,7 @@ class ServiceRegistry:
             "output_schema": output_schema,
             "owner_wallet_id": owner_wallet_id,
             "require_permit": bool(require_permit),
+            "read_only": bool(read_only),
             "is_active": True,
             "is_local": True,
             "external": False,

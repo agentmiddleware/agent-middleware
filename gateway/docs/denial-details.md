@@ -88,6 +88,27 @@ value to the signed, stable `permit_forbidden_field` reason code because field
 names are not constrained to the receipt's safe machine-code grammar. The
 adjacent `details.field` value identifies the rejected field.
 
+### Admission, credentials, and action binding
+
+These refusals happen before a permit is validated or a call is dispatched.
+
+| Reason code | Meaning | Remediation |
+|-------------|---------|-------------|
+| `permit_not_found` | The referenced permit does not exist. | Check the permit ID or mint a new permit. |
+| `permit_credits_invalid` | The call's estimated credit amount cannot be stored or compared against the permit budget. | Fix the tool's pricing or request amount, then retry with a new idempotency key. |
+| `wallet_access_denied` | The authenticated key may not act on the named wallet. | Authenticate with a key scoped to that wallet. |
+| `wallet_scoped_key_required` | The standard `/mcp` surface mints permits from the caller's wallet, so it needs a wallet-scoped key. The message may carry a `: <explanation>` suffix. | Authenticate with a wallet-scoped API key. |
+| `key_tool_not_allowed` | The API key's own tool allowlist excludes the tool. | Use a key that allows the tool. |
+| `demo_tool_not_allowed` | Demo-tenant wallets may call only the demo allowlist. | Use an allowed demo tool or a non-demo wallet. |
+| `demo_auto_permit_budget_exceeded` | The tool costs more than the demo auto-permit credit cap. | Use a cheaper tool or a non-demo wallet. |
+| `idempotency_key_required_for_human_approval` | The wallet policy requires approval, and without a client idempotency key each retry would page a human again. | Send an `Idempotency-Key` and retry the same call with the same key to poll the decision. |
+| `idempotency_key_reused` | The idempotency key was already used for a different request. | Use a new idempotency key. |
+| `action_permit_required` | The tool has an action binding and needs an explicit action permit. | Mint an action permit for the tool and pass its ID. |
+| `action_tool_binding_required` | The permit is an action permit but the tool has no action binding. | Use a tool with an action binding or a standard permit. |
+| `action_binding_mismatch` | The tool's current upstream binding differs from the one the action permit was minted for. | Mint a new action permit against the current binding. |
+| `action_quote_unsupported` | Quotes cannot be combined with action permits. | Invoke without a quote. |
+| `action_permit_denied` | Action permit validation failed without a narrower reason. | Inspect the adjacent audit event and replace the permit. |
+
 ### Wallet and standing policy
 
 | Reason code | Meaning | Remediation |
@@ -99,6 +120,7 @@ adjacent `details.field` value identifies the rejected field.
 | `tool_not_allowed` | A wallet policy excludes the requested tool. | Use a policy-allowed tool or update the policy allowlist. |
 | `service_category_not_allowed` | A wallet policy excludes the tool's service category. | Use an allowed category or update the category allowlist. |
 | `policy_constraint_corrupt` | A wallet policy's allow-list column is not a JSON array of strings, so the policy cannot be applied. | Have an administrator repair or recreate the policy bundle; the action stays denied until then. |
+| `policy_cost_invalid` | The action's cost could not be evaluated against the policy (non-finite or unstorable). Fail-closed denial. | Fix the tool's pricing, then retry with a new idempotency key. |
 | `max_cost_per_action_exceeded` | The quoted action cost exceeds the wallet policy's per-action limit. | Lower the action cost or raise the policy limit. |
 | `daily_spend_limit_exceeded` | Current daily spend plus this action exceeds the wallet policy limit. | Wait for the policy window to reset or have an administrator change the limit. |
 | `real_effects_required` | The policy forbids a simulated execution path. | Use a real-effects tool configuration or revise the policy. |
@@ -219,3 +241,11 @@ VERIFIED  rcpt-example
   credits     0 charged of 5 authorized
   at          2026-08-11T00:00:00Z
 ```
+
+## Stable registry
+
+Every code above is registered in `app/core/reason_codes.py`
+(`REFUSAL_REASON_CODES`). The values are a public contract and never change;
+new refusals add a new code. `tests/test_reason_code_registry.py` pins the set,
+checks it against this page, and scans the gateway for unregistered refusal
+literals.

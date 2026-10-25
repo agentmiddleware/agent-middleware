@@ -5,7 +5,7 @@ All settings are loaded from environment variables for zero-GUI deployment.
 
 from decimal import Decimal
 from enum import Enum
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # Used for SQLModel/SQLAlchemy async sessions
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
+
+    # Opt-in only; no automatic usage-event cleanup is scheduled.
+    API_KEY_USAGE_RETENTION_DAYS: int | None = Field(default=None, ge=0)
 
     # --- Authentication ---
     API_KEY_HEADER: str = "X-API-Key"

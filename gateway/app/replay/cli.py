@@ -21,10 +21,14 @@ from app.services.signing_keys import SigningKeyError
 def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
     """Write every output through a temp file in ``out``, then rename into place.
 
-    On any failure, remove every temp file created and every target already
-    renamed, so the output directory keeps no partial outputs or temp files.
+    Existing targets are preserved via same-dir hardlink backups before any
+    rename. On any failure, new temps are removed, overwritten targets are
+    restored from backups, and targets that did not previously exist are
+    removed. Backups are deleted on success. No temp or backup files remain
+    in either case.
     """
     temps: list[tuple[str, Path]] = []
+    backups: dict[Path, Path] = {}
     placed: list[Path] = []
     try:
         for name, content in files.items():
@@ -32,21 +36,56 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
             temps.append((tmp_name, out / name))
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(content)
+        for _, target in temps:
+            if not target.exists():
+                continue
+            fd_bak, bak_name = tempfile.mkstemp(
+                prefix=f"{target.name}.", suffix=".bak.tmp", dir=out
+            )
+            try:
+                os.close(fd_bak)
+                os.unlink(bak_name)
+                os.link(target, bak_name)
+            except BaseException:
+                try:
+                    os.unlink(bak_name)
+                except OSError:
+                    pass
+                raise
+            backups[target] = Path(bak_name)
         for tmp_name, target in temps:
             os.replace(tmp_name, target)
             placed.append(target)
     except BaseException:
-        for target in placed:
-            try:
-                target.unlink()
-            except OSError:
-                pass
         for tmp_name, _ in temps:
             try:
                 os.unlink(tmp_name)
             except OSError:
                 pass
+        for target in placed:
+            backup = backups.get(target)
+            if backup is not None:
+                try:
+                    os.replace(backup, target)
+                except OSError:
+                    pass
+            else:
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+        for backup in backups.values():
+            try:
+                os.unlink(backup)
+            except OSError:
+                pass
         raise
+    else:
+        for backup in backups.values():
+            try:
+                os.unlink(backup)
+            except OSError:
+                pass
 
 
 def main(argv: list[str] | None = None) -> int:

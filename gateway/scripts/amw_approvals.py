@@ -15,9 +15,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import sys
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import httpx
 
@@ -29,6 +31,43 @@ BASE_URL_ENV = "AMW_GATEWAY_URL"
 API_KEY_ENV = "VALID_API_KEYS"
 API_KEY_HEADER = "X-API-Key"
 
+_LOOPBACK_V4 = ipaddress.ip_network("127.0.0.0/8")
+_LOOPBACK_V6 = ipaddress.ip_address("::1")
+
+
+def _refusal_reason(base_url: str) -> str | None:
+    """Why the API key must not be sent to base_url; None when allowed.
+
+    Allowed: any https URL, or http only on loopback (localhost, 127.0.0.0/8,
+    ::1). The host comes from parsed.hostname, so userinfo tricks such as
+    http://127.0.0.1@evil resolve to the real host (evil), and look-alikes
+    such as localhost.example or 127.0.0.1.nip.io fail both the exact
+    localhost match and the IP parse. Unknown schemes and empty hosts refuse.
+    """
+    try:
+        parsed = urlparse(base_url)
+        host = parsed.hostname or ""
+    except ValueError:
+        return "unparseable URL"
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        if parsed.scheme:
+            return f"unsupported scheme {parsed.scheme!r}"
+        return "missing URL scheme"
+    if not host:
+        return "missing host"
+    if scheme == "https":
+        return None
+    if host == "localhost":
+        return None
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return f"non-loopback http host {host!r}"
+    if addr in _LOOPBACK_V4 or addr == _LOOPBACK_V6:
+        return None
+    return f"non-loopback http host {host!r}"
+
 
 def _read_api_key() -> str:
     """First key from API_KEY_ENV; empty when unset or blank."""
@@ -39,6 +78,9 @@ def _read_api_key() -> str:
 
 
 def _client(base_url: str, api_key: str) -> httpx.Client:
+    reason = _refusal_reason(base_url)
+    if reason is not None:
+        raise ValueError(f"refusing to send the API key: {reason}")
     return httpx.Client(
         base_url=base_url, timeout=10.0, headers={API_KEY_HEADER: api_key}
     )
@@ -120,6 +162,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # Validate the destination before the key is read, so a refusal never
+    # attaches the bootstrap admin key to a request.
+    reason = _refusal_reason(args.base_url)
+    if reason is not None:
+        print(
+            "error: refusing to send the API key: "
+            f"{reason}; use an https URL or http on loopback "
+            "(localhost, 127.0.0.0/8, ::1)",
+            file=sys.stderr,
+        )
+        return 1
     api_key = _read_api_key()
     if not api_key:
         print(

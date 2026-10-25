@@ -44,6 +44,15 @@ The extra pins `mcp` below 2.x, which renamed the class the server imports:
 python -m pip install -e './sdk/python[mcp]'
 ```
 
+For governed calls through `mcp serve`, supply a separately issued `permit_id`
+as an MCP tool argument or set `B2A_PERMIT_ID` for the server. A tool argument
+takes precedence over the environment value. Supply `idempotency_key` as a tool
+argument using a stable logical call ID, such as the LLM `tool_call.id`, and
+reuse it with identical arguments on retries. The server forwards that key in
+the `Idempotency-Key` header. It does not mint permits or retry keys. Without
+a permit, the MCP tool result includes the gateway's `permit_required` denial
+and guidance for supplying one.
+
 ### Historical release
 
 Version `0.4.0` was released under

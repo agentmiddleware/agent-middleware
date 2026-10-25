@@ -2,8 +2,9 @@
 
 A human on the gateway host approves or denies paused irreversible tool calls
 here (or via ``gateway/scripts/amw_approvals.py``). Every endpoint rejects
-non-loopback clients with 403. This router is intentionally not mounted in
-``main.py`` yet; mounting lands with the ``mcp_standard.py`` hook in a later PR.
+non-loopback clients with 403 and requires a bootstrap admin (operator) API
+key. This router is intentionally not mounted in ``main.py`` yet; mounting
+lands with the ``mcp_standard.py`` hook in a later PR.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from app.core.auth import AuthContext, get_auth_context
 from app.services.approval_gate import ApprovalStore, DbApprovalStore
 
 router = APIRouter(prefix="/v1/approvals", tags=["Approvals"])
@@ -60,7 +62,9 @@ class DecisionResponse(BaseModel):
 @router.get("/pending", response_model=PendingApprovalsResponse)
 async def list_pending(
     _local: None = Depends(require_loopback),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> PendingApprovalsResponse:
+    auth.require_bootstrap_admin()
     approvals = [
         PendingApproval(
             nonce=record.nonce,
@@ -70,7 +74,7 @@ async def list_pending(
             created_at=record.created_at,
             deadline=record.deadline,
         )
-        for record in get_approval_store().list_pending()
+        for record in await get_approval_store().alist_pending()
     ]
     return PendingApprovalsResponse(approvals=approvals)
 
@@ -79,8 +83,10 @@ async def list_pending(
 async def approve(
     nonce: str,
     _local: None = Depends(require_loopback),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> DecisionResponse:
-    record = get_approval_store().decide(nonce, True, now=time.time())
+    auth.require_bootstrap_admin()
+    record = await get_approval_store().adecide(nonce, True, now=time.time())
     if record is None:
         raise HTTPException(status_code=404, detail="approval_not_found")
     return DecisionResponse(nonce=record.nonce, status=record.status)
@@ -90,8 +96,10 @@ async def approve(
 async def deny(
     nonce: str,
     _local: None = Depends(require_loopback),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> DecisionResponse:
-    record = get_approval_store().decide(nonce, False, now=time.time())
+    auth.require_bootstrap_admin()
+    record = await get_approval_store().adecide(nonce, False, now=time.time())
     if record is None:
         raise HTTPException(status_code=404, detail="approval_not_found")
     return DecisionResponse(nonce=record.nonce, status=record.status)

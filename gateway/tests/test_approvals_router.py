@@ -29,6 +29,7 @@ from sqlalchemy import delete  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 import app.routers.approvals as approvals_module  # noqa: E402
+from app.core.auth import AuthContext, get_auth_context  # noqa: E402
 from app.db.approval_gate_models import ApprovalGateModel  # noqa: E402
 from app.db.database import get_session_factory  # noqa: E402
 from app.routers.approvals import (  # noqa: E402
@@ -81,12 +82,17 @@ def _random_invalid_host() -> str:
     return f"{uuid.uuid4().hex}.invalid"
 
 
+def _admin_auth() -> AuthContext:
+    return AuthContext(source="env", raw_key="synthetic", is_bootstrap_admin=True)
+
+
 @pytest.fixture
 def app() -> FastAPI:
     set_approval_store_for_tests(InMemoryApprovalStore())
     application = FastAPI()
     application.include_router(router)
     application.dependency_overrides[require_loopback] = lambda: None
+    application.dependency_overrides[get_auth_context] = _admin_auth
     return application
 
 
@@ -107,9 +113,9 @@ async def purge_approval_gate_table() -> Any:
         await session.commit()
 
 
-def _seed() -> ApprovalRecord:
+def _make_record() -> ApprovalRecord:
     now = time.time()
-    record = ApprovalRecord(
+    return ApprovalRecord(
         nonce=secrets.token_urlsafe(16),
         idempotency_key=f"amw-fb-{secrets.token_hex(32)}",
         args_hash=goose_canonical.args_hash(ARGS),
@@ -119,6 +125,10 @@ def _seed() -> ApprovalRecord:
         created_at=now,
         deadline=now + 300,
     )
+
+
+def _seed() -> ApprovalRecord:
+    record = _make_record()
     get_approval_store().save(record)
     return record
 
@@ -172,6 +182,36 @@ def test_non_loopback_client_gets_403() -> None:
     assert client.post(f"/v1/approvals/{unknown}/deny").status_code == 403
 
 
+def test_unauthenticated_client_gets_401() -> None:
+    set_approval_store_for_tests(InMemoryApprovalStore())
+    application = FastAPI()
+    application.include_router(router)
+    application.dependency_overrides[require_loopback] = lambda: None
+    client = TestClient(application)
+    unknown = _fresh_id()
+    assert client.get("/v1/approvals/pending").status_code == 401
+    assert client.post(f"/v1/approvals/{unknown}/approve").status_code == 401
+    assert client.post(f"/v1/approvals/{unknown}/deny").status_code == 401
+
+
+def test_non_admin_key_gets_403() -> None:
+    set_approval_store_for_tests(InMemoryApprovalStore())
+    application = FastAPI()
+    application.include_router(router)
+    application.dependency_overrides[require_loopback] = lambda: None
+    application.dependency_overrides[get_auth_context] = lambda: AuthContext(
+        source="db",
+        raw_key="synthetic",
+        wallet_id=_fresh_id(),
+        key_id=_fresh_id(),
+    )
+    client = TestClient(application)
+    unknown = _fresh_id()
+    assert client.get("/v1/approvals/pending").status_code == 403
+    assert client.post(f"/v1/approvals/{unknown}/approve").status_code == 403
+    assert client.post(f"/v1/approvals/{unknown}/deny").status_code == 403
+
+
 def test_default_store_is_db_backed() -> None:
     import importlib
 
@@ -186,12 +226,13 @@ async def test_approve_through_http_decides_db_row(
     client: TestClient, clean_database: None, purge_approval_gate_table: None
 ) -> None:
     set_approval_store_for_tests(DbApprovalStore())
-    record = _seed()
+    record = _make_record()
+    await DbApprovalStore().asave(record)
     response = client.post(f"/v1/approvals/{record.nonce}/approve")
     assert response.status_code == 200
     assert response.json() == {"nonce": record.nonce, "status": "approved"}
     assert client.get("/v1/approvals/pending").json() == {"approvals": []}
-    stored = DbApprovalStore().get(record.nonce)
+    stored = await DbApprovalStore().aget(record.nonce)
     assert stored is not None
     assert stored.status == "approved"
 

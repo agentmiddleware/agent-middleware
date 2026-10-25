@@ -21,7 +21,7 @@ for _path in (
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from typing import Any  # noqa: E402
+from typing import Any, cast  # noqa: E402
 
 import pytest  # noqa: E402
 from goose_amw import canonical as goose_canonical  # noqa: E402
@@ -132,7 +132,19 @@ def _pause(gate: ApprovalGate) -> Any:
     return decision
 
 
-def _retry(gate: ApprovalGate, state: str, **kwargs: Any) -> Any:
+async def _apause(gate: ApprovalGate) -> Any:
+    decision = await gate.aevaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert decision.action == "PAUSE"
+    assert decision.payload is not None
+    return decision
+
+
+def _responses(nonce: str) -> dict[str, Any]:
+    """SEP-2322 retry answers, keyed by the pause's request id."""
+    return {nonce: {"approved": True}}
+
+
+def _retry(gate: ApprovalGate, state: str, nonce: str, **kwargs: Any) -> Any:
     params: dict[str, Any] = {
         "caller": CALLER,
         "tool": TOOL,
@@ -140,10 +152,31 @@ def _retry(gate: ApprovalGate, state: str, **kwargs: Any) -> Any:
         "session_id": SESSION,
         "client_supports_input_required": True,
         "request_state": state,
-        "input_responses": [{"requestId": _fresh_id(), "approved": True}],
+        "input_responses": _responses(nonce),
     }
     params.update(kwargs)
     return gate.evaluate(
+        params.pop("caller"),
+        params.pop("tool"),
+        params.pop("arguments"),
+        params.pop("session_id"),
+        params.pop("client_supports_input_required"),
+        **params,
+    )
+
+
+async def _aretry(gate: ApprovalGate, state: str, nonce: str, **kwargs: Any) -> Any:
+    params: dict[str, Any] = {
+        "caller": CALLER,
+        "tool": TOOL,
+        "arguments": ARGS,
+        "session_id": SESSION,
+        "client_supports_input_required": True,
+        "request_state": state,
+        "input_responses": _responses(nonce),
+    }
+    params.update(kwargs)
+    return await gate.aevaluate(
         params.pop("caller"),
         params.pop("tool"),
         params.pop("arguments"),
@@ -157,8 +190,18 @@ def test_first_call_pauses_with_input_required_payload(gate: ApprovalGate) -> No
     decision = _pause(gate)
     assert decision.payload is not None
     assert decision.payload["resultType"] == "input_required"
-    assert isinstance(decision.payload["inputRequests"], list)
-    assert decision.payload["inputRequests"]
+    requests = decision.payload["inputRequests"]
+    assert isinstance(requests, dict)
+    assert decision.nonce is not None
+    assert set(requests) == {decision.nonce}
+    entry = requests[decision.nonce]
+    assert entry["method"] == "elicitation/create"
+    assert entry["params"]["message"] == f"Approve tool call: {TOOL}"
+    assert entry["params"]["requestedSchema"] == {
+        "type": "object",
+        "properties": {"approved": {"type": "boolean"}},
+        "required": ["approved"],
+    }
     assert isinstance(decision.payload["requestState"], str)
     assert decision.payload["requestState"]
 
@@ -170,7 +213,7 @@ def test_key_equals_goose_idempotency_key(gate: ApprovalGate) -> None:
     decision = _pause(gate)
     assert decision.nonce is not None
     gate.store.decide(decision.nonce, True, now=gate.clock())
-    executed = _retry(gate, decision.payload["requestState"])
+    executed = _retry(gate, decision.payload["requestState"], decision.nonce)
     assert executed.action == "EXECUTE"
     assert executed.idempotency_key == expected
 
@@ -181,9 +224,9 @@ def test_approved_retry_executes_exactly_once(
     decision = _pause(gate)
     assert decision.nonce is not None
     gate.store.decide(decision.nonce, True, now=gate.clock())
-    first = _retry(gate, decision.payload["requestState"])
+    first = _retry(gate, decision.payload["requestState"], decision.nonce)
     assert first.action == "EXECUTE"
-    second = _retry(gate, decision.payload["requestState"])
+    second = _retry(gate, decision.payload["requestState"], decision.nonce)
     assert second.action == "REJECT"
     assert second.reason == "replayed"
     assert [event for event, _ in receipts] == ["replayed"]
@@ -191,10 +234,13 @@ def test_approved_retry_executes_exactly_once(
 
 def test_pending_retry_repauses(gate: ApprovalGate) -> None:
     decision = _pause(gate)
-    again = _retry(gate, decision.payload["requestState"])
+    assert decision.nonce is not None
+    again = _retry(gate, decision.payload["requestState"], decision.nonce)
     assert again.action == "PAUSE"
     assert again.payload is not None
     assert again.payload["resultType"] == "input_required"
+    assert set(again.payload["inputRequests"]) == {decision.nonce}
+    assert again.payload["requestState"] == decision.payload["requestState"]
 
 
 def test_deny_rejects_and_receipts(
@@ -203,7 +249,7 @@ def test_deny_rejects_and_receipts(
     decision = _pause(gate)
     assert decision.nonce is not None
     gate.store.decide(decision.nonce, False, now=gate.clock())
-    rejected = _retry(gate, decision.payload["requestState"])
+    rejected = _retry(gate, decision.payload["requestState"], decision.nonce)
     assert rejected.action == "REJECT"
     assert rejected.reason == "denied"
     assert [event for event, _ in receipts] == ["denied"]
@@ -213,8 +259,9 @@ def test_expired_rejects_timeout_and_marks_expired(
     gate: ApprovalGate, clock: _Clock, receipts: list[tuple[str, dict[str, Any]]]
 ) -> None:
     decision = _pause(gate)
+    assert decision.nonce is not None
     clock.now += 3600 + 1
-    rejected = _retry(gate, decision.payload["requestState"])
+    rejected = _retry(gate, decision.payload["requestState"], decision.nonce)
     assert rejected.action == "REJECT"
     assert rejected.reason == "timeout"
     assert decision.nonce is not None
@@ -229,7 +276,8 @@ def test_tampered_state_rejects(
     decision = _pause(gate)
     state: str = decision.payload["requestState"]
     tampered = ("A" if state[0] != "A" else "B") + state[1:]
-    rejected = _retry(gate, tampered)
+    # The seal fails before the responses are read, so any key shape works.
+    rejected = _retry(gate, tampered, _fresh_id())
     assert rejected.action == "REJECT"
     assert rejected.reason == "tampered"
     assert [event for event, _ in receipts] == ["tampered"]
@@ -239,13 +287,14 @@ def test_unknown_nonce_rejects_tampered(
     gate: ApprovalGate, receipts: list[tuple[str, dict[str, Any]]], clock: _Clock
 ) -> None:
     decision = _pause(gate)
+    assert decision.nonce is not None
     fresh = ApprovalGate(
         secret=SECRET,
         store=InMemoryApprovalStore(),
         clock=clock,
         receipt_sink=lambda event, record: receipts.append((event, record)),
     )
-    rejected = _retry(fresh, decision.payload["requestState"])
+    rejected = _retry(fresh, decision.payload["requestState"], decision.nonce)
     assert rejected.action == "REJECT"
     assert rejected.reason == "tampered"
 
@@ -266,8 +315,12 @@ def test_unsupported_client_retry_rejects_with_receipt(
     gate: ApprovalGate, receipts: list[tuple[str, dict[str, Any]]]
 ) -> None:
     decision = _pause(gate)
+    assert decision.nonce is not None
     rejected = _retry(
-        gate, decision.payload["requestState"], client_supports_input_required=False
+        gate,
+        decision.payload["requestState"],
+        decision.nonce,
+        client_supports_input_required=False,
     )
     assert rejected.action == "REJECT"
     assert rejected.reason == "unsupported_client"
@@ -280,8 +333,12 @@ def test_args_mismatch_rejects(
     tmp_path: Path,
 ) -> None:
     decision = _pause(gate)
+    assert decision.nonce is not None
     rejected = _retry(
-        gate, decision.payload["requestState"], arguments={"path": str(tmp_path)}
+        gate,
+        decision.payload["requestState"],
+        decision.nonce,
+        arguments={"path": str(tmp_path)},
     )
     assert rejected.action == "REJECT"
     assert rejected.reason == "args_mismatch"
@@ -292,7 +349,10 @@ def test_principal_mismatch_rejects(
     gate: ApprovalGate, receipts: list[tuple[str, dict[str, Any]]]
 ) -> None:
     decision = _pause(gate)
-    rejected = _retry(gate, decision.payload["requestState"], caller=_fresh_id())
+    assert decision.nonce is not None
+    rejected = _retry(
+        gate, decision.payload["requestState"], decision.nonce, caller=_fresh_id()
+    )
     assert rejected.action == "REJECT"
     assert rejected.reason == "principal_mismatch"
     assert [event for event, _ in receipts] == ["principal_mismatch"]
@@ -302,7 +362,10 @@ def test_tool_mismatch_rejects(
     gate: ApprovalGate, receipts: list[tuple[str, dict[str, Any]]]
 ) -> None:
     decision = _pause(gate)
-    rejected = _retry(gate, decision.payload["requestState"], tool=_fresh_id())
+    assert decision.nonce is not None
+    rejected = _retry(
+        gate, decision.payload["requestState"], decision.nonce, tool=_fresh_id()
+    )
     assert rejected.action == "REJECT"
     assert rejected.reason == "tool_mismatch"
     assert [event for event, _ in receipts] == ["tool_mismatch"]
@@ -312,7 +375,10 @@ def test_session_mismatch_rejects(
     gate: ApprovalGate, receipts: list[tuple[str, dict[str, Any]]]
 ) -> None:
     decision = _pause(gate)
-    rejected = _retry(gate, decision.payload["requestState"], session_id=_fresh_id())
+    assert decision.nonce is not None
+    rejected = _retry(
+        gate, decision.payload["requestState"], decision.nonce, session_id=_fresh_id()
+    )
     assert rejected.action == "REJECT"
     assert rejected.reason == "session_mismatch"
     assert [event for event, _ in receipts] == ["session_mismatch"]
@@ -335,7 +401,8 @@ def test_key_mismatch_rejects(
             return secrets.token_hex(32)
 
     monkeypatch.setattr(gate_module, "_load_canonical", lambda: _DriftedCanonical)
-    rejected = _retry(gate, decision.payload["requestState"])
+    assert decision.nonce is not None
+    rejected = _retry(gate, decision.payload["requestState"], decision.nonce)
     assert rejected.action == "REJECT"
     assert rejected.reason == "key_mismatch"
     assert [event for event, _ in receipts] == ["key_mismatch"]
@@ -370,10 +437,66 @@ def test_stored_record_mismatch_rejects(
         while tampered == getattr(record, field):
             tampered = _fresh_id()
     gate.store.save(replace(record, **{field: tampered}))
-    rejected = _retry(gate, decision.payload["requestState"])
+    rejected = _retry(gate, decision.payload["requestState"], decision.nonce)
     assert rejected.action == "REJECT"
     assert rejected.reason == reason
     assert [event for event, _ in receipts] == [reason]
+
+
+@pytest.mark.parametrize("case", ["missing", "empty", "wrong_id", "legacy_list"])
+def test_retry_without_matching_input_response_rejects(
+    gate: ApprovalGate,
+    receipts: list[tuple[str, dict[str, Any]]],
+    case: str,
+) -> None:
+    """The retry must answer the pause's request id; anything else rejects."""
+    decision = _pause(gate)
+    assert decision.nonce is not None
+    if case == "missing":
+        responses = None
+    elif case == "empty":
+        responses = {}
+    elif case == "wrong_id":
+        responses = _responses(_fresh_id())
+    else:
+        responses = cast(Any, [{"requestId": decision.nonce, "approved": True}])
+    rejected = _retry(
+        gate,
+        decision.payload["requestState"],
+        decision.nonce,
+        input_responses=responses,
+    )
+    assert rejected.action == "REJECT"
+    assert rejected.reason == "response_mismatch"
+    assert [event for event, _ in receipts] == ["response_mismatch"]
+
+
+def test_consume_rejects_expired_approval(gate: ApprovalGate, clock: _Clock) -> None:
+    decision = _pause(gate)
+    assert decision.nonce is not None
+    gate.store.decide(decision.nonce, True, now=gate.clock())
+    clock.now += 3600 + 1
+    assert gate.store.consume(decision.nonce, now=clock()) is None
+    record = gate.store.get(decision.nonce)
+    assert record is not None
+    assert record.consumed is False
+
+
+async def test_async_evaluate_executes_after_approval(
+    gate: ApprovalGate, receipts: list[tuple[str, dict[str, Any]]]
+) -> None:
+    decision = await gate.aevaluate(CALLER, TOOL, ARGS, SESSION, True)
+    assert decision.action == "PAUSE"
+    assert decision.payload is not None
+    assert decision.nonce is not None
+    assert set(decision.payload["inputRequests"]) == {decision.nonce}
+    await gate.store.adecide(decision.nonce, True, now=gate.clock())
+    executed = await _aretry(gate, decision.payload["requestState"], decision.nonce)
+    assert executed.action == "EXECUTE"
+    replayed = await _aretry(gate, decision.payload["requestState"], decision.nonce)
+    assert replayed.action == "REJECT"
+    assert replayed.reason == "replayed"
+    assert [event for event, _ in receipts] == ["replayed"]
 
 
 def test_missing_secret_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -405,13 +528,13 @@ async def test_db_consumed_nonce_stays_consumed_across_restart(
     clean_database: Any,
     purge_approval_gate_table: Any,
 ) -> None:
-    decision = _pause(db_gate)
+    decision = await _apause(db_gate)
     assert decision.nonce is not None
     state: str = decision.payload["requestState"]
 
     # Simulated restart: a new store instance sees the same pending row.
     restarted = DbApprovalStore()
-    record = restarted.get(decision.nonce)
+    record = await restarted.aget(decision.nonce)
     assert record is not None
     assert record.status == "pending"
     assert record.tool == TOOL
@@ -422,19 +545,20 @@ async def test_db_consumed_nonce_stays_consumed_across_restart(
         caller=CALLER, tool=TOOL, arguments=ARGS, session_id=SESSION
     )
     assert record.deadline == clock.now + 300
-    assert [pending.nonce for pending in restarted.list_pending()] == [decision.nonce]
+    pending = await restarted.alist_pending()
+    assert [item.nonce for item in pending] == [decision.nonce]
 
-    restarted.decide(decision.nonce, True, now=clock())
-    executed = _retry(db_gate, state)
+    await restarted.adecide(decision.nonce, True, now=clock())
+    executed = await _aretry(db_gate, state, decision.nonce)
     assert executed.action == "EXECUTE"
 
     # Second restart: the nonce stays consumed; the retry cannot replay.
     restarted_again = DbApprovalStore()
-    consumed = restarted_again.get(decision.nonce)
+    consumed = await restarted_again.aget(decision.nonce)
     assert consumed is not None
     assert consumed.consumed is True
-    assert restarted_again.consume(decision.nonce) is None
-    replayed = _retry(db_gate, state)
+    assert await restarted_again.aconsume(decision.nonce, now=clock()) is None
+    replayed = await _aretry(db_gate, state, decision.nonce)
     assert replayed.action == "REJECT"
     assert replayed.reason == "replayed"
     assert [event for event, _ in receipts] == ["replayed"]
@@ -447,20 +571,48 @@ async def test_db_denied_decision_visible_across_instances(
     clean_database: Any,
     purge_approval_gate_table: Any,
 ) -> None:
-    decision = _pause(db_gate)
+    decision = await _apause(db_gate)
     assert decision.nonce is not None
     decider = DbApprovalStore()
-    denied = decider.decide(decision.nonce, False, now=clock())
+    denied = await decider.adecide(decision.nonce, False, now=clock())
     assert denied is not None
     assert denied.status == "denied"
 
     observer = DbApprovalStore()
-    assert observer.get(decision.nonce) is not None
-    assert observer.get(decision.nonce).status == "denied"  # type: ignore[union-attr]
-    assert observer.list_pending() == []
-    assert observer.decide(decision.nonce, True, now=clock()) is None
+    assert await observer.aget(decision.nonce) is not None
+    observed = await observer.aget(decision.nonce)
+    assert observed is not None
+    assert observed.status == "denied"
+    assert await observer.alist_pending() == []
+    assert await observer.adecide(decision.nonce, True, now=clock()) is None
 
-    rejected = _retry(db_gate, decision.payload["requestState"])
+    rejected = await _aretry(db_gate, decision.payload["requestState"], decision.nonce)
     assert rejected.action == "REJECT"
     assert rejected.reason == "denied"
     assert [event for event, _ in receipts] == ["denied"]
+
+
+async def test_db_consume_rejects_expired_approval(
+    db_gate: ApprovalGate,
+    clock: _Clock,
+    clean_database: Any,
+    purge_approval_gate_table: Any,
+) -> None:
+    """The atomic consume UPDATE refuses an approval past its deadline."""
+    decision = await _apause(db_gate)
+    assert decision.nonce is not None
+    store = DbApprovalStore()
+    approved = await store.adecide(decision.nonce, True, now=clock())
+    assert approved is not None
+    clock.now += 3600 + 1
+    assert await store.aconsume(decision.nonce, now=clock()) is None
+    record = await store.aget(decision.nonce)
+    assert record is not None
+    assert record.consumed is False
+
+
+async def test_db_sync_store_refuses_running_loop() -> None:
+    """Sync DB calls inside a loop refuse instead of crossing engine loops."""
+    store = DbApprovalStore()
+    with pytest.raises(RuntimeError, match="running event loop"):
+        store.get(_fresh_id())

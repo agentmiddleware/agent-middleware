@@ -1,11 +1,13 @@
 """Human approval gate for irreversible MCP tool calls (AMW V2).
 
 SEP-2322 flow: the first ``tools/call`` for an irreversible tool PAUSEs with a
-``resultType='input_required'`` result carrying an opaque ``requestState``. The
-client retries the same ``tools/call`` with "inputResponses" plus the
-``requestState``; this gate EXECUTEs only after a local human approved, else it
-REJECTs. The hook in ``mcp_standard.py`` that calls :meth:`ApprovalGate.evaluate`
-lands in a later PR.
+``resultType='input_required'`` result carrying an ``inputRequests`` map (keyed
+by request id, each value an ``elicitation/create`` client request) plus an
+opaque ``requestState``. The client retries the same ``tools/call`` with an
+"inputResponses" map keyed by the same id plus the ``requestState``; this gate
+EXECUTEs only after a local human approved, else it REJECTs. The hook in
+``mcp_standard.py`` that calls :meth:`ApprovalGate.evaluate` lands in a later
+PR.
 
 Fail-closed rules:
 
@@ -25,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import concurrent.futures
 import hashlib
 import hmac
 import json
@@ -67,6 +68,7 @@ RejectReason = Literal[
     "key_mismatch",
     "args_mismatch",
     "principal_mismatch",
+    "response_mismatch",
     "replayed",
 ]
 ApprovalStatus = Literal["pending", "approved", "denied", "expired"]
@@ -174,12 +176,41 @@ class ApprovalStore:
         """Flip pending to approved/denied; None when missing or not pending."""
         raise NotImplementedError
 
-    def consume(self, nonce: str) -> ApprovalRecord | None:
-        """Single-use: first call on approved marks consumed; later calls None."""
+    def consume(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+        """Single-use: first call on approved marks consumed; later calls None.
+
+        Expired approvals (``deadline`` past ``now``) never consume.
+        """
         raise NotImplementedError
 
     def mark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
         """Flip pending to expired; None when missing."""
+        raise NotImplementedError
+
+    async def asave(self, record: ApprovalRecord) -> None:
+        """Async ``save`` for handlers already on the app event loop."""
+        raise NotImplementedError
+
+    async def aget(self, nonce: str) -> ApprovalRecord | None:
+        """Async ``get`` for handlers already on the app event loop."""
+        raise NotImplementedError
+
+    async def alist_pending(self) -> list[ApprovalRecord]:
+        """Async ``list_pending`` for handlers already on the app event loop."""
+        raise NotImplementedError
+
+    async def adecide(
+        self, nonce: str, approved: bool, *, now: float
+    ) -> ApprovalRecord | None:
+        """Async ``decide`` for handlers already on the app event loop."""
+        raise NotImplementedError
+
+    async def aconsume(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+        """Async ``consume`` for handlers already on the app event loop."""
+        raise NotImplementedError
+
+    async def amark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+        """Async ``mark_expired`` for handlers already on the app event loop."""
         raise NotImplementedError
 
 
@@ -222,10 +253,12 @@ class InMemoryApprovalStore(ApprovalStore):
             self._records[nonce] = updated
             return replace(updated)
 
-    def consume(self, nonce: str) -> ApprovalRecord | None:
+    def consume(self, nonce: str, *, now: float) -> ApprovalRecord | None:
         with self._lock:
             record = self._records.get(nonce)
             if record is None or record.status != "approved" or record.consumed:
+                return None
+            if record.deadline <= now:
                 return None
             updated = replace(record, consumed=True)
             self._records[nonce] = updated
@@ -241,6 +274,26 @@ class InMemoryApprovalStore(ApprovalStore):
                 self._records[nonce] = record
             return replace(record)
 
+    async def asave(self, record: ApprovalRecord) -> None:
+        self.save(record)
+
+    async def aget(self, nonce: str) -> ApprovalRecord | None:
+        return self.get(nonce)
+
+    async def alist_pending(self) -> list[ApprovalRecord]:
+        return self.list_pending()
+
+    async def adecide(
+        self, nonce: str, approved: bool, *, now: float
+    ) -> ApprovalRecord | None:
+        return self.decide(nonce, approved, now=now)
+
+    async def aconsume(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+        return self.consume(nonce, now=now)
+
+    async def amark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+        return self.mark_expired(nonce, now=now)
+
 
 _T = TypeVar("_T")
 
@@ -248,17 +301,22 @@ _T = TypeVar("_T")
 def _run_sync(coro: Coroutine[Any, Any, _T]) -> _T:
     """Drive one DB coroutine from the store's synchronous interface.
 
-    The gate evaluates inline in a sync ``tools/call`` path, while the
-    gateway's persistence is async. With no running loop this is a plain
-    ``asyncio.run``; from inside a running loop (the async approvals router)
-    the coroutine runs on a helper thread with its own loop instead.
+    Sync callers (scripts, the sync ``tools/call`` path) run only when no
+    event loop is running, via a plain ``asyncio.run``. From inside a
+    running loop this refuses instead of hopping threads: the shared
+    ``AsyncEngine`` is loop-bound (asyncpg), so touching it from another
+    loop corrupts pooled connections. Async callers must await the
+    store's ``a*`` methods directly on the app loop.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+    coro.close()
+    raise RuntimeError(
+        "DbApprovalStore sync methods cannot run inside a running event "
+        "loop; await the async (a*) methods on the app loop instead"
+    )
 
 
 def _to_db_time(value: float) -> datetime:
@@ -314,23 +372,24 @@ class DbApprovalStore(ApprovalStore):
 
     Decisions and consumption survive a restart: a consumed nonce stays
     consumed because consume is a conditional ``UPDATE ... WHERE
-    status='approved' AND consumed_at IS NULL`` whose rowcount admits exactly
-    one winner, so neither a restart nor concurrent retries can replay it.
+    status='approved' AND consumed_at IS NULL AND deadline > now`` whose
+    rowcount admits exactly one winner, so neither a restart nor concurrent
+    retries can replay it, and an expired approval can never spend.
     """
 
     def save(self, record: ApprovalRecord) -> None:
-        _run_sync(self._save(record))
+        _run_sync(self.asave(record))
 
-    async def _save(self, record: ApprovalRecord) -> None:
+    async def asave(self, record: ApprovalRecord) -> None:
         factory = get_session_factory()
         async with factory() as session:
             await session.merge(_model_from_record(record))
             await session.commit()
 
     def get(self, nonce: str) -> ApprovalRecord | None:
-        return _run_sync(self._get(nonce))
+        return _run_sync(self.aget(nonce))
 
-    async def _get(self, nonce: str) -> ApprovalRecord | None:
+    async def aget(self, nonce: str) -> ApprovalRecord | None:
         factory = get_session_factory()
         async with factory() as session:
             result = await session.execute(
@@ -342,9 +401,9 @@ class DbApprovalStore(ApprovalStore):
             return _record_from_model(model) if model is not None else None
 
     def list_pending(self) -> list[ApprovalRecord]:
-        return _run_sync(self._list_pending())
+        return _run_sync(self.alist_pending())
 
-    async def _list_pending(self) -> list[ApprovalRecord]:
+    async def alist_pending(self) -> list[ApprovalRecord]:
         factory = get_session_factory()
         async with factory() as session:
             result = await session.execute(
@@ -365,9 +424,9 @@ class DbApprovalStore(ApprovalStore):
     def decide(
         self, nonce: str, approved: bool, *, now: float
     ) -> ApprovalRecord | None:
-        return _run_sync(self._decide(nonce, approved, now=now))
+        return _run_sync(self.adecide(nonce, approved, now=now))
 
-    async def _decide(
+    async def adecide(
         self, nonce: str, approved: bool, *, now: float
     ) -> ApprovalRecord | None:
         factory = get_session_factory()
@@ -400,15 +459,17 @@ class DbApprovalStore(ApprovalStore):
             await session.refresh(model)
             return _record_from_model(model)
 
-    def consume(self, nonce: str) -> ApprovalRecord | None:
-        return _run_sync(self._consume(nonce))
+    def consume(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+        return _run_sync(self.aconsume(nonce, now=now))
 
-    async def _consume(self, nonce: str) -> ApprovalRecord | None:
-        """Atomically spend an approved, unconsumed approval — single use.
+    async def aconsume(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+        """Atomically spend an approved, unconsumed, unexpired approval.
 
-        The ``WHERE status='approved' AND consumed_at IS NULL`` clause is the
-        single serialization point: exactly one caller (one retry, one
-        transport) wins, and a restart cannot resurrect a spent approval.
+        The ``WHERE status='approved' AND consumed_at IS NULL AND
+        deadline > now`` clause is the single serialization point: exactly
+        one caller (one retry, one transport) wins, a restart cannot
+        resurrect a spent approval, and an approval whose deadline passed
+        between the gate's expiry check and this UPDATE still cannot spend.
         """
         factory = get_session_factory()
         async with factory() as session:
@@ -423,6 +484,10 @@ class DbApprovalStore(ApprovalStore):
                     cast(
                         ColumnElement[bool],
                         cast(Any, ApprovalGateModel.consumed_at).is_(None),
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.deadline > _to_db_time(now),
                     ),
                 )
                 .values(consumed_at=utc_now())
@@ -439,9 +504,9 @@ class DbApprovalStore(ApprovalStore):
             return _record_from_model(model) if model is not None else None
 
     def mark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
-        return _run_sync(self._mark_expired(nonce, now=now))
+        return _run_sync(self.amark_expired(nonce, now=now))
 
-    async def _mark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
+    async def amark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
         factory = get_session_factory()
         async with factory() as session:
             result = await session.execute(
@@ -490,6 +555,33 @@ class ApprovalDecision:
     nonce: str | None = None
 
 
+def _pause_payload(tool: str, nonce: str, request_state: str) -> dict[str, Any]:
+    """Build the SEP-2322 ``input_required`` pause payload.
+
+    ``inputRequests`` is a map keyed by request id; each value is the client
+    request the server wants answered, here an ``elicitation/create`` asking
+    a human to approve the paused tool call. The client answers with an
+    ``inputResponses`` map keyed by the same id.
+    """
+    return {
+        "resultType": "input_required",
+        "inputRequests": {
+            nonce: {
+                "method": "elicitation/create",
+                "params": {
+                    "message": f"Approve tool call: {tool}",
+                    "requestedSchema": {
+                        "type": "object",
+                        "properties": {"approved": {"type": "boolean"}},
+                        "required": ["approved"],
+                    },
+                },
+            }
+        },
+        "requestState": request_state,
+    }
+
+
 class ApprovalGate:
     """Entry point for the future mcp_standard.py hook."""
 
@@ -530,10 +622,16 @@ class ApprovalGate:
         session_id: str,
         client_supports_input_required: bool,
         request_state: str | None = None,
-        input_responses: list[Any] | dict[str, Any] | None = None,
+        input_responses: dict[str, Any] | None = None,
         request_id: str | None = None,
     ) -> ApprovalDecision:
-        """Decide PAUSE, EXECUTE, or REJECT for one tools/call attempt."""
+        """Decide PAUSE, EXECUTE, or REJECT for one tools/call attempt.
+
+        Sync path for callers with no running event loop. Async callers
+        (FastAPI handlers, the async MCP hook) must use :meth:`aevaluate`,
+        which awaits the store on the app loop instead of crossing loops
+        with the shared engine.
+        """
         canonical = _load_canonical()
         if request_id is not None:
             logger.debug("approval request_id=%s logged only, never keyed", request_id)
@@ -558,6 +656,146 @@ class ApprovalGate:
             idempotency_key=idempotency_key,
             client_supports_input_required=client_supports_input_required,
             request_state=request_state,
+            input_responses=input_responses,
+        )
+
+    async def aevaluate(
+        self,
+        caller: str,
+        tool: str,
+        arguments: dict[str, Any] | None,
+        session_id: str,
+        client_supports_input_required: bool,
+        request_state: str | None = None,
+        input_responses: dict[str, Any] | None = None,
+        request_id: str | None = None,
+    ) -> ApprovalDecision:
+        """Async mirror of :meth:`evaluate` for callers on the app loop.
+
+        Awaits the store directly on the running loop; never crosses loops
+        with the shared engine.
+        """
+        canonical = _load_canonical()
+        if request_id is not None:
+            logger.debug("approval request_id=%s logged only, never keyed", request_id)
+        args_hash = canonical.args_hash(arguments)
+        idempotency_key = canonical.idempotency_key(
+            caller=caller, tool=tool, arguments=arguments, session_id=session_id
+        )
+        if request_state is None:
+            return await self._apause_new_call(
+                caller=caller,
+                tool=tool,
+                session_id=session_id,
+                args_hash=args_hash,
+                idempotency_key=idempotency_key,
+                client_supports_input_required=client_supports_input_required,
+            )
+        return await self._aevaluate_retry(
+            caller=caller,
+            tool=tool,
+            session_id=session_id,
+            args_hash=args_hash,
+            idempotency_key=idempotency_key,
+            client_supports_input_required=client_supports_input_required,
+            request_state=request_state,
+            input_responses=input_responses,
+        )
+
+    def _check_sealed_fields(
+        self,
+        sealed: dict[str, Any],
+        *,
+        caller: str,
+        tool: str,
+        session_id: str,
+        args_hash: str,
+        idempotency_key: str,
+        nonce: str,
+    ) -> ApprovalDecision | None:
+        """Reject when the retry inputs drift from the sealed state."""
+        if sealed.get("tool") != tool:
+            self._emit("tool_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="tool_mismatch", nonce=nonce
+            )
+        if sealed.get("sessionId") != session_id:
+            self._emit("session_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="session_mismatch", nonce=nonce
+            )
+        if sealed.get("principal") != caller:
+            self._emit("principal_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="principal_mismatch", nonce=nonce
+            )
+        if sealed.get("argsHash") != args_hash:
+            self._emit("args_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="args_mismatch", nonce=nonce
+            )
+        # Last: the key is derived from caller, tool, args, and session, so a
+        # mismatch here with all inputs matching means the key derivation
+        # itself drifted between pause and retry.
+        if sealed.get("idempotencyKey") != idempotency_key:
+            self._emit("key_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(action="REJECT", reason="key_mismatch", nonce=nonce)
+        return None
+
+    def _check_input_responses(
+        self,
+        input_responses: dict[str, Any] | None,
+        *,
+        nonce: str,
+        tool: str,
+        caller: str,
+    ) -> ApprovalDecision | None:
+        """Reject when the retry answers no input request for this pause.
+
+        SEP-2322 keys ``inputResponses`` by the same request id the pause
+        carried in ``inputRequests``. The response content itself is ignored:
+        only the local human decision in the store can approve.
+        """
+        if not isinstance(input_responses, dict) or nonce not in input_responses:
+            self._emit("response_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="response_mismatch", nonce=nonce
+            )
+        return None
+
+    def _check_record(
+        self,
+        record: ApprovalRecord,
+        *,
+        tool: str,
+        session_id: str,
+        idempotency_key: str,
+        caller: str,
+    ) -> ApprovalDecision | None:
+        """Reject when the stored record drifts from the retry inputs."""
+        nonce = record.nonce
+        if record.tool != tool:
+            self._emit("tool_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="tool_mismatch", nonce=nonce
+            )
+        if record.session_id != session_id:
+            self._emit("session_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(
+                action="REJECT", reason="session_mismatch", nonce=nonce
+            )
+        if record.idempotency_key != idempotency_key:
+            self._emit("key_mismatch", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(action="REJECT", reason="key_mismatch", nonce=nonce)
+        return None
+
+    @staticmethod
+    def _is_expired(now: float, sealed_deadline: Any, record: ApprovalRecord) -> bool:
+        return (
+            not isinstance(sealed_deadline, (int, float))
+            or now > sealed_deadline
+            or now > record.deadline
+            or record.status == "expired"
         )
 
     def _pause_new_call(
@@ -611,21 +849,61 @@ class ApprovalGate:
         return ApprovalDecision(
             action="PAUSE",
             nonce=nonce,
-            payload={
-                "resultType": "input_required",
-                "inputRequests": [
-                    {
-                        "requestId": nonce,
-                        "prompt": f"Approve tool call: {tool}",
-                        "schema": {
-                            "type": "object",
-                            "properties": {"approved": {"type": "boolean"}},
-                            "required": ["approved"],
-                        },
-                    }
-                ],
-                "requestState": state,
+            payload=_pause_payload(tool, nonce, state),
+        )
+
+    async def _apause_new_call(
+        self,
+        *,
+        caller: str,
+        tool: str,
+        session_id: str,
+        args_hash: str,
+        idempotency_key: str,
+        client_supports_input_required: bool,
+    ) -> ApprovalDecision:
+        if not client_supports_input_required:
+            self._emit(
+                "unsupported_client",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="unsupported_client")
+        secret = self._require_secret()
+        now = self.clock()
+        nonce = secrets.token_urlsafe(16)
+        deadline = now + self._ttl
+        await self.store.asave(
+            ApprovalRecord(
+                nonce=nonce,
+                idempotency_key=idempotency_key,
+                args_hash=args_hash,
+                principal=caller,
+                tool=tool,
+                session_id=session_id,
+                created_at=now,
+                deadline=deadline,
+            )
+        )
+        state = _seal_state(
+            secret,
+            {
+                "v": STATE_VERSION,
+                "argsHash": args_hash,
+                "principal": caller,
+                "tool": tool,
+                "sessionId": session_id,
+                "idempotencyKey": idempotency_key,
+                "deadline": deadline,
+                "nonce": nonce,
             },
+        )
+        return ApprovalDecision(
+            action="PAUSE",
+            nonce=nonce,
+            payload=_pause_payload(tool, nonce, state),
         )
 
     def _evaluate_retry(
@@ -638,6 +916,7 @@ class ApprovalGate:
         idempotency_key: str,
         client_supports_input_required: bool,
         request_state: str,
+        input_responses: dict[str, Any] | None,
     ) -> ApprovalDecision:
         if not client_supports_input_required:
             self._emit(
@@ -670,57 +949,37 @@ class ApprovalGate:
                 session_id=session_id,
             )
             return ApprovalDecision(action="REJECT", reason="tampered")
-        if sealed.get("tool") != tool:
-            self._emit("tool_mismatch", nonce=nonce, tool=tool, principal=caller)
-            return ApprovalDecision(
-                action="REJECT", reason="tool_mismatch", nonce=nonce
-            )
-        if sealed.get("sessionId") != session_id:
-            self._emit("session_mismatch", nonce=nonce, tool=tool, principal=caller)
-            return ApprovalDecision(
-                action="REJECT", reason="session_mismatch", nonce=nonce
-            )
-        if sealed.get("principal") != caller:
-            self._emit("principal_mismatch", nonce=nonce, tool=tool, principal=caller)
-            return ApprovalDecision(
-                action="REJECT", reason="principal_mismatch", nonce=nonce
-            )
-        if sealed.get("argsHash") != args_hash:
-            self._emit("args_mismatch", nonce=nonce, tool=tool, principal=caller)
-            return ApprovalDecision(
-                action="REJECT", reason="args_mismatch", nonce=nonce
-            )
-        # Last: the key is derived from caller, tool, args, and session, so a
-        # mismatch here with all inputs matching means the key derivation
-        # itself drifted between pause and retry.
-        if sealed.get("idempotencyKey") != idempotency_key:
-            self._emit("key_mismatch", nonce=nonce, tool=tool, principal=caller)
-            return ApprovalDecision(action="REJECT", reason="key_mismatch", nonce=nonce)
+        rejected = self._check_sealed_fields(
+            sealed,
+            caller=caller,
+            tool=tool,
+            session_id=session_id,
+            args_hash=args_hash,
+            idempotency_key=idempotency_key,
+            nonce=nonce,
+        )
+        if rejected is not None:
+            return rejected
+        rejected = self._check_input_responses(
+            input_responses, nonce=nonce, tool=tool, caller=caller
+        )
+        if rejected is not None:
+            return rejected
         record = self.store.get(nonce)
         if record is None:
             self._emit("tampered", nonce=nonce, tool=tool, principal=caller)
             return ApprovalDecision(action="REJECT", reason="tampered", nonce=nonce)
-        if record.tool != tool:
-            self._emit("tool_mismatch", nonce=nonce, tool=tool, principal=caller)
-            return ApprovalDecision(
-                action="REJECT", reason="tool_mismatch", nonce=nonce
-            )
-        if record.session_id != session_id:
-            self._emit("session_mismatch", nonce=nonce, tool=tool, principal=caller)
-            return ApprovalDecision(
-                action="REJECT", reason="session_mismatch", nonce=nonce
-            )
-        if record.idempotency_key != idempotency_key:
-            self._emit("key_mismatch", nonce=nonce, tool=tool, principal=caller)
-            return ApprovalDecision(action="REJECT", reason="key_mismatch", nonce=nonce)
+        rejected = self._check_record(
+            record,
+            tool=tool,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+            caller=caller,
+        )
+        if rejected is not None:
+            return rejected
         now = self.clock()
-        sealed_deadline = sealed.get("deadline")
-        if (
-            not isinstance(sealed_deadline, (int, float))
-            or now > sealed_deadline
-            or now > record.deadline
-            or record.status == "expired"
-        ):
+        if self._is_expired(now, sealed.get("deadline"), record):
             self.store.mark_expired(nonce, now=now)
             self._emit("timeout", nonce=nonce, tool=tool, principal=caller)
             return ApprovalDecision(action="REJECT", reason="timeout", nonce=nonce)
@@ -731,23 +990,104 @@ class ApprovalGate:
             return ApprovalDecision(
                 action="PAUSE",
                 nonce=nonce,
-                payload={
-                    "resultType": "input_required",
-                    "inputRequests": [
-                        {
-                            "requestId": nonce,
-                            "prompt": f"Approve tool call: {tool}",
-                            "schema": {
-                                "type": "object",
-                                "properties": {"approved": {"type": "boolean"}},
-                                "required": ["approved"],
-                            },
-                        }
-                    ],
-                    "requestState": request_state,
-                },
+                payload=_pause_payload(tool, nonce, request_state),
             )
-        consumed = self.store.consume(nonce)
+        consumed = self.store.consume(nonce, now=now)
+        if consumed is None:
+            self._emit("replayed", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(action="REJECT", reason="replayed", nonce=nonce)
+        return ApprovalDecision(
+            action="EXECUTE", idempotency_key=idempotency_key, nonce=nonce
+        )
+
+    async def _aevaluate_retry(
+        self,
+        *,
+        caller: str,
+        tool: str,
+        session_id: str,
+        args_hash: str,
+        idempotency_key: str,
+        client_supports_input_required: bool,
+        request_state: str,
+        input_responses: dict[str, Any] | None,
+    ) -> ApprovalDecision:
+        """Async mirror of :meth:`_evaluate_retry` on the app loop."""
+        if not client_supports_input_required:
+            self._emit(
+                "unsupported_client",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="unsupported_client")
+        secret = self._require_secret()
+        try:
+            sealed = _unseal_state(secret, request_state)
+        except _StateTampered:
+            self._emit(
+                "tampered",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="tampered")
+        nonce = sealed.get("nonce")
+        if not isinstance(nonce, str) or not nonce:
+            self._emit(
+                "tampered",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="tampered")
+        rejected = self._check_sealed_fields(
+            sealed,
+            caller=caller,
+            tool=tool,
+            session_id=session_id,
+            args_hash=args_hash,
+            idempotency_key=idempotency_key,
+            nonce=nonce,
+        )
+        if rejected is not None:
+            return rejected
+        rejected = self._check_input_responses(
+            input_responses, nonce=nonce, tool=tool, caller=caller
+        )
+        if rejected is not None:
+            return rejected
+        record = await self.store.aget(nonce)
+        if record is None:
+            self._emit("tampered", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(action="REJECT", reason="tampered", nonce=nonce)
+        rejected = self._check_record(
+            record,
+            tool=tool,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+            caller=caller,
+        )
+        if rejected is not None:
+            return rejected
+        now = self.clock()
+        if self._is_expired(now, sealed.get("deadline"), record):
+            await self.store.amark_expired(nonce, now=now)
+            self._emit("timeout", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(action="REJECT", reason="timeout", nonce=nonce)
+        if record.status == "denied":
+            self._emit("denied", nonce=nonce, tool=tool, principal=caller)
+            return ApprovalDecision(action="REJECT", reason="denied", nonce=nonce)
+        if record.status == "pending":
+            return ApprovalDecision(
+                action="PAUSE",
+                nonce=nonce,
+                payload=_pause_payload(tool, nonce, request_state),
+            )
+        consumed = await self.store.aconsume(nonce, now=now)
         if consumed is None:
             self._emit("replayed", nonce=nonce, tool=tool, principal=caller)
             return ApprovalDecision(action="REJECT", reason="replayed", nonce=nonce)

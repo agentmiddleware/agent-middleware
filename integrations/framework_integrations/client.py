@@ -236,8 +236,10 @@ class B2AClient:
         """
         if not isinstance(context, dict):
             raise ValueError("context must be a dict")
-        if not isinstance(options, list) or not all(
-            isinstance(option, str) and option.strip() for option in options
+        if (
+            not isinstance(options, list)
+            or not options
+            or not all(isinstance(option, str) and option.strip() for option in options)
         ):
             raise ValueError("options must be a list of non-blank strings")
         payload = {
@@ -384,6 +386,10 @@ class B2AClient:
             idempotency_key,
             blank_message="idempotency_key is required and must not be blank",
         )
+        # The server prices the units; a negative or non-finite quantity must
+        # never reach it as a charge.
+        if not isfinite(units) or units < 0:
+            raise ValueError("units must be a finite number and must not be negative")
         params: dict[str, str | float] = {
             "wallet_id": self.config.wallet_id,
             "service": service_category,

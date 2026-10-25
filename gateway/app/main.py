@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .core.auth import AuthContext, get_auth_context
+from .core.api_key_usage import APIKeyUsageMiddleware
 from .core.build_metadata import get_build_commit_sha, get_build_provenance
 from .core.config import get_settings
 from .core.durable_state import (
@@ -582,6 +583,10 @@ app = FastAPI(
 
 # --- Middleware Stack ---
 
+# Run inside the rate limiter so its accepted-credential holder is shared
+# with auth; this records at most one event after the routed call completes.
+app.add_middleware(APIKeyUsageMiddleware)
+
 # Rate limiting (enforces documented 120 req/min per API key)
 app.add_middleware(RateLimitMiddleware)
 
@@ -800,6 +805,7 @@ for router_module in CORE_TRUST_ROUTERS:
             else True
         ),
     )
+app.include_router(api_keys.admin_router)
 
 # Self-serve dev keys: the handler is triple-gated at runtime (its own
 # ENABLE_DEV_KEY_SELF_PROVISION flag answers 404, production-like environments

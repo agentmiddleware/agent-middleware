@@ -19,7 +19,8 @@ usable.
 
 Superusers and BYPASSRLS roles skip every policy. FORCE binds the table owner
 too, so this migration (and any later data migration) runs with
-the app.rls_bypass setting set locally by migrations/env.py. Runtime role setup and
+the app.rls_bypass setting set to 'on' for the migration transaction only by
+migrations/env.py (``set_config(..., true)``). Runtime role setup and
 the admin mechanism are documented in docs/tenant-rls.md in the api repo.
 
 A second, SELECT-only policy mirrors the delegated-issuer branch of
@@ -33,10 +34,11 @@ stay limited to the caller's own wallet.
 The table list is a frozen copy of app.db.tenant_rls.RLS_TABLES in the api repo.
 
 Ported from the archived agent-middleware-api chain with the same revision
-id. This service has no ``TENANT_RLS_MODE`` setting and no the app.rls_bypass setting
-in migrations/env.py, so the setting is read with an ``off`` default:
-policies are created, row-level security is never enabled or forced here.
-That is the same default-off result the original produced.
+id. This service has no ``TENANT_RLS_MODE`` setting, so it is read with an
+``off`` default: policies are created and row-level security is enabled or
+forced only when an operator sets TENANT_RLS_MODE=enforce, as in the
+original. migrations/env.py sets the app.rls_bypass setting exactly as the
+archived env.py did, so data migrations still see every row under FORCE.
 """
 
 from alembic import op

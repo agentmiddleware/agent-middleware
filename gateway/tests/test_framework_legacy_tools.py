@@ -37,6 +37,7 @@ from framework_integrations import (
 )
 
 WALLET_ID = "wallet-legacy-tools"
+AGENT_ID = "agent-legacy-tools"
 API_KEY = "legacy-tools-key"
 
 # tool name -> (tool kwargs, HTTP method, path, text the tool output must hold)
@@ -106,7 +107,12 @@ async def recording():
             return httpx.Response(404, json={"detail": "unexpected request"})
         return httpx.Response(200, json=body)
 
-    client = B2AClient(api_url="http://b2a.test", api_key=API_KEY, wallet_id=WALLET_ID)
+    client = B2AClient(
+        api_url="http://b2a.test",
+        api_key=API_KEY,
+        wallet_id=WALLET_ID,
+        agent_id=AGENT_ID,
+    )
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     yield client, sent
     await client.close()
@@ -166,6 +172,8 @@ def _assert_one_request(sent: list[httpx.Request], method: str, path: str) -> No
         f"saw {[(r.method, r.url.path) for r in sent]}"
     )
     assert sent[0].headers["X-API-Key"] == API_KEY
+    if path == "/v1/comms/messages":
+        assert sent[0].url.params["from_agent"] == AGENT_ID
     if path == "/v1/telemetry/events/single":
         assert json.loads(sent[0].content) == {
             "event_type": "custom",

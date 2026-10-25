@@ -923,3 +923,121 @@ def test_replay_recorded_tool_denial_flips_to_allow(tmp_path):
     assert claims["change"] == "deny_to_allow"
     key_set = key_set_from_document({"keys": [result.public_key]})
     assert verify_bundle(result.receipts[0], key_set).ok
+
+
+# --- 22. approval_id is validated ---------------------------------------------
+
+
+def test_load_recorded_calls_rejects_bad_approval_id(tmp_path):
+    for i, value in enumerate((1, True, "", ["appr-1"])):
+        payload = _record_payload(approval_id=value)
+        with pytest.raises(ReplayError, match="approval_id"):
+            load_recorded_calls(
+                _record_file(tmp_path, payload, name=f"bad-approval-{i}.json")
+            )
+
+
+def test_load_recorded_calls_bad_approval_id_names_record(tmp_path):
+    payload = _record_payload(approval_id="")
+    with pytest.raises(ReplayError, match=r"bad-approval\.json.*approval_id"):
+        load_recorded_calls(_record_file(tmp_path, payload, name="bad-approval.json"))
+    good = {"signing_input": canonical_json(_record_payload())}
+    bad = {"signing_input": canonical_json(_record_payload(approval_id=1))}
+    path = tmp_path / "calls.jsonl"
+    path.write_text(json.dumps(good) + "\n" + json.dumps(bad) + "\n")
+    with pytest.raises(ReplayError, match=r"calls\.jsonl:2.*approval_id"):
+        load_recorded_calls(path)
+
+
+def test_load_recorded_calls_accepts_missing_or_valid_approval_id(tmp_path):
+    assert (
+        load_recorded_calls(_record_file(tmp_path, _record_payload()))[0].payload.get(
+            "approval_id"
+        )
+        is None
+    )
+    payload = _record_payload(approval_id=None)
+    assert (
+        load_recorded_calls(_record_file(tmp_path, payload, name="none.json"))[
+            0
+        ].payload.get("approval_id")
+        is None
+    )
+    payload = _record_payload(approval_id="appr-0001", risk_tier="low")
+    calls = load_recorded_calls(_record_file(tmp_path, payload, name="ok.json"))
+    result = replay_calls(calls, load_policy_bundle(_approval_rule(tmp_path)))
+    assert _claims(result.receipts[0])["new_decision"] == "allow"
+
+
+# --- 23. --require-verified ---------------------------------------------------
+
+
+def test_cli_require_verified_without_keys_returns_2(tmp_path, capsys):
+    code = replay_main(
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--out",
+            str(tmp_path / "out"),
+            "--require-verified",
+        ]
+    )
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "--require-verified" in err
+    assert "--recorded-keys" in err
+
+
+def test_cli_require_verified_rejects_unverified_calls(tmp_path, capsys, monkeypatch):
+    import app.replay.cli as replay_cli
+
+    from dataclasses import replace
+
+    real_load = replay_cli.load_recorded_calls
+
+    def _strip_verification(path, **kwargs):
+        return [replace(c, signature_verified=False) for c in real_load(path, **kwargs)]
+
+    monkeypatch.setattr(replay_cli, "load_recorded_calls", _strip_verification)
+    out = tmp_path / "out"
+    code = replay_main(
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--recorded-keys",
+            str(SPEC_KEYS),
+            "--out",
+            str(out),
+            "--require-verified",
+        ]
+    )
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "6 unverified" in captured.err
+    assert captured.out == ""
+    assert not (out / "summary.json").exists()
+    assert not (out / "receipts.jsonl").exists()
+
+
+def test_cli_require_verified_passes_when_all_verified(tmp_path, capsys):
+    out = tmp_path / "out"
+    code = replay_main(
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--recorded-keys",
+            str(SPEC_KEYS),
+            "--out",
+            str(out),
+            "--require-verified",
+        ]
+    )
+    assert code == 0, capsys.readouterr().err
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["total"] == 6

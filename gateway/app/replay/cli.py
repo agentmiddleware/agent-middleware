@@ -35,7 +35,19 @@ def main(argv: list[str] | None = None) -> int:
         "--recorded-keys",
         help="trust-keys.json to verify each recorded receipt before replay",
     )
+    parser.add_argument(
+        "--require-verified",
+        action="store_true",
+        help="fail unless every recorded receipt verified against --recorded-keys",
+    )
     args = parser.parse_args(argv)
+
+    if args.require_verified and not args.recorded_keys:
+        print(
+            "amw-replay: --require-verified needs --recorded-keys",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         recorded_keys = None
@@ -57,6 +69,20 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, SigningKeyError, OSError) as exc:
         print(f"amw-replay: {exc}", file=sys.stderr)
         return 2
+
+    if args.require_verified:
+        unverified = sum(
+            1
+            for receipt in result.receipts
+            if json.loads(receipt["signing_input"]).get("recorded_signature_verified")
+            is not True
+        )
+        if unverified:
+            print(
+                f"amw-replay: {unverified} unverified recorded calls",
+                file=sys.stderr,
+            )
+            return 2
 
     out = Path(args.out)
     try:

@@ -4,8 +4,10 @@ B2A Client — Framework Integration Core
 HTTP client for Agent Middleware API.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Any, Optional
+
 import httpx
 
 
@@ -103,6 +105,8 @@ class B2AClient:
         options: list[str],
     ) -> str:
         """Make an AI-powered decision."""
+        if not options:
+            raise ValueError("options must not be empty")
         payload = {
             "agent_id": self.config.wallet_id,
             "context": context,
@@ -226,6 +230,10 @@ class B2AClient:
         # silently drop the double-charge protection, so refuse it here.
         if not idempotency_key or not idempotency_key.strip():
             raise ValueError("idempotency_key is required and must not be blank")
+        # The server prices the units; a negative or non-finite quantity must
+        # never reach it as a charge.
+        if not math.isfinite(units) or units < 0:
+            raise ValueError("units must be a finite number and must not be negative")
         params: dict[str, str | float] = {
             "wallet_id": self.config.wallet_id,
             "service": service_category,

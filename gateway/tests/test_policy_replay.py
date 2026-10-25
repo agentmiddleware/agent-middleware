@@ -16,6 +16,7 @@ Acceptance criteria (R&D spec V1):
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import socket
 import sys
@@ -923,3 +924,587 @@ def test_replay_recorded_tool_denial_flips_to_allow(tmp_path):
     assert claims["change"] == "deny_to_allow"
     key_set = key_set_from_document({"keys": [result.public_key]})
     assert verify_bundle(result.receipts[0], key_set).ok
+
+
+# --- 22. approval_id is validated ---------------------------------------------
+
+
+def test_load_recorded_calls_rejects_bad_approval_id(tmp_path):
+    for i, value in enumerate((1, True, "", ["appr-1"])):
+        payload = _record_payload(approval_id=value)
+        with pytest.raises(ReplayError, match="approval_id"):
+            load_recorded_calls(
+                _record_file(tmp_path, payload, name=f"bad-approval-{i}.json")
+            )
+
+
+def test_load_recorded_calls_bad_approval_id_names_record(tmp_path):
+    payload = _record_payload(approval_id="")
+    with pytest.raises(ReplayError, match=r"bad-approval\.json.*approval_id"):
+        load_recorded_calls(_record_file(tmp_path, payload, name="bad-approval.json"))
+    good = {"signing_input": canonical_json(_record_payload())}
+    bad = {"signing_input": canonical_json(_record_payload(approval_id=1))}
+    path = tmp_path / "calls.jsonl"
+    path.write_text(json.dumps(good) + "\n" + json.dumps(bad) + "\n")
+    with pytest.raises(ReplayError, match=r"calls\.jsonl:2.*approval_id"):
+        load_recorded_calls(path)
+
+
+def test_load_recorded_calls_rejects_whitespace_approval_id(tmp_path):
+    for i, value in enumerate((" ", "\t\n", "  \t  \n ")):
+        payload = _record_payload(approval_id=value)
+        with pytest.raises(ReplayError, match="approval_id"):
+            load_recorded_calls(
+                _record_file(tmp_path, payload, name=f"ws-approval-{i}.json")
+            )
+
+
+def test_load_recorded_calls_accepts_missing_or_valid_approval_id(tmp_path):
+    assert (
+        load_recorded_calls(_record_file(tmp_path, _record_payload()))[0].payload.get(
+            "approval_id"
+        )
+        is None
+    )
+    payload = _record_payload(approval_id=None)
+    assert (
+        load_recorded_calls(_record_file(tmp_path, payload, name="none.json"))[
+            0
+        ].payload.get("approval_id")
+        is None
+    )
+    payload = _record_payload(approval_id="appr-0001", risk_tier="low")
+    calls = load_recorded_calls(_record_file(tmp_path, payload, name="ok.json"))
+    result = replay_calls(calls, load_policy_bundle(_approval_rule(tmp_path)))
+    assert _claims(result.receipts[0])["new_decision"] == "allow"
+
+
+# --- 23. --require-verified ---------------------------------------------------
+
+
+def test_cli_require_verified_without_keys_returns_2(tmp_path, capsys):
+    code = replay_main(
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--out",
+            str(tmp_path / "out"),
+            "--require-verified",
+        ]
+    )
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "--require-verified" in err
+    assert "--recorded-keys" in err
+
+
+def test_cli_require_verified_rejects_unverified_calls(tmp_path, capsys, monkeypatch):
+    import app.replay.cli as replay_cli
+
+    from dataclasses import replace
+
+    real_load = replay_cli.load_recorded_calls
+
+    def _strip_verification(path, **kwargs):
+        return [replace(c, signature_verified=False) for c in real_load(path, **kwargs)]
+
+    monkeypatch.setattr(replay_cli, "load_recorded_calls", _strip_verification)
+    out = tmp_path / "out"
+    code = replay_main(
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--recorded-keys",
+            str(SPEC_KEYS),
+            "--out",
+            str(out),
+            "--require-verified",
+        ]
+    )
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "6 unverified" in captured.err
+    assert captured.out == ""
+    assert not (out / "summary.json").exists()
+    assert not (out / "receipts.jsonl").exists()
+
+
+def test_cli_require_verified_passes_when_all_verified(tmp_path, capsys):
+    out = tmp_path / "out"
+    code = replay_main(
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--recorded-keys",
+            str(SPEC_KEYS),
+            "--out",
+            str(out),
+            "--require-verified",
+        ]
+    )
+    assert code == 0, capsys.readouterr().err
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["total"] == 6
+
+
+# --- 24. CLI outputs are written atomically -----------------------------------
+
+
+def _replay_out_argv(tmp_path: Path) -> tuple[list[str], Path]:
+    out = tmp_path / "out"
+    return (
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--out",
+            str(out),
+        ],
+        out,
+    )
+
+
+def test_cli_success_writes_only_outputs(tmp_path, capsys):
+    argv, out = _replay_out_argv(tmp_path)
+    assert replay_main(argv) == 0, capsys.readouterr().err
+    assert sorted(p.name for p in out.iterdir()) == [
+        "keys.json",
+        "receipts.jsonl",
+        "summary.json",
+    ]
+
+
+def test_cli_outputs_rename_into_place(tmp_path, capsys, monkeypatch):
+    import os
+
+    real_replace = os.replace
+    renamed: list[tuple[Path, Path]] = []
+
+    def _spy(src, dst):
+        renamed.append((Path(src), Path(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _spy)
+    argv, out = _replay_out_argv(tmp_path)
+    assert replay_main(argv) == 0, capsys.readouterr().err
+    ours = [(src, dst) for src, dst in renamed if dst.parent == out]
+    assert sorted(dst.name for _, dst in ours) == [
+        "keys.json",
+        "receipts.jsonl",
+        "summary.json",
+    ]
+    assert all(src.parent == out for src, _ in ours)
+
+
+def test_cli_first_output_failure_leaves_no_files(tmp_path, capsys, monkeypatch):
+    import tempfile
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tempfile, "mkstemp", _boom)
+    argv, out = _replay_out_argv(tmp_path)
+    assert replay_main(argv) == 2
+    assert "amw-replay: disk full" in capsys.readouterr().err
+    assert list(out.iterdir()) == []
+
+
+def test_cli_second_output_failure_removes_first_temp(tmp_path, capsys, monkeypatch):
+    import tempfile
+
+    real_mkstemp = tempfile.mkstemp
+    attempts = {"count": 0}
+
+    def _fail_second(*args, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] == 2:
+            raise OSError("disk full")
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkstemp", _fail_second)
+    argv, out = _replay_out_argv(tmp_path)
+    assert replay_main(argv) == 2
+    assert "amw-replay: disk full" in capsys.readouterr().err
+    assert attempts["count"] == 2
+    assert list(out.iterdir()) == []
+
+
+def test_cli_rename_failure_restores_previous_outputs(tmp_path, capsys, monkeypatch):
+    import os
+
+    argv, out = _replay_out_argv(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_bytes(content.encode("utf-8"))
+    old_bytes = {name: (out / name).read_bytes() for name in old}
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _fail_second_temp_rename(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and dst_path.name in old
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 2:
+                raise OSError("rename failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_second_temp_rename)
+    assert replay_main(argv) == 2
+    assert "amw-replay: rename failed" in capsys.readouterr().err
+    assert renames["count"] == 2
+    for name, data in old_bytes.items():
+        assert (out / name).read_bytes() == data
+    assert sorted(p.name for p in out.iterdir()) == sorted(old)
+
+
+def test_cli_overwrite_prepopulated_out_writes_new_contents(tmp_path, capsys):
+    argv, out = _replay_out_argv(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_text(content)
+    assert replay_main(argv) == 0, capsys.readouterr().err
+    assert sorted(p.name for p in out.iterdir()) == [
+        "keys.json",
+        "receipts.jsonl",
+        "summary.json",
+    ]
+    for name, content in old.items():
+        assert (out / name).read_text() != content
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["total"] == 6
+    receipts = (out / "receipts.jsonl").read_text().splitlines()
+    assert len(receipts) == 6
+
+
+def test_cli_backup_link_failure_falls_back_to_copy(tmp_path, capsys, monkeypatch):
+    import os
+
+    argv, out = _replay_out_argv(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_text(content)
+
+    def _no_link(_src, _dst):
+        raise OSError("hardlinks unsupported")
+
+    monkeypatch.setattr(os, "link", _no_link)
+    assert replay_main(argv) == 0, capsys.readouterr().err
+    assert sorted(p.name for p in out.iterdir()) == [
+        "keys.json",
+        "receipts.jsonl",
+        "summary.json",
+    ]
+    for name, content in old.items():
+        assert (out / name).read_text() != content
+
+
+def test_cli_restore_failure_keeps_backup_and_mentions_it(
+    tmp_path, capsys, monkeypatch
+):
+    import os
+
+    argv, out = _replay_out_argv(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_bytes(content.encode("utf-8"))
+    old_bytes = {name: (out / name).read_bytes() for name in old}
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _fail_temp_rename_then_restore(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and dst_path.name in old
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 2:
+                raise OSError("rename failed")
+        if src_str.endswith(".bak.tmp") and dst_path.parent == out:
+            raise OSError("restore failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_temp_rename_then_restore)
+    assert replay_main(argv) == 2
+    err = capsys.readouterr().err
+    assert renames["count"] == 2
+    backups = list(out.glob("*.bak.tmp"))
+    assert len(backups) == 1
+    assert str(backups[0]) in err
+    assert backups[0].is_file()
+    assert backups[0].read_bytes() == old_bytes["receipts.jsonl"]
+    assert sorted(p.name for p in out.glob("*.tmp")) == [backups[0].name]
+
+
+def test_cli_copy_fallback_with_rename_failure_restores_previous_outputs(
+    tmp_path, capsys, monkeypatch
+):
+    import os
+
+    argv, out = _replay_out_argv(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_bytes(content.encode("utf-8"))
+    old_bytes = {name: (out / name).read_bytes() for name in old}
+
+    def _no_link(_src, _dst):
+        raise OSError("hardlinks unsupported")
+
+    monkeypatch.setattr(os, "link", _no_link)
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _fail_second_temp_rename(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and dst_path.name in old
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 2:
+                raise OSError("rename failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_second_temp_rename)
+    assert replay_main(argv) == 2
+    assert "amw-replay: rename failed" in capsys.readouterr().err
+    assert renames["count"] == 2
+    for name, data in old_bytes.items():
+        assert (out / name).read_bytes() == data
+    assert sorted(p.name for p in out.iterdir()) == sorted(old)
+    assert list(out.glob("*.tmp")) == []
+
+
+def test_cli_non_oserror_with_failed_restore_reraises_with_note(tmp_path, monkeypatch):
+    import os
+
+    from app.replay.cli import _write_outputs_atomically
+
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_bytes(content.encode("utf-8"))
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _fail_temp_rename_then_restore(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and dst_path.name in old
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 2:
+                raise RuntimeError("boom")
+        if src_str.endswith(".bak.tmp") and dst_path.parent == out:
+            raise OSError("restore failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_temp_rename_then_restore)
+    with pytest.raises(RuntimeError, match="boom") as excinfo:
+        _write_outputs_atomically(
+            out,
+            {
+                "receipts.jsonl": "new receipts\n",
+                "summary.json": "new summary\n",
+                "keys.json": "new keys\n",
+            },
+        )
+    assert type(excinfo.value) is RuntimeError
+    assert renames["count"] == 2
+    backups = list(out.glob("*.bak.tmp"))
+    assert len(backups) == 1
+    notes = getattr(excinfo.value, "__notes__", [])
+    assert len(notes) == 1
+    assert "rollback restore failed" in notes[0]
+    assert str(backups[0]) in notes[0]
+    assert sorted(p.name for p in out.glob("*.tmp")) == [backups[0].name]
+
+
+# --- 25. atomic-output review fixes -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("after_success", "exc_type", "message"),
+    [
+        (False, OSError, "rename failed"),
+        (True, KeyboardInterrupt, "interrupted"),
+    ],
+    ids=["raise-before-replace", "interrupt-after-replace"],
+)
+def test_cli_first_rename_race_restores_previous_outputs(
+    tmp_path, monkeypatch, after_success, exc_type, message
+):
+    """A failure on the first rename still rolls that target back.
+
+    The target is recorded before ``os.replace`` runs, so the rollback
+    covers both a rename that never happened (the untouched target needs
+    no restore) and an interrupt that lands after a successful rename
+    but before any later bookkeeping.
+    """
+    from app.replay.cli import _write_outputs_atomically
+
+    out = tmp_path / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    old = {
+        "receipts.jsonl": "old receipts\n",
+        "summary.json": "old summary\n",
+        "keys.json": "old keys\n",
+    }
+    for name, content in old.items():
+        (out / name).write_bytes(content.encode("utf-8"))
+    old_bytes = {name: (out / name).read_bytes() for name in old}
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _racy_replace(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and dst_path.name in old
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 1:
+                if after_success:
+                    real_replace(src, dst)
+                    raise KeyboardInterrupt(message)
+                raise OSError(message)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _racy_replace)
+    with pytest.raises(exc_type, match=message):
+        _write_outputs_atomically(
+            out,
+            {
+                "receipts.jsonl": "new receipts\n",
+                "summary.json": "new summary\n",
+                "keys.json": "new keys\n",
+            },
+        )
+    assert renames["count"] == 1
+    for name, data in old_bytes.items():
+        assert (out / name).read_bytes() == data
+    assert sorted(p.name for p in out.iterdir()) == sorted(old)
+    assert list(out.glob("*.tmp")) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
+def test_cli_output_modes_match_target_or_umask(tmp_path):
+    import stat
+
+    from app.replay.cli import _write_outputs_atomically
+
+    out = tmp_path / "out"
+    out.mkdir()
+    existing = out / "summary.json"
+    existing.write_text("old summary\n")
+    existing.chmod(0o640)
+
+    current = os.umask(0)
+    os.umask(current)
+    expected_new = 0o666 & ~current
+
+    _write_outputs_atomically(
+        out,
+        {
+            "receipts.jsonl": "new receipts\n",
+            "summary.json": "new summary\n",
+            "keys.json": "new keys\n",
+        },
+    )
+
+    assert (out / "summary.json").read_text() == "new summary\n"
+    assert stat.S_IMODE((out / "summary.json").stat().st_mode) == 0o640
+    for name in ("receipts.jsonl", "keys.json"):
+        assert stat.S_IMODE((out / name).stat().st_mode) == expected_new
+
+
+def test_cli_rename_failure_in_fresh_out_dir_leaves_no_files(
+    tmp_path, capsys, monkeypatch
+):
+    argv, out = _replay_out_argv(tmp_path)
+    assert not out.exists()
+
+    real_replace = os.replace
+    renames = {"count": 0}
+
+    def _fail_second_temp_rename(src, dst):
+        dst_path = Path(dst)
+        src_str = str(src)
+        if (
+            dst_path.parent == out
+            and src_str.endswith(".tmp")
+            and not src_str.endswith(".bak.tmp")
+        ):
+            renames["count"] += 1
+            if renames["count"] == 2:
+                raise OSError("rename failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_second_temp_rename)
+    assert replay_main(argv) == 2
+    assert "amw-replay: rename failed" in capsys.readouterr().err
+    assert renames["count"] == 2
+    assert not out.exists() or list(out.iterdir()) == []
+    if out.exists():
+        assert list(out.glob("*.tmp")) == []

@@ -7,7 +7,8 @@ ledger entry, audit chain, replay safety, and out-of-scope denial.
 This guide proves technical fit. It does not by itself prove customer demand.
 Use the interview funnel, commercial evidence gate, and partner-owned pilot
 acceptance test in
-`docs/30-day-customer-validation.md`.
+`docs/30-day-customer-validation.md` (not included in this repository; the
+in-repo pass/fail criteria are in [docs/partner-first-tool-runbook.md](docs/partner-first-tool-runbook.md)).
 
 For the concise route through local evaluation, integration, SDK, security, and
 pilot material, use the [documentation guide](docs/README.md).
@@ -120,7 +121,7 @@ surfaces are off. Use one operator-configured upstream tool in production;
 dependency on Phase9 / AWI / marketplace stub tool ids and plan a swap to a
 real registered tool.
 Details: `docs/tech-debt-remediation-plan.md`
-(Phase 2).
+(Phase 2, not included in this repository).
 
 If the partner wants the operator narrative instead of the compact proof, run:
 

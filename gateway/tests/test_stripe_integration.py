@@ -256,6 +256,38 @@ async def test_prepare_top_up_never_persists_client_secret(
 
 
 @pytest.mark.anyio
+async def test_prepare_top_up_in_progress_fallback_rehydrates_client_secret(
+    client, sponsor_wallet, api_headers, fake_payment_intent_retrieve
+):
+    """Race: begin_with_record says in-progress, but the row has completed.
+
+    The fallback must re-fetch the secret instead of returning the stored row.
+    """
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "in-progress-race"}
+    url = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0"
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_race", client_secret="pi_race_secret"
+        )
+        first = await client.post(url, headers=headers)
+        with patch(
+            "app.services.idempotency.IdempotencyService.begin_with_record",
+            new=AsyncMock(side_effect=IdempotencyInProgressError("in progress")),
+        ):
+            second = await client.post(url, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["client_secret"] == "pi_race_secret"
+    assert second.json() == first.json()
+    mock_create.assert_called_once()
+    fake_payment_intent_retrieve.assert_called_once_with("pi_race")
+
+
+@pytest.mark.anyio
 async def test_prepare_top_up_retry_sends_the_same_stripe_idempotency_key(
     client, sponsor_wallet, api_headers
 ):

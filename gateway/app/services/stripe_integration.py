@@ -206,7 +206,9 @@ class StripeIntegration:
                     if record is None or record.operation_kind != "stripe_top_up":
                         raise
                     if record.response_json is not None:
-                        return json.loads(record.response_json)
+                        return await self._rehydrate_top_up_replay(
+                            json.loads(record.response_json)
+                        )
                     quote = record.response_reference or ""
                     age = (utc_now() - record.created_at).total_seconds()
                     if (

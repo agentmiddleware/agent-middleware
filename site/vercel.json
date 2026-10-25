@@ -1,0 +1,351 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "python3 build_site.py",
+  "outputDirectory": "dist",
+  "cleanUrls": true,
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000; includeSubDomains"
+        },
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; form-action 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://vitals.vercel-insights.com https://api.thisisatest.tech https://cqtlzicxmaklslvxderm.supabase.co; manifest-src 'self'; upgrade-insecure-requests"
+        }
+      ]
+    },
+    {
+      "source": "/:asset(styles.css|fonts.css|a11y.js|a11y-preload.js|va-init.js|analytics.js|utm-capture.js|home-key.js|wave.js|arcade-boot.js|arcade.js|arcade.css|favicon.svg|social-card.png)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/fonts/:file(.*\\.woff2)",
+      "headers": [
+        { "key": "Content-Type", "value": "font/woff2" },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/proof/proof.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/demo-key/demo-key.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/concept/:asset(concept.css)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/.well-known/security.txt",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    },
+    {
+      "source": "/.well-known/agent.json",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    },
+    {
+      "source": "/llm.txt",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    },
+    {
+      "source": "/llms.txt",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    },
+    {
+      "source": "/llms-full.txt",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    },
+    {
+      "source": "/docs/llms.txt",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    },
+    {
+      "source": "/robots.txt",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    },
+    {
+      "source": "/sitemap.xml",
+      "headers": [
+        { "key": "Content-Type", "value": "application/xml; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    },
+    {
+      "source": "/proof/receipt.json",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    },
+    {
+      "source": "/proof/trust-keys.json",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    },
+    {
+      "source": "/proof/transcript.json",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    },
+    {
+      "source": "/proof/verify_receipt.py",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=300" }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "thisisatest.tech" }],
+      "destination": "https://www.agentmiddleware.dev/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "www.thisisatest.tech" }],
+      "destination": "https://www.agentmiddleware.dev/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "agentmiddleware.dev" }],
+      "destination": "https://www.agentmiddleware.dev/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "agent-middleware-web.vercel.app" }],
+      "destination": "https://www.agentmiddleware.dev/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "site-tawny-seven-33.vercel.app" }],
+      "destination": "https://www.agentmiddleware.dev/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/pilot",
+      "destination": "/pilot/",
+      "permanent": true
+    },
+    {
+      "source": "/proof",
+      "destination": "/proof/",
+      "permanent": true
+    },
+    {
+      "source": "/docs",
+      "destination": "/docs/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/what-is-amw",
+      "destination": "/docs/what-is-amw/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/three-minute-quickstart",
+      "destination": "/docs/three-minute-quickstart/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/run-locally",
+      "destination": "/docs/run-locally/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/permits",
+      "destination": "/docs/permits/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/calls-and-request-keys",
+      "destination": "/docs/calls-and-request-keys/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/receipts",
+      "destination": "/docs/receipts/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/credits",
+      "destination": "/docs/credits/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/put-a-refund-tool-behind-amw",
+      "destination": "/docs/put-a-refund-tool-behind-amw/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/mcp-client-setup",
+      "destination": "/docs/mcp-client-setup/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/langchain",
+      "destination": "/docs/langchain/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/crewai",
+      "destination": "/docs/crewai/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/autogen",
+      "destination": "/docs/autogen/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/openai-agents",
+      "destination": "/docs/openai-agents/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/paypal-sandbox-demo",
+      "destination": "/docs/paypal-sandbox-demo/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/http-api",
+      "destination": "/docs/http-api/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/errors",
+      "destination": "/docs/errors/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/python-sdk",
+      "destination": "/docs/python-sdk/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/ts-verifier",
+      "destination": "/docs/ts-verifier/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/receipt-spec-v0-1",
+      "destination": "/docs/receipt-spec-v0-1/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/limits",
+      "destination": "/docs/limits/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/security-limitations",
+      "destination": "/docs/security-limitations/",
+      "permanent": true
+    },
+    {
+      "source": "/docs/proof-and-published-receipts",
+      "destination": "/docs/proof-and-published-receipts/",
+      "permanent": true
+    },
+    {
+      "source": "/compare",
+      "destination": "/compare/",
+      "permanent": true
+    },
+    {
+      "source": "/demo-key",
+      "destination": "/demo-key/",
+      "permanent": true
+    },
+    {
+      "source": "/try",
+      "destination": "/try/",
+      "permanent": true
+    },
+    {
+      "source": "/concept",
+      "destination": "/concept/",
+      "permanent": true
+    },
+    {
+      "source": "/mcp/tools.json",
+      "destination": "https://api.thisisatest.tech/mcp/tools.json",
+      "permanent": false
+    },
+    {
+      "source": "/v1/discover",
+      "destination": "https://api.thisisatest.tech/v1/discover",
+      "permanent": false
+    },
+    {
+      "source": "/openapi.json",
+      "destination": "https://api.thisisatest.tech/openapi.json",
+      "permanent": false
+    },
+    {
+      "source": "/health/dependencies",
+      "destination": "https://api.thisisatest.tech/health/dependencies",
+      "permanent": false
+    }
+  ]
+}

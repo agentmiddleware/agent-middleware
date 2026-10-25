@@ -32,7 +32,11 @@ from app.replay.policy_replay import (
     network_sealed,
     replay_calls,
 )
-from app.services.signing_keys import get_signing_key_service
+from app.services.signing_keys import (
+    SigningKeyError,
+    canonical_json,
+    get_signing_key_service,
+)
 from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "receipt_signing_golden"
@@ -74,6 +78,24 @@ def _approval_rule(tmp_path: Path) -> Path:
 
 def _claims(receipt: dict) -> dict:
     return json.loads(receipt["signing_input"])
+
+
+def _record_payload(**overrides):
+    payload = {
+        "receipt_id": "rcpt_replay_0001",
+        "tool": "golden-path-echo",
+        "wallet_id": "agt-golden-0001",
+        "outcome": "success",
+        "credits_authorized": "2.5",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _record_file(tmp_path: Path, payload: dict, name: str = "call.json") -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps({"signing_input": canonical_json(payload)}))
+    return path
 
 
 # --- 1. nothing is forwarded -------------------------------------------------
@@ -313,3 +335,292 @@ def test_recorded_calls_only_rejects_tampered_recording(tmp_path):
     path.write_text(json.dumps(record))
     with pytest.raises(ReplayError, match="signature"):
         load_recorded_calls(path, recorded_keys=_recorded_keys())
+
+
+# --- 6. directories load every recording shape -------------------------------
+
+
+def test_load_recorded_calls_directory_loads_json_and_jsonl(tmp_path):
+    record = json.loads((GOLDEN_DIR / "success_legacy.json").read_text())
+    calls_dir = tmp_path / "calls"
+    calls_dir.mkdir()
+    (calls_dir / "a.json").write_text(json.dumps(record))
+    (calls_dir / "b.jsonl").write_text(json.dumps(record) + "\n")
+    calls = load_recorded_calls(calls_dir)
+    assert [c.source for c in calls] == ["a.json", "b.jsonl:1"]
+
+
+def test_load_recorded_calls_jsonl_only_directory(tmp_path):
+    record = json.loads((GOLDEN_DIR / "success_legacy.json").read_text())
+    calls_dir = tmp_path / "calls"
+    calls_dir.mkdir()
+    (calls_dir / "only.jsonl").write_text(json.dumps(record) + "\n")
+    assert len(load_recorded_calls(calls_dir)) == 1
+
+
+def test_load_recorded_calls_directory_loads_ndjson(tmp_path):
+    record = json.loads((GOLDEN_DIR / "success_legacy.json").read_text())
+    calls_dir = tmp_path / "calls"
+    calls_dir.mkdir()
+    (calls_dir / "only.ndjson").write_text(json.dumps(record) + "\n")
+    assert len(load_recorded_calls(calls_dir)) == 1
+
+
+# --- 7. strict bundle parsing ------------------------------------------------
+
+
+def test_load_policy_bundle_bools_match_pydantic(tmp_path):
+    bundle = load_policy_bundle(_bundle(tmp_path, {"require_real_effects": "false"}))
+    assert bundle.models[0].require_real_effects is False
+    bundle = load_policy_bundle(
+        _bundle(tmp_path, {"human_approval_required": "true"}, name="b2.json")
+    )
+    assert bundle.models[0].human_approval_required is True
+    bundle = load_policy_bundle(
+        _bundle(tmp_path, {"is_active": "false"}, name="b3.json")
+    )
+    assert bundle.models[0].is_active is False
+
+
+def test_load_policy_bundle_rejects_garbage_bools(tmp_path):
+    for field, value in (
+        ("require_real_effects", "maybe"),
+        ("human_approval_required", "sometimes"),
+        ("is_active", "active-ish"),
+    ):
+        with pytest.raises(ReplayError, match="must be a boolean"):
+            load_policy_bundle(_bundle(tmp_path, {field: value}))
+
+
+def test_load_policy_bundle_rejects_unknown_risk_tier(tmp_path):
+    with pytest.raises(ReplayError, match="unknown risk_tier"):
+        load_policy_bundle(_bundle(tmp_path, {"risk_tier": "extreme"}))
+    with pytest.raises(ReplayError, match="unknown risk_tier"):
+        load_policy_bundle(_bundle(tmp_path, {"risk_tier": 5}))
+
+
+# --- 8. unknown replay inputs fail closed -------------------------------------
+
+
+def test_replay_unknown_simulation_denies(tmp_path):
+    calls = load_recorded_calls(_record_file(tmp_path, _record_payload()))
+    result = replay_calls(
+        calls,
+        load_policy_bundle(_bundle(tmp_path, {"require_real_effects": True})),
+    )
+    claims = _claims(result.receipts[0])
+    assert claims["new_decision"] == "deny"
+    assert claims["new_reason"] == "replay_input_unknown:simulation"
+    assert claims["unevaluated_constraints"] == ["simulation"]
+
+
+def test_replay_recorded_simulation_reaches_policy(tmp_path):
+    bundle_path = _bundle(tmp_path, {"require_real_effects": True})
+    calls = load_recorded_calls(
+        _record_file(tmp_path, _record_payload(simulation=True), name="t.json")
+    )
+    result = replay_calls(calls, load_policy_bundle(bundle_path))
+    assert _claims(result.receipts[0])["new_reason"] == "real_effects_required"
+    calls = load_recorded_calls(
+        _record_file(tmp_path, _record_payload(simulation=False), name="f.json")
+    )
+    result = replay_calls(calls, load_policy_bundle(bundle_path))
+    claims = _claims(result.receipts[0])
+    assert claims["new_decision"] == "allow"
+    assert claims["unevaluated_constraints"] == []
+
+
+def test_replay_unknown_risk_tier_denies(tmp_path):
+    calls = load_recorded_calls(_record_file(tmp_path, _record_payload()))
+    result = replay_calls(
+        calls, load_policy_bundle(_bundle(tmp_path, {"risk_tier": "low"}))
+    )
+    claims = _claims(result.receipts[0])
+    assert claims["new_decision"] == "deny"
+    assert claims["new_reason"] == "replay_input_unknown:risk_tier"
+    assert claims["unevaluated_constraints"] == ["risk_tier"]
+
+
+def test_replay_recorded_risk_tier_reaches_policy(tmp_path):
+    bundle_path = _bundle(tmp_path, {"risk_tier": "low"})
+    calls = load_recorded_calls(
+        _record_file(tmp_path, _record_payload(risk_tier="low"), name="low.json")
+    )
+    result = replay_calls(calls, load_policy_bundle(bundle_path))
+    claims = _claims(result.receipts[0])
+    assert claims["new_decision"] == "allow"
+    assert claims["unevaluated_constraints"] == []
+    calls = load_recorded_calls(
+        _record_file(tmp_path, _record_payload(risk_tier="high"), name="high.json")
+    )
+    result = replay_calls(calls, load_policy_bundle(bundle_path))
+    assert _claims(result.receipts[0])["new_reason"] == "risk_tier_not_allowed"
+
+
+def test_replay_unknown_credits_denies(tmp_path):
+    payload = _record_payload()
+    del payload["credits_authorized"]
+    calls = load_recorded_calls(_record_file(tmp_path, payload))
+    result = replay_calls(
+        calls, load_policy_bundle(_bundle(tmp_path, {"max_cost_per_action": "1.0"}))
+    )
+    claims = _claims(result.receipts[0])
+    assert claims["new_decision"] == "deny"
+    assert claims["new_reason"] == "replay_input_unknown:credits_authorized"
+    assert claims["unevaluated_constraints"] == ["credits_authorized"]
+
+
+# --- 9. non-success recorded outcomes stay denied -----------------------------
+
+
+def test_replay_recorded_insufficient_funds_never_flips(tmp_path):
+    calls = load_recorded_calls(
+        _record_file(tmp_path, _record_payload(outcome="insufficient_funds"))
+    )
+    assert calls[0].old_decision == "deny"
+    result = replay_calls(calls, load_policy_bundle(_bundle(tmp_path, {})))
+    claims = _claims(result.receipts[0])
+    assert claims["old_decision"] == "deny"
+    assert claims["new_decision"] == "deny"
+    assert claims["new_reason"] == "recorded_denial:insufficient_funds"
+
+
+# --- 10. CLI errors stay on protocol ------------------------------------------
+
+
+def test_cli_signing_key_error_returns_2(tmp_path, capsys, monkeypatch):
+    import app.replay.policy_replay as policy_replay
+
+    def _boom():
+        raise SigningKeyError("trust_signing_private_key_required")
+
+    monkeypatch.setattr(policy_replay, "get_signing_key_service", _boom)
+    code = replay_main(
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
+    assert code == 2
+    assert "amw-replay: trust_signing_private_key_required" in capsys.readouterr().err
+
+
+def test_cli_output_write_failure_returns_2(tmp_path, capsys):
+    out_file = tmp_path / "out"
+    out_file.write_text("not a directory")
+    code = replay_main(
+        [
+            "--bundle",
+            str(_approval_rule(tmp_path)),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--out",
+            str(out_file),
+        ]
+    )
+    assert code == 2
+    assert "amw-replay: " in capsys.readouterr().err
+
+
+# --- 11. the seal survives nesting --------------------------------------------
+
+
+def test_network_sealed_nested_and_sequential_restores():
+    def _fns():
+        return (
+            socket.socket.connect,
+            socket.socket.connect_ex,
+            socket.create_connection,
+            socket.getaddrinfo,
+        )
+
+    before = _fns()
+    with network_sealed():
+        with network_sealed():
+            with pytest.raises(NetworkSealedError):
+                socket.create_connection(("127.0.0.1", 9))
+        with pytest.raises(NetworkSealedError):
+            socket.create_connection(("127.0.0.1", 9))
+    assert _fns() == before
+    with network_sealed():
+        pass
+    assert _fns() == before
+
+
+# --- 12. recorded signature provenance ----------------------------------------
+
+
+def test_replay_receipt_marks_verified_recordings(tmp_path):
+    calls = load_recorded_calls(GOLDEN_DIR, recorded_keys=_recorded_keys())
+    assert all(c.signature_verified for c in calls)
+    result = replay_calls(calls, load_policy_bundle(_approval_rule(tmp_path)))
+    assert [_claims(r)["recorded_signature_verified"] for r in result.receipts] == [
+        True
+    ] * 6
+
+
+def test_replay_receipt_marks_unverified_recordings(tmp_path):
+    calls = load_recorded_calls(GOLDEN_DIR)
+    assert not any(c.signature_verified for c in calls)
+    result = replay_calls(calls, load_policy_bundle(_approval_rule(tmp_path)))
+    assert [_claims(r)["recorded_signature_verified"] for r in result.receipts] == [
+        False
+    ] * 6
+
+
+# --- 13. limits must be finite ------------------------------------------------
+
+
+def test_load_policy_bundle_rejects_non_finite_limits(tmp_path):
+    for field in ("max_cost_per_action", "daily_spend_limit"):
+        for value in ("NaN", "sNaN", "Infinity", "-Infinity"):
+            with pytest.raises(ReplayError, match="must be finite"):
+                load_policy_bundle(_bundle(tmp_path, {field: value}))
+    raw = tmp_path / "raw.json"
+    raw.write_text('{"max_cost_per_action": NaN}')
+    with pytest.raises(ReplayError, match="must be finite"):
+        load_policy_bundle(raw)
+
+
+# --- 14. unknown daily spend fails closed -------------------------------------
+
+
+def test_replay_daily_spend_limit_without_usage_denies(tmp_path):
+    result = replay_calls(
+        _calls(), load_policy_bundle(_bundle(tmp_path, {"daily_spend_limit": "100.00"}))
+    )
+    assert len(result.receipts) == 6
+    for receipt in result.receipts:
+        claims = _claims(receipt)
+        if claims["old_decision"] == "deny":
+            continue
+        assert claims["new_decision"] == "deny"
+        assert claims["new_reason"] == "daily_spend_unknown"
+
+
+# --- 15. bundle shape negatives -----------------------------------------------
+
+
+def test_load_policy_bundle_rejects_bad_shapes(tmp_path):
+    with pytest.raises(ReplayError, match="unknown fields"):
+        load_policy_bundle(_bundle(tmp_path, {"bogus_field": True}))
+    with pytest.raises(ReplayError, match="list of strings"):
+        load_policy_bundle(_bundle(tmp_path, {"allowed_tools": "golden-path-echo"}))
+    with pytest.raises(ReplayError, match="list of strings"):
+        load_policy_bundle(
+            _bundle(tmp_path, {"allowed_service_categories": ["ok", 7]}, name="l2.json")
+        )
+    with pytest.raises(ReplayError, match="not a number"):
+        load_policy_bundle(
+            _bundle(tmp_path, {"max_cost_per_action": "lots"}, name="c.json")
+        )
+    with pytest.raises(ReplayError, match="no policies"):
+        load_policy_bundle(_bundle(tmp_path, {"policies": []}, name="e.json"))
+    bad = tmp_path / "arr.json"
+    bad.write_text(json.dumps(["not", "an", "object"]))
+    with pytest.raises(ReplayError, match="must be a JSON object"):
+        load_policy_bundle(bad)

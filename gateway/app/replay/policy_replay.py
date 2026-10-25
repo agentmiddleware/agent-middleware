@@ -24,15 +24,19 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 import contextlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from pathlib import Path
 import socket
-from typing import Any
+import threading
+from typing import Any, get_args
+
+from pydantic import TypeAdapter, ValidationError
 
 from app.db.models import PolicyBundleModel
+from app.schemas.policies import RiskTier
 from app.services.policies import evaluate_policy_models
 from app.services.signing_keys import (
     RECEIPT_CANONICALIZATION,
@@ -80,6 +84,15 @@ _BUNDLE_FIELDS = (
 )
 _REQUIRED_RECORD_FIELDS = ("receipt_id", "tool", "wallet_id", "outcome")
 
+#: Bundle booleans parse exactly the way the ``/v1/policies`` pydantic schema
+#: parses them (``"false"`` -> False, garbage rejected), never by truthiness.
+_BOOL_ADAPTER: TypeAdapter[bool] = TypeAdapter(bool)
+_ALLOWED_RISK_TIERS = frozenset(get_args(RiskTier))
+
+#: Serializes :func:`network_sealed` so overlapping replays cannot interleave
+#: patch/restore and leave sockets patched. Reentrant for nested replays.
+_NETWORK_SEAL_LOCK = threading.RLock()
+
 
 class ReplayError(ValueError):
     """Input that cannot be replayed safely."""
@@ -95,6 +108,7 @@ class RecordedCall:
     signing_input: str
     signature: str | None
     payload: dict[str, Any]
+    signature_verified: bool = False
 
     @property
     def call_hash(self) -> str:
@@ -102,7 +116,11 @@ class RecordedCall:
 
     @property
     def old_decision(self) -> str:
-        return DENY if self.payload["outcome"] == "denied" else ALLOW
+        # Only an explicit success counted as allowed when recorded. Every
+        # other gateway outcome (denied, insufficient_funds, failed_*,
+        # delivery_uncertain, response_rejected) is a deny, so the
+        # non-policy-denial guard in _decide keeps applying to it.
+        return ALLOW if self.payload["outcome"] == "success" else DENY
 
     @property
     def old_reason(self) -> str | None:
@@ -113,6 +131,11 @@ class RecordedCall:
 class PolicyBundle:
     document: dict[str, Any]
     models: tuple[PolicyBundleModel, ...]
+    #: Per-model flag aligned with ``models``: True when the bundle JSON
+    #: explicitly states ``risk_tier`` for that policy (as opposed to the
+    #: schema default). Only an explicit ceiling fails a replay closed when
+    #: the recorded call carries no tier.
+    risk_tier_explicit: tuple[bool, ...] = ()
 
     @property
     def bundle_hash(self) -> str:
@@ -133,30 +156,34 @@ def network_sealed() -> Iterator[None]:
     def _refuse(*_: Any, **__: Any) -> Any:
         raise NetworkSealedError("amw-replay never opens network connections")
 
-    saved = (
-        socket.socket.connect,
-        socket.socket.connect_ex,
-        socket.create_connection,
-        socket.getaddrinfo,
-    )
-    socket.socket.connect = _refuse  # type: ignore[method-assign]
-    socket.socket.connect_ex = _refuse  # type: ignore[method-assign]
-    socket.create_connection = _refuse  # type: ignore[assignment]
-    socket.getaddrinfo = _refuse  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        (
-            socket.socket.connect,  # type: ignore[method-assign]
-            socket.socket.connect_ex,  # type: ignore[method-assign]
+    with _NETWORK_SEAL_LOCK:
+        saved = (
+            socket.socket.connect,
+            socket.socket.connect_ex,
             socket.create_connection,
             socket.getaddrinfo,
-        ) = saved
+        )
+        socket.socket.connect = _refuse  # type: ignore[method-assign]
+        socket.socket.connect_ex = _refuse  # type: ignore[method-assign]
+        socket.create_connection = _refuse  # type: ignore[assignment]
+        socket.getaddrinfo = _refuse  # type: ignore[assignment]
+        try:
+            yield
+        finally:
+            (
+                socket.socket.connect,  # type: ignore[method-assign]
+                socket.socket.connect_ex,  # type: ignore[method-assign]
+                socket.create_connection,
+                socket.getaddrinfo,
+            ) = saved
 
 
 def _iter_records(path: Path) -> Iterator[tuple[str, Any]]:
     if path.is_dir():
-        for child in sorted(path.glob("*.json")):
+        children: set[Path] = set()
+        for pattern in ("*.json", "*.jsonl", "*.ndjson"):
+            children.update(path.glob(pattern))
+        for child in sorted(children):
             yield from _iter_records(child)
         return
     text = path.read_text(encoding="utf-8")
@@ -231,18 +258,47 @@ def load_recorded_calls(
     if not calls:
         raise ReplayError(f"{path}: no recorded calls found")
     if recorded_keys is not None:
+        verified_calls: list[RecordedCall] = []
         for call in calls:
             _verify_recorded(call, recorded_keys)
+            verified_calls.append(replace(call, signature_verified=True))
+        calls = verified_calls
     return calls
 
 
-def _decimal(value: Any, *, field_name: str) -> Decimal | None:
+def _decimal(
+    value: Any, *, field_name: str, require_finite: bool = False
+) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(str(value))
+        result = Decimal(str(value))
     except InvalidOperation as exc:
         raise ReplayError(f"bundle {field_name} is not a number") from exc
+    if require_finite and not result.is_finite():
+        # A NaN/sNaN/Infinity limit poisons the money gates in
+        # evaluate_policy_models (NaN comparisons raise InvalidOperation, an
+        # unclassified crash with no denial recorded). Reject at load.
+        raise ReplayError(f"bundle {field_name} must be finite")
+    return result
+
+
+def _policy_bool(policy: dict[str, Any], field_name: str, default: bool) -> bool:
+    if field_name not in policy:
+        return default
+    try:
+        return _BOOL_ADAPTER.validate_python(policy[field_name])
+    except ValidationError as exc:
+        raise ReplayError(f"bundle {field_name} must be a boolean") from exc
+
+
+def _policy_risk_tier(policy: dict[str, Any], index: int) -> str:
+    if "risk_tier" not in policy:
+        return "medium"
+    value = policy["risk_tier"]
+    if not isinstance(value, str) or value not in _ALLOWED_RISK_TIERS:
+        raise ReplayError(f"bundle policy {index} has unknown risk_tier {value!r}")
+    return value
 
 
 def load_policy_bundle(path: str | Path) -> PolicyBundle:
@@ -259,6 +315,7 @@ def load_policy_bundle(path: str | Path) -> PolicyBundle:
     if not isinstance(policies, list) or not policies:
         raise ReplayError("bundle has no policies")
     models: list[PolicyBundleModel] = []
+    risk_explicit: list[bool] = []
     for index, policy in enumerate(policies):
         if not isinstance(policy, dict):
             raise ReplayError(f"bundle policy {index} must be an object")
@@ -286,30 +343,87 @@ def load_policy_bundle(path: str | Path) -> PolicyBundle:
                 else None
             ),
             max_cost_per_action=_decimal(
-                policy.get("max_cost_per_action"), field_name="max_cost_per_action"
+                policy.get("max_cost_per_action"),
+                field_name="max_cost_per_action",
+                require_finite=True,
             ),
             daily_spend_limit=_decimal(
-                policy.get("daily_spend_limit"), field_name="daily_spend_limit"
+                policy.get("daily_spend_limit"),
+                field_name="daily_spend_limit",
+                require_finite=True,
             ),
-            require_real_effects=bool(policy.get("require_real_effects", False)),
-            risk_tier=policy.get("risk_tier", "medium"),
-            human_approval_required=bool(policy.get("human_approval_required", False)),
-            is_active=bool(policy.get("is_active", True)),
+            require_real_effects=_policy_bool(
+                policy, "require_real_effects", default=False
+            ),
+            risk_tier=_policy_risk_tier(policy, index),
+            human_approval_required=_policy_bool(
+                policy, "human_approval_required", default=False
+            ),
+            is_active=_policy_bool(policy, "is_active", default=True),
         )
         models.append(model)
-    return PolicyBundle(document=document, models=tuple(models))
+        risk_explicit.append("risk_tier" in policy)
+    return PolicyBundle(
+        document=document, models=tuple(models), risk_tier_explicit=tuple(risk_explicit)
+    )
 
 
-def _decide(call: RecordedCall, bundle: PolicyBundle) -> tuple[str, str, str | None]:
+def _unknown_inputs(
+    call: RecordedCall,
+    models: Sequence[PolicyBundleModel],
+    risk_explicit: Sequence[bool],
+) -> list[str]:
+    """Recorded inputs an applicable policy needs but the call lacks.
+
+    ``require_real_effects`` needs ``simulation``, an explicit ``risk_tier``
+    ceiling needs ``risk_tier``, and ``max_cost_per_action`` needs
+    ``credits_authorized``. A defaulted (unstated) risk tier keeps the live
+    allow-with-unevaluated behavior instead of failing closed.
+    """
+    payload = call.payload
+    unknown: list[str] = []
+    if (
+        any(m.require_real_effects for m in models)
+        and payload.get("simulation") is None
+    ):
+        unknown.append("simulation")
+    if (
+        any(
+            explicit and m.risk_tier is not None
+            for explicit, m in zip(risk_explicit, models, strict=True)
+        )
+        and payload.get("risk_tier") is None
+    ):
+        unknown.append("risk_tier")
+    if (
+        any(m.max_cost_per_action is not None for m in models)
+        and payload.get("credits_authorized") is None
+    ):
+        unknown.append("credits_authorized")
+    return sorted(unknown)
+
+
+def _decide(
+    call: RecordedCall, bundle: PolicyBundle
+) -> tuple[str, str, str | None, list[str]]:
+    wallet_id = call.payload["wallet_id"]
+    indexed = [
+        (index, model)
+        for index, model in enumerate(bundle.models)
+        if model.is_active and (not model.wallet_id or model.wallet_id == wallet_id)
+    ]
+    models = [model for _, model in indexed]
+    unevaluated = _unknown_inputs(
+        call, models, [bundle.risk_tier_explicit[index] for index, _ in indexed]
+    )
     if call.old_decision == DENY and call.old_reason not in POLICY_REASON_CODES:
         # Denied before or outside policy evaluation; a bundle cannot undo it.
-        return DENY, f"recorded_denial:{call.old_reason or 'unknown'}", None
-    wallet_id = call.payload["wallet_id"]
-    models = [
-        m
-        for m in bundle.models
-        if m.is_active and (not m.wallet_id or m.wallet_id == wallet_id)
-    ]
+        return (
+            DENY,
+            f"recorded_denial:{call.old_reason or call.payload['outcome']}",
+            None,
+            unevaluated,
+        )
     evaluation = evaluate_policy_models(
         models,
         tool_name=call.payload["tool"],
@@ -317,12 +431,27 @@ def _decide(call: RecordedCall, bundle: PolicyBundle) -> tuple[str, str, str | N
         estimated_cost=_decimal(
             call.payload.get("credits_authorized"), field_name="credits_authorized"
         ),
+        daily_spend_used=_decimal(
+            call.payload.get("daily_spend_used"), field_name="daily_spend_used"
+        ),
+        simulation=call.payload.get("simulation"),
+        risk_tier=call.payload.get("risk_tier"),
         approval_gate_active=bool(call.payload.get("approval_id")),
     )
+    if evaluation.allowed and unevaluated:
+        # A constraint that cannot be evaluated cannot be shown to permit
+        # this action: fail closed instead of claiming an allow.
+        return (
+            DENY,
+            f"replay_input_unknown:{unevaluated[0]}",
+            evaluation.policy_id,
+            unevaluated,
+        )
     return (
         ALLOW if evaluation.allowed else DENY,
         evaluation.reason,
         evaluation.policy_id,
+        unevaluated,
     )
 
 
@@ -364,7 +493,7 @@ def replay_calls(
     )
     with network_sealed():
         for index, call in enumerate(calls):
-            new_decision, new_reason, policy_id = _decide(call, bundle)
+            new_decision, new_reason, policy_id, unevaluated = _decide(call, bundle)
             replay_id = (
                 f"rpl_{sha256_hex(f'{bundle_hash}:{call.call_hash}:{index}')[:24]}"
             )
@@ -374,6 +503,7 @@ def replay_calls(
                 "call_index": index,
                 "call_hash": call.call_hash,
                 "recorded_receipt_id": call.payload["receipt_id"],
+                "recorded_signature_verified": call.signature_verified,
                 "tool": call.payload["tool"],
                 "wallet_id": call.payload["wallet_id"],
                 "old_decision": call.old_decision,
@@ -381,6 +511,7 @@ def replay_calls(
                 "new_decision": new_decision,
                 "new_reason": new_reason,
                 "new_policy_id": policy_id,
+                "unevaluated_constraints": unevaluated,
                 "change": _change(call.old_decision, new_decision),
                 "bundle_hash": bundle_hash,
                 "alg": "Ed25519",

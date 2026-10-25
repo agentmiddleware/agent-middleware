@@ -13,6 +13,7 @@ from app.replay.policy_replay import (
     load_recorded_calls,
     replay_calls,
 )
+from app.services.signing_keys import SigningKeyError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,21 +48,26 @@ def main(argv: list[str] | None = None) -> int:
         calls = load_recorded_calls(args.calls, recorded_keys=recorded_keys)
         bundle = load_policy_bundle(args.bundle)
         result = replay_calls(calls, bundle)
-    except (ReplayError, OSError, json.JSONDecodeError) as exc:
+    except (ReplayError, SigningKeyError, OSError, json.JSONDecodeError) as exc:
         print(f"amw-replay: {exc}", file=sys.stderr)
         return 2
 
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "receipts.jsonl").write_text(
-        "".join(json.dumps(r, sort_keys=True) + "\n" for r in result.receipts),
-        encoding="utf-8",
-    )
-    (out / "summary.json").write_text(
-        json.dumps(result.summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    (out / "keys.json").write_text(
-        json.dumps({"keys": [result.public_key]}, indent=2) + "\n", encoding="utf-8"
-    )
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "receipts.jsonl").write_text(
+            "".join(json.dumps(r, sort_keys=True) + "\n" for r in result.receipts),
+            encoding="utf-8",
+        )
+        (out / "summary.json").write_text(
+            json.dumps(result.summary, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (out / "keys.json").write_text(
+            json.dumps({"keys": [result.public_key]}, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        print(f"amw-replay: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps(result.summary, sort_keys=True))
     return 0

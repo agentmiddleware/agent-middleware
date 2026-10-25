@@ -12,3 +12,7 @@ This repository starts with a fresh history. Releases are listed here once tagge
   loading the calls file raises `ReplayError` naming the record.
 - Replay: new `amw-replay --require-verified` flag exits 2 unless every
   recorded receipt verified against `--recorded-keys`.
+- Replay: whitespace-only recorded `approval_id` now raises `ReplayError` like the
+  empty string, and `amw-replay` writes `receipts.jsonl`, `summary.json`, and
+  `keys.json` atomically (temp file in the output dir, then rename), leaving no
+  partial outputs or temp files when a write fails.

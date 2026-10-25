@@ -61,6 +61,14 @@ def test_serve_async_registers_tool_and_starts_transport(monkeypatch, tmp_path, 
         (403, "other_denial", None, None, False),
         (403, "permit_required", None, None, False),
         (403, {"error": "permit_required"}, None, None, False),
+        (429, {"error": "rate_limited", "retry_after": 1}, None, None, False),
+        (
+            403,
+            {"error": "permit_scope_denied", "receipt": {"outcome": "denied"}},
+            None,
+            None,
+            False,
+        ),
         (400, "idempotency_key_required", "permit-123", None, False),
         (
             202,
@@ -83,6 +91,7 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("B2A_WALLET_ID", "test-wallet")
     monkeypatch.setenv("B2A_API_KEY", "test-key")
+    monkeypatch.delenv("B2A_PERMIT_ID", raising=False)
     monkeypatch.setattr(
         mcp,
         "generate_manifest",
@@ -138,13 +147,15 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
         )
         assert result.isError is True
         assert result.structuredContent["error"] == "permit_required"
+        assert result.structuredContent["detail"] == detail
         assert "permit_id" in result.content[0].text
         assert "idempotency_key" in result.content[0].text
-        assert "idempotency_key" in result.structuredContent["guidance"]
+        assert "B2A_PERMIT_ID" in result.structuredContent["guidance"]
     elif status_code == 400:
         result = asyncio.run(registered[0](query="sample", **caller_context))
         assert result.isError is True
         assert result.structuredContent["error"] == "idempotency_key_required"
+        assert result.structuredContent["detail"] == detail
         assert "idempotency_key" in result.content[0].text
         assert "idempotency_key" in result.structuredContent["guidance"]
     elif status_code == 202:
@@ -162,13 +173,15 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
         assert "invoke-123" not in result.content[0].text
         assert "same permit_id and idempotency_key" in result.structuredContent["guidance"]
     else:
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            asyncio.run(registered[0](query="sample", **caller_context))
-        assert exc_info.value.response.status_code == 403
+        result = asyncio.run(registered[0](query="sample", **caller_context))
+        assert result.isError is True
+        assert result.structuredContent["detail"] == detail
+        assert result.structuredContent["error"] in result.content[0].text
     assert len(requests) == 1
     assert requests[0].method == "POST"
     assert str(requests[0].url) == "https://unused.invalid/mcp/tools/partner.search/invoke"
     assert requests[0].headers["X-API-Key"] == "test-key"
+    assert requests[0].headers.get("Idempotency-Key") == idempotency_key
     mcp_context = {"wallet_id": "test-wallet"}
     if permit_id is not None:
         mcp_context["permit_id"] = permit_id
@@ -179,6 +192,70 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
         "arguments": {"query": "sample"},
         "mcp_context": mcp_context,
     }
+
+
+def test_serve_async_uses_env_permit_and_reuses_caller_key(monkeypatch, tmp_path):
+    from uuid import uuid4
+
+    fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
+    httpx = pytest.importorskip("httpx")
+    monkeypatch.chdir(tmp_path)
+    permit_id = str(uuid4())
+    monkeypatch.setenv("B2A_PERMIT_ID", permit_id)
+    monkeypatch.setenv("B2A_WALLET_ID", "")
+    monkeypatch.setenv("B2A_API_KEY", "")
+    monkeypatch.setattr(
+        mcp,
+        "generate_manifest",
+        lambda **kwargs: {"tools": [{"name": "partner.search", "description": "Search"}]},
+    )
+    started = []
+    requests = []
+
+    async def run_stdio(self):
+        started.append(self)
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}]})
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda: client_type(transport=httpx.MockTransport(respond))
+    )
+    monkeypatch.setattr(fastmcp, "run_stdio_async", run_stdio)
+    asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
+
+    key = str(uuid4())
+    arguments = {"kwargs": {"query": "sample"}, "idempotency_key": key}
+    asyncio.run(started[0].call_tool("partner.search", arguments))
+    asyncio.run(started[0].call_tool("partner.search", arguments))
+
+    assert len(requests) == 2
+    for request in requests:
+        assert request.headers["Idempotency-Key"] == key
+        body = json.loads(request.content)
+        assert body["mcp_context"] == {
+            "wallet_id": "",
+            "permit_id": permit_id,
+            "idempotency_key": key,
+        }
+        assert body["arguments"] == {"query": "sample"}
+
+    caller_permit = str(uuid4())
+    caller_key = str(uuid4())
+    asyncio.run(
+        started[0].call_tool(
+            "partner.search",
+            {
+                "kwargs": {"query": "sample"},
+                "permit_id": caller_permit,
+                "idempotency_key": caller_key,
+            },
+        )
+    )
+    assert requests[-1].headers["Idempotency-Key"] == caller_key
+    assert json.loads(requests[-1].content)["mcp_context"]["permit_id"] == caller_permit
 
 
 def test_serve_async_rejects_unknown_transport(monkeypatch, tmp_path):

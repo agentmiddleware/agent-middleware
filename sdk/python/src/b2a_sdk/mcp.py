@@ -144,10 +144,13 @@ async def serve_async(
             mcp_context["permit_id"] = permit_id
         if idempotency_key is not None:
             mcp_context["idempotency_key"] = idempotency_key
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{api_url}/mcp/tools/{service_id}/invoke",
-                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                headers=headers,
                 json={
                     "name": service_id,
                     "arguments": input_data,
@@ -156,34 +159,40 @@ async def serve_async(
                 timeout=30.0,
                 follow_redirects=False,
             )
-            if response.status_code in {400, 403, 202}:
+            if 400 <= response.status_code < 500:
                 try:
-                    detail = response.json().get("detail")
-                except (ValueError, AttributeError):
-                    detail = None
+                    body = response.json()
+                except ValueError:
+                    body = {"detail": response.text}
+                detail = body.get("detail") if isinstance(body, dict) else body
                 error = detail.get("error") if isinstance(detail, dict) else detail
-                if response.status_code == 403 and error == "permit_required":
-                    guidance = "Supply permit_id and idempotency_key as MCP tool arguments."
-                    return CallToolResult(
-                        content=[TextContent(type="text", text=f"permit_required: {guidance}")],
-                        isError=True,
-                        structuredContent={"error": "permit_required", "guidance": guidance},
+                structured = dict(body) if isinstance(body, dict) else {"detail": body}
+                if isinstance(error, str):
+                    structured["error"] = error
+                if error == "permit_required":
+                    structured["guidance"] = (
+                        "Supply permit_id as an MCP tool argument or set B2A_PERMIT_ID; "
+                        "supply a stable idempotency_key for retries."
                     )
-                if response.status_code == 400 and error == "idempotency_key_required":
-                    guidance = "Supply idempotency_key with permit_id as MCP tool arguments."
-                    return CallToolResult(
-                        content=[TextContent(type="text", text=f"{error}: {guidance}")],
-                        isError=True,
-                        structuredContent={"error": error, "guidance": guidance},
+                elif error == "idempotency_key_required":
+                    structured["guidance"] = (
+                        "Supply a stable idempotency_key as an MCP tool argument."
                     )
-                if response.status_code == 202 and error == "human_approval_pending":
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
+            if response.status_code == 202:
+                detail = response.json().get("detail")
+                error = detail.get("error") if isinstance(detail, dict) else detail
+                if error == "human_approval_pending":
                     approval = detail.get("approval", {}) if isinstance(detail, dict) else {}
                     guidance = "Retry with the same permit_id and idempotency_key after approval."
                     return CallToolResult(
                         content=[
                             TextContent(
-                                type="text",
-                                text=f"{error}: {json.dumps(approval)}. {guidance}",
+                                type="text", text=f"{error}: {json.dumps(approval)}. {guidance}"
                             )
                         ],
                         isError=True,
@@ -212,7 +221,7 @@ async def serve_async(
                     input_data=kwargs.pop("kwargs", kwargs),
                     wallet_id=os.getenv("B2A_WALLET_ID", ""),
                     api_key=os.getenv("B2A_API_KEY", ""),
-                    permit_id=permit_id,
+                    permit_id=permit_id if permit_id is not None else os.getenv("B2A_PERMIT_ID"),
                     idempotency_key=idempotency_key,
                 )
 

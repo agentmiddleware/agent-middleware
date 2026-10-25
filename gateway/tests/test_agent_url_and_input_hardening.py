@@ -469,24 +469,13 @@ class TestBrowserNavigationGuard:
         assert failed.continued is False
 
     @pytest.mark.anyio
-    async def test_child_frame_redirect_uses_no_redirect_guard(
+    async def test_child_frame_request_continues_for_cdp_redirect_guard(
         self, bridge, monkeypatch
     ):
         allowed_url = "https://93.184.216.34/iframe"
-        blocked_url = "http://169.254.169.254/latest/meta-data/"
-        page = type("Page", (), {})()
-        main_frame = type("Frame", (), {"page": page})()
-        page.main_frame = main_frame
-        child_frame = type("Frame", (), {"page": page})()
 
         class Request:
             url = allowed_url
-            frame = child_frame
-            method = "GET"
-            post_data_buffer = None
-
-            async def all_headers(self):
-                return {}
 
         class Route:
             request = Request()
@@ -494,19 +483,9 @@ class TestBrowserNavigationGuard:
             def __init__(self):
                 self.continued = False
                 self.aborted = False
-                self.fetched = False
 
             async def continue_(self):
                 self.continued = True
-
-            async def fetch(self, **kwargs):
-                assert kwargs == {"max_redirects": 0}
-                self.fetched = True
-                return type(
-                    "Response",
-                    (),
-                    {"status": 302, "headers": {"location": blocked_url}},
-                )()
 
             async def abort(self, _error_code):
                 self.aborted = True
@@ -522,10 +501,9 @@ class TestBrowserNavigationGuard:
             awi_playwright_bridge, "browser_request_block_reason", allow_test_entry
         )
         route = Route()
-        await bridge._guard_browser_route(route, object(), page)
-        assert route.fetched is True
-        assert route.aborted is True
-        assert route.continued is False
+        await bridge._guard_browser_route(route)
+        assert route.continued is True
+        assert route.aborted is False
 
     @pytest.mark.anyio
     async def test_chromium_refuses_redirect_to_blocked_host(self, bridge, monkeypatch):

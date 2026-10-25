@@ -782,3 +782,111 @@ def test_replay_non_finite_recorded_money_denies(tmp_path):
             assert claims["new_reason"] == "policy_cost_invalid", (field, value)
             cases += 1
     assert cases == 6
+
+
+# --- 17. non-UTF-8 CLI inputs stay on protocol -------------------------------
+
+
+def test_cli_non_utf8_inputs_return_2(tmp_path, capsys):
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(b"\xff\xfe\xfd\xfc")
+    bundle_path = _approval_rule(tmp_path)
+    cases = [
+        ["--bundle", str(bad), "--calls", str(GOLDEN_DIR)],
+        ["--bundle", str(bundle_path), "--calls", str(bad)],
+        [
+            "--bundle",
+            str(bundle_path),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--recorded-keys",
+            str(bad),
+        ],
+    ]
+    for argv in cases:
+        code = replay_main([*argv, "--out", str(tmp_path / "out")])
+        assert code == 2, argv
+        assert "amw-replay: " in capsys.readouterr().err, argv
+
+
+# --- 18. recorded string fields are validated ---------------------------------
+
+
+def test_load_recorded_calls_rejects_non_string_fields(tmp_path):
+    for field in ("receipt_id", "tool", "wallet_id", "outcome"):
+        payload = _record_payload()
+        payload[field] = 12345
+        with pytest.raises(ReplayError, match="must be a string"):
+            load_recorded_calls(
+                _record_file(tmp_path, payload, name=f"bad-{field}.json")
+            )
+    payload = _record_payload()
+    payload["reason_code"] = 12345
+    with pytest.raises(ReplayError, match="reason_code.*must be a string"):
+        load_recorded_calls(_record_file(tmp_path, payload, name="bad-reason.json"))
+
+
+# --- 19. bundle string fields are validated -----------------------------------
+
+
+def test_load_policy_bundle_rejects_non_string_fields(tmp_path):
+    for field in ("policy_id", "wallet_id", "name"):
+        for i, value in enumerate((12345, 0, False)):
+            with pytest.raises(ReplayError, match="must be a string"):
+                load_policy_bundle(
+                    _bundle(tmp_path, {field: value}, name=f"bad-{field}-{i}.json")
+                )
+    bundle = load_policy_bundle(
+        _bundle(
+            tmp_path,
+            {"policy_id": None, "wallet_id": None, "name": None},
+            name="none.json",
+        )
+    )
+    assert bundle.models[0].policy_id == "replay-policy-0"
+    assert bundle.models[0].wallet_id == ""
+    assert bundle.models[0].name == "replay policy 0"
+    bundle = load_policy_bundle(
+        _bundle(
+            tmp_path, {"policy_id": "", "wallet_id": "", "name": ""}, name="empty.json"
+        )
+    )
+    assert bundle.models[0].policy_id == "replay-policy-0"
+    assert bundle.models[0].wallet_id == ""
+    assert bundle.models[0].name == "replay policy 0"
+
+
+# --- 20. daily spend limit needs the authorized cost --------------------------
+
+
+def test_replay_daily_spend_limit_without_credits_denies(tmp_path):
+    payload = _record_payload(risk_tier="low", daily_spend_used="10.00")
+    del payload["credits_authorized"]
+    calls = load_recorded_calls(_record_file(tmp_path, payload))
+    result = replay_calls(
+        calls, load_policy_bundle(_bundle(tmp_path, {"daily_spend_limit": "100.00"}))
+    )
+    claims = _claims(result.receipts[0])
+    assert claims["new_decision"] == "deny"
+    assert claims["new_reason"] == "replay_input_unknown:credits_authorized"
+    assert claims["unevaluated_constraints"] == ["credits_authorized"]
+
+
+# --- 21. recorded policy denials can flip to allow ----------------------------
+
+
+def test_replay_recorded_tool_denial_flips_to_allow(tmp_path):
+    payload = _record_payload(
+        outcome="denied",
+        reason_code="tool_not_allowed",
+        risk_tier="low",
+    )
+    calls = load_recorded_calls(_record_file(tmp_path, payload))
+    assert calls[0].old_decision == "deny"
+    result = replay_calls(calls, load_policy_bundle(_bundle(tmp_path, {})))
+    claims = _claims(result.receipts[0])
+    assert claims["old_decision"] == "deny"
+    assert claims["new_decision"] == "allow"
+    assert claims["change"] == "deny_to_allow"
+    key_set = key_set_from_document({"keys": [result.public_key]})
+    assert verify_bundle(result.receipts[0], key_set).ok

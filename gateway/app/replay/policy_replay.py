@@ -237,6 +237,16 @@ def _record_to_call(source: str, record: Any) -> RecordedCall:
     missing = [name for name in _REQUIRED_RECORD_FIELDS if not payload.get(name)]
     if missing:
         raise ReplayError(f"{source}: recorded receipt lacks {', '.join(missing)}")
+    for name in _REQUIRED_RECORD_FIELDS:
+        if not isinstance(payload[name], str):
+            raise ReplayError(
+                f"{source}: recorded receipt field {name} must be a string"
+            )
+    reason_code = payload.get("reason_code")
+    if reason_code is not None and not isinstance(reason_code, str):
+        raise ReplayError(
+            f"{source}: recorded receipt field reason_code must be a string"
+        )
     if canonical_json(payload) != signing_input:
         raise ReplayError(f"{source}: signing_input is not canonical gateway JSON")
     signature = record.get("signature") or record.get("signature_b64_over_test_seed")
@@ -345,6 +355,15 @@ def _policy_risk_tier(policy: dict[str, Any], index: int) -> str:
     return value
 
 
+def _policy_str(policy: dict[str, Any], field_name: str, default: str) -> str:
+    value = policy.get(field_name)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return default if value == "" else value
+    raise ReplayError(f"bundle {field_name} must be a string")
+
+
 def load_policy_bundle(path: str | Path) -> PolicyBundle:
     """Load a policy bundle document: one policy or ``{"policies": [...]}``.
 
@@ -372,9 +391,9 @@ def load_policy_bundle(path: str | Path) -> PolicyBundle:
             ):
                 raise ReplayError(f"bundle {list_field} must be a list of strings")
         model = PolicyBundleModel(
-            policy_id=policy.get("policy_id") or f"replay-policy-{index}",
-            wallet_id=policy.get("wallet_id") or "",
-            name=policy.get("name") or f"replay policy {index}",
+            policy_id=_policy_str(policy, "policy_id", f"replay-policy-{index}"),
+            wallet_id=_policy_str(policy, "wallet_id", ""),
+            name=_policy_str(policy, "name", f"replay policy {index}"),
             allowed_tools_json=(
                 json.dumps(policy["allowed_tools"])
                 if policy.get("allowed_tools") is not None
@@ -416,8 +435,8 @@ def _unknown_inputs(
 
     ``require_real_effects`` needs ``simulation``, any ``risk_tier`` ceiling
     needs ``risk_tier`` (an unstated tier still defaults to ``medium``, which
-    is a ceiling like any other), and ``max_cost_per_action`` needs
-    ``credits_authorized``.
+    is a ceiling like any other), and ``max_cost_per_action`` or
+    ``daily_spend_limit`` needs ``credits_authorized``.
     """
     payload = call.payload
     unknown: list[str] = []
@@ -432,7 +451,10 @@ def _unknown_inputs(
     ):
         unknown.append("risk_tier")
     if (
-        any(m.max_cost_per_action is not None for m in models)
+        any(
+            m.max_cost_per_action is not None or m.daily_spend_limit is not None
+            for m in models
+        )
         and payload.get("credits_authorized") is None
     ):
         unknown.append("credits_authorized")

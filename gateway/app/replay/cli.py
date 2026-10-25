@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         calls = load_recorded_calls(args.calls, recorded_keys=recorded_keys)
         bundle = load_policy_bundle(args.bundle)
         result = replay_calls(calls, bundle)
-    except (ReplayError, SigningKeyError, OSError, json.JSONDecodeError) as exc:
+    except (ValueError, SigningKeyError, OSError) as exc:
         print(f"amw-replay: {exc}", file=sys.stderr)
         return 2
 

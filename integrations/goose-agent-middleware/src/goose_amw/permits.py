@@ -29,7 +29,11 @@ def check(policy: dict[str, Any], tool: str, arguments: dict[str, Any] | None) -
     raw = (arguments or {}).get("path")
     if not isinstance(raw, str) or not raw:
         return Decision(False, f"no permit: {name} call has no path argument")
-    target = Path(raw).expanduser().resolve()
+    if not Path(raw).is_absolute():
+        # The upstream server resolves relative (and ~) paths against its own root,
+        # not our working directory, so only an absolute path can be checked safely.
+        return Decision(False, f"no permit: {name} path must be absolute, got {raw!r}")
+    target = Path(raw).resolve()
     for rule in policy.get("rules", []):
         if rule.get("tool") != name:
             continue

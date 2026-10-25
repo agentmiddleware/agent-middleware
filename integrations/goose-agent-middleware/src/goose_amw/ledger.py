@@ -31,6 +31,7 @@ class Claim:
     action: str  # "run" | "replay" | "refuse"
     result: str | None = None
     status: str | None = None
+    previous: tuple | None = None  # the row as it was before this claim, for release()
 
 
 class Ledger:
@@ -60,9 +61,8 @@ class Ledger:
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
-                row = self._db.execute(
-                    "SELECT status, result, created_at FROM calls WHERE key = ?", (key,)
-                ).fetchone()
+                full = self._db.execute("SELECT * FROM calls WHERE key = ?", (key,)).fetchone()
+                row = None if full is None else (full[3], full[4], full[6])
                 if row is not None:
                     status, result, created_at = row
                     if status == "failed_unknown":
@@ -86,7 +86,7 @@ class Ledger:
                         (key, tool, args_hash, request_id, now, now),
                     )
                 self._db.execute("COMMIT")
-                return Claim("run")
+                return Claim("run", previous=full)
             except BaseException:
                 self._db.execute("ROLLBACK")
                 raise
@@ -99,6 +99,24 @@ class Ledger:
                 "UPDATE calls SET status=?, result=?, updated_at=? WHERE key=?",
                 (status, result, time.time(), key),
             )
+
+    def release(self, key: str, claim: Claim) -> None:
+        """Undo a ``run`` claim whose call was never dispatched upstream.
+
+        The key goes back to exactly its state before the claim (or disappears if it
+        was new), so a pre-dispatch failure leaves no trace and the call stays retryable.
+        """
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute("DELETE FROM calls WHERE key=? AND status='in_flight'", (key,))
+                if claim.previous is not None:
+                    marks = ",".join("?" * len(claim.previous))
+                    self._db.execute(f"INSERT INTO calls VALUES ({marks})", claim.previous)
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
 
     def mark_stale_in_flight_unknown(self) -> int:
         """At startup, an ``in_flight`` row means a crash mid-call: outcome unknown."""

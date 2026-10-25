@@ -12,6 +12,8 @@ Configuration (environment):
 * ``AMW_STATE_DIR`` - ledger, receipts and signing key
 * ``AMW_CALLERS`` - JSON map of sha256(bearer token) -> caller id
 * ``AMW_FS_ROOT`` - root directory handed to the filesystem server
+* ``AMW_FS_SERVER_PACKAGE`` - pinned npm spec of the filesystem server,
+  default ``@modelcontextprotocol/server-filesystem@2.0.1``
 * ``AMW_IDEMPOTENCY_WINDOW_SECONDS`` - replay window, default 600
 * ``AMW_HOST`` / ``AMW_PORT`` - bind address, default 127.0.0.1:8791
 """
@@ -45,6 +47,14 @@ class UpstreamError(Exception):
     """The upstream answered with a definite error: the call had no effect."""
 
 
+class UpstreamNotDispatched(UpstreamError):
+    """Failed before the tool call was sent (spawn, session setup, initialize).
+
+    Nothing reached the upstream tool, so the call is safe to retry and the
+    idempotency key is left exactly as it was before the attempt.
+    """
+
+
 class UpstreamUnknown(Exception):
     """The call was dispatched but its outcome is unknown."""
 
@@ -52,32 +62,37 @@ class UpstreamUnknown(Exception):
 Upstream = Callable[[str, dict[str, Any]], Awaitable[str]]
 
 
-def filesystem_upstream(fs_root: str) -> Upstream:
-    from mcp.client.session import ClientSession
-    from mcp.client.stdio import StdioServerParameters, stdio_client
+FS_SERVER_PACKAGE = "@modelcontextprotocol/server-filesystem@2.0.1"
 
-    params = StdioServerParameters(
-        command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", fs_root]
-    )
+
+def filesystem_upstream(fs_root: str, package: str | None = None) -> Upstream:
+    from mcp.client.stdio import StdioServerParameters
+
+    spec = package or os.environ.get("AMW_FS_SERVER_PACKAGE") or FS_SERVER_PACKAGE
+    return stdio_upstream(StdioServerParameters(command="npx", args=["-y", spec, fs_root]))
+
+
+def stdio_upstream(params: Any) -> Upstream:
+    """Call one tool on a stdio MCP server, classifying failures by dispatch point."""
+    from mcp.client.session import ClientSession
+    from mcp.client.stdio import stdio_client
 
     async def call(tool: str, arguments: dict[str, Any]) -> str:
+        dispatched = False
+        res = None
         try:
-            ctx = stdio_client(params)
-            read, write = await ctx.__aenter__()
-        except Exception as exc:  # never dispatched
-            raise UpstreamError(f"filesystem server unavailable: {exc}") from exc
-        try:
-            async with ClientSession(read, write) as session:
+            async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
                 await session.initialize()
-                try:
-                    res = await session.call_tool(tool, arguments)
-                except Exception as exc:
-                    raise UpstreamUnknown(f"{type(exc).__name__}: {exc}") from exc
-        finally:
-            try:
-                await ctx.__aexit__(None, None, None)
-            except Exception:
-                log.warning("filesystem server shutdown error", exc_info=True)
+                dispatched = True
+                res = await session.call_tool(tool, arguments)
+        except BaseException as exc:
+            if res is not None and isinstance(exc, Exception):
+                # The server already answered; a teardown error does not change that.
+                log.warning("ignoring stdio teardown error after a result: %r", exc)
+            elif not dispatched:
+                raise UpstreamNotDispatched(f"filesystem server unavailable: {exc!r}") from exc
+            else:
+                raise UpstreamUnknown(f"{type(exc).__name__}: {exc}") from exc
         text = "\n".join(getattr(c, "text", "") for c in res.content)
         if res.is_error:
             raise UpstreamError(text)
@@ -205,14 +220,29 @@ class Gateway:
                 f"AMW refused to re-run: an earlier identical {tool} call is {claim.status}; "
                 "its outcome is unknown, so it will not run again automatically"
             )
-        return await self._run(tool, arguments, ahash, base, key=key)
+        return await self._run(tool, arguments, ahash, base, key=key, claim=claim)
 
-    async def _run(self, tool, arguments, ahash, base, *, key):
+    async def _run(self, tool, arguments, ahash, base, *, key, claim=None):
         try:
             result = await self.upstream(tool, arguments)
+        except UpstreamNotDispatched as exc:
+            if key:
+                self.ledger.release(key, claim)
+            self.signer.issue(
+                tool=tool, args_hash=ahash, decision="allow", outcome="not_dispatched", **base
+            )
+            raise ToolError(f"upstream unavailable, safe to retry: {exc}") from exc
         except UpstreamError as exc:
             if key:
-                self.ledger.finish(key, "failed")
+                # The filesystem server writes in place, so an error result for a
+                # write may come after a partial write: never claim it had no effect.
+                self.ledger.finish(key, "failed_unknown")
+                self.signer.issue(
+                    tool=tool, args_hash=ahash, decision="allow", outcome="failed_unknown", **base
+                )
+                raise ToolError(
+                    f"upstream error; the write may be partly applied and will not re-run: {exc}"
+                ) from exc
             self.signer.issue(
                 tool=tool, args_hash=ahash, decision="allow", outcome="failed", **base
             )

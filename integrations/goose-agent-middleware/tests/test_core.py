@@ -3,6 +3,7 @@
 import asyncio
 import json
 import secrets
+import sys
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,15 @@ from mcp.server.mcpserver.exceptions import ToolError
 from goose_amw import hook, permits
 from goose_amw.canonical import args_hash, canonical_json, idempotency_key, sha256_hex
 from goose_amw.ledger import DEFAULT_WINDOW_SECONDS, Ledger
-from goose_amw.proxy import Config, Gateway
+from goose_amw.proxy import (
+    Config,
+    Gateway,
+    UpstreamError,
+    UpstreamNotDispatched,
+    UpstreamUnknown,
+    stdio_upstream,
+    verify_caller,
+)
 from goose_amw.receipts import ReceiptSigner, load_or_create_key, verify
 
 FIXTURE = Path(__file__).parent / "fixtures" / "g1_gate_calls.jsonl"
@@ -201,3 +210,186 @@ def test_write_without_session_id_is_refused_and_not_run(tmp_path):
     assert receipt["body"]["decision"] == "refuse"
     assert receipt["body"]["outcome"] == "not_run"
     assert verify(receipt, gw.signer.public_key_b64)
+
+
+def _gateway(tmp_path, upstream):
+    allowed, policy = _policy(tmp_path)
+    token = secrets.token_hex(24)
+    cfg = Config(
+        policy=policy,
+        state_dir=tmp_path / "state",
+        callers={sha256_hex(token): fresh()},
+        fs_root=str(tmp_path),
+    )
+    ctx = SimpleNamespace(
+        request_context=SimpleNamespace(meta={"agent-session-id": fresh()}),
+        headers={"authorization": f"Bearer {token}"},
+        protocol_version=None,
+    )
+    return (
+        Gateway(cfg, upstream=upstream),
+        ctx,
+        {"path": str(allowed / fresh()), "content": fresh()},
+    )
+
+
+def test_verify_caller_rejects_missing_and_wrong_tokens():
+    token = secrets.token_hex(24)
+    caller = fresh()
+    callers = {sha256_hex(token): caller}
+    assert verify_caller({"authorization": f"Bearer {token}"}, callers) == caller
+    for headers in (
+        None,
+        {},
+        {"authorization": token},
+        {"authorization": f"Bearer {secrets.token_hex(24)}"},
+        {"authorization": f"Bearer {token[:-1]}"},
+    ):
+        with pytest.raises(ToolError, match="caller not verified"):
+            verify_caller(headers, callers)
+
+
+def test_unverified_caller_never_reaches_upstream(tmp_path):
+    calls = []
+
+    async def upstream(tool, arguments):
+        calls.append(tool)
+        return fresh()
+
+    gw, ctx, args = _gateway(tmp_path, upstream)
+    ctx.headers = {"authorization": f"Bearer {secrets.token_hex(24)}"}
+    with pytest.raises(ToolError, match="caller not verified"):
+        asyncio.run(gw.handle(W["tool"], args, ctx, write=True))
+    assert calls == []
+
+
+def test_pre_dispatch_failure_leaves_key_untouched_and_retryable(tmp_path):
+    attempts = []
+
+    async def upstream(tool, arguments):
+        attempts.append(tool)
+        if len(attempts) == 1:
+            raise UpstreamNotDispatched(fresh())
+        return fresh()
+
+    gw, ctx, args = _gateway(tmp_path, upstream)
+    with pytest.raises(ToolError, match="safe to retry"):
+        asyncio.run(gw.handle(W["tool"], args, ctx, write=True))
+    assert gw.ledger._db.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
+    asyncio.run(gw.handle(W["tool"], args, ctx, write=True))
+    rows = gw.ledger._db.execute("SELECT status, executions FROM calls").fetchall()
+    assert rows == [("completed", 1)]
+
+
+def test_release_restores_the_previous_row(tmp_path):
+    led = Ledger(tmp_path / "l.db")
+    key = _gate_key()
+    led.claim(key, tool=W["tool"], args_hash=args_hash(ARGS), request_id=rid(W))
+    led.finish(key, "failed")
+    before = led.get(key)
+    claim = led.claim(key, tool=W["tool"], args_hash=args_hash(ARGS), request_id=rid(WRITES[1]))
+    led.release(key, claim)
+    assert led.get(key) == before
+
+
+def test_server_that_dies_before_initialize_is_not_dispatched():
+    from mcp.client.stdio import StdioServerParameters
+
+    call = stdio_upstream(StdioServerParameters(command=sys.executable, args=["-c", ""]))
+    with pytest.raises(UpstreamNotDispatched):
+        asyncio.run(asyncio.wait_for(call(W["tool"], ARGS), 30))
+
+
+def test_handle_denies_unpermitted_path_without_reaching_upstream(tmp_path):
+    calls = []
+
+    async def upstream(tool, arguments):
+        calls.append(tool)
+        return fresh()
+
+    gw, ctx, args = _gateway(tmp_path, upstream)
+    for path in (str(tmp_path / fresh()), f"{Path(args['path']).parent}/../{fresh()}"):
+        with pytest.raises(ToolError, match="permit denied"):
+            asyncio.run(gw.handle(W["tool"], {**args, "path": path}, ctx, write=True))
+    assert calls == []
+    assert gw.ledger._db.execute("SELECT COUNT(*) FROM calls").fetchone()[0] == 0
+    lines = (tmp_path / "state" / "receipts.jsonl").read_text().splitlines()
+    for line in lines:
+        receipt = json.loads(line)
+        assert receipt["body"]["decision"] == "deny"
+        assert receipt["body"]["outcome"] == "not_run"
+        assert verify(receipt, gw.signer.public_key_b64)
+    assert len(lines) == 2
+
+
+def test_write_error_result_is_failed_unknown_and_not_rerun(tmp_path):
+    calls = []
+
+    async def upstream(tool, arguments):
+        calls.append(tool)
+        raise UpstreamError(fresh())
+
+    gw, ctx, args = _gateway(tmp_path, upstream)
+    with pytest.raises(ToolError, match="partly applied"):
+        asyncio.run(gw.handle(W["tool"], args, ctx, write=True))
+    with pytest.raises(ToolError, match="will not run again"):
+        asyncio.run(gw.handle(W["tool"], args, ctx, write=True))
+    assert calls == [W["tool"]]
+    rows = gw.ledger._db.execute("SELECT status FROM calls").fetchall()
+    assert rows == [("failed_unknown",)]
+
+
+def test_relative_and_home_paths_are_denied(tmp_path, monkeypatch):
+    allowed, policy = _policy(tmp_path)
+    monkeypatch.chdir(allowed)
+    name = fresh()
+    for raw in (name, f"./{name}", f"~/{name}"):
+        decision = permits.check(policy, W["tool"], {"path": raw})
+        assert not decision.allowed
+        assert "must be absolute" in decision.reason
+    assert permits.check(policy, W["tool"], {"path": str(allowed / name)}).allowed
+
+
+def _fake_stdio(monkeypatch, result, *, fail_on_exit):
+    import contextlib
+
+    import mcp.client.session
+    import mcp.client.stdio
+
+    @contextlib.asynccontextmanager
+    async def client(params):
+        yield (None, None)
+        if fail_on_exit:
+            raise OSError(fresh())
+
+    class Session:
+        def __init__(self, read, write):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, tool, arguments):
+            return result
+
+    monkeypatch.setattr(mcp.client.stdio, "stdio_client", client)
+    monkeypatch.setattr(mcp.client.session, "ClientSession", Session)
+
+
+def test_teardown_error_after_result_keeps_the_result(monkeypatch):
+    text = fresh()
+    result = SimpleNamespace(content=[SimpleNamespace(text=text)], is_error=False)
+    _fake_stdio(monkeypatch, result, fail_on_exit=True)
+    assert asyncio.run(stdio_upstream(object())(W["tool"], ARGS)) == text
+
+
+def test_teardown_error_without_result_is_unknown(monkeypatch):
+    _fake_stdio(monkeypatch, None, fail_on_exit=True)
+    with pytest.raises(UpstreamUnknown):
+        asyncio.run(stdio_upstream(object())(W["tool"], ARGS))

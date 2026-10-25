@@ -469,6 +469,65 @@ class TestBrowserNavigationGuard:
         assert failed.continued is False
 
     @pytest.mark.anyio
+    async def test_child_frame_redirect_uses_no_redirect_guard(
+        self, bridge, monkeypatch
+    ):
+        allowed_url = "https://93.184.216.34/iframe"
+        blocked_url = "http://169.254.169.254/latest/meta-data/"
+        page = type("Page", (), {})()
+        main_frame = type("Frame", (), {"page": page})()
+        page.main_frame = main_frame
+        child_frame = type("Frame", (), {"page": page})()
+
+        class Request:
+            url = allowed_url
+            frame = child_frame
+            method = "GET"
+            post_data_buffer = None
+
+            async def all_headers(self):
+                return {}
+
+        class Route:
+            request = Request()
+
+            def __init__(self):
+                self.continued = False
+                self.aborted = False
+                self.fetched = False
+
+            async def continue_(self):
+                self.continued = True
+
+            async def fetch(self, **kwargs):
+                assert kwargs == {"max_redirects": 0}
+                self.fetched = True
+                return type(
+                    "Response",
+                    (),
+                    {"status": 302, "headers": {"location": blocked_url}},
+                )()
+
+            async def abort(self, _error_code):
+                self.aborted = True
+
+        original_guard = awi_playwright_bridge.browser_request_block_reason
+
+        async def allow_test_entry(url):
+            if url == allowed_url:
+                return None
+            return await original_guard(url)
+
+        monkeypatch.setattr(
+            awi_playwright_bridge, "browser_request_block_reason", allow_test_entry
+        )
+        route = Route()
+        await bridge._guard_browser_route(route, object(), page)
+        assert route.fetched is True
+        assert route.aborted is True
+        assert route.continued is False
+
+    @pytest.mark.anyio
     async def test_chromium_refuses_redirect_to_blocked_host(self, bridge, monkeypatch):
         playwright_api = pytest.importorskip("playwright.async_api")
         requested_paths = []
@@ -532,6 +591,67 @@ class TestBrowserNavigationGuard:
                         "/entry-chain",
                         "/allowed-hop",
                     ]
+                finally:
+                    await browser.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    @pytest.mark.anyio
+    async def test_chromium_refuses_cross_site_iframe_redirect_to_blocked_host(
+        self, bridge, monkeypatch
+    ):
+        playwright_api = pytest.importorskip("playwright.async_api")
+        requested_paths = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requested_paths.append(self.path)
+                if self.path == "/iframe":
+                    self.send_response(302)
+                    self.send_header("Location", "/blocked")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.end_headers()
+                if self.path == "/parent":
+                    self.wfile.write(f'<iframe src="{iframe_url}"></iframe>'.encode())
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        parent_url = f"http://localhost:{server.server_port}/parent"
+        iframe_url = f"http://127.0.0.1:{server.server_port}/iframe"
+        original_guard = awi_playwright_bridge.browser_request_block_reason
+
+        async def allow_test_entry(url):
+            if url in {parent_url, iframe_url}:
+                return None
+            return await original_guard(url)
+
+        monkeypatch.setattr(
+            awi_playwright_bridge, "browser_request_block_reason", allow_test_entry
+        )
+        try:
+            async with playwright_api.async_playwright() as playwright:
+                if not Path(playwright.chromium.executable_path).exists():
+                    pytest.skip("Chromium is not installed")
+                browser = await playwright.chromium.launch(
+                    headless=True, args=["--site-per-process"]
+                )
+                try:
+                    bridge._browser = browser
+                    bridge._playwright_initialized = True
+                    session = BridgeSession(session_id="iframe-redirect")
+                    await bridge._create_browser_context(session, None, None)
+                    response = await session._page.goto(parent_url, timeout=5000)
+                    assert response.status == 200
+                    assert "/iframe" in requested_paths
+                    assert "/blocked" not in requested_paths
                 finally:
                     await browser.close()
         finally:

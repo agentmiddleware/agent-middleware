@@ -2077,9 +2077,12 @@ class AWIPlaywrightBridge:
             if urlsplit(str(url)).scheme in {"about", "data", "blob"}:
                 await route.continue_()
                 return
-            if guarded_page is not None and route.request.frame.page == guarded_page:
-                # CDP screens this page's original request and every redirect.
-                # Other pages retain the no-redirect route fallback.
+            if (
+                guarded_page is not None
+                and route.request.frame == guarded_page.main_frame
+            ):
+                # CDP screens this page's main-frame requests and redirects.
+                # Child frames and other pages use the no-redirect fallback.
                 await route.continue_()
                 return
             response = await route.fetch(max_redirects=0)

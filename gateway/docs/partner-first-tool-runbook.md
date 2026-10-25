@@ -177,9 +177,9 @@ broad migration before the single-tool loop is trusted. Point to
 - MCP invoke is authorized, not only authenticated.
 - Receipt is the durable proof of charge + outcome.
 - Replay and out-of-scope deny are the product, not edge cases.
-- The gateway guarantees one dispatch/debit for an idempotency key. The remote
-  side effect is deduplicated only if the partner tool honors the forwarded
-  idempotency metadata.
+- The gateway permits at most one dispatch and debit per accepted idempotency
+  key. The remote side effect is deduplicated only if the partner tool honors
+  the forwarded idempotency metadata.
 
 ## Commands
 

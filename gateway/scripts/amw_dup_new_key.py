@@ -796,7 +796,7 @@ def render_not_measured_summary(
         f"- generated_at: {generated}",
         _params_block(window=window, since=since, until=until).rstrip("\n"),
         "",
-        "No queries were run and no counts are reported.",
+        "No complete measurement is available; no counts are reported.",
         "",
         _LIMITS_BLOCK.rstrip("\n"),
         "",

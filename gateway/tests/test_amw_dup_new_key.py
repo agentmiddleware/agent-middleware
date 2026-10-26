@@ -792,6 +792,9 @@ def test_postgres_query_failure_does_not_leak_dsn(
     assert amw.main(["--out-dir", str(out_dir)]) == 0
     captured_out = capsys.readouterr().out
     assert "not measured: query failed" in captured_out
+    assert "No complete measurement is available; no counts are reported." in (
+        out_dir / "summary.md"
+    ).read_text(encoding="utf-8")
     for output in (
         captured_out,
         (out_dir / "summary.md").read_text(encoding="utf-8"),

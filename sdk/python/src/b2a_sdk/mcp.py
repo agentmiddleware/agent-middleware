@@ -337,7 +337,15 @@ async def serve_async(
                     isError=True,
                     structuredContent=structured,
                 )
-            response.raise_for_status()
+            if not 200 <= response.status_code < 300:
+                structured = _gateway_response_uncertain(
+                    keyed=idempotency_key is not None, response=response
+                )
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
             try:
                 envelope = response.json()
                 if not isinstance(envelope, dict):

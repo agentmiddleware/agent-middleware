@@ -586,7 +586,15 @@ def test_serve_async_unkeyed_gateway_5xx_is_not_retryable(monkeypatch, tmp_path)
 @pytest.mark.parametrize("key", [None, "invoke-123"])
 @pytest.mark.parametrize(
     "failure",
-    ["timeout", "invalid_json", "request_id", "non_object", "missing_result", "invalid_result"],
+    [
+        "timeout",
+        "redirect",
+        "invalid_json",
+        "request_id",
+        "non_object",
+        "missing_result",
+        "invalid_result",
+    ],
 )
 def test_serve_async_uncertain_gateway_response_preserves_retry_safety(
     monkeypatch, tmp_path, key, failure
@@ -596,6 +604,8 @@ def test_serve_async_uncertain_gateway_response_preserves_retry_safety(
     def respond(request):
         if failure == "timeout":
             raise httpx.ReadTimeout("response lost", request=request)
+        if failure == "redirect":
+            return httpx.Response(307, headers={"Location": "https://redirect.invalid/mcp"})
         if failure == "invalid_json":
             return httpx.Response(200, content=b"", headers={"X-Correlation-ID": _CORRELATION_ID})
         if failure == "request_id":
@@ -614,13 +624,16 @@ def test_serve_async_uncertain_gateway_response_preserves_retry_safety(
         assert result.isError is True
         assert result.structuredContent["error"] == "gateway_response_uncertain"
         assert result.structuredContent["retryable"] is (key is not None)
-        assert result.structuredContent["http_status"] == (None if failure == "timeout" else 200)
+        assert result.structuredContent["http_status"] == (
+            None if failure == "timeout" else 307 if failure == "redirect" else 200
+        )
         assert result.structuredContent["correlation_id"] == (
             _CORRELATION_ID if failure in {"invalid_json", "request_id"} else None
         )
         assert json.loads(result.content[0].text) == result.structuredContent
         assert "response lost" not in result.content[0].text
         assert "unused.invalid" not in result.content[0].text
+        assert "redirect.invalid" not in result.content[0].text
         assert "test-key" not in result.content[0].text
         if key is None:
             assert "may already have run and charged" in result.structuredContent["hint"]

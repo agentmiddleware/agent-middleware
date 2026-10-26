@@ -114,6 +114,7 @@ from app.schemas.trust import PermitCreateRequest
 from app.services.agent_money import get_agent_money
 from app.services.idempotency import (
     IdempotencyConflictError,
+    IdempotencyFence,
     IdempotencyInProgressError,
     InvalidIdempotencyKeyError,
     get_idempotency_service,
@@ -306,7 +307,7 @@ async def _acquire_unkeyed_retry_lock(wallet_id: str, lock_key: str) -> str:
     mutex, ``abandon`` releases it. A row left by a crashed holder is
     released once it is older than the stale threshold, so a holder that
     merely stalls can lose the lock: it must re-check ownership with
-    ``_still_holds_unkeyed_retry_lock`` before acting and release only its own
+    its record id (the mint-row insert is fenced on it) before acting and release only its own
     row (``expected_record_id``).
     """
     idem = get_idempotency_service()
@@ -342,17 +343,6 @@ async def _acquire_unkeyed_retry_lock(wallet_id: str, lock_key: str) -> str:
             if time.monotonic() >= deadline:
                 raise
             await anyio.sleep(0.02)
-
-
-async def _still_holds_unkeyed_retry_lock(
-    wallet_id: str, lock_key: str, record_id: str
-) -> bool:
-    held = await get_idempotency_service().get_record(
-        wallet_id=wallet_id,
-        endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
-        idempotency_key=lock_key,
-    )
-    return held is not None and held.record_id == record_id
 
 
 async def _resolve_unkeyed_retry(
@@ -429,19 +419,16 @@ async def _resolve_unkeyed_retry(
             )
             if stored is None or not is_no_effect_failure(stored.response_json):
                 break
-        if not await _still_holds_unkeyed_retry_lock(
-            wallet_id, lock_key, lock_record_id
-        ):
-            # Stalled past the stale threshold and taken over: the new holder
-            # owns slot selection now, so do not mint or dispatch.
-            if map_mcp_errors:
-                raise _mcp_error(-32005, "idempotency_in_progress")
-            raise IdempotencyInProgressError("idempotency_in_progress")
+        # The mint-row insert is fenced on this lock row: it is written only
+        # if we still own the lock, in the same transaction. A holder that
+        # stalled past the stale threshold and was taken over gets -32005
+        # and never mints or dispatches.
         permit_id = await _mint_auto_permit(
             auth=auth,
             tool_name=tool_name,
             record=record,
             client_key=key,
+            lock_fence=(_UNKEYED_RETRY_LOCK_ENDPOINT, lock_key, lock_record_id),
             requires_human_approval=requires_human_approval,
             map_mcp_errors=map_mcp_errors,
         )
@@ -463,6 +450,7 @@ async def _mint_auto_permit(
     client_key: str | None,
     requires_human_approval: bool = False,
     map_mcp_errors: bool = True,
+    lock_fence: IdempotencyFence | None = None,
 ) -> str:
     """Mint the bounded single-tool permit backing this call.
 
@@ -550,6 +538,7 @@ async def _mint_auto_permit(
             endpoint=_AUTO_PERMIT_ENDPOINT,
             idempotency_key=mint_key,
             request_payload=mint_payload,
+            fence=lock_fence,
         )
     except IdempotencyConflictError as exc:
         if map_mcp_errors:

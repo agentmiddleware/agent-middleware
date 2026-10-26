@@ -124,6 +124,17 @@ class IdempotencyInProgressError(RuntimeError):
     """Raised when an idempotency key is already executing without a result."""
 
 
+class IdempotencyFenceLostError(IdempotencyInProgressError):
+    """The fencing record named by ``fence`` is gone or now belongs to another
+    holder, so the new record was not written. Callers treat it as in progress:
+    the current holder owns the work."""
+
+
+# (endpoint, idempotency_key, record_id) of a lock row the writer must still
+# own, in the same wallet, for a new record to be inserted.
+IdempotencyFence = tuple[str, str, str]
+
+
 class IdempotencyCreationDisabledError(RuntimeError):
     """Raised when only existing requests may be replayed."""
 
@@ -488,7 +499,19 @@ class IdempotencyService:
         wait_timeout_seconds: float = 0.0,
         poll_interval_seconds: float = 0.05,
         allow_new_record: bool = True,
+        fence: IdempotencyFence | None = None,
     ) -> IdempotencyBegin:
+        """Claim (or replay) one idempotency record.
+
+        ``fence`` makes creating a NEW record conditional on the caller still
+        owning a lock row: inside the same transaction as the insert, the
+        fence row is read ``FOR UPDATE`` (PostgreSQL holds the row lock until
+        commit, so a concurrent stale-lock takeover cannot delete it in
+        between; SQLite serializes writers and a snapshot conflict surfaces
+        as "database is locked", which fails closed below). A missing or
+        re-issued fence row raises :class:`IdempotencyFenceLostError` and
+        nothing is written. Replaying an existing record is not fenced.
+        """
         if wait_timeout_seconds < 0 or poll_interval_seconds <= 0:
             raise ValueError("idempotency_wait_invalid")
         request_hash = sha256_hex(request_payload)
@@ -524,6 +547,23 @@ class IdempotencyService:
 
             if not allow_new_record:
                 raise IdempotencyCreationDisabledError("idempotency_creation_disabled")
+
+            if fence is not None:
+                fence_endpoint, fence_key, fence_record_id = fence
+                held = (
+                    await session.execute(
+                        select(IdempotencyRecordModel)
+                        .where(
+                            *_idempotency_predicates(
+                                wallet_id, fence_endpoint, fence_key
+                            )
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if held is None or held.record_id != fence_record_id:
+                    await session.rollback()
+                    raise IdempotencyFenceLostError("idempotency_in_progress")
 
             record = IdempotencyRecordModel(
                 record_id=f"idm-{uuid.uuid4().hex[:16]}",
@@ -620,6 +660,7 @@ class IdempotencyService:
         request_payload: dict[str, Any],
         allow_new_record: bool = True,
         compatible_request_payload: dict[str, Any] | None = None,
+        fence: IdempotencyFence | None = None,
     ) -> IdempotencyReplay | None:
         """Replay an explicitly supplied historical shape without writing that shape."""
         begun = await self.begin_with_compatible_record(
@@ -629,6 +670,7 @@ class IdempotencyService:
             request_payload=request_payload,
             allow_new_record=allow_new_record,
             compatible_request_payload=compatible_request_payload,
+            fence=fence,
         )
         return begun.replay
 
@@ -641,6 +683,7 @@ class IdempotencyService:
         request_payload: dict[str, Any],
         allow_new_record: bool = True,
         compatible_request_payload: dict[str, Any] | None = None,
+        fence: IdempotencyFence | None = None,
     ) -> IdempotencyBegin:
         """Keep the granted identity while permitting historical-shape replay."""
         try:
@@ -650,6 +693,7 @@ class IdempotencyService:
                 idempotency_key=idempotency_key,
                 request_payload=request_payload,
                 allow_new_record=allow_new_record,
+                fence=fence,
             )
         except IdempotencyConflictError as conflict:
             if compatible_request_payload is None:

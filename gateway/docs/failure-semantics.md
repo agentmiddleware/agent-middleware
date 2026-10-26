@@ -256,7 +256,11 @@ JSON-RPC id is not part of it, because retries carry fresh ids.
   `MCP_UNKEYED_RETRY_WINDOW_SECONDS` (default 300) ago is joined even if the
   clock bucket has rolled over, so a retry or concurrent twin straddling the
   edge resolves to one dispatch. A concurrent duplicate either replays the
-  same receipt or gets the retryable `idempotency_in_progress`.
+  same receipt or gets the retryable `idempotency_in_progress`. A lock older
+  than 120 s is treated as abandoned and can be taken over. The auto-permit
+  mint row is written only if the writer still owns the lock (checked in the
+  same transaction as the insert), so a stalled former holder never mints or
+  dispatches, and it releases only its own lock row.
 - **IGA before replay.** A replay of a stored governed result re-runs the IGA
   check (without spending a use) first, and the principal is part of the key,
   so one human never receives another's stored result.

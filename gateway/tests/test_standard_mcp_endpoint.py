@@ -921,7 +921,7 @@ async def test_unkeyed_retry_after_no_effect_failure_runs_again(
     from sqlalchemy import select
 
     from app.db.models import IdempotencyRecordModel
-    from app.db import get_session_factory
+    from app.db.database import get_session_factory
     from app.services.idempotency import GOVERNED_MCP_IDEMPOTENCY_ENDPOINT
 
     provisioned = await provision_agent_wallet(client)
@@ -1000,13 +1000,111 @@ async def test_simultaneous_identical_unkeyed_calls_dispatch_once(
         get_service_registry().unregister_local("echo-concurrent")
 
 
+async def _backdate_lock(wallet_id: str, lock_key: str) -> None:
+    """Age a held lock row past the stale threshold via its real created_at."""
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from app.db.database import get_session_factory
+    from app.db.models import IdempotencyRecordModel
+    from app.routers import mcp_standard
+    from app.core.time import utc_now
+
+    factory = get_session_factory()
+    async with factory() as session:
+        await session.execute(
+            update(IdempotencyRecordModel)
+            .where(
+                IdempotencyRecordModel.wallet_id == wallet_id,
+                IdempotencyRecordModel.endpoint
+                == mcp_standard._UNKEYED_RETRY_LOCK_ENDPOINT,
+                IdempotencyRecordModel.idempotency_key == lock_key,
+            )
+            .values(
+                created_at=utc_now()
+                - timedelta(seconds=mcp_standard._UNKEYED_RETRY_LOCK_STALE_SECONDS + 5)
+            )
+        )
+        await session.commit()
+
+
+def _stall_after_acquire(monkeypatch, on_stall):
+    """Holder A acquires the lock for real, then stalls (runs ``on_stall``)
+    before minting. Only the first acquire stalls; later ones are untouched.
+    Neither the ownership check nor the mint is patched."""
+    from app.routers import mcp_standard
+
+    real_acquire = mcp_standard._acquire_unkeyed_retry_lock
+    state = {"stalled": False}
+
+    async def _acquire(wallet_id, lock_key):
+        record_id = await real_acquire(wallet_id, lock_key)
+        if not state["stalled"]:
+            state["stalled"] = True
+            await on_stall(wallet_id, lock_key, record_id)
+        return record_id
+
+    monkeypatch.setattr(mcp_standard, "_acquire_unkeyed_retry_lock", _acquire)
+
+
 @pytest.mark.anyio
-async def test_stalled_lock_holder_taken_over_neither_dispatches_nor_frees_new_lock(
+async def test_stale_takeover_via_created_at_fences_stalled_holder_mint(
     client, standard_mcp_enabled, clean_database, monkeypatch
 ):
-    """Codex re-review blocker: a stalled holder whose lock was reclaimed as
-    stale must not mint/dispatch, and its release must not delete the lock now
-    held by the worker that took over."""
+    """Codex blocker: no window between the ownership check and the mint.
+    A stalls holding the lock; its row ages past the stale threshold (real
+    created_at); worker B reclaims it through the real acquire path and runs
+    the call end-to-end. A then resumes: its fenced mint-row insert must fail
+    atomically or replay B's outcome, so the tool runs exactly once."""
+    from app.routers import mcp_standard
+    from app.services.idempotency import get_idempotency_service
+
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    invocations: list[str] = []
+    _register_counting_tool("echo-stale", invocations)
+    idem = get_idempotency_service()
+    seen: dict[str, object] = {}
+
+    async def _while_a_stalls(wid, lock_key, record_id):
+        await _backdate_lock(wid, lock_key)
+        seen["b"] = await _call(client, headers, "echo-stale", 2)
+        seen["key"] = lock_key
+
+    _stall_after_acquire(monkeypatch, _while_a_stalls)
+    try:
+        stalled = await _call(client, headers, "echo-stale", 1)
+        b = seen["b"]
+        assert "result" in b.json(), b.text
+        assert invocations == ["hi"]
+        # A resumed after B finished: B's mint row already exists, so A's
+        # mint replays it (not fenced) and A returns B's receipt — never a
+        # second dispatch. The fence-lost path is the next test.
+        receipt_key = "io.agentmiddleware/receipt"
+        assert (
+            stalled.json()["result"]["_meta"][receipt_key]["receipt_id"]
+            == b.json()["result"]["_meta"][receipt_key]["receipt_id"]
+        ), stalled.text
+        # B released its own lock; A's fenced release deleted nothing extra.
+        assert (
+            await idem.get_record(
+                wallet_id=wallet_id,
+                endpoint=mcp_standard._UNKEYED_RETRY_LOCK_ENDPOINT,
+                idempotency_key=seen["key"],
+            )
+        ) is None
+    finally:
+        get_service_registry().unregister_local("echo-stale")
+
+
+@pytest.mark.anyio
+async def test_stale_takeover_via_created_at_keeps_new_holders_lock(
+    client, standard_mcp_enabled, clean_database, monkeypatch
+):
+    """A stalled holder reclaimed via the real stale path neither mints nor
+    dispatches, and its release leaves the new holder's lock row intact."""
     from app.routers import mcp_standard
     from app.services.idempotency import get_idempotency_service
 
@@ -1016,29 +1114,21 @@ async def test_stalled_lock_holder_taken_over_neither_dispatches_nor_frees_new_l
     invocations: list[str] = []
     _register_counting_tool("echo-takeover", invocations)
     idem = get_idempotency_service()
-    real_check = mcp_standard._still_holds_unkeyed_retry_lock
     taken: dict[str, str] = {}
+    real_acquire = mcp_standard._acquire_unkeyed_retry_lock
 
-    async def _stall_then_take_over(wid, lock_key, record_id):
-        # Worker B reclaims the "stale" lock while A is stalled mid-section.
-        await idem.abandon(
-            wallet_id=wid,
-            endpoint=mcp_standard._UNKEYED_RETRY_LOCK_ENDPOINT,
-            idempotency_key=lock_key,
-            expected_record_id=record_id,
-        )
+    async def _while_a_stalls(wid, lock_key, record_id):
+        await _backdate_lock(wid, lock_key)
+        # B goes through the unpatched acquire: stale created_at -> reclaim.
+        taken["id"] = await real_acquire(wid, lock_key)
         taken["key"] = lock_key
-        taken["id"] = await mcp_standard._acquire_unkeyed_retry_lock(wid, lock_key)
-        return await real_check(wid, lock_key, record_id)
+        assert taken["id"] != record_id
 
-    monkeypatch.setattr(
-        mcp_standard, "_still_holds_unkeyed_retry_lock", _stall_then_take_over
-    )
+    _stall_after_acquire(monkeypatch, _while_a_stalls)
     try:
         stalled = await _call(client, headers, "echo-takeover", 1)
         assert stalled.json()["error"]["code"] == -32005, stalled.text
         assert invocations == []
-
         held = await idem.get_record(
             wallet_id=wallet_id,
             endpoint=mcp_standard._UNKEYED_RETRY_LOCK_ENDPOINT,
@@ -1046,8 +1136,6 @@ async def test_stalled_lock_holder_taken_over_neither_dispatches_nor_frees_new_l
         )
         assert held is not None and held.record_id == taken["id"]
 
-        # Once B releases, the retry goes through exactly once.
-        monkeypatch.setattr(mcp_standard, "_still_holds_unkeyed_retry_lock", real_check)
         await idem.abandon(
             wallet_id=wallet_id,
             endpoint=mcp_standard._UNKEYED_RETRY_LOCK_ENDPOINT,
@@ -1059,3 +1147,49 @@ async def test_stalled_lock_holder_taken_over_neither_dispatches_nor_frees_new_l
         assert invocations == ["hi"]
     finally:
         get_service_registry().unregister_local("echo-takeover")
+
+
+@pytest.mark.anyio
+async def test_fenced_begin_writes_nothing_when_fence_row_reissued(
+    client, clean_database
+):
+    """The mint-row insert and the lock ownership check are one transaction:
+    a fence naming a lost (missing or re-issued) lock row writes no record."""
+    from app.services.idempotency import (
+        IdempotencyFenceLostError,
+        get_idempotency_service,
+    )
+
+    wallet = (await provision_agent_wallet(client))["agent_wallet_id"]
+    idem = get_idempotency_service()
+    lock = await idem.begin_with_record(
+        wallet_id=wallet,
+        endpoint="/mcp#unkeyed-retry-lock",
+        idempotency_key="ulock-x",
+        request_payload={"kind": "unkeyed-retry-lock"},
+    )
+    for fence in (
+        ("/mcp#unkeyed-retry-lock", "ulock-x", "idm-not-the-holder"),
+        ("/mcp#unkeyed-retry-lock", "ulock-gone", lock.record_id),
+    ):
+        with pytest.raises(IdempotencyFenceLostError):
+            await idem.begin_with_record(
+                wallet_id=wallet,
+                endpoint="/mcp#auto-permit",
+                idempotency_key="smcp-x",
+                request_payload={"k": 1},
+                fence=fence,
+            )
+    assert (
+        await idem.get_record(
+            wallet_id=wallet, endpoint="/mcp#auto-permit", idempotency_key="smcp-x"
+        )
+    ) is None
+    owned = await idem.begin_with_record(
+        wallet_id=wallet,
+        endpoint="/mcp#auto-permit",
+        idempotency_key="smcp-x",
+        request_payload={"k": 1},
+        fence=("/mcp#unkeyed-retry-lock", "ulock-x", lock.record_id),
+    )
+    assert owned.replay is None

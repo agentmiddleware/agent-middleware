@@ -106,7 +106,7 @@ async def _seed_same_prefix_keys() -> None:
                 APIKeyModel(
                     key_id=key_id,
                     wallet_id=wallet_id,
-                    key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+                    key_hash=api_key_service_module.hash_api_key(api_key),
                     key_prefix=SHARED_PREFIX,
                 )
             )

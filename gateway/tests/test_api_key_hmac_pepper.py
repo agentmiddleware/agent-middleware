@@ -1,4 +1,4 @@
-"""HMAC-SHA256 peppered API-key digests with legacy SHA-256 fallback."""
+"""HMAC-SHA256 peppered API-key digests; no unkeyed fallback."""
 
 import hashlib
 import hmac
@@ -20,10 +20,6 @@ def _hmac(pepper: str, key: str) -> str:
     return hmac.new(pepper.encode(), key.encode(), hashlib.sha256).hexdigest()
 
 
-def _legacy(key: str) -> str:
-    return hashlib.sha256(key.encode()).hexdigest()
-
-
 @pytest.fixture
 def pepper(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(svc.API_KEY_HASH_PEPPER_ENV, PEPPER)
@@ -33,12 +29,12 @@ def pepper(monkeypatch: pytest.MonkeyPatch) -> str:
 @pytest.fixture
 def no_pepper(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(svc.API_KEY_HASH_PEPPER_ENV, raising=False)
-    monkeypatch.setattr(svc, "_api_key_hash_pepper", lambda: None, raising=True)
+    monkeypatch.setattr(svc, "_configured_pepper", lambda: None, raising=True)
 
 
 @pytest.fixture
 def production(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(svc, "_legacy_api_key_hashing_allowed", lambda: False)
+    monkeypatch.setattr(svc, "_dev_pepper_allowed", lambda: False)
 
 
 async def _seed(key_hash: str, key: str = KEY, key_id: str = "key-hmac-1") -> None:
@@ -66,15 +62,14 @@ async def _stored_hash(key_id: str = "key-hmac-1") -> str:
         return row.key_hash
 
 
-def test_generate_api_key_uses_hmac_when_pepper_set(pepper: str) -> None:
+def test_generate_api_key_uses_hmac_with_configured_pepper(pepper: str) -> None:
     full_key, key_hash, _ = svc.generate_api_key()
     assert key_hash == _hmac(pepper, full_key)
-    assert key_hash != _legacy(full_key)
 
 
-def test_generate_api_key_legacy_only_in_local_without_pepper(no_pepper) -> None:
+def test_local_without_pepper_uses_public_dev_pepper(no_pepper) -> None:
     full_key, key_hash, _ = svc.generate_api_key()
-    assert key_hash == _legacy(full_key)
+    assert key_hash == _hmac(svc.DEV_API_KEY_HASH_PEPPER.decode(), full_key)
 
 
 def test_generate_api_key_fails_closed_in_production_without_pepper(
@@ -83,6 +78,10 @@ def test_generate_api_key_fails_closed_in_production_without_pepper(
     with pytest.raises(svc.APIKeyHashingUnavailable) as exc:
         svc.generate_api_key()
     assert PEPPER not in str(exc.value)
+
+
+def test_production_never_uses_dev_pepper(no_pepper, production) -> None:
+    assert svc._api_key_hash_pepper() is None
 
 
 def test_startup_guard_refuses_production_without_pepper(no_pepper, production) -> None:
@@ -116,77 +115,45 @@ async def test_hmac_row_authenticates(clean_database, pepper: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_legacy_row_authenticates_and_is_rehashed(
-    clean_database, pepper: str, caplog: pytest.LogCaptureFixture
-) -> None:
-    await _seed(_legacy(KEY))
-    caplog.set_level("DEBUG")
-    key = await APIKeyService().validate_key(KEY)
-    assert key is not None
-    assert await _stored_hash() == _hmac(pepper, KEY)
-    # Second auth goes through the HMAC path.
-    assert await APIKeyService().validate_key(KEY) is not None
-    assert PEPPER not in caplog.text and KEY not in caplog.text
+async def test_near_miss_rejected(clean_database, pepper: str) -> None:
+    await _seed(_hmac(pepper, KEY))
+    assert await APIKeyService().validate_key(KEY[:-1] + "x") is None
 
 
 @pytest.mark.anyio
-async def test_legacy_row_not_rehashed_when_validation_fails(
+async def test_row_hashed_under_other_pepper_is_rejected(
     clean_database, pepper: str
 ) -> None:
-    await _seed(_legacy(KEY))
-    near_miss = KEY[:-1] + "x"
-    assert await APIKeyService().validate_key(near_miss) is None
-    assert await _stored_hash() == _legacy(KEY)
-
-
-@pytest.mark.anyio
-async def test_preflight_does_not_rehash(clean_database, pepper: str) -> None:
-    await _seed(_legacy(KEY))
-    assert await APIKeyService().validate_key(KEY, consume=False) is not None
-    assert await _stored_hash() == _legacy(KEY)
-
-
-@pytest.mark.anyio
-async def test_hmac_row_rejected_with_wrong_pepper(
-    clean_database, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    # Old rows (any digest not made with the current pepper) stop working:
+    # there is no fallback lookup and nothing is rewritten.
     await _seed(_hmac("other-pepper", KEY))
-    monkeypatch.setenv(svc.API_KEY_HASH_PEPPER_ENV, PEPPER)
     assert await APIKeyService().validate_key(KEY) is None
+    assert await APIKeyService().validate_key(KEY, consume=False) is None
+    assert await _stored_hash() == _hmac("other-pepper", KEY)
 
 
 @pytest.mark.anyio
-async def test_legacy_row_works_locally_without_pepper(
+async def test_local_without_pepper_authenticates_dev_pepper_rows(
     clean_database, no_pepper
 ) -> None:
-    await _seed(_legacy(KEY))
+    await _seed(_hmac(svc.DEV_API_KEY_HASH_PEPPER.decode(), KEY))
     assert await APIKeyService().validate_key(KEY) is not None
-    assert await _stored_hash() == _legacy(KEY)
 
 
 @pytest.mark.anyio
 async def test_production_without_pepper_rejects_all_keys(
     clean_database, no_pepper, production
 ) -> None:
-    await _seed(_legacy(KEY))
+    await _seed(_hmac(svc.DEV_API_KEY_HASH_PEPPER.decode(), KEY))
     assert await APIKeyService().validate_key(KEY) is None
 
 
 @pytest.mark.anyio
-async def test_rehash_failure_keeps_legacy_row_working(
-    clean_database, pepper: str, monkeypatch: pytest.MonkeyPatch
+async def test_auth_logs_never_contain_pepper_or_key(
+    clean_database, pepper: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    await _seed(_legacy(KEY))
-
-    async def boom(*args, **kwargs):
-        raise RuntimeError("db down")
-
-    real = APIKeyService._rehash_legacy_key
-
-    async def failing(session, key, *, legacy_hash, peppered_hash):
-        monkeypatch.setattr(session, "execute", boom)
-        await real(session, key, legacy_hash=legacy_hash, peppered_hash=peppered_hash)
-
-    monkeypatch.setattr(APIKeyService, "_rehash_legacy_key", staticmethod(failing))
+    caplog.set_level("DEBUG")
+    await _seed(_hmac(pepper, KEY))
     assert await APIKeyService().validate_key(KEY) is not None
-    assert await _stored_hash() == _legacy(KEY)
+    assert await APIKeyService().validate_key(KEY[:-1] + "x") is None
+    assert PEPPER not in caplog.text and KEY not in caplog.text

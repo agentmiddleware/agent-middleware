@@ -7,7 +7,6 @@ limiter. Auth-gated paths are counted. Discovery/docs/health are exempt.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import time
 
 import pytest
@@ -479,7 +478,9 @@ async def test_raw_api_key_never_names_a_limiter_bucket() -> None:
     assert not any(secret in key for key in seen)
     assert not any(secret in key for key in in_memory._requests)
     # Nor the key table's own lookup hash for that key.
-    key_hash = hashlib.sha256(secret.encode()).hexdigest()
+    from app.services.api_key_service import hash_api_key
+
+    key_hash = hash_api_key(secret)
     assert not any(key_hash in key for key in seen)
 
 

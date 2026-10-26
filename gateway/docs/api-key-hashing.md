@@ -1,49 +1,41 @@
 # API key hashing
 
-API keys are stored only as digests. New digests are **HMAC-SHA256 keyed by a
-server pepper** (`API_KEY_HASH_PEPPER`), so a leaked `api_keys` table cannot be
-checked offline against candidate keys without also holding the pepper.
+API keys are stored only as a digest. The digest is **HMAC-SHA256** of the full
+key, keyed by a server-side pepper (`API_KEY_HASH_PEPPER`). Lookups compute the
+HMAC digest and compare it in constant time (`hmac.compare_digest`). There is
+**no unkeyed fallback**: plain SHA-256 rows from before this change are never
+looked up, accepted, or rewritten.
 
-## Configuration
+## Pepper resolution
 
-| Variable | Required | Notes |
-|---|---|---|
-| `API_KEY_HASH_PEPPER` | Yes in production-like environments | Long random secret (32+ random bytes). Read from the process environment, then `.env` via Settings (stored as a `SecretStr`). Never logged. |
+1. `API_KEY_HASH_PEPPER` (env var or `Settings.API_KEY_HASH_PEPPER`, a
+   `SecretStr` that is masked in logs and reprs).
+2. Local and test environments only: if no pepper is configured, the public,
+   non-secret dev pepper `DEV_API_KEY_HASH_PEPPER` in
+   `app/services/api_key_service.py` is used so the gateway runs out of the box.
+   It is not a secret and must never be relied on for real keys.
+3. Production-like environments (`is_production_like_environment()`): no dev
+   pepper. Without a configured pepper the gateway **refuses to boot**
+   (`validate_api_key_hashing_config()` in the lifespan), key generation raises
+   `APIKeyHashingUnavailable`, and `validate_key` rejects every key.
 
-## Lookup and migration
+## Generating a pepper
 
-`APIKeyService.validate_key` computes both candidate digests and looks the row
-up by digest and prefix:
+Use 32+ random bytes from your secret store, e.g.
+`python -c "import secrets; print(secrets.token_urlsafe(48))"`. Never commit it
+or log it. Changing the pepper invalidates every existing key.
 
-1. **HMAC-SHA256(pepper, key)**: the current format.
-2. **Legacy SHA-256(key)**: rows written before the pepper existed.
+## Migration and key rotation (breaking)
 
-Both digests are compared in constant time. When a key matches on its legacy
-digest and a pepper is configured, the row is rewritten to the HMAC digest after
-the authentication succeeds. The update is guarded on the old digest, so
-concurrent requests upgrade it only once. A failed rehash is logged by key id
-and exception type only, and the legacy row keeps working.
+Every key issued before this change was stored as plain SHA-256 and **stops
+working the moment this version is deployed**. Rotation order:
 
-No schema change is needed, because both digests are 64 hex characters.
+1. Generate the pepper and set `API_KEY_HASH_PEPPER` in the production secret
+   store (and every other production-like environment).
+2. Deploy. Startup fails closed if step 1 was missed.
+3. Reissue every API key (new keys get HMAC digests), then revoke or delete the
+   old rows, and send the new keys to their holders through the usual secure
+   channel.
+4. Expect `401`s from clients still on old keys until they switch.
 
-## When the pepper is unset
-
-| Environment | Issue new keys | Validate keys | Startup |
-|---|---|---|---|
-| Local-compatible (`local`, `test`, ...) | Legacy SHA-256 digest | Legacy digest only | Boots |
-| Production-like | Refused (`APIKeyHashingUnavailable`) | Every key rejected | **Refuses to boot** |
-
-Production fails closed so that a missing secret can never quietly put the
-fleet back on unkeyed hashing.
-
-## Deploy steps
-
-1. Generate the pepper and store it in the secret manager for every
-   production-like environment **before** deploying this version. Without it the
-   gateway will not start.
-2. Deploy. Existing keys keep working through the legacy fallback and are
-   rehashed on first use.
-3. Keys that are never used stay in the legacy format. Rotate or revoke them
-   if they should be retired.
-4. Do not change the pepper. Changing it invalidates every rehashed or newly
-   issued key. Rotating the pepper needs its own dual-pepper plan.
+Rotating the pepper later follows the same steps: every key must be reissued.

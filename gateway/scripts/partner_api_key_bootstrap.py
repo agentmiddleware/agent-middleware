@@ -4,7 +4,10 @@
 Uses a bootstrap/admin key (VALID_API_KEYS) only to provision:
   sponsor wallet → agent wallet → DB-scoped agent API key.
 
-The agent secret is printed once. Requires network access to --api-url.
+The minted agent secret is never printed to stdout or stderr. Pass --key-file
+PATH to write it (created mode 0600, fails if PATH exists); otherwise only a
+masked form is shown (first 8 chars of the key prefix area + "..." + last 4).
+Requires network access to --api-url.
 Does not mint keys without a bootstrap secret (fail closed).
 
 Resume: pass --sponsor-wallet-id / --agent-wallet-id to skip earlier creates
@@ -26,6 +29,32 @@ import httpx
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"error: {message}")
+
+
+def _mask_api_key(key: str) -> str:
+    """Return a display form that is not the full secret.
+
+    Uses the first 8 characters of the key prefix area, an ellipsis, and
+    the last 4 characters.
+    """
+    return f"{key[:8]}...{key[-4:]}"
+
+
+def _write_key_file(path: str, api_key: str) -> None:
+    """Write the minted key to PATH created 0600; refuse if it already exists."""
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(path, flags, 0o600)
+    except FileExistsError:
+        raise SystemExit(f"error: --key-file {path} already exists")
+    except OSError as exc:
+        raise SystemExit(f"error: cannot write --key-file {path}: {exc}") from exc
+    try:
+        os.write(fd, api_key.encode("utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"error: cannot write --key-file {path}: {exc}") from exc
+    finally:
+        os.close(fd)
 
 
 def _require_safe_api_url(api_url: str) -> str:
@@ -92,7 +121,8 @@ def provision(
     Args:
         json_mode: If True, print only machine-readable status to stderr (never
             the api_key or bootstrap_key). Human text goes to stderr so
-            `jq -r .api_key` works on stdout JSON output.
+            stdout JSON stays pipeable. The minted secret is never in that JSON;
+            use --key-file to persist it.
     """
     base = _require_safe_api_url(api_url)
     headers = {
@@ -153,7 +183,7 @@ def provision(
             key_body["max_uses"] = max_uses
         key = _post(client, "/v1/api-keys", key_body)
         api_key = key.get("api_key")
-        _require(bool(api_key), "api_key missing (shown only once)")
+        _require(bool(api_key), "api_key missing (write with --key-file; never printed)")
 
         return {
             "api_url": base,
@@ -217,21 +247,36 @@ def main() -> int:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Print full JSON including api_key (default: human summary)",
+        help=(
+            "Print JSON to stdout with api_key replaced by api_key_masked "
+            "(and key_file when --key-file is given). Default: human summary."
+        ),
     )
     parser.add_argument(
         "--key-only",
         action="store_true",
         help=(
-            "Print only the minted api_key to stdout. Lets the secret be "
-            "piped straight into a secret store without a jq dependency, and "
-            "without the surrounding metadata landing wherever stdout goes."
+            "Print only the --key-file path, or the masked key when --key-file "
+            "is omitted. Never prints the full minted secret."
+        ),
+    )
+    parser.add_argument(
+        "--key-file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write the minted api_key to PATH (created mode 0600 with "
+            "O_CREAT|O_EXCL|O_WRONLY; refused if PATH already exists). "
+            "Stdout prints PATH in --key-only mode, and JSON includes key_file."
         ),
     )
     args = parser.parse_args()
 
     if args.key_only and args.json:
         raise SystemExit("error: --key-only and --json are mutually exclusive")
+
+    if args.key_file and os.path.exists(args.key_file):
+        raise SystemExit(f"error: --key-file {args.key_file} already exists")
 
     if args.agent_wallet_id and not args.sponsor_wallet_id:
         raise SystemExit(
@@ -255,21 +300,33 @@ def main() -> int:
         json_mode=args.json,
     )
 
+    api_key = str(result["api_key"])
+    masked = _mask_api_key(api_key)
+    key_file = args.key_file
+    if key_file:
+        _write_key_file(key_file, api_key)
+
     if args.key_only:
-        print(result["api_key"])
+        print(key_file if key_file else masked)
     elif args.json:
         # Machine-readable: JSON to stdout, all status to stderr.
-        # Never print bootstrap_key. This lets `jq -r .api_key` work.
-        print(json.dumps(result, indent=2))
+        # Never print bootstrap_key or the full minted api_key.
+        payload = {k: v for k, v in result.items() if k != "api_key"}
+        payload["api_key_masked"] = masked
+        if key_file:
+            payload["key_file"] = key_file
+        print(json.dumps(payload, indent=2))
     else:
-        # Human-readable summary to stdout (legacy behavior).
+        # Human-readable summary to stdout. Masked key only.
         print("Partner API key bootstrap OK")
         print(f"  api_url:            {result['api_url']}")
         print(f"  sponsor_wallet_id:  {result['sponsor_wallet_id']}")
         print(f"  agent_wallet_id:    {result['agent_wallet_id']}")
         print(f"  key_id:             {result['key_id']}")
         print(f"  key_prefix:         {result['key_prefix']}")
-        print(f"  api_key (once):     {result['api_key']}")
+        print(f"  api_key (masked):   {masked}")
+        if key_file:
+            print(f"  key_file:           {key_file}")
     return 0
 
 

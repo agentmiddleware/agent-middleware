@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # --- Server ---
-    HOST: str = "0.0.0.0"
+    # Loopback by default, matching uvicorn's own default bind. DEBUG open
+    # mode only serves requests when HOST is an explicit loopback bind, so a
+    # shared-interface default would refuse every local open-mode call.
+    # Deployments that bind a public interface set HOST explicitly.
+    HOST: str = "127.0.0.1"
     PORT: int = 8000
     CORS_ORIGINS: str = ""
 

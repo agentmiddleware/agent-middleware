@@ -508,7 +508,8 @@ def debug_open_auth_armed(settings: Any) -> bool:
 
     True when an unknown key would authenticate as bootstrap admin: DEBUG on,
     no VALID_API_KEYS, no STATIC_DEV_API_KEYS, and a local-compatible
-    ENVIRONMENT (production-like boots refuse DEBUG before this matters).
+    ENVIRONMENT (production-like boots refuse DEBUG before this matters),
+    and a loopback HOST (any other bind refuses open mode per request).
     Startup logs it loudly so a shared demo never runs open by accident.
     """
     return bool(
@@ -516,6 +517,7 @@ def debug_open_auth_armed(settings: Any) -> bool:
         and not any(key.strip() for key in settings.VALID_API_KEYS.split(","))
         and not settings.STATIC_DEV_API_KEYS.strip()
         and not is_production_like_environment(settings.ENVIRONMENT)
+        and _is_loopback_bind(settings.HOST)
     )
 
 

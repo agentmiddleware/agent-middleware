@@ -13,11 +13,12 @@ from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 
 from app.core.auth import (
+    _is_loopback_bind,
     _is_loopback_client,
     debug_open_auth_armed,
     get_auth_context,
 )
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.main import app
 
 UNKNOWN_KEY = "some-unknown-caller-key"
@@ -209,3 +210,12 @@ def test_debug_open_auth_armed_matrix(open_mode_settings):
     open_mode_settings.STATIC_DEV_API_KEYS = ""
     open_mode_settings.ENVIRONMENT = "production"
     assert debug_open_auth_armed(open_mode_settings) is False
+    open_mode_settings.ENVIRONMENT = "local"
+    assert debug_open_auth_armed(open_mode_settings) is True
+    open_mode_settings.HOST = "0.0.0.0"
+    assert debug_open_auth_armed(open_mode_settings) is False
+
+
+def test_default_host_keeps_debug_open_mode_usable():
+    """The shipped HOST default is a loopback bind, so open mode works locally."""
+    assert _is_loopback_bind(Settings.model_fields["HOST"].default) is True

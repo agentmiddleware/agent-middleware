@@ -307,10 +307,11 @@ def test_legacy_factories_warn_they_are_ungoverned(monkeypatch, factory_name):
         "get_autogen_tools": get_autogen_tools,
     }[factory_name]
 
-    with pytest.warns(DeprecationWarning, match="legacy ungoverned"):
+    with pytest.warns(DeprecationWarning, match="legacy ungoverned") as caught:
         tools = factory(client)
 
     assert tools, "legacy factory must still return its tools alongside the warning"
+    assert caught[0].filename == __file__
 
 
 # --- Real frameworks, when installed ----------------------------------------

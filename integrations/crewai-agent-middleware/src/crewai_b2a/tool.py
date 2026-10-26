@@ -452,13 +452,12 @@ class CrewAIB2ATool(BaseTool):
         **kwargs: Any,
     ) -> str:
         """Synchronous operation (for CrewAI compatibility)."""
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-        else:
-            if self.client is not None and not self._owns_client:
-                return "Error: sync CrewAI call inside a running event loop; use _arun"
+        if (
+            self.client is not None
+            and not self._owns_client
+            and self.sync_client_factory is None
+        ):
+            return "Error: sync_client_factory is required for sync calls with a borrowed client"
         replay_permit = self._begin_permit_call(operation, permit_idempotency_key)
         coro = self._execute(
             operation,

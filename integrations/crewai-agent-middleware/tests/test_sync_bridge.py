@@ -69,6 +69,7 @@ class _SyncGateway:
         self.permit_requests = 0
         self.charges = 0
         self.seen_keys: list[str] = []
+        self._responses: dict[str, dict] = {}
 
     async def __call__(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/permits":
@@ -78,20 +79,21 @@ class _SyncGateway:
             body = json.loads(request.content)
             key = body["params"]["mcpContext"]["idempotency_key"]
             self.seen_keys.append(key)
+            if key in self._responses:
+                return httpx.Response(200, json=self._responses[key])
             self.charges += 1
-            return httpx.Response(
-                200,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": body["id"],
-                    "result": {
-                        "content": [{"type": "text", "text": '{"ok": true}'}],
-                        "structuredContent": {"ok": True},
-                        "isError": False,
-                        "receipt": _receipt_payload(f"receipt-sync-{self.charges}"),
-                    },
+            response = {
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "content": [{"type": "text", "text": '{"ok": true}'}],
+                    "structuredContent": {"ok": True},
+                    "isError": False,
+                    "receipt": _receipt_payload(f"receipt-sync-{self.charges}"),
                 },
-            )
+            }
+            self._responses[key] = response
+            return httpx.Response(200, json=response)
         return httpx.Response(404)
 
 
@@ -140,6 +142,19 @@ def test_sync_run_repeated_calls_each_succeed(sync_tool):
         for w in caught
         if "event loop" in str(w.message).lower() or "never awaited" in str(w.message)
     ] == []
+
+
+def test_sync_run_replayed_call_charges_once(sync_tool):
+    tool, gateway, _ = sync_tool
+
+    first = _call(tool, "sync-replay-key", "sync-replay-permit")
+    replay = _call(tool, "sync-replay-key", "sync-replay-permit")
+
+    assert "receipt-sync-1" in first
+    assert "receipt-sync-1" in replay
+    assert gateway.charges == 1
+    assert gateway.permit_requests == 1
+    assert gateway.seen_keys == ["sync-replay-key"] * 2
 
 
 def test_sync_run_emits_no_event_loop_warnings(sync_tool):

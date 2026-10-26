@@ -212,18 +212,60 @@ async def test_first_use_recorded_when_tracking_disabled(
 
 
 async def test_concurrent_first_uses_of_two_keys_fire_one_activation(
-    client, enabled, sent, self_provision
+    client, enabled, sent, self_provision, monkeypatch
 ):
+    """Two keys of one account are first used truly concurrently.
+
+    SQLite serializes plain ``asyncio.gather`` calls, so a barrier is patched
+    into ``AsyncSession.commit``: each racing call commits its key's usage
+    update and then waits until the other has done the same. Both first uses
+    are therefore durable before either call decides on activation, which is
+    exactly the interleave that broke the old post-commit "count other used
+    keys" logic (each saw the other and neither fired). The atomic claim on
+    the root wallet must still fire exactly once.
+    """
+    import contextvars
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     body = (await client.post("/v1/dev-keys/self-provision", json={})).json()
     service = get_api_key_service()
     second = await service.create_key(wallet_id=body["wallet_id"], key_name="2nd")
-    results = await asyncio.gather(
-        service.validate_key(body["api_key"]),
-        service.validate_key(second["api_key"]),
-        service.validate_key(body["api_key"]),
-        service.validate_key(second["api_key"]),
+
+    # Cyclic barrier: every commit of a racing call waits for the other's
+    # matching commit, so the two calls advance in lockstep (usage commit,
+    # then claim commit) and both first uses are durable before either
+    # decides. A call that finishes early just releases the barrier (timeout).
+    barrier = asyncio.Barrier(2)
+    racing: contextvars.ContextVar[bool] = contextvars.ContextVar(
+        "racing", default=False
     )
+    lockstep = {"on": True, "rounds": 0}
+    original_commit = AsyncSession.commit
+
+    async def commit_then_wait(self):
+        await original_commit(self)
+        if racing.get() and lockstep["on"]:
+            try:
+                await asyncio.wait_for(barrier.wait(), timeout=1)
+                lockstep["rounds"] += 1
+            except TimeoutError:
+                lockstep["on"] = False
+                await barrier.reset()
+
+    monkeypatch.setattr(AsyncSession, "commit", commit_then_wait)
+
+    async def race(api_key: str):
+        racing.set(True)
+        return await service.validate_key(api_key)
+
+    results = await asyncio.gather(
+        asyncio.create_task(race(body["api_key"])),
+        asyncio.create_task(race(second["api_key"])),
+    )
+    monkeypatch.setattr(AsyncSession, "commit", original_commit)
     assert all(results)
+    assert lockstep["rounds"] >= 2  # both usage commits met before deciding
     await product_analytics.drain_pending()
     activations = [p for _, p in sent if p["event"] == "activation"]
     assert len(activations) == 1
@@ -285,7 +327,124 @@ async def test_root_wallet_walk_handles_nesting_and_cycles(clean_database):
         await session.commit()
         assert await APIKeyService._root_wallet_id(session, "w-leaf") == "w-root"
         assert await APIKeyService._root_wallet_id(session, "w-root") == "w-root"
-        assert await APIKeyService._root_wallet_id(session, "missing") == "missing"
+        # An unreadable row (missing, or hidden by RLS) is never treated as root.
+        assert await APIKeyService._root_wallet_id(session, "missing") is None
+
+
+async def _chain(session, ids, *, parent_of_first=None):
+    from app.db.models import WalletModel
+
+    parent = parent_of_first
+    for wid in ids:
+        session.add(
+            WalletModel(wallet_id=wid, wallet_type="agent", parent_wallet_id=parent)
+        )
+        await session.commit()
+        parent = wid
+
+
+async def test_root_wallet_walk_cycle_is_unresolved_and_bounded(
+    clean_database, monkeypatch
+):
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.database import get_session_factory
+    from app.db.models import WalletModel
+    from app.services.api_key_service import APIKeyService
+
+    async with get_session_factory()() as session:
+        await _chain(session, ["cyc-a", "cyc-b"])
+        a = await session.get(WalletModel, "cyc-a")
+        a.parent_wallet_id = "cyc-b"
+        await session.commit()
+
+        calls = {"n": 0}
+        original = AsyncSession.execute
+
+        async def counting(self, *args, **kwargs):
+            calls["n"] += 1
+            return await original(self, *args, **kwargs)
+
+        monkeypatch.setattr(AsyncSession, "execute", counting)
+        assert await APIKeyService._root_wallet_id(session, "cyc-a") is None
+        monkeypatch.setattr(AsyncSession, "execute", original)
+        # The seen-set stops the cycle after visiting both wallets, well
+        # before the depth cap would.
+        assert calls["n"] == 2
+
+
+async def test_root_wallet_walk_depth_cap_is_unresolved(clean_database, monkeypatch):
+    from app.db.database import get_session_factory
+    from app.services import api_key_service as svc
+
+    async with get_session_factory()() as session:
+        ids = [f"deep-{i}" for i in range(6)]
+        await _chain(session, ids)
+        leaf = ids[-1]
+        assert await svc.APIKeyService._root_wallet_id(session, leaf) == "deep-0"
+        monkeypatch.setattr(svc, "_MAX_WALLET_DEPTH", 3)
+        # Deeper than the cap: refuse rather than return an intermediate wallet.
+        assert await svc.APIKeyService._root_wallet_id(session, leaf) is None
+        assert await svc.APIKeyService._root_wallet_id(session, "deep-3") == "deep-0"
+
+
+def test_backfill_depth_matches_runtime():
+    import importlib.util
+    from pathlib import Path
+
+    from app.services import api_key_service as svc
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations/versions/054_wallet_product_activation.py"
+    )
+    spec = importlib.util.spec_from_file_location("m054", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.MAX_WALLET_DEPTH == svc._MAX_WALLET_DEPTH
+
+
+async def test_backfill_marks_root_of_deep_used_descendant(clean_database):
+    import importlib.util
+    from datetime import datetime
+    from pathlib import Path
+
+    from sqlalchemy import text
+
+    from app.db.database import get_session_factory
+    from app.db.models import APIKeyModel, WalletModel
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations/versions/054_wallet_product_activation.py"
+    )
+    spec = importlib.util.spec_from_file_location("m054b", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    used_at = datetime(2026, 1, 2, 3, 4, 5)
+    async with get_session_factory()() as session:
+        ids = [f"bf-{i}" for i in range(6)]  # depth 5, beyond the old 3 levels
+        await _chain(session, ids)
+        session.add(WalletModel(wallet_id="bf-unused-root", wallet_type="sponsor"))
+        session.add(
+            APIKeyModel(
+                key_id="bf-key",
+                wallet_id=ids[-1],
+                key_hash="x" * 64,
+                key_prefix="b2a_bfbf",
+                first_used_at=used_at,
+            )
+        )
+        await session.commit()
+        await session.execute(text(mod.BACKFILL_SQL))
+        await session.commit()
+        session.expire_all()
+        root = await session.get(WalletModel, "bf-0")
+        assert root.product_activated_at == used_at
+        assert (await session.get(WalletModel, "bf-3")).product_activated_at is None
+        unused = await session.get(WalletModel, "bf-unused-root")
+        assert unused.product_activated_at is None
 
 
 def test_posthog_settings_load_from_dotenv_fields(monkeypatch):

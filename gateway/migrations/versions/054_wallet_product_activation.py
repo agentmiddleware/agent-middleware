@@ -8,9 +8,11 @@ root wallet with a conditional UPDATE (``... IS NULL``) on a key's first use,
 which makes the PostHog ``activation`` event fire once per account even when
 first uses race.
 
-Backfill: a root wallet whose own keys, or whose descendants' keys (up to
-three levels), were already used gets the earliest such ``first_used_at``, so
-accounts active before 054 never emit a late activation. The column is added
+Backfill: a root wallet whose own keys, or any descendant's keys (to the same
+``MAX_WALLET_DEPTH`` the runtime resolver uses), were already used gets the
+earliest such ``first_used_at``, so accounts active before 054 never emit a
+late activation. One recursive CTE: api_keys is aggregated once per wallet,
+then ancestry is walked via the wallets primary key (no per-root scan). The column is added
 only when missing, and the backfill only touches NULL rows.
 """
 
@@ -22,18 +24,37 @@ down_revision: str = "053_repair_api_lineage"
 branch_labels = None
 depends_on = None
 
-BACKFILL_SQL = """
-UPDATE wallets SET product_activated_at = (
-    SELECT MIN(k.first_used_at)
-    FROM api_keys k
-    JOIN wallets w1 ON w1.wallet_id = k.wallet_id
-    LEFT JOIN wallets w2 ON w2.wallet_id = w1.parent_wallet_id
-    LEFT JOIN wallets w3 ON w3.wallet_id = w2.parent_wallet_id
-    WHERE k.first_used_at IS NOT NULL
-      AND wallets.wallet_id IN (w1.wallet_id, w1.parent_wallet_id,
-                                w2.parent_wallet_id, w3.parent_wallet_id)
+# Must match app.services.api_key_service._MAX_WALLET_DEPTH (asserted by a test).
+MAX_WALLET_DEPTH = 64
+
+BACKFILL_SQL = f"""
+WITH RECURSIVE used AS (
+    SELECT wallet_id, MIN(first_used_at) AS first_used_at
+    FROM api_keys
+    WHERE first_used_at IS NOT NULL
+    GROUP BY wallet_id
+),
+anc (wallet_id, ancestor_id, depth) AS (
+    SELECT wallet_id, wallet_id, 0 FROM used
+    UNION ALL
+    SELECT a.wallet_id, w.parent_wallet_id, a.depth + 1
+    FROM anc a
+    JOIN wallets w ON w.wallet_id = a.ancestor_id
+    WHERE w.parent_wallet_id IS NOT NULL AND a.depth < {MAX_WALLET_DEPTH}
+),
+root_first AS (
+    SELECT a.ancestor_id AS root_id, MIN(u.first_used_at) AS first_used_at
+    FROM anc a
+    JOIN used u ON u.wallet_id = a.wallet_id
+    JOIN wallets r ON r.wallet_id = a.ancestor_id AND r.parent_wallet_id IS NULL
+    GROUP BY a.ancestor_id
 )
-WHERE parent_wallet_id IS NULL AND product_activated_at IS NULL
+UPDATE wallets SET product_activated_at = (
+    SELECT rf.first_used_at FROM root_first rf WHERE rf.root_id = wallets.wallet_id
+)
+WHERE parent_wallet_id IS NULL
+  AND product_activated_at IS NULL
+  AND wallet_id IN (SELECT root_id FROM root_first)
 """
 
 

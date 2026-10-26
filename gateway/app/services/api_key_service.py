@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
 
 # Wallets nest via parent_wallet_id (sponsor -> agent -> child agent); the
 # root walk is capped so a corrupt cycle cannot loop forever.
-_MAX_WALLET_DEPTH = 16
+# Bound on parent_wallet_id hops when resolving an account root. Shared with
+# migration 054's backfill (054_wallet_product_activation.MAX_WALLET_DEPTH).
+_MAX_WALLET_DEPTH = 64
 
 API_KEY_LENGTH = 32
 API_KEY_PREFIX_LENGTH = 8
@@ -568,6 +570,9 @@ class APIKeyService:
         """
         try:
             root_id = await self._root_wallet_id(session, key.wallet_id)
+            if root_id is None:
+                logger.debug("product_activation_root_unresolved")
+                return
             claimed = await session.execute(
                 update(WalletModel)
                 .where(
@@ -587,23 +592,34 @@ class APIKeyService:
             logger.debug("product_activation_claim_failed error=%s", type(exc).__name__)
 
     @staticmethod
-    async def _root_wallet_id(session: AsyncSession, wallet_id: str) -> str:
-        """Walk parent_wallet_id up to the root (bounded, cycle-safe)."""
+    async def _root_wallet_id(session: AsyncSession, wallet_id: str) -> str | None:
+        """Walk parent_wallet_id to the root, or None if it cannot be proven.
+
+        Returns None (and the caller skips the claim) when the chain is deeper
+        than ``_MAX_WALLET_DEPTH``, contains a cycle, or reaches a row this
+        session cannot read (missing, or hidden by a child-scoped RLS policy).
+        Never returns an intermediate wallet as the account.
+        """
         current = wallet_id
         seen = {current}
-        for _ in range(_MAX_WALLET_DEPTH):
-            parent = (
+        for _ in range(_MAX_WALLET_DEPTH + 1):
+            row = (
                 await session.execute(
                     select(col(WalletModel.parent_wallet_id)).where(
                         col(WalletModel.wallet_id) == current
                     )
                 )
-            ).scalar_one_or_none()
-            if not parent or parent in seen:
-                break
+            ).first()
+            if row is None:
+                return None
+            parent = row[0]
+            if not parent:
+                return current
+            if parent in seen:
+                return None
             seen.add(parent)
             current = parent
-        return current
+        return None
 
     async def rotate_key(
         self,

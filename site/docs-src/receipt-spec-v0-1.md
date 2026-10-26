@@ -7,6 +7,8 @@ description: Read the draft portable Receipt format and verification boundary.
 
 # Receipt spec v0.1
 
+Preview
+
 The [Receipt format v0.1](https://github.com/agentmiddleware/agent-middleware/blob/main/spec/receipt-v0.1.md) is a draft interoperability spec. Its version is the document version. The current gateway's portable response has a separate `schema_version` field set to `1.0`.
 
 Install the [Python SDK](/docs/python-sdk/) with its `verify` extra. Export your Receipt with a wallet key, then fetch the public key set:

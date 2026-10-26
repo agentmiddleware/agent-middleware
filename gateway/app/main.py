@@ -458,20 +458,28 @@ async def lifespan(app: FastAPI):
 
     # The design-partner adapter is configuration-only and fail-closed. When
     # enabled, startup must complete MCP initialize + tools/list and register
-    # the exact executable tool before the app advertises readiness.
+    # the configured executable tools before the app advertises readiness.
     startup_time = time.monotonic()
     from .services.upstream_mcp import register_configured_upstream_mcp
 
     upstream_service = await register_configured_upstream_mcp(settings=settings)
+    upstream_services = (
+        upstream_service
+        if isinstance(upstream_service, list)
+        else [upstream_service]
+        if upstream_service
+        else []
+    )
     logger.info(
         "app_startup",
         phase="mcp_upstream_registration_synced",
         enabled=bool(settings.MCP_UPSTREAM_ENABLED),
         public_tool_id=(
-            upstream_service.get("service_id") if upstream_service else None
+            upstream_services[0].get("service_id") if upstream_services else None
         ),
+        upstream_tool_count=len(upstream_services),
         upstream_origin=(
-            upstream_service.get("upstream_origin") if upstream_service else None
+            upstream_services[0].get("upstream_origin") if upstream_services else None
         ),
         startup_time_s=time.monotonic() - startup_time,
     )

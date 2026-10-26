@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -951,6 +952,106 @@ async def test_discovery_initializes_and_caches_exact_tool_schema() -> None:
     assert "Write a partner note" not in discovered.description
     assert discovered.input_schema["required"] == ["note"]
     assert adapter.discovered_tool is discovered
+
+
+@pytest.mark.anyio
+async def test_multi_tool_discovery_filters_allowlist_and_rejects_missing_name() -> (
+    None
+):
+    tools = [
+        Tool(name=name, inputSchema={"type": "object"})
+        for name in ("partner.read", "partner.write", "partner.admin")
+    ]
+    adapter = UpstreamMcpAdapter(
+        _configuration(
+            MCP_UPSTREAM_MULTI_TOOL_ENABLED=True,
+            MCP_UPSTREAM_TOOL_NAME="",
+            MCP_UPSTREAM_TOOL_ALLOWLIST="partner.read,partner.write",
+        )
+    )
+    _bind_session(adapter, FakeSession(tools=tools))
+    assert [tool.name for tool in await adapter.discover_tools()] == [
+        "partner.read",
+        "partner.write",
+    ]
+
+    missing = UpstreamMcpAdapter(
+        _configuration(
+            MCP_UPSTREAM_MULTI_TOOL_ENABLED=True,
+            MCP_UPSTREAM_TOOL_NAME="",
+            MCP_UPSTREAM_TOOL_ALLOWLIST="partner.missing",
+        )
+    )
+    _bind_session(missing, FakeSession(tools=tools))
+    with pytest.raises(UpstreamMcpConfigurationError) as exc_info:
+        await missing.discover_tools()
+    assert "absent upstream tool" in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_multi_tool_registration_binds_stable_ids_and_routes_each_name(
+    monkeypatch,
+) -> None:
+    names = ("partner.read", "partner.write", "partner/read")
+    session = FakeSession(
+        tools=[Tool(name=name, inputSchema={"type": "object"}) for name in names]
+    )
+
+    @asynccontextmanager
+    async def fake_session(self, **_kwargs):
+        yield session
+
+    monkeypatch.setattr(UpstreamMcpAdapter, "_session", fake_session)
+    registry = ServiceRegistry()
+    settings = _settings(
+        MCP_UPSTREAM_MULTI_TOOL_ENABLED=True,
+        MCP_UPSTREAM_TOOL_NAME="",
+    )
+    registered = await register_configured_upstream_mcp(
+        settings=settings, registry=registry
+    )
+    assert isinstance(registered, list)
+    assert len(registered) == 3
+    expected_ids = {
+        name: "partner.notes.write." + hashlib.sha256(name.encode("utf-8")).hexdigest()
+        for name in names
+    }
+    assert {item["service_id"] for item in registered} == set(expected_ids.values())
+    assert {item["upstream_tool_name"] for item in registered} == set(names)
+    assert all(item["credits_per_unit_exact"] == "7.50000000" for item in registered)
+    assert {
+        item["name"] for item in McpGenerator(registry).generate_tools_json()["tools"]
+    } == set(expected_ids.values())
+
+    claims = []
+
+    async def claim() -> None:
+        claims.append(True)
+
+    for name in names:
+        executor = registry.get_executor(expected_ids[name])
+        assert isinstance(executor, UpstreamMcpAdapter)
+        result = await executor.call_tool(
+            {"message": name},
+            invocation_id="invocation-1",
+            idempotency_key=f"key-{name}",
+            before_dispatch=claim,
+        )
+        assert result.is_error is False
+        assert session.call_arguments == {
+            "name": name,
+            "arguments": {"message": name},
+        }
+    assert len(claims) == 3
+
+
+def test_multi_tool_configuration_requires_explicit_mode() -> None:
+    with pytest.raises(UpstreamMcpConfigurationError) as exc_info:
+        _configuration(MCP_UPSTREAM_TOOL_ALLOWLIST="partner.read")
+    assert "requires multi-tool" in exc_info.value.detail
+    with pytest.raises(UpstreamMcpConfigurationError) as exc_info:
+        _configuration(MCP_UPSTREAM_MULTI_TOOL_ENABLED=True)
+    assert "must be empty" in exc_info.value.detail
 
 
 @pytest.mark.parametrize(

@@ -25,6 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from app.services.api_key_service import validate_api_key_hashing_config
 from .core.auth import AuthContext, debug_open_auth_armed, get_auth_context
 from .core.api_key_usage import APIKeyUsageMiddleware
 from .core.build_metadata import get_build_commit_sha, get_build_provenance
@@ -176,6 +177,7 @@ _SIGNING_KEY_REMEDIATION = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_trust_mode_guardrails(settings)
+    validate_api_key_hashing_config()
     warn_if_trust_mode_permissive(settings)
     # Operator-facing posture record. The unauthenticated /health/dependencies
     # payload no longer publishes per-service simulation modes when proof

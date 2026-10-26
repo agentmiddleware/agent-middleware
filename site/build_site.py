@@ -43,7 +43,7 @@ CONTACT_FIELDS = {
 BOOKING_TOKEN = "@@PUBLIC_BOOKING_URL@@"
 BOOKING_CONTEXT_TOKEN = "@@BOOKING_CONTEXT@@"
 PILOT_EMAIL_TOKEN = "@@PILOT_EMAIL_HREF@@"
-PILOT_EMAIL_BODY = """One-tool paid pilot enquiry
+PILOT_EMAIL_BODY = """One tool paid pilot enquiry
 
 1. Tool or action (synthetic or redacted only):
 2. What goes wrong on retry:
@@ -895,7 +895,7 @@ def render_site(output: Path, environment: dict[str, str]) -> None:
         "mailto:"
         + quote(text_replacements["@@PUBLIC_CONTACT_EMAIL@@"], safe="@")
         + "?subject="
-        + quote("One-tool paid pilot enquiry", safe="")
+        + quote("One tool paid pilot enquiry", safe="")
         + "&body="
         + quote(PILOT_EMAIL_BODY, safe="")
     )

@@ -61,11 +61,15 @@ def generate(count: int) -> int:
 
 def _probe(base_url: str, api_key: str) -> httpx.Response:
     # Stay on the named origin: an ambient proxy can move this key.
+    # The SSL helper reads CA variables; the client still ignores proxy variables.
+    custom_ca = os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR")
+    verify = httpx.create_ssl_context(trust_env=True) if custom_ca else True
     with httpx.Client(
         base_url=base_url,
         timeout=30,
         follow_redirects=False,
         trust_env=False,
+        verify=verify,
     ) as client:
         return client.get(CHECK_PATH, headers={"X-API-Key": api_key})
 

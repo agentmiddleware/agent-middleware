@@ -7,8 +7,10 @@ whether the two sampled responses match the expected statuses.
 
 import importlib.util
 from pathlib import Path
+import ssl
 import sys
 
+import certifi
 import httpx
 import pytest
 
@@ -140,14 +142,17 @@ def test_verify_allows_safe_origins_and_disables_redirects(
     rotate, monkeypatch, target, normalized
 ):
     _env(monkeypatch, url=target)
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
     requests = []
 
     class Client:
-        def __init__(self, *, base_url, timeout, follow_redirects, trust_env):
+        def __init__(self, *, base_url, timeout, follow_redirects, trust_env, verify):
             assert base_url == normalized
             assert timeout == 30
             assert follow_redirects is False
             assert trust_env is False
+            assert verify is True
 
         def __enter__(self):
             return self
@@ -165,3 +170,65 @@ def test_verify_allows_safe_origins_and_disables_redirects(
         (rotate.CHECK_PATH, {"X-API-Key": "old-key-value"}),
         (rotate.CHECK_PATH, {"X-API-Key": "new-key-value"}),
     ]
+
+
+@pytest.mark.parametrize("ca_source", ["file", "dir"])
+def test_probe_honors_custom_ca_without_ambient_proxy(rotate, monkeypatch, ca_source):
+    if ca_source == "file":
+        ca_path = certifi.where()
+        ca_arg = "cafile"
+        monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    else:
+        ca_path = ssl.get_default_verify_paths().capath
+        if ca_path is None or not Path(ca_path).is_dir():
+            pytest.skip("system CA directory unavailable")
+        ca_arg = "capath"
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.setenv(f"SSL_CERT_{ca_source.upper()}", ca_path)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+    seen = {}
+    real_create_default_context = ssl.create_default_context
+
+    def capture_context(*args, **kwargs):
+        seen["ca_path"] = kwargs.get(ca_arg)
+        return real_create_default_context(*args, **kwargs)
+
+    class Client:
+        def __init__(self, *, verify, trust_env, follow_redirects, **_kwargs):
+            seen.update(
+                verify=verify, trust_env=trust_env, follow_redirects=follow_redirects
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            return httpx.Response(204)
+
+    monkeypatch.setattr(ssl, "create_default_context", capture_context)
+    monkeypatch.setattr(rotate.httpx, "Client", Client)
+    assert rotate._probe("https://api.thisisatest.tech", "").status_code == 204
+    assert seen["ca_path"] == ca_path
+    assert seen["trust_env"] is False
+    assert seen["follow_redirects"] is False
+    assert isinstance(seen["verify"], ssl.SSLContext)
+    assert seen["verify"].verify_mode == ssl.CERT_REQUIRED
+    if ca_source == "file":
+        assert seen["verify"].get_ca_certs()
+
+
+def test_probe_invalid_ca_file_fails_before_client_or_key_send(
+    rotate, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing-ca.pem"))
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+
+    def unexpected_client(**_kwargs):
+        pytest.fail("invalid CA reached credential-bearing client")
+
+    monkeypatch.setattr(rotate.httpx, "Client", unexpected_client)
+    with pytest.raises(FileNotFoundError):
+        rotate._probe("https://api.thisisatest.tech", "")

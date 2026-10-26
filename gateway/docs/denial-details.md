@@ -49,10 +49,12 @@ not depend on the missing context (`permit_not_found`, `permit_expired`,
 
 ## Reason-code and remediation catalog
 
-This catalog lists stable refusal reasons from governed MCP calls and related
-admission paths. A terminal permit-bound denial can carry a signed receipt;
-an API-only error has no receipt. The signed reason names the failure class;
-use the signed `outcome` and credit fields to determine whether a debit was
+This catalog lists stable governed denials and the permit-issuance and
+idempotency admission reasons below. Generic API errors such as
+`invalid_api_key`, `rate_limited`, and `internal_error` use their own envelope
+codes. A terminal permit-bound denial can carry a signed receipt; an API-only
+error has no receipt. The signed reason names the failure class; use the
+signed `outcome` and credit fields to determine whether a debit was
 retained, refunded, or never made. API details and audit metadata remain
 adjacent context, not receipt-signed claims.
 
@@ -87,10 +89,29 @@ value to the signed, stable `permit_forbidden_field` reason code because field
 names are not constrained to the receipt's safe machine-code grammar. The
 adjacent `details.field` value identifies the rejected field.
 
+### Permit issuance
+
+These refusals happen before a permit is issued or an invocation can produce
+a signed denial receipt. They are API-only.
+
+| Reason code | Meaning | Remediation |
+|-------------|---------|-------------|
+| `action_permit_requires_trusted_issuance` | A caller tried to mint an action permit through ordinary permit issuance. | Use the trusted action-permit flow. |
+| `aggregate_value_cap_not_storable` | The aggregate cap cannot be represented in the permit store. | Supply a valid finite cap within the supported range. |
+| `demo_permit_out_of_bounds` | A demo key requested authority outside its wallet, tool, credit, or lifetime limits. | Issue a permit within the demo key's limits. |
+| `issuer_wallet_not_found` | The requested issuer wallet does not exist. | Use an existing authorized issuer wallet. |
+| `max_credits_must_be_positive` | The requested permit budget is zero or negative. | Supply a positive budget. |
+| `max_credits_not_storable` | The requested budget cannot be represented in the permit store. | Supply a valid finite budget within the supported range. |
+| `permit_budget_exceeds_wallet_balance` | The subject wallet cannot cover the requested permit budget. | Fund the wallet, lower the budget, or request additional authority. |
+| `permit_expired_at_creation` | The requested permit has already expired. | Set a future expiry and issue a new permit. |
+| `repeat_window_issuance_disabled` | Repeat-window permit issuance is disabled. | Omit the repeat window until issuance is enabled. |
+| `subject_wallet_access_denied` | The caller cannot issue a permit against the subject wallet. | Use a wallet the key may access. |
+| `subject_wallet_not_found` | The requested subject wallet does not exist. | Use an existing authorized subject wallet. |
+
 ### Admission, credentials, and action binding
 
-These refusals cover admission and action validation before dispatch. The two
-rows marked API-only occur before a signed denial receipt can be created.
+These refusals cover admission and action validation before dispatch. Rows
+marked API-only occur before a signed denial receipt can be created.
 
 | Reason code | Meaning | Remediation |
 |-------------|---------|-------------|
@@ -102,6 +123,12 @@ rows marked API-only occur before a signed denial receipt can be created.
 | `demo_tool_not_allowed` | Demo-tenant wallets may call only the demo allowlist. | Use an allowed demo tool or a non-demo wallet. |
 | `demo_auto_permit_budget_exceeded` | The tool costs more than the demo auto-permit credit cap. | Use a cheaper tool or a non-demo wallet. |
 | `idempotency_key_required_for_human_approval` | The wallet policy requires approval, and without a client idempotency key each retry would page a human again. | Send an `Idempotency-Key` and retry the same call with the same key to poll the decision. |
+| `idempotency_key_not_a_string` | API-only: a supplied request key is not a string. | Send a string key. |
+| `idempotency_key_blank` | API-only: the key is empty or only whitespace. | Send a non-blank key. |
+| `idempotency_key_too_long` | API-only: the key exceeds the allowed length. | Send a shorter key. |
+| `idempotency_key_control_characters` | API-only: the key contains a control character. | Remove control characters and resend. |
+| `idempotency_key_not_utf8` | API-only: an HTTP header key is not valid UTF-8. | Send a UTF-8 string key. |
+| `idempotency_key_conflict` | API-only: header and body supply different keys. | Send the same key in both places or use one source. |
 | `idempotency_key_reused` | API-only: the idempotency key was already used for a different request; no signed receipt is created. | Use a new idempotency key. |
 | `action_permit_required` | The tool has an action binding and needs an explicit action permit. | Mint an action permit for the tool and pass its ID. |
 | `action_tool_binding_required` | The permit is an action permit but the tool has no action binding. | Use a tool with an action binding or a standard permit. |
@@ -286,8 +313,7 @@ VERIFIED  rcpt-example
 
 ## Stable registry
 
-Every code above is registered in `app/core/reason_codes.py`
-(`REFUSAL_REASON_CODES`). The values are a public contract and never change;
-new refusals add a new code. `tests/test_reason_code_registry.py` pins the set,
-checks it against this page, and scans the gateway for unregistered refusal
-literals.
+Every code in the tables above is registered in `app/core/reason_codes.py`
+(`REFUSAL_REASON_CODES`). These values are a public contract; new refusals add
+a new code. `tests/test_reason_code_registry.py` pins the set, checks it
+against this page, and scans known refusal producers for unregistered literals.

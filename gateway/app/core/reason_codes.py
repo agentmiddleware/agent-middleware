@@ -1,21 +1,38 @@
 """Registry of stable refusal reason codes.
 
-Every machine-readable reason a governed call can be refused with is listed
-here. These strings are a public contract: they appear as the JSON-RPC error
-message or in REST ``detail.error``. Terminal permit-bound denials also sign
-the reason as ``reason_code`` on a receipt; earlier API errors have no receipt.
-Values must never be renamed; add a new code instead and document it in
-``docs/denial-details.md``.
+This catalog covers governed denials and the related permit-issuance and
+idempotency admission reasons documented in ``docs/denial-details.md``.
+Generic API errors such as ``invalid_api_key``, ``rate_limited``, and
+``internal_error`` are outside this catalog. Terminal permit-bound denials
+can sign ``reason_code`` on a receipt; earlier API errors have no receipt.
+Keep registered values stable:
+add a new code instead of renaming one.
 
 ``tests/test_reason_code_registry.py`` pins this set, checks it against the
-documentation, and scans ``app/`` so a refusal literal that is not registered
-fails CI.
+documentation, and scans known refusal producers for unregistered literals.
 """
 
 from __future__ import annotations
 
 #: Non-active permit statuses that surface as ``permit_<status>``.
 PERMIT_STATUS_REASON_CODES: frozenset[str] = frozenset({"permit_revoked"})
+
+#: Permit creation refusals returned by the permit API or auto-mint path.
+PERMIT_ISSUANCE_REASON_CODES: frozenset[str] = frozenset(
+    {
+        "action_permit_requires_trusted_issuance",
+        "aggregate_value_cap_not_storable",
+        "demo_permit_out_of_bounds",
+        "issuer_wallet_not_found",
+        "max_credits_must_be_positive",
+        "max_credits_not_storable",
+        "permit_budget_exceeds_wallet_balance",
+        "permit_expired_at_creation",
+        "repeat_window_issuance_disabled",
+        "subject_wallet_access_denied",
+        "subject_wallet_not_found",
+    }
+)
 
 #: Permit validation and recipient binding.
 PERMIT_REASON_CODES: frozenset[str] = frozenset(
@@ -93,8 +110,14 @@ ADMISSION_REASON_CODES: frozenset[str] = frozenset(
     {
         "demo_auto_permit_budget_exceeded",
         "demo_tool_not_allowed",
+        "idempotency_key_blank",
+        "idempotency_key_conflict",
+        "idempotency_key_control_characters",
+        "idempotency_key_not_a_string",
+        "idempotency_key_not_utf8",
         "idempotency_key_required_for_human_approval",
         "idempotency_key_reused",
+        "idempotency_key_too_long",
         "key_tool_not_allowed",
         "wallet_access_denied",
         "wallet_scoped_key_required",
@@ -149,6 +172,7 @@ DISPATCH_REASON_CODES: frozenset[str] = frozenset(
 
 REFUSAL_REASON_CODES: frozenset[str] = (
     PERMIT_STATUS_REASON_CODES
+    | PERMIT_ISSUANCE_REASON_CODES
     | PERMIT_REASON_CODES
     | ACTION_REASON_CODES
     | IGA_REASON_CODES

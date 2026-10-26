@@ -28,12 +28,15 @@ PINNED = frozenset(
         "action_payload_mismatch",
         "action_permit_denied",
         "action_permit_required",
+        "action_permit_requires_trusted_issuance",
         "action_quote_unsupported",
         "action_tool_binding_required",
+        "aggregate_value_cap_not_storable",
         "daily_spend_limit_exceeded",
         "daily_spend_unknown",
         "delivery_uncertain",
         "demo_auto_permit_budget_exceeded",
+        "demo_permit_out_of_bounds",
         "demo_tool_not_allowed",
         "duplicate_request_new_key",
         "failed_refunded",
@@ -60,21 +63,32 @@ PINNED = frozenset(
         "iga_token_not_yet_valid",
         "iga_tool_not_allowed",
         "iga_velocity_exceeded",
+        "idempotency_key_blank",
+        "idempotency_key_conflict",
+        "idempotency_key_control_characters",
+        "idempotency_key_not_a_string",
+        "idempotency_key_not_utf8",
         "idempotency_key_required_for_human_approval",
         "idempotency_key_reused",
+        "idempotency_key_too_long",
         "insufficient_funds",
         "invalid_action_binding",
         "invalid_action_digest",
         "invalid_action_permit_scope",
         "invalid_action_schema",
+        "issuer_wallet_not_found",
         "key_tool_not_allowed",
+        "max_credits_must_be_positive",
+        "max_credits_not_storable",
         "max_cost_per_action_exceeded",
         "permit_aggregate_value_cap_exceeded",
+        "permit_budget_exceeds_wallet_balance",
         "permit_budget_exceeded",
         "permit_constraint_unsupported_for_upstream",
         "permit_credits_invalid",
         "permit_denied",
         "permit_expired",
+        "permit_expired_at_creation",
         "permit_forbidden_field",
         "permit_key_mismatch",
         "permit_max_calls_exceeded",
@@ -91,10 +105,13 @@ PINNED = frozenset(
         "real_effects_required",
         "refund_failed",
         "response_rejected",
+        "repeat_window_issuance_disabled",
         "risk_tier_not_allowed",
         "service_category_not_allowed",
         "tool_execution_failed",
         "tool_not_allowed",
+        "subject_wallet_access_denied",
+        "subject_wallet_not_found",
         "upstream_pre_dispatch_failed",
         "upstream_prepare_failed",
         "upstream_returned_error",
@@ -125,6 +142,12 @@ def _string_literals(node: ast.AST | None) -> list[str]:
     """String constants in ``node``, including fallback and conditional forms."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [node.value]
+    if isinstance(node, ast.JoinedStr) and node.values:
+        first = node.values[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            prefix, separator, _ = first.value.partition(":")
+            if separator and prefix:
+                return [prefix.strip()]
     if isinstance(node, ast.BoolOp):
         return [s for value in node.values for s in _string_literals(value)]
     if isinstance(node, ast.IfExp):
@@ -146,6 +169,11 @@ def _scan_refusal_literals() -> dict[str, str]:
             name = _call_name(node)
             reason: ast.AST | None = None
             if name == "ToolPermissionDenied" and node.args:
+                reason = node.args[0]
+            elif (
+                name in {"PermitCreationRejectedError", "InvalidIdempotencyKeyError"}
+                and node.args
+            ):
                 reason = node.args[0]
             elif (
                 name in _REFUSAL_CALLS
@@ -221,6 +249,9 @@ def test_every_documented_code_is_registered() -> None:
 def test_every_refusal_literal_in_app_is_registered() -> None:
     found = _scan_refusal_literals()
     assert "permit_tool_not_allowed" in found  # the scan sees real call sites
+    assert "permit_forbidden_field" in found  # static prefix of a real f-string
+    assert "permit_budget_exceeds_wallet_balance" in found
+    assert "idempotency_key_conflict" in found
     assert "action_payload_mismatch" in found
     assert "iga_no_matching_role" in found
     unregistered = {

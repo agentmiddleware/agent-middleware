@@ -458,7 +458,13 @@ async def main(argv: list[str] | None = None) -> int:
     print(f"Target: {API_URL}")
     print(f"Run tag: {TAG}")
     print("=" * 64)
-    async with httpx.AsyncClient(base_url=API_URL, timeout=45) as c:
+    # Stay on the named origin: an ambient proxy or a redirect can move this key.
+    async with httpx.AsyncClient(
+        base_url=API_URL,
+        timeout=45,
+        trust_env=False,
+        follow_redirects=False,
+    ) as c:
         try:
             await run(c, s)
         except Exception as exc:  # noqa: BLE001 — a crash is a suite failure

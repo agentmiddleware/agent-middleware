@@ -91,7 +91,11 @@ def req(
         headers.update(extra_headers)
     r = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.build_opener(_NoRedirect()).open(r, timeout=30) as resp:
+        # An empty ProxyHandler ignores HTTP_PROXY so the key stays on API_URL.
+        with urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _NoRedirect(),
+        ).open(r, timeout=30) as resp:
             raw = resp.read().decode()
             status = resp.status
     except urllib.error.HTTPError as e:

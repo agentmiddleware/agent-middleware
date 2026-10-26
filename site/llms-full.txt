@@ -32,8 +32,8 @@ the fallback without JavaScript. Production keys are issued to design partners.
 The homepage's three-minute hosted demo uses https://github.com/agentmiddleware/amw-demo
 and Python 3.10+. It needs both api_key and wallet_id from the demo key
 response. The script issues a permit, calls partner.echo, retries with the
-same request key, and verifies the receipt offline. The curl invoke tab is
-marked Coming soon because the shorter server path is not deployed yet.
+same request key, and verifies the receipt offline. The curl invoke path is
+not published yet.
 
 ## Transaction loop
 

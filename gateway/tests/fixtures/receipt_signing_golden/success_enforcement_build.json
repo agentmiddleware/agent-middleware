@@ -1,0 +1,5 @@
+{
+  "signature_b64_over_test_seed": "ij5D5zN7SmVmsdfpNdnRfcqKxefmpBkMaNl3uaQ9kzDVXsHYm8bpCTv4+uILG2nJaLk377ziq/Vgd/+elmY5Bw==",
+  "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"enforcement_mode\":\"enforce\",\"gateway_build\":\"0123456789abcdef0123456789abcdef01234567\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"e3d1cb8f6369020b87a3ba8b48c3108e335312f145b952ca69481e893f7be090\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0005\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
+  "signing_input_sha256": "12bbc80225eede4e0e9912adf5cf9e9639823c3cb7681723ffa3be2ded27567e"
+}

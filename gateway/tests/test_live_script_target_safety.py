@@ -323,7 +323,16 @@ def test_script_cli_target_overrides_env_and_key_is_not_printed(
         created_with: list[str] = []
 
         class FakeAsyncClient:
-            def __init__(self, *, base_url: str, timeout: int) -> None:
+            def __init__(
+                self,
+                *,
+                base_url: str,
+                timeout: int,
+                trust_env: bool,
+                follow_redirects: bool,
+            ) -> None:
+                assert trust_env is False
+                assert follow_redirects is False
                 created_with.append(base_url)
 
             async def __aenter__(self) -> object:
@@ -559,3 +568,16 @@ def test_adversarial_battery_import_reads_no_target_or_key(
 
     assert module.API_URL == ""
     assert module.BOOTSTRAP_KEY is None
+
+
+def test_require_loopback_origin_rejects_remote_and_credentials() -> None:
+    from scripts.live_script_target import require_loopback_origin
+
+    assert require_loopback_origin("http://127.0.0.1:8000") == "http://127.0.0.1:8000"
+    assert require_loopback_origin("http://localhost:8000/") == "http://localhost:8000"
+    assert require_loopback_origin("http://[::1]:8000") == "http://[::1]:8000"
+    for remote in ("https://example.com", "http://example.com"):
+        with pytest.raises(LiveTargetError, match="loopback-only"):
+            require_loopback_origin(remote)
+    with pytest.raises(LiveTargetError, match="embedded credentials"):
+        require_loopback_origin("http://alice:s3cr3t@127.0.0.1:8000")

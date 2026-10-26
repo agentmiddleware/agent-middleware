@@ -536,7 +536,7 @@ test("float-bearing payload signed Python-style verifies", () => {
 
 test(
   "unexpected crypto backend failure raises instead of reporting invalid",
-  { skip: "edOk swallows every exception as a failed signature; Python raises VerificationError so a broken backend is never read as forgery" },
+  { skip: "needs an injectable verifier to simulate a crypto backend failure" },
   () => {
     assert.fail("needs an injectable verifier to simulate backend failure");
   },

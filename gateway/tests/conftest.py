@@ -77,6 +77,7 @@ DORMANT_SURFACE_TEST_MODULES = frozenset(
         "test_billing",
         "test_discovery_drift",
         "test_golden_path",
+        "test_idempotency_billing_permit_breaks",
         "test_kyc",
         "test_mcp_trust_mode",
         "test_mcp_upstream_governed",
@@ -442,6 +443,7 @@ CLEAN_DATABASE_TABLES = (
     "daily_balance_snapshots",
     "kyc_verifications",
     "refresh_tokens",
+    "api_key_usage_events",
     "api_keys",
     "key_rotation_logs",
     "service_registry",
@@ -454,21 +456,24 @@ CLEAN_DATABASE_TABLES = (
 
 @pytest_asyncio.fixture(scope="function")
 async def clean_database():
-    """Clean database tables between tests."""
+    """Clean database tables before and after tests that use this fixture."""
     require_disposable_test_database()
     from app.db.database import get_session_factory
 
-    factory = get_session_factory()
-    async with factory() as session:
-        for table in CLEAN_DATABASE_TABLES:
-            if table == "wallets":
-                await session.execute(
-                    text("UPDATE wallets SET parent_wallet_id = NULL")
-                )
-            await session.execute(text(f"DELETE FROM {table}"))
-        await session.commit()
+    async def clear_tables():
+        factory = get_session_factory()
+        async with factory() as session:
+            for table in CLEAN_DATABASE_TABLES:
+                if table == "wallets":
+                    await session.execute(
+                        text("UPDATE wallets SET parent_wallet_id = NULL")
+                    )
+                await session.execute(text(f"DELETE FROM {table}"))
+            await session.commit()
 
+    await clear_tables()
     yield
+    await clear_tables()
 
 
 @pytest.fixture

@@ -30,6 +30,11 @@ check, not a substitute for network-level egress policy.
 Setting ``ALLOW_PRIVATE_NETWORK_TARGETS=true`` (local development against
 mock servers) skips only the private-address checks; non-http(s) schemes
 such as ``file://`` and ``javascript:`` are never allowed.
+
+Non-canonical IPv4 literals (decimal ``2130706433``, hex ``0x7f000001``,
+octal ``0177.0.0.1``, short form ``127.1``) are decoded locally. Browsers
+treat those as addresses and do not ask DNS, so a resolver that answers
+unknown names with a public address must not be allowed to approve them.
 """
 
 from __future__ import annotations
@@ -46,6 +51,60 @@ from app.core.config import get_settings
 _ALLOWED_SCHEMES = {"http", "https"}
 _BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal"}
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal")
+# Schemes a browser uses inside a page without opening a socket.
+_PAGE_LOCAL_SCHEMES = frozenset({"about", "data", "blob"})
+
+
+def _ipv4_number(part: str) -> int | None:
+    """Parse one WHATWG IPv4 number, or None when the part is not one."""
+    if part == "":
+        return None
+    if len(part) >= 2 and part[:2] == "0x":
+        digits = part[2:]
+        alphabet = "0123456789abcdef"
+        base = 16
+    elif len(part) >= 2 and part[0] == "0":
+        digits = part[1:]
+        alphabet = "01234567"
+        base = 8
+    else:
+        digits = part
+        alphabet = "0123456789"
+        base = 10
+    if digits == "":
+        return 0
+    if any(character not in alphabet for character in digits):
+        return None
+    significant = digits.lstrip("0")
+    if len(significant) > 12:
+        return None
+    return int(significant or "0", base)
+
+
+def _parse_legacy_ipv4(host: str) -> ipaddress.IPv4Address | None:
+    """Decode a browser IPv4 literal that ``ipaddress`` would reject.
+
+    Returns None for ordinary hostnames so those still go through DNS.
+    """
+    parts = host.split(".")
+    if not parts or len(parts) > 4:
+        return None
+    numbers: list[int] = []
+    for part in parts:
+        number = _ipv4_number(part)
+        if number is None:
+            return None
+        numbers.append(number)
+    if any(number > 255 for number in numbers[:-1]):
+        return None
+    if numbers[-1] >= 256 ** (5 - len(numbers)):
+        return None
+    ipv4 = numbers[-1]
+    for index, number in enumerate(numbers[:-1]):
+        ipv4 += number * (256 ** (3 - index))
+    return ipaddress.IPv4Address(ipv4)
+
+
 # libc and browsers parse these as IPv4. ipaddress rejects them, so a guard
 # that only calls ip_address() then DNS will follow a public DNS answer
 # while the client dials the embedded private address (2130706433 is
@@ -180,8 +239,16 @@ async def pin_outbound_url(
     try:
         ipaddress.ip_address(host)
     except ValueError:
-        # Reject before DNS. A public answer must not hide an octal, hex,
-        # decimal, or shortened IPv4 literal the client will dial directly.
+        # Browsers accept decimal, hex, octal, and short IPv4 forms that
+        # ipaddress rejects, and they connect to the decoded address without
+        # DNS. Decode and pin the actual address they dial.
+        literal = _parse_legacy_ipv4(host)
+        if literal is not None:
+            if address_is_blocked(literal):
+                return "private_address_blocked", None
+            return None, str(literal)
+        # Reject ambiguous numeric hosts that could be interpreted by a
+        # client but could not be decoded safely here.
         if is_ambiguous_ipv4_literal(host):
             return "private_address_blocked", None
     else:
@@ -208,3 +275,18 @@ async def check_outbound_url(url: str) -> str | None:
     """Return a block reason for an agent-supplied outbound URL, or None."""
     reason, _ = await pin_outbound_url(url)
     return reason
+
+
+async def browser_request_block_reason(url: str) -> str | None:
+    """Block reason for one browser request or proposed redirect target.
+
+    about, data, and blob URLs stay inside the page and do not open a
+    socket. Every other URL uses ``check_outbound_url``.
+    """
+    try:
+        scheme = urlsplit(url).scheme.lower()
+    except ValueError:
+        return "unparseable_url"
+    if scheme in _PAGE_LOCAL_SCHEMES:
+        return None
+    return await check_outbound_url(url)

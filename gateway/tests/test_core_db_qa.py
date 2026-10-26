@@ -1195,6 +1195,7 @@ async def test_verify_required_schema_gate():
     from sqlmodel import SQLModel
 
     import app.db.models  # noqa: F401  (register tables)
+    from app.db.api_key_usage_view import CREATE_API_KEY_USAGE_DAILY_VIEW_SQL
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     try:
@@ -1202,6 +1203,10 @@ async def test_verify_required_schema_gate():
             await verify_required_schema(engine)
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
+        with pytest.raises(SchemaInitError, match="Required database views missing"):
+            await verify_required_schema(engine)
+        async with engine.begin() as conn:
+            await conn.exec_driver_sql(CREATE_API_KEY_USAGE_DAILY_VIEW_SQL)
         await verify_required_schema(engine)
     finally:
         await engine.dispose()

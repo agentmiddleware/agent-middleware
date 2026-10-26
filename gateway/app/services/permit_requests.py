@@ -46,9 +46,10 @@ from decimal import Decimal
 from typing import Any, cast
 
 import httpx
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.elements import ColumnElement
+from sqlmodel import col
 
 from app.core.config import get_settings, public_api_origin
 from app.core.credits import credit_amount_fits_storage
@@ -105,6 +106,12 @@ _TIMEOUT_MAX = 86400
 # A mint claim older than this is assumed to belong to a dead worker and may be
 # retaken. Safe because the reserved permit id makes the mint idempotent.
 _MINT_RECLAIM_SECONDS = 120
+# A permit-request row with no Sentinel id is either still being paged by the
+# worker that inserted it, or that worker died before the page was saved. A
+# younger row is left for the inserter so a concurrent retry does not page a
+# second time. An older row is paged on the next retry. The Sentinel key is
+# derived from the stored terms, so a repeated page names the same approval.
+_UNPAGED_RECLAIM_SECONDS = 120
 
 
 class PermitRequestError(Exception):
@@ -243,6 +250,81 @@ class PermitRequestService:
                 raise
             return existing, False
 
+    @staticmethod
+    def _is_unpaged(model: PermitRequestModel) -> bool:
+        return (
+            not model.simulated
+            and model.status == REQUEST_STATUS_PENDING
+            and model.sentinel_action_id is None
+        )
+
+    @staticmethod
+    def _unpaged_is_fresh(model: PermitRequestModel) -> bool:
+        return utc_now() - model.requested_at < timedelta(
+            seconds=_UNPAGED_RECLAIM_SECONDS
+        )
+
+    async def _delete_unpaged_claim(self, request_id: str) -> None:
+        """Drop a claim that never reached Sentinel, so the same key can retry."""
+        factory = get_session_factory()
+        async with factory() as session:
+            await session.execute(
+                delete(PermitRequestModel).where(
+                    cast(
+                        ColumnElement[bool],
+                        PermitRequestModel.request_id == request_id,
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        PermitRequestModel.status == REQUEST_STATUS_PENDING,
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        col(PermitRequestModel.sentinel_action_id).is_(None),
+                    ),
+                )
+            )
+            await session.commit()
+
+    async def _save_remote_annotation(self, model: PermitRequestModel) -> None:
+        """Persist the Sentinel id after the page, not before it."""
+        factory = get_session_factory()
+        async with factory() as session:
+            await session.execute(
+                update(PermitRequestModel)
+                .where(
+                    cast(
+                        ColumnElement[bool],
+                        PermitRequestModel.request_id == model.request_id,
+                    )
+                )
+                .values(
+                    sentinel_action_id=model.sentinel_action_id,
+                    approval_url=model.approval_url,
+                )
+            )
+            await session.commit()
+
+    async def _page_saved_claim(self, stored: PermitRequestModel) -> PermitRequestModel:
+        """Page Sentinel for a row this caller owns, and remove it if that fails."""
+        try:
+            await self._create_remote(stored)
+        except Exception:
+            await self._delete_unpaged_claim(stored.request_id)
+            raise
+        await self._save_remote_annotation(stored)
+        await self._notify_approvers(stored)
+        return stored
+
+    async def _resume_matching(self, stored: PermitRequestModel) -> PermitRequestModel:
+        """Continue a row whose terms already match this ask."""
+        if self._is_unpaged(stored):
+            if self._unpaged_is_fresh(stored):
+                # The paging worker may still fail and delete this claim.
+                raise HumanApprovalUnavailableError()
+            return await self._page_saved_claim(stored)
+        return await self.advance(stored)
+
     # --- request creation -----------------------------------------------
 
     async def create(
@@ -279,10 +361,10 @@ class PermitRequestService:
 
         existing = await self._load_by_idempotency(subject_wallet_id, idempotency_key)
         if existing is not None:
-            # Same key, different ask — the human reviewed the first one.
+            # Same key, different ask: the human reviewed the first one.
             if existing.request_hash != req_hash:
                 raise PermitRequestConflictError()
-            return await self.advance(existing)
+            return await self._resume_matching(existing)
 
         available, reason = human_approval_available()
         if not available:
@@ -325,14 +407,23 @@ class PermitRequestService:
             model.decided_by = "simulation"
             model.reason = "simulated_auto_approval"
             model.decided_at = now
-            stored, _created = await self._persist_new(model)
+            stored, created = await self._persist_new(model)
+            # A racing insert with different terms must not decide the winner.
+            if stored.request_hash != req_hash:
+                raise PermitRequestConflictError()
+            if not created:
+                return await self.advance(stored)
             return await self._decide(stored, REQUEST_STATUS_APPROVED)
 
-        await self._create_remote(model)
+        # Claim the unique key before paging. Otherwise two overlapping asks
+        # both call Sentinel, and the loser of the insert returns the winner's
+        # row without comparing terms.
         stored, created = await self._persist_new(model)
-        if created:
-            await self._notify_approvers(stored)
-        return stored
+        if stored.request_hash != req_hash:
+            raise PermitRequestConflictError()
+        if not created:
+            return await self._resume_matching(stored)
+        return await self._page_saved_claim(stored)
 
     async def _create_remote(self, model: PermitRequestModel) -> None:
         """Page the human via Sentinel; annotate the row with what came back."""
@@ -346,7 +437,9 @@ class PermitRequestService:
                     "issuer_wallet_id": model.issuer_wallet_id,
                     "allowed_tools": json.loads(model.allowed_tools_json),
                     "scopes": json.loads(model.scopes_json),
-                    "max_credits": str(model.max_credits),
+                    # The column keeps 8 decimal places. str() of the reloaded
+                    # value would be "20.00000000" where the ask was "20".
+                    "max_credits": format(model.max_credits.normalize(), "f"),
                     "permit_expires_at": model.permit_expires_at.isoformat(),
                     "requires_human_approval": model.requires_human_approval,
                     "justification": model.justification,

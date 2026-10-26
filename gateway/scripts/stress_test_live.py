@@ -91,7 +91,13 @@ def successful_receipt_id(response: httpx.Response) -> str:
 
 async def req(method, path, **kwargs):
     async with SEM:
-        async with httpx.AsyncClient(base_url=API_URL, timeout=30) as c:
+        # Stay on the named origin: an ambient proxy or a redirect can move this key.
+        async with httpx.AsyncClient(
+            base_url=API_URL,
+            timeout=30,
+            trust_env=False,
+            follow_redirects=False,
+        ) as c:
             headers = {"X-API-Key": API_KEY, "Content-Type": "application/json"}
             headers.update(kwargs.pop("headers", {}))
             return await c.request(method, path, headers=headers, **kwargs)

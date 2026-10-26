@@ -17,6 +17,8 @@ _USE_DEFAULT_STRUCTURED = object()
 class FakeSession:
     """Duck-typed GovernedEdgeSession: records calls, returns canned results."""
 
+    permit_id = "permit-test-1"
+
     def __init__(self, receipt_id="rcpt-1", structured=_USE_DEFAULT_STRUCTURED):
         self.calls = []
         self.receipt_id = receipt_id
@@ -85,6 +87,15 @@ def test_supplied_key_reused_blank_refused_absent_derived():
     asyncio.run(tool("d", idempotency_key=None))
     derived = session.calls[2]["idempotency_key"]
     assert derived and derived != "k1"
+
+
+@pytest.mark.parametrize("key", [42, "line\nbreak", "k" * 129])
+def test_invalid_caller_key_refused_before_dispatch(key):
+    session = FakeSession()
+    tool = _tool(session)
+    with pytest.raises(ValueError, match="idempotency_key"):
+        asyncio.run(tool("q", idempotency_key=key))
+    assert session.calls == []
 
 
 def test_reserved_key_is_not_sent_as_a_tool_argument():

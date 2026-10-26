@@ -709,9 +709,9 @@ async def test_claim3_induced_timeout_stays_charged_and_never_redispatches(
         assert Decimal(str(receipt["credits_charged"])) == Decimal("2")
 
         # Replay is byte-identical and did NOT redispatch.
-        assert _error_without_request_id(replay.json()["error"]) == _error_without_request_id(
-            error
-        )
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(error)
         assert executor.dispatch_count == 1
         assert len(executor.calls) == 1
 
@@ -770,9 +770,9 @@ async def test_claim3_pre_dispatch_death_refunds_to_net_zero_without_executing(
         assert Decimal(str(receipt["credits_charged"])) == Decimal("0")
 
         # Replay is identical and still never dispatched.
-        assert _error_without_request_id(replay.json()["error"]) == _error_without_request_id(
-            error
-        )
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(error)
         assert executor.dispatch_count == 0
 
         # Debit and its refund both landed; the net effect on spend is zero.

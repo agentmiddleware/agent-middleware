@@ -66,6 +66,13 @@ def _patch_resolve_key(monkeypatch: pytest.MonkeyPatch, exc: BaseException) -> N
     monkeypatch.setattr(mcp_router, "resolve_client_idempotency_key", explode)
 
 
+def _patch_adapter_invoke(monkeypatch: pytest.MonkeyPatch, exc: BaseException) -> None:
+    async def explode(_request: Any) -> Any:
+        raise exc
+
+    monkeypatch.setattr(mcp_router._mcp_adapter, "invoke", explode)
+
+
 BRANCHES: list[tuple[str, Callable[[pytest.MonkeyPatch], None]]] = [
     (
         "jsonrpc_error_response_invalid_key",
@@ -135,7 +142,9 @@ BRANCHES: list[tuple[str, Callable[[pytest.MonkeyPatch], None]]] = [
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(("branch", "patch"), BRANCHES, ids=[row[0] for row in BRANCHES])
+@pytest.mark.parametrize(
+    ("branch", "patch"), BRANCHES, ids=[row[0] for row in BRANCHES]
+)
 async def test_tools_call_except_branch_hides_exception_text(
     client, clean_database, monkeypatch, caplog, branch, patch
 ):
@@ -196,3 +205,134 @@ async def test_malformed_request_id_header_is_replaced_with_generated_hex(
         and SENTINEL in r.getMessage()
     ]
     assert matched, caplog.text
+
+
+# Fixed-value regression coverage for the REST invoke route and the governed
+# error path: fixed X-Request-ID headers, fixed marker strings, no randomness.
+REQUEST_ID_242_A = "req-fixed-242-0001"
+REQUEST_ID_242_B = "req-fixed-242-0002"
+REQUEST_ID_242_C = "req-fixed-242-0003"
+SENTINEL_242 = "REQ242_FIXED_SENTINEL_MUST_NOT_LEAK"
+SENTINEL_242_B = "REQ242_FIXED_SENTINEL_B_MUST_NOT_LEAK"
+TOOL_242 = "exposure-probe-242"
+
+
+def _rest_body(wallet_id: str, idempotency_key: str) -> dict[str, Any]:
+    return {
+        "name": TOOL_242,
+        "arguments": {},
+        "mcp_context": {
+            "wallet_id": wallet_id,
+            "idempotency_key": idempotency_key,
+        },
+    }
+
+
+@pytest.mark.anyio
+async def test_rest_invoke_permission_denied_hides_exception_text(
+    client, clean_database, monkeypatch, caplog
+):
+    provisioned = await provision_agent_wallet(client)
+    _patch_adapter_invoke(
+        monkeypatch,
+        mcp_router.ToolPermissionDenied(
+            SENTINEL_242,
+            receipt={"receipt_id": "rcpt-fixed-242-0001"},
+            details={"reason_code": "fixed-242-probe"},
+        ),
+    )
+
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        resp = await client.post(
+            f"/mcp/tools/{TOOL_242}/invoke",
+            json=_rest_body(provisioned["agent_wallet_id"], "req-242-fixed-key-0001"),
+            headers={
+                **provisioned["agent_headers"],
+                "X-Request-ID": REQUEST_ID_242_A,
+            },
+        )
+
+    assert resp.status_code == 403, resp.text
+    assert SENTINEL_242 not in resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "Permission denied"
+    assert detail["request_id"] == REQUEST_ID_242_A
+    assert detail["receipt"]["receipt_id"] == "rcpt-fixed-242-0001"
+    assert detail["details"] == {"reason_code": "fixed-242-probe"}
+    matched = [
+        r
+        for r in caplog.records
+        if r.name == LOGGER
+        and REQUEST_ID_242_A in r.getMessage()
+        and SENTINEL_242 in r.getMessage()
+    ]
+    assert matched, caplog.text
+    assert matched[0].exc_info is not None
+
+
+@pytest.mark.anyio
+async def test_rest_invoke_tool_failure_hides_exception_text(
+    client, clean_database, monkeypatch, caplog
+):
+    provisioned = await provision_agent_wallet(client)
+    _patch_adapter_invoke(monkeypatch, mcp_router.ToolExecutionError(SENTINEL_242_B))
+
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        resp = await client.post(
+            f"/mcp/tools/{TOOL_242}/invoke",
+            json=_rest_body(provisioned["agent_wallet_id"], "req-242-fixed-key-0002"),
+            headers={
+                **provisioned["agent_headers"],
+                "X-Request-ID": REQUEST_ID_242_B,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert SENTINEL_242_B not in resp.text
+    body = resp.json()
+    assert body["isError"] is True
+    assert body["content"] == [{"type": "text", "text": "Error: tool_execution_failed"}]
+    assert body["structuredContent"]["error"] == "tool_execution_failed"
+    assert body["structuredContent"]["request_id"] == REQUEST_ID_242_B
+    matched = [
+        r
+        for r in caplog.records
+        if r.name == LOGGER
+        and REQUEST_ID_242_B in r.getMessage()
+        and SENTINEL_242_B in r.getMessage()
+    ]
+    assert matched, caplog.text
+    assert matched[0].exc_info is not None
+
+
+@pytest.mark.anyio
+async def test_messages_governed_tool_error_hides_exception_text_fixed_id(
+    client, clean_database, monkeypatch, caplog
+):
+    provisioned = await provision_agent_wallet(client)
+    _patch_handle(monkeypatch, mcp_router.GovernedToolError(SENTINEL_242))
+
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        resp = await client.post(
+            "/mcp/messages",
+            json=MCP_CALL,
+            headers={
+                **provisioned["agent_headers"],
+                "X-Request-ID": REQUEST_ID_242_C,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert SENTINEL_242 not in resp.text
+    error = resp.json()["error"]
+    assert error["message"] == "internal_error"
+    assert error["data"]["request_id"] == REQUEST_ID_242_C
+    matched = [
+        r
+        for r in caplog.records
+        if r.name == LOGGER
+        and REQUEST_ID_242_C in r.getMessage()
+        and SENTINEL_242 in r.getMessage()
+    ]
+    assert matched, caplog.text
+    assert matched[0].exc_info is not None

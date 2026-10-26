@@ -391,9 +391,9 @@ async def test_frozen_wallet_denial_returns_receipt_and_replays_without_charge(
         assert receipt["credits_charged"] == "0"
 
         assert replay.status_code == 200
-        assert _error_without_request_id(replay.json()["error"]) == _error_without_request_id(
-            first_error
-        )
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert calls["count"] == 0
 
         stored_permit = await get_permit_service().get_permit(permit["permit_id"])
@@ -497,9 +497,9 @@ async def test_velocity_auto_freeze_returns_receipted_denial_and_releases_budget
         assert receipt["ledger_entry_id"] is None
         assert receipt["credits_charged"] == "0"
         assert replay.status_code == 200
-        assert _error_without_request_id(replay.json()["error"]) == _error_without_request_id(
-            first_error
-        )
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert calls["count"] == 0
 
         stored_permit = await get_permit_service().get_permit(permit["permit_id"])
@@ -1522,9 +1522,9 @@ async def test_insufficient_funds_returns_receipt_and_replays_without_charge(
         assert receipt["credits_charged"] == "0"
 
         assert replay.status_code == 200
-        assert _error_without_request_id(replay.json()["error"]) == _error_without_request_id(
-            first_error
-        )
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert calls["count"] == 0
 
         stored_permit = await get_permit_service().get_permit(permit["permit_id"])

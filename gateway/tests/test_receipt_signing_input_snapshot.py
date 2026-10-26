@@ -5,7 +5,7 @@ any change to the field set, key ordering, Decimal/datetime normalization,
 or the payload_hash derivation changes what an offline verifier must
 reconstruct, and silently invalidates every receipt already issued.
 
-This test freezes five representative receipts to byte-exact canonical
+This test freezes representative receipts to byte-exact canonical
 JSON, and freezes the Ed25519 signature over those bytes under a fixed
 test seed (Ed25519 is deterministic, so the signature is a second pin on
 the same bytes).
@@ -88,6 +88,24 @@ CASES = {
             action_schema_version="1",
             action_public_tool_id="golden-path-echo",
             action_upstream_binding_hash="d" * 64,
+        ),
+        True,
+    ),
+    # Migration 052 signs enforcement_mode and gateway_build only when set.
+    # Pin both populated, and enforcement_mode alone, so a refactor cannot
+    # drop or reorder either field while the omitted-field goldens stay green.
+    "success_enforcement_build": (
+        _base_model(
+            receipt_id="rcpt_golden_0005",
+            enforcement_mode="enforce",
+            gateway_build="0123456789abcdef0123456789abcdef01234567",
+        ),
+        True,
+    ),
+    "success_permissive": (
+        _base_model(
+            receipt_id="rcpt_golden_0006",
+            enforcement_mode="permissive",
         ),
         True,
     ),

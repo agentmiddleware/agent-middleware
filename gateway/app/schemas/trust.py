@@ -320,6 +320,10 @@ class ReceiptResponse(ActionPermitFields):
     credits_charged: Decimal
     outcome: str
     reason_code: str | None = None
+    # "enforce" when trust mode refuses unpermitted calls, else "permissive".
+    enforcement_mode: str | None = None
+    # Commit SHA of the gateway image that signed the receipt, when known.
+    gateway_build: str | None = None
     audit_event_id: str | None
     # Human approval that authorized this invoke, when the permit required one.
     approval_id: str | None = None

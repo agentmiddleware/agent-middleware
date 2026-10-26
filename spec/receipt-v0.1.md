@@ -43,10 +43,12 @@ of its own, is a `mismatch`.
 | `created_at` | ISO-8601 UTC |
 | `alg`, `kid`, `payload_hash` | See [`README.md`](README.md) |
 
-Additional members (approval ids, action bindings, constraint denials) are
-additive, as for permits. `reason_code`, `approval_id`,
-`constraints_evaluated`, and the action-binding members are omitted when they
-have no value. `idempotency_record_id` and `dispatch_attempt_id` are omitted
+Additional members (approval ids, action bindings, constraint denials,
+enforcement posture) are additive, as for permits. `enforcement_mode` is
+`"enforce"` or `"permissive"`, the trust posture the issuing gateway enforced.
+`gateway_build` is the commit SHA of the issuing gateway build. `reason_code`,
+`approval_id`, `constraints_evaluated`, `enforcement_mode`, `gateway_build`,
+and the action-binding members are omitted when they have no value. `idempotency_record_id` and `dispatch_attempt_id` are omitted
 unless that signature included linkage, so an older success receipt can omit
 both. `response_hash` and `ledger_entry_id` are not omitted: they are JSON
 `null` instead. Dropping a null changes the signed bytes.

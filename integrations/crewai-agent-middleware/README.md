@@ -58,6 +58,10 @@ and authentication settings. The tool owns and closes the sync client; the calle
 still closes the borrowed client. A sync call with a borrowed client but no
 factory returns an error before sending a request.
 
+Direct `run()` callers now receive exceptions for terminal gateway errors
+instead of `"Error: ..."` strings. Handle those exceptions when calling the
+tool directly. CrewAI dispatch records them as non-retryable tool failures.
+
 ## Operations
 
 ### Discover Tools
@@ -140,5 +144,5 @@ b2a_tool = CrewAIB2ATool(
 ## Requirements
 
 - Python 3.11+
-- CrewAI 0.1.0+
+- CrewAI 1.15.30+
 - httpx 0.25.0+

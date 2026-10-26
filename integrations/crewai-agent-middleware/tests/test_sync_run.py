@@ -30,6 +30,7 @@ def _tool(handler, *, sync: bool = True) -> tuple[CrewAIB2ATool, B2AClient]:
             base_url="http://127.0.0.1:9",
             transport=transport,
         )
+        tool.sync_client_factory = lambda: tool._sync_client
     return tool, client
 
 
@@ -357,7 +358,9 @@ def test_sync_call_inside_running_loop_does_not_block_it():
     caller.join(timeout=2)
     try:
         assert not caller.is_alive(), "sync call blocked its caller's event loop"
-        assert result and "running event loop" in result[0]
+        assert result == [
+            "Error: sync_client_factory is required for sync calls with a borrowed client"
+        ]
         assert not seen.is_set()
     finally:
         tool.close()

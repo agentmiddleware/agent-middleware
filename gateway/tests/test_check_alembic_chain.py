@@ -219,3 +219,153 @@ def test_usage_errors_exit_two(arguments):
         text=True,
     )
     assert completed.returncode == 2
+
+
+def _numbered(directory):
+    return sorted(
+        path
+        for path in directory.glob("[0-9]*_*.py")
+        if path.stem == _metadata(path)["revision"]
+    )
+
+
+def _rewrite_line(path, name, replacement):
+    lines = path.read_text().splitlines(keepends=True)
+    for number, line in enumerate(lines):
+        if re.match(rf"{name}\b\s*[:=]", line):
+            lines[number] = replacement
+            path.write_text("".join(lines))
+            return
+    raise AssertionError(f"no {name} in {path}")
+
+
+def test_legacy_duplicate_prefix_allowlist_is_exact(tmp_path):
+    directory = _copy(tmp_path)
+    source = _numbered(directory)[-1]
+    moved = directory / ("025_" + source.name.split("_", 1)[1])
+    source.rename(moved)
+    status, output = _run(directory)
+    assert status == 1
+    assert any(
+        "duplicate numeric prefix 025:" in finding and moved.name in finding
+        for finding in output["findings"]
+    )
+
+
+def test_new_duplicate_prefix_outside_allowlist_fails(tmp_path):
+    directory = _copy(tmp_path)
+    numbered = _numbered(directory)
+    target, source = numbered[-2], numbered[-1]
+    prefix = target.name.split("_", 1)[0]
+    moved = directory / (prefix + "_" + source.name.split("_", 1)[1])
+    source.rename(moved)
+    status, output = _run(directory)
+    assert status == 1
+    assert any(
+        f"duplicate numeric prefix {prefix}:" in finding
+        for finding in output["findings"]
+    )
+
+
+def test_legacy_stem_mismatch_allowlist_is_keyed_by_exact_filename(tmp_path):
+    directory = _copy(tmp_path)
+    legacy = directory / "022_refresh_tokens.py"
+    renamed = directory / "022_refresh_tokens_renamed.py"
+    legacy.rename(renamed)
+    status, output = _run(directory)
+    assert status == 1
+    assert any(
+        f"{renamed.name}: filename stem differs" in finding
+        for finding in output["findings"]
+    )
+
+
+def test_new_stem_mismatch_fails(tmp_path):
+    directory = _copy(tmp_path)
+    source = _numbered(directory)[len(_numbered(directory)) // 2]
+    renamed = directory / f"{source.stem}_renamed.py"
+    source.rename(renamed)
+    status, output = _run(directory)
+    assert status == 1
+    assert any(
+        f"{renamed.name}: filename stem differs" in finding
+        for finding in output["findings"]
+    )
+
+
+def test_syntax_error_is_reported(tmp_path):
+    directory = _copy(tmp_path)
+    path = directory / _files()[-1].name
+    path.write_text(path.read_text() + "\ndef broken(:\n")
+    status, output = _run(directory)
+    assert status == 1
+    assert any(
+        f"{path.name}: cannot parse" in finding for finding in output["findings"]
+    )
+
+
+def test_missing_revision_assignment_is_reported(tmp_path):
+    directory = _copy(tmp_path)
+    path = directory / _files()[-1].name
+    _rewrite_line(path, "revision", "\n")
+    status, output = _run(directory)
+    assert status == 1
+    assert any(
+        f"{path.name}: expected one module-level revision assignment" in finding
+        for finding in output["findings"]
+    )
+
+
+def test_duplicate_revision_assignment_is_reported(tmp_path):
+    directory = _copy(tmp_path)
+    path = directory / _files()[-1].name
+    path.write_text(
+        path.read_text() + f"\nrevision = {_metadata(path)['revision']!r}\n"
+    )
+    status, output = _run(directory)
+    assert status == 1
+    assert any(
+        f"{path.name}: expected one module-level revision assignment" in finding
+        for finding in output["findings"]
+    )
+
+
+def test_non_literal_down_revision_is_reported(tmp_path):
+    directory = _copy(tmp_path)
+    path = directory / _files()[-1].name
+    _rewrite_line(path, "down_revision", "down_revision = revision\n")
+    status, output = _run(directory)
+    assert status == 1
+    assert any(
+        f"{path.name}: down_revision must be a literal" in finding
+        for finding in output["findings"]
+    )
+
+
+def test_cycle_error_names_every_revision(tmp_path):
+    directory = _copy(tmp_path)
+    numbered = _numbered(directory)
+    first, second = numbered[-2], numbered[-1]
+    _rewrite_down(first, _metadata(second)["revision"])
+    status, output = _run(directory)
+    assert status == 1
+    ids = sorted([_metadata(first)["revision"], _metadata(second)["revision"]])
+    expected = f"cycle detected: {ids[0]} -> {ids[1]} -> {ids[0]}"
+    assert any(finding.endswith(expected) for finding in output["findings"])
+
+
+def test_unnumbered_revision_only_in_one_chain_is_reported(tmp_path):
+    left = _copy(tmp_path / "left")
+    right = _copy(tmp_path / "right")
+    last = _numbered(left)[-1]
+    revision = _metadata(last)["revision"]
+    unnumbered = left / last.name.split("_", 1)[1]
+    last.rename(unnumbered)
+    (right / last.name).unlink()
+    status, output = _run(left, "--compare", right)
+    assert status == 1
+    assert not any("numeric prefix" in f and "only in" in f for f in output["findings"])
+    assert (
+        f"revision {revision} only in first chain ({unnumbered.name})"
+        in output["findings"]
+    )

@@ -2,6 +2,12 @@
 
 Usage: python scripts/check_alembic_chain.py [VERSIONS_DIR] [--compare OTHER_VERSIONS_DIR] [--json]
 The default directory is gateway/migrations/versions, relative to this file.
+
+Only module-level ``revision`` and ``down_revision`` literals are read.
+``branch_labels`` and ``depends_on`` are ignored: they are not checked and do
+not affect bases, heads, branchpoints, cycles, or --compare results.
+In --compare mode every revision id present in only one chain is reported,
+whether or not its filename has a numeric prefix.
 """
 
 import argparse
@@ -142,6 +148,8 @@ def _read_chain(directory: Path):
         for data in files.values()
     ):
         findings.append("merge revision found; chain is not linear")
+    for cycle in _cycles(files):
+        findings.append("cycle detected: " + " -> ".join(cycle + [cycle[0]]))
     if len(bases) == 1:
         visited = set()
         current = bases[0]
@@ -149,8 +157,6 @@ def _read_chain(directory: Path):
             visited.add(current)
             successors = children[current]
             current = successors[0] if len(successors) == 1 else None
-        if current in visited:
-            findings.append(f"cycle detected at {current}")
         if len(visited) != len(files):
             findings.append(
                 "chain is disconnected or cyclic: "
@@ -163,6 +169,29 @@ def _read_chain(directory: Path):
         "files": files,
         "prefixes": prefixes,
     }
+
+
+def _cycles(files):
+    """Return each down_revision cycle once, as revisions in child-to-parent order."""
+    cycles = []
+    seen = set()
+    for start in sorted(files):
+        path = []
+        index = {}
+        current = start
+        while current in files and current not in seen:
+            if current in index:
+                cycle = path[index[current] :]
+                pivot = cycle.index(min(cycle))
+                cycles.append(cycle[pivot:] + cycle[:pivot])
+                break
+            index[current] = len(path)
+            path.append(current)
+            down = files[current]["down"]
+            parents = (down,) if isinstance(down, str) else down or ()
+            current = parents[0] if len(parents) == 1 else None
+        seen.update(path)
+    return cycles
 
 
 def _digest(contents: bytes) -> str:
@@ -187,6 +216,16 @@ def _compare(left, right):
     ):
         for prefix in sorted(only):
             findings.append(f"numeric prefix {prefix:03d} only in {label} chain")
+    for label, only in (
+        ("first", left["files"].keys() - right["files"].keys()),
+        ("other", right["files"].keys() - left["files"].keys()),
+    ):
+        for revision in sorted(only):
+            files = left["files"] if label == "first" else right["files"]
+            findings.append(
+                f"revision {revision} only in {label} chain "
+                f"({files[revision]['path'].name})"
+            )
     for revision in sorted(left["files"].keys() & right["files"].keys()):
         if _digest(left["files"][revision]["contents"]) != _digest(
             right["files"][revision]["contents"]

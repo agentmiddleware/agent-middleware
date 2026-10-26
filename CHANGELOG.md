@@ -4,11 +4,14 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ## [Unreleased]
 
-- API keys (breaking): key digests are HMAC-SHA256 with a server pepper
-  (`API_KEY_HASH_PEPPER`); the plain SHA-256 lookup is removed, so all existing
-  keys stop working at deploy and must be reissued. Production-like
-  environments refuse to boot without the pepper; local/test use a public dev
-  pepper. See docs/api-key-hashing.md.
+- API keys (breaking): keys are stored as salted, peppered scrypt hashes
+  (`API_KEY_HASH_PEPPER`) and found by a non-secret indexed lookup id
+  (migration 054). A bounded 60 s cache of recent verifications keeps repeat
+  requests cheap. The plain SHA-256 lookup is removed, so all existing keys
+  stop working at deploy and must be reissued. Agent-comms owner digests use
+  peppered scrypt too. Production-like environments refuse to boot without
+  the pepper; local and test use a public dev pepper. See
+  docs/api-key-hashing.md.
 - Upstream MCP: optional multi-tool discovery and exact-name allowlist with
   stable public IDs, per-tool permit scope, and unchanged per-call credits.
 - Initial import of the gateway (Fair Source, FSL-1.1-ALv2), the Python SDK and

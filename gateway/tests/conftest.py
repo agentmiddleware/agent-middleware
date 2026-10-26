@@ -187,7 +187,8 @@ require_disposable_test_database()
 os.environ.setdefault("STATE_BACKEND", "memory")
 # Fixed, non-secret test pepper so tests that switch to a production-like
 # ENVIRONMENT still hash API keys (production fails closed without one).
-os.environ.setdefault("API_KEY_HASH_PEPPER", "amw-test-suite-pepper")
+# Fixed, non-secret TEST-ONLY pepper (not real data).
+os.environ.setdefault("API_KEY_HASH_PEPPER", "TEST-ONLY-amw-suite-pepper-not-a-secret")
 # Ephemeral SQLite create_all even when a job sets ENVIRONMENT=production
 # (production_trust CI). Never applies to Postgres — see allows_metadata_create_all.
 os.environ.setdefault("ALLOW_METADATA_CREATE_ALL", "true")
@@ -533,3 +534,13 @@ def enforce_naive_utc_datetime_columns():
     finally:
         event.remove(Session, "before_flush", assert_naive_datetime_values)
         event.remove(Engine, "before_execute", assert_naive_statement_parameters)
+
+
+@pytest.fixture(autouse=True)
+def _clear_verified_api_key_cache():
+    """Keep the in-process verified-key cache from leaking across tests."""
+    from app.services.api_key_service import clear_verified_key_cache
+
+    clear_verified_key_cache()
+    yield
+    clear_verified_key_cache()

@@ -27,6 +27,8 @@ from ..core.durable_state import get_durable_state
 from ..core.runtime_mode import is_simulation, require_simulation
 from .agent_comms_store import CommsMessageStore, compute_payload_hash
 
+from .api_key_service import APIKeyHashingUnavailable, _api_key_hash_pepper
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,11 +123,34 @@ class RegisteredAgent:
 # durable registry holds no secrets.
 
 _OWNER_WALLET_PREFIX = "wallet:"
-_DIGEST_PREFIX = "sha256:"
+_DIGEST_PREFIX = "scrypt:"
+# Records written before the scrypt switch. They are treated as already
+# scrubbed (never re-hashed) but no longer match any caller.
+_RETIRED_DIGEST_PREFIXES = ("sha256:",)
+_OWNER_DIGEST_DOMAIN = b"amw-agent-comms-owner-v1:"
 
 
 def _digest(secret: str) -> str:
-    return _DIGEST_PREFIX + hashlib.sha256(secret.encode()).hexdigest()
+    """Deterministic peppered scrypt digest of a credential.
+
+    Ownership is an equality match, so this digest uses a fixed salt (domain
+    tag plus the API-key pepper) instead of a per-record random one; the
+    pepper keeps a registry dump from being attacked offline. Production-like
+    environments without the pepper fail closed.
+    """
+    pepper = _api_key_hash_pepper()
+    if pepper is None:
+        raise APIKeyHashingUnavailable("API_KEY_HASH_PEPPER is not set")
+    derived = hashlib.scrypt(
+        secret.encode("utf-8"),
+        salt=_OWNER_DIGEST_DOMAIN + pepper,
+        n=2**14,
+        r=8,
+        p=1,
+        maxmem=64 * 1024 * 1024,
+        dklen=32,
+    )
+    return _DIGEST_PREFIX + derived.hex()
 
 
 def owner_identity(auth: AuthContext) -> str:
@@ -135,7 +160,21 @@ def owner_identity(auth: AuthContext) -> str:
     return _digest(auth.raw_key)
 
 
-def caller_owns_agent(agent: RegisteredAgent, auth: AuthContext) -> bool:
+def owner_candidates(auth: AuthContext) -> list[str]:
+    """Identities ``auth`` may own records under; compute once per request."""
+    candidates = [owner_identity(auth)]
+    if auth.source != "jwt":
+        digest = _digest(auth.raw_key)
+        if digest not in candidates:
+            candidates.append(digest)
+    return candidates
+
+
+def caller_owns_agent(
+    agent: RegisteredAgent,
+    auth: AuthContext,
+    candidates: list[str] | None = None,
+) -> bool:
     """True only when ``auth`` is the tenant that registered ``agent``.
 
     An owner-less record matches nobody. A record registered before ownership
@@ -146,9 +185,8 @@ def caller_owns_agent(agent: RegisteredAgent, auth: AuthContext) -> bool:
     """
     if not agent.owner_key:
         return False
-    candidates = [owner_identity(auth)]
-    if auth.source != "jwt":
-        candidates.append(_digest(auth.raw_key))
+    if candidates is None:
+        candidates = owner_candidates(auth)
     stored = agent.owner_key.encode()
     return any(hmac.compare_digest(stored, c.encode()) for c in candidates)
 
@@ -194,11 +232,13 @@ class AgentRegistry:
         """
         changed = False
         if agent.owner_key and not agent.owner_key.startswith(
-            (_OWNER_WALLET_PREFIX, _DIGEST_PREFIX)
+            (_OWNER_WALLET_PREFIX, _DIGEST_PREFIX, *_RETIRED_DIGEST_PREFIXES)
         ):
             agent.owner_key = _digest(agent.owner_key)
             changed = True
-        if agent.api_key and not agent.api_key.startswith(_DIGEST_PREFIX):
+        if agent.api_key and not agent.api_key.startswith(
+            (_DIGEST_PREFIX, *_RETIRED_DIGEST_PREFIXES)
+        ):
             agent.api_key = _digest(agent.api_key)
             changed = True
         return changed

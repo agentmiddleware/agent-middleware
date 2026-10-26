@@ -5,16 +5,22 @@ Handles API key creation, rotation, and revocation for compromised wallets.
 Supports automatic rotation on suspicious activity detection.
 
 Architecture:
-1. Keys are stored as HMAC-SHA256 digests keyed by a server pepper
-   (API_KEY_HASH_PEPPER); there is no unkeyed fallback
+1. Keys are stored as salted scrypt hashes keyed by a server pepper
+   (API_KEY_HASH_PEPPER) and found by a non-secret indexed lookup id; there
+   is no unkeyed fallback (see docs/api-key-hashing.md)
 2. Only the key prefix and masked key are ever shown
 3. Rotation creates new key and optionally revokes old ones
 4. Emergency revocation immediately invalidates all keys
 """
 
+import asyncio
+import base64
 import hashlib
 import hmac
 import json
+import threading
+import time
+from collections import OrderedDict
 import os
 import secrets
 import logging
@@ -45,6 +51,10 @@ logger = logging.getLogger(__name__)
 
 API_KEY_LENGTH = 32
 API_KEY_PREFIX_LENGTH = 8
+# Non-secret lookup id: "b2a_" plus 12 random characters (72 bits) of the key.
+# The remaining ~31 characters (~184 bits) stay secret. Stored and indexed so
+# a slow, salted hash can be verified against a single row.
+API_KEY_LOOKUP_LENGTH = 16
 
 
 def _demo_attribution_field(
@@ -148,12 +158,64 @@ def validate_api_key_hashing_config() -> None:
         )
 
 
-def _peppered_digest(pepper: bytes, presented_key: str) -> str:
-    return hmac.new(pepper, presented_key.encode("utf-8"), hashlib.sha256).hexdigest()
+# scrypt cost: N=2**14, r=8, p=1 (16 MiB, the RFC 7914 interactive setting).
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_DKLEN = 32
+_SCRYPT_MAXMEM = 64 * 1024 * 1024
+_SALT_BYTES = 16
+_HASH_SCHEME = "scrypt"
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _unb64(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _scrypt(
+    pepper: bytes, salt: bytes, presented_key: str, n: int, r: int, p: int
+) -> bytes:
+    # The pepper is part of the salt, so a database dump alone cannot be
+    # attacked offline; the per-row random salt makes every hash unique.
+    return hashlib.scrypt(
+        presented_key.encode("utf-8"),
+        salt=pepper + salt,
+        n=n,
+        r=r,
+        p=p,
+        maxmem=_SCRYPT_MAXMEM,
+        dklen=_SCRYPT_DKLEN,
+    )
+
+
+def _encode_hash(salt: bytes, derived: bytes) -> str:
+    return f"{_HASH_SCHEME}${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${_b64(salt)}${_b64(derived)}"
+
+
+def _verify_hash(pepper: bytes, stored: str, presented_key: str) -> bool:
+    """Constant-time check of ``presented_key`` against a stored scrypt hash."""
+    try:
+        scheme, n, r, p, salt_text, derived_text = stored.split("$")
+        if scheme != _HASH_SCHEME:
+            return False
+        salt, expected = _unb64(salt_text), _unb64(derived_text)
+        derived = _scrypt(pepper, salt, presented_key, int(n), int(r), int(p))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(derived, expected)
+
+
+def api_key_lookup_id(full_key: str) -> str:
+    """Non-secret, indexed lookup id for ``full_key`` (its first 16 chars)."""
+    return full_key[:API_KEY_LOOKUP_LENGTH]
 
 
 def hash_api_key(full_key: str) -> str:
-    """HMAC-SHA256 digest of ``full_key`` under the server pepper.
+    """Salted, peppered scrypt hash of ``full_key`` in PHC-like text form.
 
     Production-like environments without a pepper fail closed.
     """
@@ -162,7 +224,81 @@ def hash_api_key(full_key: str) -> str:
         raise APIKeyHashingUnavailable(
             f"{API_KEY_HASH_PEPPER_ENV} is not set; refusing to hash API keys."
         )
-    return _peppered_digest(pepper, full_key)
+    salt = secrets.token_bytes(_SALT_BYTES)
+    return _encode_hash(
+        salt, _scrypt(pepper, salt, full_key, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P)
+    )
+
+
+class _VerifiedKeyCache:
+    """Bounded TTL cache of recent successful scrypt verifications.
+
+    Entries are keyed by the stored row hash (already non-reversible) and hold
+    a cheap verifier of the presented key: scrypt at minimal cost salted with
+    a per-process random secret that is never persisted or logged. A hit
+    still requires the presented key to match that verifier and the same
+    pepper to be in use, and the row is still read from the database on every
+    request, so revocation, expiry and use limits apply immediately. Only the
+    expensive KDF is skipped.
+    """
+
+    def __init__(self, max_entries: int = 4096, ttl_seconds: float = 60.0) -> None:
+        self._max = max_entries
+        self._ttl = ttl_seconds
+        self._secret = secrets.token_bytes(32)
+        self._entries: OrderedDict[str, tuple[float, bytes, bytes]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _fast(self, presented_key: str) -> bytes:
+        return hashlib.scrypt(
+            presented_key.encode("utf-8"), salt=self._secret, n=2, r=1, p=1, dklen=32
+        )
+
+    def hit(self, stored_hash: str, pepper: bytes, presented_key: str) -> bool:
+        with self._lock:
+            entry = self._entries.get(stored_hash)
+            if entry is None:
+                return False
+            expires, cached_pepper, verifier = entry
+            if expires < time.monotonic():
+                del self._entries[stored_hash]
+                return False
+        return hmac.compare_digest(cached_pepper, pepper) and hmac.compare_digest(
+            verifier, self._fast(presented_key)
+        )
+
+    def remember(self, stored_hash: str, pepper: bytes, presented_key: str) -> None:
+        verifier = self._fast(presented_key)
+        with self._lock:
+            self._entries[stored_hash] = (
+                time.monotonic() + self._ttl,
+                pepper,
+                verifier,
+            )
+            self._entries.move_to_end(stored_hash)
+            while len(self._entries) > self._max:
+                self._entries.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+_verified_keys = _VerifiedKeyCache()
+
+
+def clear_verified_key_cache() -> None:
+    _verified_keys.clear()
+
+
+async def _verify_presented_key(pepper: bytes, stored: str, presented_key: str) -> bool:
+    if _verified_keys.hit(stored, pepper, presented_key):
+        return True
+    # hashlib.scrypt releases the GIL; keep the event loop free while it runs.
+    ok = await asyncio.to_thread(_verify_hash, pepper, stored, presented_key)
+    if ok:
+        _verified_keys.remember(stored, pepper, presented_key)
+    return ok
 
 
 def generate_api_key() -> tuple[str, str, str]:
@@ -287,6 +423,7 @@ class APIKeyService:
             key_id=key_id,
             wallet_id=wallet_id,
             key_hash=key_hash,
+            key_lookup=api_key_lookup_id(full_key),
             key_prefix=key_prefix,
             status=APIKeyStatus.ACTIVE.value,
             metadata_json=json.dumps({"name": key_name}),
@@ -531,28 +668,30 @@ class APIKeyService:
             # authenticates nothing (startup also refuses to boot).
             logger.error("API key hashing is not configured; rejecting key")
             return None
-        key_hash = _peppered_digest(pepper, api_key)
+        if len(api_key) <= API_KEY_LOOKUP_LENGTH:
+            return None
+        lookup_id = api_key_lookup_id(api_key)
 
         async with self._session_factory()() as session:
-            # Look up by the indexed full digest, not the prefix alone: the
-            # prefix is "b2a_" plus four random characters and is not unique,
-            # so two live keys sharing it are expected at a few thousand keys
-            # (and can be ground out deliberately by any caller able to mint
-            # keys). A prefix-only lookup then returned several rows and
-            # failed every request for both keys with a 500.
+            # A slow salted hash cannot be searched, so find candidate rows by
+            # the indexed, non-secret lookup id and verify each with scrypt.
+            # The id carries 72 random bits, so more than one live row is
+            # practically impossible; checking all candidates keeps a
+            # collision from turning into a 500.
             result = await session.execute(
                 select(APIKeyModel).where(
-                    col(APIKeyModel.key_hash) == key_hash,
+                    col(APIKeyModel.key_lookup) == lookup_id,
                     col(APIKeyModel.key_prefix) == key_prefix,
                     col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
                 )
             )
-            key = result.scalar_one_or_none()
+            key = None
+            for candidate in result.scalars().all():
+                if await _verify_presented_key(pepper, candidate.key_hash, api_key):
+                    key = candidate
+                    break
 
             if not key:
-                return None
-
-            if not hmac.compare_digest(key.key_hash, key_hash):
                 return None
 
             if not consume:
@@ -749,6 +888,7 @@ class APIKeyService:
                 key_id=new_key_id,
                 wallet_id=wallet_id,
                 key_hash=key_hash,
+                key_lookup=api_key_lookup_id(full_key),
                 key_prefix=new_key_prefix,
                 status=APIKeyStatus.ACTIVE.value,
                 expires_at=inherited_expires_at,
@@ -1033,6 +1173,7 @@ class APIKeyService:
                     key_id=new_key_id,
                     wallet_id=wallet_id,
                     key_hash=key_hash,
+                    key_lookup=api_key_lookup_id(full_key),
                     key_prefix=key_prefix,
                     status=APIKeyStatus.ACTIVE.value,
                     metadata_json=json.dumps({"name": "emergency_key"}),

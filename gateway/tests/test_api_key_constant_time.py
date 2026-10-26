@@ -1,7 +1,5 @@
 """Focused regression coverage for DB-backed API-key digest comparison."""
 
-import hashlib
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -20,10 +18,12 @@ NEAR_MISS_API_KEY = f"{VALID_API_KEY[:-1]}x"
 async def test_db_key_digest_comparison_is_constant_time_and_near_miss_is_rejected(
     clean_database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Current (peppered HMAC) storage format, so the lookup matches on the
-    # first constant-time comparison.
+    # The near miss shares the non-secret lookup id, so it reaches the scrypt
+    # verification of the stored row and must fail there, in constant time.
     valid_hash = api_key_service_module.hash_api_key(VALID_API_KEY)
-    near_miss_hash = api_key_service_module.hash_api_key(NEAR_MISS_API_KEY)
+    assert api_key_service_module.api_key_lookup_id(
+        VALID_API_KEY
+    ) == api_key_service_module.api_key_lookup_id(NEAR_MISS_API_KEY)
     assert (
         VALID_API_KEY[: api_key_service_module.API_KEY_PREFIX_LENGTH]
         == NEAR_MISS_API_KEY[: api_key_service_module.API_KEY_PREFIX_LENGTH]
@@ -43,6 +43,7 @@ async def test_db_key_digest_comparison_is_constant_time_and_near_miss_is_reject
                 key_id="key-constant-time",
                 wallet_id="agt-constant-time-key",
                 key_hash=valid_hash,
+                key_lookup=api_key_service_module.api_key_lookup_id(VALID_API_KEY),
                 key_prefix=VALID_API_KEY[
                     : api_key_service_module.API_KEY_PREFIX_LENGTH
                 ],
@@ -50,10 +51,10 @@ async def test_db_key_digest_comparison_is_constant_time_and_near_miss_is_reject
         )
         await session.commit()
 
-    comparisons: list[tuple[str, str]] = []
+    comparisons: list[tuple[bytes, bytes]] = []
     real_compare_digest = api_key_service_module.hmac.compare_digest
 
-    def record_compare_digest(stored_digest: str, supplied_digest: str) -> bool:
+    def record_compare_digest(stored_digest: bytes, supplied_digest: bytes) -> bool:
         comparisons.append((stored_digest, supplied_digest))
         return real_compare_digest(stored_digest, supplied_digest)
 
@@ -70,15 +71,15 @@ async def test_db_key_digest_comparison_is_constant_time_and_near_miss_is_reject
     assert valid is not None
     assert valid.key_id == "key-constant-time"
     assert near_miss is None
-    # The lookup is by the full digest, so a same-prefix near miss selects no
-    # stored row at all; the selected row is still re-checked in constant time.
-    assert comparisons == [(valid_hash, valid_hash)]
-    assert all(near_miss_hash not in comparison for comparison in comparisons)
-    assert all(
-        len(digest) == hashlib.sha256().digest_size * 2
-        for comparison in comparisons
-        for digest in comparison
-    )
+    # Both keys were checked against the stored scrypt output with
+    # compare_digest: one match (valid) and one mismatch (near miss).
+    kdf = [
+        c
+        for c in comparisons
+        if len(c[0]) == api_key_service_module._SCRYPT_DKLEN == len(c[1])
+    ]
+    assert any(a == b for a, b in kdf)
+    assert any(a != b for a, b in kdf)
 
 
 # key_prefix is "b2a_" plus only four random characters and is not unique, so
@@ -107,6 +108,7 @@ async def _seed_same_prefix_keys() -> None:
                     key_id=key_id,
                     wallet_id=wallet_id,
                     key_hash=api_key_service_module.hash_api_key(api_key),
+                    key_lookup=api_key_service_module.api_key_lookup_id(api_key),
                     key_prefix=SHARED_PREFIX,
                 )
             )

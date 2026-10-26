@@ -20,6 +20,7 @@ from ..services.agent_comms import (
     MessageType,
     MessagePriority,
     caller_owns_agent,
+    owner_candidates,
     owner_identity,
 )
 
@@ -254,7 +255,8 @@ async def list_agents(
     if not auth.is_bootstrap_admin:
         # Tenants never enumerate each other's agents. Capability handoff
         # routing reads the registry server-side and is unaffected.
-        agents = [a for a in agents if caller_owns_agent(a, auth)]
+        candidates = owner_candidates(auth)
+        agents = [a for a in agents if caller_owns_agent(a, auth, candidates)]
 
     return {
         "agents": [

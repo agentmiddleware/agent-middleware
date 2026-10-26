@@ -2,11 +2,18 @@
 
 import logging
 import secrets
+import threading
+from dataclasses import asdict
+from datetime import timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.core.config import get_settings
+from app.core.auth import AuthContext, get_auth_context
+from app.core.config import Settings, get_settings
 from app.db.database import get_session_factory
 from app.db.models import APIKeyModel, WalletModel
 from app.services import api_key_service as svc
@@ -129,6 +136,18 @@ def test_pepper_read_from_settings_secret(monkeypatch: pytest.MonkeyPatch) -> No
         get_settings.cache_clear()
 
 
+def test_empty_env_pepper_does_not_revive_dotenv_secret(monkeypatch, tmp_path) -> None:
+    dotenv = tmp_path / "pepper.env"
+    dotenv.write_text(f"API_KEY_HASH_PEPPER={secrets.token_urlsafe(32)}\n")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv(svc.API_KEY_HASH_PEPPER_ENV, "")
+    monkeypatch.setattr(svc, "get_settings", lambda: Settings(_env_file=dotenv))
+    with pytest.raises(svc.APIKeyHashingUnavailable):
+        svc.validate_api_key_hashing_config()
+    monkeypatch.delenv(svc.API_KEY_HASH_PEPPER_ENV)
+    svc.validate_api_key_hashing_config()
+
+
 @pytest.mark.anyio
 async def test_row_authenticates(clean_database, pepper: str) -> None:
     stored = svc.hash_api_key(KEY)
@@ -145,7 +164,8 @@ async def test_near_miss_with_same_lookup_id_rejected(
     await _seed(svc.hash_api_key(KEY))
     assert await APIKeyService().validate_key(KEY) is not None
     # Same lookup id, cached verification of the real key must not help.
-    assert await APIKeyService().validate_key(KEY[:-1] + "x") is None
+    wrong_key = KEY[:-1] + ("y" if KEY[-1] == "x" else "x")
+    assert await APIKeyService().validate_key(wrong_key) is None
 
 
 @pytest.mark.anyio
@@ -178,6 +198,10 @@ async def test_old_rows_without_lookup_id_never_authenticate(
         )
         await session.commit()
     assert await APIKeyService().validate_key(KEY) is None
+    with pytest.raises(HTTPException) as rejected:
+        await get_auth_context(api_key=KEY, authorization=None)
+    assert rejected.value.status_code == 403
+    assert rejected.value.detail["error"] == "invalid_api_key"
 
 
 @pytest.mark.anyio
@@ -194,6 +218,55 @@ async def test_cache_hit_still_honours_revocation(clean_database, pepper: str) -
         row.status = "revoked"
         await session.commit()
     assert await service.validate_key(KEY) is None
+
+
+@pytest.mark.anyio
+async def test_cache_hit_still_honours_expiry(clean_database, pepper: str) -> None:
+    key_id = secrets.token_hex(16)
+    stored = svc.hash_api_key(KEY)
+    await _seed(stored, key_id=key_id)
+    service = APIKeyService()
+    assert await service.validate_key(KEY) is not None
+    assert svc._verified_keys.hit(stored, pepper.encode(), KEY)
+    async with get_session_factory()() as session:
+        row = (
+            await session.execute(
+                select(APIKeyModel).where(APIKeyModel.key_id == key_id)
+            )
+        ).scalar_one()
+        row.expires_at = svc.utc_now() - timedelta(seconds=1)
+        await session.commit()
+    assert await service.validate_key(KEY) is None
+    assert svc._verified_keys.hit(stored, pepper.encode(), KEY)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["create", "rotate", "emergency"])
+async def test_api_key_issuance_hashing_runs_off_event_loop(
+    clean_database, pepper, monkeypatch, operation
+):
+    key_id = secrets.token_hex(16)
+    wallet_id = f"agt-{key_id}"
+    await _seed(svc.hash_api_key(KEY), key_id=key_id)
+    loop_thread = threading.get_ident()
+    real_scrypt = svc._scrypt
+    calls = []
+
+    def checked_scrypt(*args):
+        assert threading.get_ident() != loop_thread
+        calls.append(1)
+        return real_scrypt(*args)
+
+    monkeypatch.setattr(svc, "_scrypt", checked_scrypt)
+    service = APIKeyService()
+    if operation == "create":
+        created = await service.create_key(wallet_id)
+    elif operation == "rotate":
+        created = (await service.rotate_key(wallet_id, key_id=key_id))["new_key"]
+    else:
+        created = (await service.emergency_revocation(wallet_id))["new_key"]
+    assert len(calls) == 1
+    assert await service.validate_key(created["api_key"]) is not None
 
 
 @pytest.mark.anyio
@@ -254,7 +327,8 @@ async def test_auth_logs_never_contain_pepper_or_key(
     caplog.set_level(logging.DEBUG)
     await _seed(svc.hash_api_key(KEY))
     assert await APIKeyService().validate_key(KEY) is not None
-    assert await APIKeyService().validate_key(KEY[:-1] + "x") is None
+    wrong_key = KEY[:-1] + ("y" if KEY[-1] == "x" else "x")
+    assert await APIKeyService().validate_key(wrong_key) is None
     assert PEPPER not in caplog.text and KEY not in caplog.text
 
 
@@ -283,3 +357,79 @@ def test_agent_comms_retired_sha256_owner_matches_nobody(pepper: str) -> None:
     agent = SimpleNamespace(owner_key="sha256:" + "0" * 64)
     auth = SimpleNamespace(wallet_id=None, source="api_key", raw_key=KEY)
     assert not agent_comms.caller_owns_agent(agent, auth)
+
+
+def test_agent_comms_owner_digest_does_not_match_another_key(pepper: str) -> None:
+    from app.services import agent_comms
+
+    agent = SimpleNamespace(owner_key=agent_comms._digest(secrets.token_urlsafe(32)))
+    auth = AuthContext(wallet_id=None, source="env", raw_key=KEY)
+    assert not agent_comms.caller_owns_agent(agent, auth)
+
+
+def test_agent_comms_owner_candidates_derive_key_once(pepper: str, monkeypatch) -> None:
+    from app.services import agent_comms
+
+    real_digest = agent_comms._digest
+    calls = []
+
+    def counting(secret):
+        calls.append(1)
+        return real_digest(secret)
+
+    monkeypatch.setattr(agent_comms, "_digest", counting)
+    auth = AuthContext(wallet_id=None, source="env", raw_key=KEY)
+    assert agent_comms.owner_candidates(auth) == [real_digest(KEY)]
+    assert len(calls) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["register", "authorize", "list", "hydrate"])
+async def test_agent_comms_hashing_runs_off_event_loop(pepper, monkeypatch, operation):
+    from app.routers import comms as routes
+    from app.services import agent_comms
+
+    comms = agent_comms.AgentComms()
+    comms.registry._state = SimpleNamespace(
+        enabled=False, load_json=AsyncMock(return_value=None)
+    )
+    auth = AuthContext(wallet_id=None, source="env", raw_key=KEY)
+    name = secrets.token_hex(16)
+    if operation != "register":
+        agent = await comms.register_agent(
+            name=name, capabilities=[], owner_key=agent_comms.owner_identity(auth)
+        )
+    if operation == "hydrate":
+        agent.api_key = secrets.token_urlsafe(32)
+        agent.owner_key = KEY
+        comms.registry = agent_comms.AgentRegistry()
+        comms.registry._state = SimpleNamespace(
+            enabled=False,
+            load_json=AsyncMock(return_value={agent.agent_id: asdict(agent)}),
+        )
+
+    loop_thread = threading.get_ident()
+    real_digest = agent_comms._digest
+    calls = []
+
+    def checked_digest(secret):
+        assert threading.get_ident() != loop_thread
+        calls.append(1)
+        return real_digest(secret)
+
+    monkeypatch.setattr(agent_comms, "_digest", checked_digest)
+    if operation == "register":
+        registered = await routes.register_agent(
+            routes.AgentRegistrationRequest(name=name, capabilities=[]), auth, comms
+        )
+        assert registered.name == name
+    elif operation == "authorize":
+        await routes.require_agent_owner(comms, auth, agent.agent_id)
+    elif operation == "list":
+        result = await routes.list_agents(None, auth, comms)
+        assert [row["agent_id"] for row in result["agents"]] == [agent.agent_id]
+    else:
+        hydrated = await comms.registry.get(agent.agent_id)
+        assert hydrated.api_key.startswith("scrypt:")
+        assert hydrated.owner_key.startswith("scrypt:")
+    assert calls

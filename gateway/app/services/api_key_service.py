@@ -122,6 +122,8 @@ DEV_API_KEY_HASH_PEPPER = b"amw-local-dev-api-key-pepper-not-a-secret"
 def _configured_pepper() -> bytes | None:
     """The server pepper: process env first, then Settings (``.env``).
 
+    An explicitly empty environment value also masks dotenv in Settings;
+    production then fails closed instead of reviving a stale dotenv pepper.
     Settings holds it as a SecretStr so it is masked in any settings dump.
     It is never logged.
     """
@@ -411,7 +413,7 @@ class APIKeyService:
                 if wallet.tenant:
                     tenant = wallet.tenant
 
-        full_key, key_hash, key_prefix = generate_api_key()
+        full_key, key_hash, key_prefix = await asyncio.to_thread(generate_api_key)
         key_id = f"key_{uuid4().hex[:12]}"
         now = utc_now()
         expires_at = None
@@ -880,7 +882,7 @@ class APIKeyService:
                     except json.JSONDecodeError:
                         pass
 
-            full_key, key_hash, key_prefix = generate_api_key()
+            full_key, key_hash, key_prefix = await asyncio.to_thread(generate_api_key)
             new_key_id = f"key_{uuid4().hex[:12]}"
             new_key_prefix = key_prefix
 
@@ -1167,7 +1169,9 @@ class APIKeyService:
                     emergency_allowed_tools_json = donor.allowed_tools_json
                     emergency_tenant = wallet.tenant or donor.tenant
 
-                full_key, key_hash, key_prefix = generate_api_key()
+                full_key, key_hash, key_prefix = await asyncio.to_thread(
+                    generate_api_key
+                )
                 new_key_id = f"key_{uuid4().hex[:12]}"
                 emergency_key = APIKeyModel(
                     key_id=new_key_id,

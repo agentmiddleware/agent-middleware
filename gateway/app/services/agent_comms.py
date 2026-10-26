@@ -162,11 +162,11 @@ def owner_identity(auth: AuthContext) -> str:
 
 def owner_candidates(auth: AuthContext) -> list[str]:
     """Identities ``auth`` may own records under; compute once per request."""
-    candidates = [owner_identity(auth)]
-    if auth.source != "jwt":
-        digest = _digest(auth.raw_key)
-        if digest not in candidates:
-            candidates.append(digest)
+    candidates = []
+    if auth.wallet_id:
+        candidates.append(_OWNER_WALLET_PREFIX + auth.wallet_id)
+    if not auth.wallet_id or auth.source != "jwt":
+        candidates.append(_digest(auth.raw_key))
     return candidates
 
 
@@ -263,7 +263,12 @@ class AgentRegistry:
                             "Skipping corrupt comms agent record: %s", agent_id
                         )
                         continue
-                    scrubbed = self._scrub_plaintext_credentials(agent) or scrubbed
+                    scrubbed = (
+                        await asyncio.to_thread(
+                            self._scrub_plaintext_credentials, agent
+                        )
+                        or scrubbed
+                    )
                     loaded[agent_id] = agent
                 self._agents = loaded
 
@@ -310,7 +315,7 @@ class AgentRegistry:
             api_key=agent_key,
             owner_key=owner_key,
         )
-        self._scrub_plaintext_credentials(agent)
+        await asyncio.to_thread(self._scrub_plaintext_credentials, agent)
         async with self._lock:
             self._agents[agent.agent_id] = agent
             await self._persist_locked()

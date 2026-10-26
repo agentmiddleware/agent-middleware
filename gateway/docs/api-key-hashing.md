@@ -45,6 +45,9 @@ skipped.
 
 1. `API_KEY_HASH_PEPPER` (env var or `Settings.API_KEY_HASH_PEPPER`, a
    `SecretStr` that is masked in reprs). It is never logged.
+   An explicitly empty environment variable masks any dotenv value and makes
+   production fail closed. Remove the variable to use dotenv; setting it empty
+   must not revive a stale pepper from a file.
 2. Local and test only: if no pepper is set, the public, non-secret
    `DEV_API_KEY_HASH_PEPPER` is used.
 3. Production-like environments: there is no dev pepper. Startup refuses to
@@ -74,7 +77,7 @@ is deployed**. See [schema 054 rollout](schema-054-rollout.md).
 4. Reissue every API key, revoke or delete the old rows, and send the new keys
    to their holders through the usual secure channel. Re-register agent-comms
    agents owned by env or bootstrap keys.
-5. Expect 401s from clients that are still on old keys until they switch.
+5. Expect HTTP 403 `invalid_api_key` from clients still on old keys until they switch.
 
 Rotating the pepper later invalidates every key in the same way, so repeat
 steps 1, 3 and 4.

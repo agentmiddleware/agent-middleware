@@ -34,7 +34,7 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import mcp.types as mcp_types
 from fastapi import APIRouter, HTTPException, Request
@@ -58,6 +58,9 @@ from app.services.signing_keys import (
     SigningKeyError,
     get_signing_key_service,
 )
+
+if TYPE_CHECKING:
+    from b2a_sdk.receipt_verifier import VerificationKey
 
 
 # Image layout: both Dockerfiles copy the in-repo SDK to /sdk/python, install
@@ -384,7 +387,7 @@ def _mcp_error(code: int, message: str) -> McpError:
     return McpError(mcp_types.ErrorData(code=code, message=message))
 
 
-async def _published_key_set() -> dict[str, bytes] | None:
+async def _published_key_set() -> dict[str, bytes | VerificationKey] | None:
     """Load the same key set a verifier gets from trust-keys.json.
 
     ``None`` means "no usable keys right now" — the tool-level analogue of

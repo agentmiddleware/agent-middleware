@@ -2,8 +2,10 @@
 
 .. deprecated:: 0.5.0
     The edge client's ``call_mcp_tool`` bypasses the trust-plane loop
-    (no permit, no idempotency key, no signed receipt, no replay protection).
-    Each call dispatches and charges independently, making replay a double-charge.
+    (no permit, no signed receipt). It sends an ``Idempotency-Key`` header,
+    but without the governed loop a retry under a different key still
+    dispatches and charges again, so callers must reuse the key per logical
+    call. Prefer the governed flow below.
 
     Use ``AgentMiddlewareClient`` with the governed flow instead:
     ``discover_tools() → create_permit() → invoke_tool()`` gives you
@@ -43,6 +45,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -54,6 +57,7 @@ import httpx
 from .errors import PermitDeniedError
 from .receipt_verifier import (
     VerificationError,
+    VerificationKey,
     canonical_json,
     key_set_from_document,
     verify_ed25519,
@@ -115,18 +119,29 @@ class B2AEdgeClient:
         self,
         name: str,
         arguments: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Call an MCP tool by name.
 
         .. warning::
-            This method bypasses the trust-plane loop: no permit, no idempotency
-            key, no signed receipt, no replay protection. Calling this method
-            twice with the same arguments dispatches and charges twice.
+            This method bypasses the trust-plane loop: no permit, no signed
+            receipt. It does send an ``Idempotency-Key`` header (a caller
+            key when given, otherwise one minted for this call), but without
+            the governed loop there is no permit binding or signed receipt,
+            so a retry with a *different* key still dispatches and charges
+            again. Callers that retry one logical call must reuse the key.
 
             For governed invocations with replay protection and signed receipts,
             use ``AgentMiddlewareClient.invoke_tool()`` instead, which requires
             a permit and an idempotency key.
         """
+        if idempotency_key is None:
+            key = uuid.uuid4().hex
+        else:
+            from .client import AgentMiddlewareClient
+
+            key = AgentMiddlewareClient._validate_idempotency_key(idempotency_key)
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": "tools/call",
@@ -134,7 +149,7 @@ class B2AEdgeClient:
                 "name": name,
                 "arguments": arguments,
             },
-            "id": 1,
+            "id": key,
         }
         if self.wallet_id:
             payload["params"]["mcpContext"] = {"wallet_id": self.wallet_id}
@@ -142,7 +157,7 @@ class B2AEdgeClient:
         response = await self._client.post(
             f"{self.api_url}/mcp/messages",
             json=payload,
-            headers=self._headers(),
+            headers={**self._headers(), "Idempotency-Key": key},
         )
         response.raise_for_status()
         return response.json()
@@ -284,7 +299,7 @@ class LocalPermitValidator:
 
     * :meth:`verify_permit` — does the permit's Ed25519 signature verify
       against the issuer's published keys? (Requires the ``cryptography``
-      package: ``pip install "b2a-sdk[verify]"``.)
+      package: ``pip install "amw-sdk[verify]"``.)
     * :meth:`check` — would the server's validation obviously deny this call
       right now (expiry, status, tool scope, budget, per-tool call caps)?
 
@@ -299,7 +314,7 @@ class LocalPermitValidator:
     session do not silently overrun the cached budget.
     """
 
-    def __init__(self, permit: dict[str, Any], key_set: dict[str, bytes]) -> None:
+    def __init__(self, permit: dict[str, Any], key_set: dict[str, bytes | VerificationKey]) -> None:
         self._permit = dict(permit)
         self._key_set = dict(key_set)
         # Locally reserved credits and per-tool call counts, advanced by
@@ -454,6 +469,11 @@ class LocalPermitValidator:
         a malformed permit dict, an unknown/absent signing key, undecodable
         material, or a bad signature all return ``False``.
 
+        A ``True`` here says the signature is genuine, not that the permit is
+        still live: revocation is enforced by gateway validation, so a revoked
+        permit still verifies. Recheck live status (``POST /v1/permits/verify``)
+        before treating an exported permit as authority to act.
+
         Verifier failures are different:
         :class:`~b2a_sdk.receipt_verifier.VerificationError` propagates when
         the Ed25519 verifier itself is unavailable (``cryptography`` not
@@ -471,7 +491,7 @@ class LocalPermitValidator:
         except (KeyError, TypeError, ValueError, ArithmeticError):
             return False
         raw_public_key = self._key_set.get(payload["kid"])
-        if raw_public_key is None or len(raw_public_key) != 32:
+        if not isinstance(raw_public_key, bytes) or len(raw_public_key) != 32:
             return False
         if len(signature) != 64:
             return False

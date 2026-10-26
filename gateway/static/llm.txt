@@ -77,11 +77,11 @@ The human site publishes one non-sensitive portable `partner.echo` receipt and
 the matching public-key snapshot:
 
 ```bash
-GET https://www.thisisatest.tech/proof/receipt.json
-GET https://www.thisisatest.tech/proof/trust-keys.json
+GET https://www.agentmiddleware.dev/proof/receipt.json
+GET https://www.agentmiddleware.dev/proof/trust-keys.json
 ```
 
-Use the offline CLI command on `https://www.thisisatest.tech/proof/`. A valid
+Use the offline CLI command on `https://www.agentmiddleware.dev/proof/`. A valid
 signature proves the receipt matches the supplied snapshot. Authenticate or
 pin that snapshot through a trusted channel before treating issuer identity as
 independently established.
@@ -160,7 +160,7 @@ Install the SDK from source in `sdk/python/`. The agent manifest's
 `integrations.python_sdk` reports both the source version and the available
 release tag; do not infer a package-index install from this document. The SDK
 is **not** published to PyPI. Install from a clone of
-https://github.com/PetrefiedThunder/agent-middleware (repository root):
+https://github.com/agentmiddleware/agent-middleware (repository root):
 
 ```bash
 pip install -e ./sdk/python
@@ -222,4 +222,4 @@ clients require `/mcp` after the operator enables the Streamable HTTP transport.
 - OpenAPI Spec: `/openapi.json`
 - Wedge: `/WEDGE.md`
 - Security limitations: `/SECURITY_LIMITATIONS.md`
-- GitHub: https://github.com/PetrefiedThunder/agent-middleware
+- GitHub: https://github.com/agentmiddleware/agent-middleware

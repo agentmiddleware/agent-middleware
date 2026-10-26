@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
   CANONICALIZATION,
+  P256_ALGORITHM,
   canonicalJson,
   keySetFromDocument,
   verifyBundle,
@@ -12,6 +13,9 @@ import {
 
 const keyPair = generateKeyPairSync("ed25519");
 const otherPair = generateKeyPairSync("ed25519");
+const p256Pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const otherP256Pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+const p256PublicDer = p256Pair.publicKey.export({ type: "spki", format: "der" });
 const rawKey = Buffer.from(
   (keyPair.publicKey.export({ format: "jwk" }).x as string),
   "base64url",
@@ -46,6 +50,18 @@ function seal(
 
 function statusOf(bundle: unknown, ks: KeySet = keys(), issuer?: string): string {
   return verifyBundle(bundle, ks, issuer).status;
+}
+
+function p256Keys(status = "active", publicKeyDer = p256PublicDer): KeySet {
+  return keySetFromDocument({
+    keys: [{ kid: "p256-key", alg: P256_ALGORITHM, status, public_key_b64: publicKeyDer.toString("base64") }],
+  });
+}
+
+function sealP256(body: Record<string, unknown> = { receipt_id: "rcpt-p256", kid: "p256-key", alg: P256_ALGORITHM }): Record<string, unknown> {
+  const signingInput = JSON.stringify(body);
+  const signature = sign("sha256", Buffer.from(signingInput, "utf8"), p256Pair.privateKey).toString("base64");
+  return { signing_input: signingInput, signature, kid: "p256-key", alg: P256_ALGORITHM };
 }
 
 test("valid bundle verifies and reports claims from the signed bytes", () => {
@@ -155,14 +171,25 @@ test("envelope kid differing from a verified payload is mismatch", () => {
   assert.equal(statusOf(bundle, new Map([["key-1", rawKey]])), "mismatch");
 });
 
-test("correct payload_hash verifies; wrong payload_hash is mismatch", () => {
+test("payload_hash is advisory: a signed wrong hash still verifies", () => {
   const inner = payload({ credits_charged: "1" });
   const good = createHash("sha256").update(canonicalJson(inner), "utf8").digest("hex");
   assert.equal(statusOf(seal({ ...inner, payload_hash: good })), "verified");
   assert.equal(
     statusOf(seal({ ...inner, payload_hash: "0".repeat(64) })),
-    "mismatch",
+    "verified",
   );
+});
+
+test("editing payload_hash without re-signing is invalid", () => {
+  const inner = payload({ credits_charged: "1" });
+  const good = createHash("sha256").update(canonicalJson(inner), "utf8").digest("hex");
+  const bundle = seal({ ...inner, payload_hash: good });
+  const forged = {
+    ...bundle,
+    signing_input: (bundle.signing_input as string).replace(good, "0".repeat(64)),
+  };
+  assert.equal(statusOf(forged), "invalid");
 });
 
 function deepField(depth: number): unknown {
@@ -171,10 +198,10 @@ function deepField(depth: number): unknown {
   return deep;
 }
 
-test("deeply nested payload with payload_hash is malformed, never a throw", () => {
+test("deeply nested payload with payload_hash still verifies, never throws", () => {
   const body = { ...payload({ payload_hash: "0".repeat(64) }), deep: deepField(3000) };
   const result = verifyBundle(seal(body), keys());
-  assert.equal(result.status, "malformed");
+  assert.equal(result.status, "verified");
 });
 
 test("deeply nested payload without payload_hash still verifies", () => {
@@ -255,6 +282,60 @@ test("envelope RS256 claim cannot turn a good Ed25519 receipt into unsupported",
 test("signed RS256 algorithm is unsupported, driven by the signer", () => {
   const bundle = seal({ ...payload(), alg: "RS256" });
   assert.equal(statusOf(bundle), "unsupported");
+});
+
+test("genuine P-256 receipt is unsupported only after its DER signature verifies", () => {
+  const ks = p256Keys();
+  const key = ks.get("p256-key");
+  assert.ok(key && !Buffer.isBuffer(key));
+  assert.equal(key.alg, P256_ALGORITHM);
+  assert.deepEqual(key.publicKeyDer, p256PublicDer);
+
+  const bundle = sealP256();
+  assert.equal(statusOf(bundle, new Map()), "unknown_key");
+  const result = verifyBundle(bundle, ks);
+  assert.equal(result.status, "unsupported");
+  assert.equal(result.ok, false);
+});
+
+test("altered P-256 signed bytes and signatures are invalid", () => {
+  const bundle = sealP256();
+  assert.equal(statusOf({ ...bundle, signing_input: (bundle.signing_input as string).replace("rcpt-p256", "rcpt-f256") }, p256Keys()), "invalid");
+  const wrongSignature = sign("sha256", Buffer.from(bundle.signing_input as string), otherP256Pair.privateKey).toString("base64");
+  assert.equal(statusOf({ ...bundle, signature: wrongSignature }, p256Keys()), "invalid");
+});
+
+test("base64-decoded malformed P-256 DER signatures are malformed", () => {
+  const bundle = sealP256();
+  const notDer = Buffer.alloc(70).toString("base64");
+  const nonMinimalInteger = Buffer.from("300702020001020101", "hex").toString("base64");
+  assert.equal(statusOf({ ...bundle, signature: notDer }, p256Keys()), "malformed");
+  assert.equal(statusOf({ ...bundle, signature: nonMinimalInteger }, p256Keys()), "malformed");
+});
+
+test("missing and disabled P-256 keys are unknown_key", () => {
+  const bundle = sealP256();
+  assert.equal(statusOf(bundle, new Map()), "unknown_key");
+  assert.equal(statusOf(bundle, p256Keys("disabled")), "unknown_key");
+});
+
+test("malformed or wrong-curve P-256 public keys are malformed", () => {
+  const bundle = sealP256();
+  assert.equal(statusOf(bundle, p256Keys("active", Buffer.from("bad DER"))), "malformed");
+  const p384 = generateKeyPairSync("ec", { namedCurve: "secp384r1" });
+  const p384Der = p384.publicKey.export({ type: "spki", format: "der" });
+  assert.equal(statusOf(bundle, p256Keys("active", p384Der)), "malformed");
+  assert.equal(statusOf({ ...bundle, signature: "!!!!" }, p256Keys()), "malformed");
+});
+
+test("P-256 signed kid confusion is a mismatch", () => {
+  const bundle = sealP256({ receipt_id: "rcpt-p256", kid: "ghost", alg: P256_ALGORITHM });
+  assert.equal(statusOf(bundle, p256Keys()), "mismatch");
+});
+
+test("P-256 verification key cannot mark an Ed25519-declared receipt verified", () => {
+  const bundle = sealP256({ receipt_id: "rcpt-p256", kid: "p256-key", alg: "Ed25519" });
+  assert.equal(statusOf(bundle, p256Keys()), "unsupported");
 });
 
 test("signed unknown canonicalization is unsupported", () => {
@@ -350,7 +431,10 @@ test("key set reads raw, key_id alias and JWK mirror forms", () => {
     ],
   });
   assert.deepEqual(new Set(ks.keys()), new Set(["raw", "alias", "jwk-only"]));
-  for (const value of ks.values()) assert.equal(value.length, 32);
+  for (const value of ks.values()) {
+    assert.ok(Buffer.isBuffer(value));
+    assert.equal(value.length, 32);
+  }
 });
 
 test("key set drops disabled keys, wrong algs and unusable entries", () => {
@@ -383,13 +467,72 @@ test("disabled key verifies nothing: its receipts are unknown_key", () => {
   assert.equal(verifyBundle(seal(payload()), ks).status, "unknown_key");
 });
 
-test(
-  "float payload_hash does not round-trip across languages",
-  { skip: "JS prints 1.0 as 1, so a hash computed over Python-style 1.0 cannot verify here; numbers must be strings per spec" },
-  () => {
-    assert.equal(canonicalJson({ v: 1.0 }), '{"v":1.0}');
-  },
-);
+test("integer above 2^53 is returned as the signed digits", () => {
+  const signingInput =
+    '{"constraints_evaluated":{"jev_risk_guard":{"big":9007199254740993,"exact":9007199254740992,"neg":-9007199254740993,"note":"9007199254740993","pow10":10000000000000000,"safe":1}},"kid":"key-1","receipt_id":"rcpt-1"}';
+  const signature = sign(
+    null,
+    Buffer.from(signingInput, "utf8"),
+    keyPair.privateKey,
+  ).toString("base64");
+  const result = verifyBundle(
+    { signing_input: signingInput, signature, kid: "key-1" },
+    keys(),
+  );
+  assert.equal(result.status, "verified");
+  const guard = (
+    result.claims?.constraints_evaluated as {
+      jev_risk_guard: {
+        big: unknown;
+        exact: unknown;
+        neg: unknown;
+        note: unknown;
+        pow10: unknown;
+        safe: unknown;
+      };
+    }
+  ).jev_risk_guard;
+  assert.equal(guard.big, "9007199254740993");
+  assert.equal(typeof guard.big, "string");
+  assert.notEqual(guard.big, 9007199254740992);
+  // Powers of two (and 10^16) that fit in a double stay numbers.
+  assert.equal(guard.exact, 9007199254740992);
+  assert.equal(guard.pow10, 10000000000000000);
+  assert.equal(guard.neg, "-9007199254740993");
+  assert.equal(guard.note, "9007199254740993");
+  assert.equal(guard.safe, 1);
+
+  const tampered = signingInput.replace("9007199254740993", "9007199254740994");
+  const bad = verifyBundle(
+    { signing_input: tampered, signature, kid: "key-1" },
+    keys(),
+  );
+  assert.equal(bad.status, "invalid");
+  assert.equal(bad.claims, undefined);
+});
+
+test("float-bearing payload signed Python-style verifies", () => {
+  // The gateway signs floats Python renders as 1.0/0.0. seal() would print
+  // them as 1/0, so the signed bytes are built as a string instead.
+  const innerJson =
+    '{"constraints_evaluated":{"jev_risk_guard":{"injected_instructions":1.0,"latency_ms":0.0}},"kid":"key-1","receipt_id":"rcpt-1"}';
+  const hash = createHash("sha256").update(innerJson, "utf8").digest("hex");
+  const signingInput = innerJson.replace(
+    ',"receipt_id"',
+    `,"payload_hash":"${hash}","receipt_id"`,
+  );
+  assert.match(signingInput, /1\.0/);
+  const signature = sign(
+    null,
+    Buffer.from(signingInput, "utf8"),
+    keyPair.privateKey,
+  ).toString("base64");
+  const result = verifyBundle(
+    { signing_input: signingInput, signature, kid: "key-1" },
+    keys(),
+  );
+  assert.equal(result.status, "verified");
+});
 
 test(
   "unexpected crypto backend failure raises instead of reporting invalid",

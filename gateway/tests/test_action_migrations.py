@@ -1,11 +1,14 @@
 """Additive authority migration must never downgrade accepted bindings away."""
 
 import os
+from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from tests.support import db_gate
 from tests.support.action_database_guard import (
@@ -29,9 +32,16 @@ FIELDS = (
 ACTION_REVISION = "042_permit_action_binding"
 SCRUB_REVISION = "041_scrub_content_owner_keys"
 CONTENT_TABLES = ("content_pipelines", "content_campaigns")
+GATEWAY_ROOT = Path(__file__).resolve().parents[1]
 AUTHORITIES = [
     (table, field) for table in ("permits", "receipts") for field in FIELDS
 ] + [("idempotency_records", "owner")]
+
+
+def current_head_revision():
+    config = Config(str(GATEWAY_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(GATEWAY_ROOT / "migrations"))
+    return ScriptDirectory.from_config(config).get_current_head()
 
 
 def content_inserts():
@@ -66,6 +76,7 @@ def retained_authority_sql(authority):
 def migrate(url, revision, direction="upgrade"):
     return subprocess.run(
         [sys.executable, "-m", "alembic", direction, revision],
+        cwd=GATEWAY_ROOT,
         env={**os.environ, "DATABASE_URL": url},
         capture_output=True,
         text=True,
@@ -78,6 +89,7 @@ def migrate(url, revision, direction="upgrade"):
 def test_action_migration_retains_legacy_and_blocks_authority_loss(
     tmp_path, start_revision, authority
 ):
+    head_revision = current_head_revision()
     path = tmp_path / "migration.sqlite"
     url = f"sqlite+aiosqlite:///{path}"
     result = migrate(url, "040_permit_repeat_window")
@@ -113,7 +125,7 @@ def test_action_migration_retains_legacy_and_blocks_authority_loss(
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            ACTION_REVISION,
+            head_revision,
         )
         assert db.execute("SELECT * FROM permits").fetchone() == (
             *before,
@@ -176,6 +188,7 @@ def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
     url = os.environ["ACTION_MIGRATION_DATABASE_URL"]
     require_action_database_url(url)
     require_action_test_environment(os.environ.get("ENVIRONMENT"))
+    head_revision = current_head_revision()
 
     async def query(sql):
         connection = await asyncpg.connect(
@@ -212,7 +225,7 @@ def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
     result = migrate(url, "head")
     assert result.returncode == 0, result.stderr
     assert sql("SELECT version_num FROM alembic_version") == [
-        {"version_num": ACTION_REVISION}
+        {"version_num": head_revision}
     ]
     for table, old in before.items():
         assert sql(f"SELECT * FROM {table}")[0] == {**old, **dict.fromkeys(FIELDS)}
@@ -247,7 +260,7 @@ def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
         result = migrate(url, SCRUB_REVISION, "downgrade")
         assert result.returncode != 0 and "action_authority_retained" in result.stderr
         assert sql("SELECT version_num FROM alembic_version") == [
-            {"version_num": ACTION_REVISION}
+            {"version_num": head_revision}
         ]
         for table, rows in retained.items():
             assert sql(f"SELECT * FROM {table}") == rows

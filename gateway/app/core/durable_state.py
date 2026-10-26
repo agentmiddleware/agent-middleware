@@ -33,6 +33,7 @@ import redis.asyncio as redis
 from .config import get_settings
 from .db_urls import (
     as_asyncpg_url,
+    is_in_memory_sqlite_url,
     is_postgres_url,
     is_sqlite_url,
     sqlite_path_from_url,
@@ -151,20 +152,36 @@ class DurableStateStore:
         self._state_backend = settings.STATE_BACKEND.strip().lower()
         self._redis_url = settings.REDIS_URL.strip()
         self._database_url = settings.DATABASE_URL.strip()
+        self._production_like = is_production_like_environment(settings.ENVIRONMENT)
         # SQLITE_URL is documented as a filesystem path (see .env.example),
         # but the name invites the SQLAlchemy URL form, and handing a URL to
         # aiosqlite.connect would create a file with that literal name while
         # the operator believes state is durable elsewhere. Accept the URL
         # form too; anything that is not a SQLite URL stays a raw path, and
-        # an in-memory spelling resolves to "" so it keeps the deliberate
-        # non-durable treatment below instead of a garbage file.
+        # an in-memory spelling resolves to ":memory:".
         raw_sqlite_url = settings.SQLITE_URL.strip()
         if raw_sqlite_url and is_sqlite_url(raw_sqlite_url):
             # SQLAlchemy URL form: normalize to the file path aiosqlite
-            # expects. An in-memory spelling normalizes to "" so it keeps
-            # the deliberate non-durable treatment instead of becoming a
-            # file with a URL for a name.
-            self._sqlite_url = sqlite_path_from_url(raw_sqlite_url)
+            # expects. sqlite_path_from_url returns "" for in-memory
+            # spellings; that must become ":memory:" here, not "", or the
+            # DATABASE_URL fallback below would write the state to disk.
+            # Every in-memory spelling (including ``file::memory:?...``,
+            # which aiosqlite would treat as a literal filename without
+            # uri=True) maps to plain ":memory:". The store holds a single
+            # connection, so all reads and writes see the same database.
+            # Only a recognized in-memory spelling maps to ":memory:"; a
+            # SQLite URL that cannot be parsed fails loudly rather than
+            # silently discarding state the operator expects on disk.
+            sqlite_path = sqlite_path_from_url(raw_sqlite_url)
+            if sqlite_path:
+                self._sqlite_url = sqlite_path
+            elif is_in_memory_sqlite_url(raw_sqlite_url):
+                self._sqlite_url = ":memory:"
+            else:
+                raise DurableStateConfigError(
+                    "SQLITE_URL is a SQLite URL that could not be parsed; use "
+                    "sqlite[+driver]:///path/to/state.db or a plain file path"
+                )
         else:
             # Documented raw-path form (or the ":memory:" shorthand).
             self._sqlite_url = raw_sqlite_url
@@ -172,10 +189,25 @@ class DurableStateStore:
         # setting. Without this, auto-resolution below would see a non-empty
         # DATABASE_URL, choose the postgres backend, hand a sqlite DSN to
         # asyncpg, and silently degrade to in-memory state after the failure.
-        if not self._sqlite_url:
+        uses_database_sqlite = not self._production_like and (
+            self._state_backend == "sqlite"
+            or (
+                self._state_backend not in ("postgres", "postgresql", "redis", "memory")
+                and not is_postgres_url(self._database_url)
+                and not self._redis_url
+            )
+        )
+        if not self._sqlite_url and uses_database_sqlite:
             self._sqlite_url = sqlite_path_from_url(self._database_url)
-        self._production_like = is_production_like_environment(settings.ENVIRONMENT)
-
+            if (
+                self._database_url
+                and is_sqlite_url(self._database_url)
+                and not self._sqlite_url
+                and not is_in_memory_sqlite_url(self._database_url)
+            ):
+                raise DurableStateConfigError(
+                    "DATABASE_URL is a SQLite URL that could not be parsed"
+                )
         self._init_lock = asyncio.Lock()
         self._initialized = False
         self._backend: str = "memory"
@@ -610,7 +642,7 @@ class DurableStateStore:
         self._backend = "memory"
 
 
-@lru_cache()
+@lru_cache
 def get_durable_state() -> DurableStateStore:
     return DurableStateStore()
 

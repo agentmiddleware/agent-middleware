@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from ..core.auth import AuthContext, get_auth_context, verify_api_key
 from ..core.config import get_settings
+from ..core.wallet_resolution import resolve_wallet_id
 from ..core.dependencies import get_agent_money
 from .http_idempotency import (
     begin_http_idempotency as _begin_idempotency,
@@ -34,11 +35,12 @@ from ..services.ownership import CallerIdentity, OwnershipDeniedError
 from ..services.idempotency import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
+    InvalidIdempotencyKeyError,
     get_idempotency_service,
 )
 from ..services.policies import evaluate_wallet_policy
 from ..services.velocity_monitor import WalletFrozenError
-from ..services.wallet_engine import WalletExpiredError
+from ..services.wallet_engine import CrossTenantTransferError, WalletExpiredError
 from ..services.stripe_integration import get_stripe_integration
 from ..services.shadow_ledger import SimulatedChargeResult, get_shadow_ledger
 from ..services.acp_bridge import (
@@ -613,7 +615,7 @@ async def get_ledger(
 )
 async def charge_wallet(
     request: Request,
-    wallet_id: str,
+    wallet_id: str | None = None,
     service_category: ServiceCategory | None = None,
     service: ServiceCategory | None = Query(
         None,
@@ -638,7 +640,7 @@ async def charge_wallet(
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ):
-    _require_wallet_access(auth, wallet_id)
+    wallet_id = resolve_wallet_id(wallet_id, auth)
     category = service_category or service
     if not category:
         raise HTTPException(
@@ -979,7 +981,7 @@ async def top_up_wallet(
     ),
 )
 async def prepare_top_up(
-    wallet_id: str,
+    wallet_id: str | None = Query(None, description="Sponsor wallet ID"),
     amount_fiat: float = Query(
         ...,
         gt=0,
@@ -988,9 +990,9 @@ async def prepare_top_up(
         description="Amount in fiat currency (USD)",
     ),
     currency: str = Query("USD", description="Fiat currency code"),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ):
-    _require_wallet_access(auth, wallet_id)
     """
     Prepare a fiat top-up by creating a Stripe PaymentIntent.
 
@@ -1009,6 +1011,7 @@ async def prepare_top_up(
             "currency": str,
         }
     """
+    wallet_id = resolve_wallet_id(wallet_id, auth)
     from ..core.config import get_settings
 
     settings = get_settings()
@@ -1036,14 +1039,28 @@ async def prepare_top_up(
     stripe_integration = get_stripe_integration()
 
     try:
+        key_arg = (
+            {"idempotency_key": idempotency_key} if idempotency_key is not None else {}
+        )
         result = await stripe_integration.create_top_up_intent(
             wallet_id=wallet_id,
             amount_fiat=Decimal(str(amount_fiat)),
             currency=currency,
+            **key_arg,
         )
         return result
     except WalletNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except InvalidIdempotencyKeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": str(e), **e.as_error_data()},
+        ) from e
+    except (IdempotencyConflictError, IdempotencyInProgressError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": str(e), "message": str(e)},
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1150,6 +1167,16 @@ async def transfer_wallets(
         )
         await guard.complete({"error": "wallet_not_found", "message": str(e)}, 404)
         raise HTTPException(status_code=404, detail=str(e))
+    except CrossTenantTransferError:
+        refused_detail = {
+            "error": "cross_tenant_transfer_refused",
+            "message": "The request could not be completed.",
+        }
+        await guard.complete(refused_detail, status.HTTP_403_FORBIDDEN)
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content=refused_detail,
+        )
     except OwnershipDeniedError:
         await _record_billing_governance(
             event="billing.transfer",
@@ -1522,7 +1549,9 @@ async def get_velocity_status(
 class CreateDryRunSessionRequest(BaseModel):
     """Start a dry-run session for simulating billing operations."""
 
-    wallet_id: str = Field(..., description="Wallet to simulate charges against")
+    wallet_id: str | None = Field(
+        None, description="Wallet to simulate charges against"
+    )
 
 
 class DryRunSessionResponse(ExactDecimalFieldsMixin):
@@ -1546,7 +1575,7 @@ class DryRunSessionResponse(ExactDecimalFieldsMixin):
 class SimulatedChargeRequest(BaseModel):
     """Simulate a charge without affecting real balance."""
 
-    wallet_id: str = Field(..., description="Wallet being simulated")
+    wallet_id: str | None = Field(None, description="Wallet being simulated")
     service: ServiceCategory = Field(..., description="Service category to simulate")
     units: float = Field(
         default=1.0,
@@ -1615,20 +1644,20 @@ async def create_dry_run_session(
     money: AgentMoney = Depends(get_agent_money),
 ):
     """Start a new dry-run session for the specified wallet."""
-    _require_wallet_access(auth, request.wallet_id)
-    wallet = await money.get_wallet(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
+    wallet = await money.get_wallet(wallet_id)
     if not wallet:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "wallet_not_found",
-                "message": f"Wallet {request.wallet_id} not found",
+                "message": f"Wallet {wallet_id} not found",
             },
         )
 
     shadow_ledger = get_shadow_ledger()
     session = await shadow_ledger.create_session(
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         real_balance=Decimal(str(wallet.balance)),
     )
 
@@ -1883,19 +1912,19 @@ async def simulate_charge(
             reason=result.reason,
         )
 
-    _require_wallet_access(auth, request.wallet_id)
-    wallet = await money.get_wallet(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
+    wallet = await money.get_wallet(wallet_id)
     if not wallet:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "wallet_not_found",
-                "message": f"Wallet {request.wallet_id} not found",
+                "message": f"Wallet {wallet_id} not found",
             },
         )
 
     charge_result = await money.charge(
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         service_category=request.service,
         units=Decimal(str(request.units)),
         description=request.description or "",

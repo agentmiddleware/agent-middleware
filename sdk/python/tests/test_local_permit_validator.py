@@ -169,6 +169,23 @@ def test_verify_permit_accepts_genuine_signature():
     assert _validator(permit, key_document).verify_permit() is True
 
 
+def test_p256_receipt_key_does_not_verify_an_ed25519_permit():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    permit, key_document = _build_signed_permit()
+    public_der = (
+        ec.generate_private_key(ec.SECP256R1())
+        .public_key()
+        .public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    )
+    key_document["keys"][0].update(
+        alg="ECDSA-P256-SHA256", public_key_b64=base64.b64encode(public_der).decode()
+    )
+
+    assert _validator(permit, key_document).verify_permit() is False
+
+
 def test_verify_permit_normalizes_api_value_forms():
     """Naive timestamps and non-normalized decimals canonicalize identically.
 

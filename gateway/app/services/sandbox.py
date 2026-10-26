@@ -415,13 +415,15 @@ class SandboxEngine:
                 guess = str(action_value).lower()
                 for rule in env.hidden_rules:
                     if any(
-                        keyword in guess
+                        keyword in rule.lower() and keyword in guess
                         for keyword in [
                             "rotate",
                             "mirror",
                             "increment",
                             "invert",
                             "shift",
+                            "color",
+                            "swap",
                         ]
                     ):
                         return 10.0, "Correct transformation detected!", True

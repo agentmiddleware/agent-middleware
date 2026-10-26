@@ -10,6 +10,10 @@ fence, metering against an internal credit ledger, Ed25519 receipts, the
 hash-chained audit log, policy, and the MCP endpoints. Python 3.11+, FastAPI,
 SQLite or PostgreSQL, Alembic.
 
+Note for contributors: the canonical gateway copy is
+`agent-middleware-api/app`; this directory is synced from it, so policy and
+safety fixes should match that copy.
+
 ## Run it
 
 ```bash
@@ -22,6 +26,29 @@ make test                   # the test suite (excluding proof-surface tests)
 
 Walkthrough: [`docs/quickstart.md`](docs/quickstart.md) and the shorter
 [`../QUICKSTART.md`](../QUICKSTART.md).
+
+## Agent bootstrap
+
+Autonomous clients discover the gateway without human help. Fetch these in
+order: `GET /.well-known/agent.json`, then `GET /llms.txt`
+(`/llm.txt` serves identical content as a legacy alias). On production-like
+origins, obtain an operator-provisioned key and send it in `X-API-Key` when
+fetching `GET /mcp/tools.json`; local quickstart allows anonymous tool
+discovery. Then fetch `GET /openapi.json`. The manifest names the
+transport, authentication (`X-API-Key` header), and dependency-readiness
+rules; start the full loop at [`docs/quickstart.md`](docs/quickstart.md).
+
+## Demo keys
+
+`GET /v1/demo/keys` explains the issuance request. When
+`ENABLE_DEMO_TENANT=true`, an anonymous `POST /v1/demo/keys` with a JSON body
+issues a demo sponsor wallet, agent wallet, and API key. The body may contain
+`utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, and
+`referrer`; all are optional. The key is returned once and stored as a hash.
+Issuance is limited per IP and globally. Demo wallets use synthetic credits
+and are confined to the demo tenant. Browser origins for this route are set
+with `DEMO_ALLOWED_ORIGINS` (comma-separated); the default includes both
+`thisisatest.tech` and `agentmiddleware.dev`, with and without `www`.
 
 ## How it works
 
@@ -54,8 +81,8 @@ is receipted `delivery_uncertain` and never silently re-sent. See
 ## Guarantees and limits
 
 - At most one gateway dispatch and at most one debit per accepted idempotency
-  key; a same-key retry returns the original receipt; same key with a different
-  payload fails closed.
+  key; a retry with the same key returns the original receipt instead of dispatching again.
+  The same key with a different payload fails closed.
 - Budget, scope, expiry, and revocation are checked before money moves.
 - **Not exactly-once.** A remote side effect is deduplicated only if the remote
   tool honors the forwarded idempotency key, and an agent that restarts with a
@@ -75,7 +102,8 @@ is receipted `delivery_uncertain` and never silently re-sent. See
 - Credits are created by admin-gated sponsor issuance
   (`POST /v1/billing/wallets/sponsor`) and, only when
   `ENABLE_PROOF_SURFACES` is on, by verified Stripe top-up (USD only, where
-  Stripe keys are configured). Sponsor wallets may require KYC before a
+  Stripe keys are configured). The opt-in demo-key route creates synthetic
+  credits confined to demo wallets. Sponsor wallets may require KYC before a
   top-up is prepared. There is no subscription, invoice, or payout flow in
   this gateway. Direct client-token top-up answers `410 Gone`.
 - x402 and ACP mount only with `ENABLE_PROOF_SURFACES`. x402 prepares a

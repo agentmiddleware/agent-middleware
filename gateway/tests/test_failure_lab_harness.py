@@ -249,7 +249,9 @@ def test_refund_request_is_strict_about_representation():
     RefundRequest.from_mapping(
         {"operation_id": "o", "customer_id": "c", "payment_id": "p", "amount": 5000}
     )
-    with pytest.raises(ValueError):
+    # Strict representation: a string amount, a float amount, and an unknown
+    # field fail in three different checks, so each names its own refusal.
+    with pytest.raises(ValueError, match="amount must be an integer"):
         RefundRequest.from_mapping(
             {
                 "operation_id": "o",
@@ -258,7 +260,7 @@ def test_refund_request_is_strict_about_representation():
                 "amount": "5000",
             }
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="amount must be an integer"):
         RefundRequest.from_mapping(
             {
                 "operation_id": "o",
@@ -267,7 +269,7 @@ def test_refund_request_is_strict_about_representation():
                 "amount": 5000.0,
             }
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unknown fields"):
         RefundRequest.from_mapping(
             {
                 "operation_id": "o",

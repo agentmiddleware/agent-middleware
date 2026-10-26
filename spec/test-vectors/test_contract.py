@@ -24,9 +24,12 @@ REQUIRED_CASES = {
     "synthetic.disabled_key": "unknown_key",
     "synthetic.jwk_only_key": "verified",
     "synthetic.raw_key_beats_jwk": "invalid",
-    "synthetic.payload_hash_mismatch": "mismatch",
+    "synthetic.payload_hash_mismatch": "verified",
+    "synthetic.float_payload_verifies": "verified",
     "synthetic.unsupported_alg": "unsupported",
     "synthetic.unsupported_canonicalization": "unsupported",
+    "p256.valid": "unsupported",
+    "p256.tampered_payload": "invalid",
     "synthetic.envelope_kid_mismatch": "mismatch",
     "synthetic.envelope_alg_mismatch": "mismatch",
     "synthetic.envelope_canonicalization_mismatch": "mismatch",
@@ -61,6 +64,12 @@ def test_committed_vectors_match_the_generator():
     assert json.loads((HERE / "receipts.json").read_text()) == json.loads(
         generate.render_receipts()
     )
+    assert json.loads((HERE / "rotation.json").read_text()) == json.loads(
+        generate.render_rotation()
+    )
+    assert json.loads((HERE / "permits.json").read_text()) == json.loads(
+        generate.render_permits()
+    )
 
 
 def test_reference_verifier_matches_every_committed_case():
@@ -84,7 +93,9 @@ def test_disabled_key_stays_in_the_document_and_is_not_a_verification_key():
     case = _by_name(_load_cases())["synthetic.disabled_key"]
     kids = [entry["kid"] for entry in case["keys"]["keys"]]
     assert case["bundle"]["kid"] in kids
-    disabled = [entry for entry in case["keys"]["keys"] if entry["status"] == "disabled"]
+    disabled = [
+        entry for entry in case["keys"]["keys"] if entry["status"] == "disabled"
+    ]
     assert [entry["kid"] for entry in disabled] == [case["bundle"]["kid"]]
     assert case["bundle"]["kid"] not in key_set_from_document(case["keys"])
 
@@ -104,8 +115,18 @@ def test_unsupported_alg_is_inside_the_signed_bytes_not_the_envelope():
     assert case["bundle"]["alg"] == "Ed25519"
 
 
-def test_payload_hash_mismatch_is_a_signature_that_still_verifies():
-    """The signature covers the lying hash. The hash check is separate."""
+def test_signed_payload_hash_is_advisory_not_a_recheck():
+    """The signature covers the lying hash, and that is what verifies."""
     case = _by_name(_load_cases())["synthetic.payload_hash_mismatch"]
     signed = json.loads(case["bundle"]["signing_input"])
     assert signed["payload_hash"] != generate.payload_hash(signed)
+
+
+def test_float_payload_verifies_without_reserialization():
+    """The float vector must really carry renderings other languages mangle."""
+    case = _by_name(_load_cases())["synthetic.float_payload_verifies"]
+    raw = case["bundle"]["signing_input"]
+    assert '"latency_ms":0.0' in raw
+    assert '"injected_instructions":1.0' in raw
+    assert '"tiny":4e-05' in raw
+    assert '"big":9007199254740993' in raw

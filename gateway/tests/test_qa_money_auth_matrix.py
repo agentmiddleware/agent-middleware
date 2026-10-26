@@ -48,7 +48,7 @@ _counter = itertools.count(1)
 @pytest.fixture(autouse=True)
 async def _clean_shared_db(clean_database):
     """Every money-route test starts from an empty shared database."""
-    yield
+    return
 
 
 @pytest.fixture

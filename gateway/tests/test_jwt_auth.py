@@ -17,6 +17,8 @@ from app.core.jwt import (
     JWTError,
     get_jwt_service,
 )
+from app.db.database import get_session_factory
+from app.db.models import WalletModel
 from app.routers.auth import _exp_to_datetime
 
 
@@ -75,6 +77,29 @@ async def test_bearer_access_token_authenticates(jwt_service, live_key):
     assert auth.wallet_id == "wallet_test"
     assert auth.key_id == "key_test"
     assert auth.is_bootstrap_admin is False
+
+
+@pytest.mark.anyio
+async def test_demo_wallet_jwt_without_key_row_fails_closed(
+    jwt_service, live_key, auth_client, clean_database
+):
+    async with get_session_factory()() as session:
+        session.add(
+            WalletModel(
+                wallet_id="wallet_demo_without_key", wallet_type="agent", tenant="demo"
+            )
+        )
+        await session.commit()
+    token = jwt_service.create_access_token(
+        wallet_id="wallet_demo_without_key", key_id="missing_key", scopes=[]
+    )
+
+    response = await auth_client.get(
+        "/protected", headers={"Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "no_active_api_key"
 
 
 @pytest.mark.anyio

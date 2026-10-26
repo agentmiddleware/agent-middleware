@@ -4,11 +4,19 @@ API Key Management Router
 Handles API key creation, rotation, and revocation for wallet security.
 """
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from datetime import date, datetime, time, timedelta
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from pydantic import BaseModel
+from sqlalchemy import text
 
 from ..core.dependencies import get_agent_money
 
 from ..core.auth import AuthContext, get_auth_context
+from ..db.database import get_session_factory
+from ..db.api_key_usage_view import bounded_daily_usage_sql
+from ..core.time import utc_now
+from ..core.wallet_resolution import resolve_wallet_id
 from ..services.api_key_service import (
     get_api_key_service,
     InvalidRotationRequestError,
@@ -36,6 +44,60 @@ router = APIRouter(
         403: {"description": "Insufficient permissions"},
     },
 )
+
+admin_router = APIRouter(
+    prefix="/v1/admin/api-keys",
+    tags=["API Key Management"],
+)
+
+
+class APIKeyUsageDailyRow(BaseModel):
+    key_id: str
+    day: date
+    calls: int
+    calls_4xx: int
+    calls_5xx: int
+    p50_latency_ms: float
+    p95_latency_ms: float
+    first_call_at: datetime
+    last_call_at: datetime
+
+
+class APIKeyUsageDailyResponse(BaseModel):
+    rows: list[APIKeyUsageDailyRow]
+
+
+@admin_router.get(
+    "/usage/daily",
+    response_model=APIKeyUsageDailyResponse,
+    summary="Admin: daily usage by API key",
+    description="Read daily call counts and latency for a bounded UTC window.",
+)
+async def admin_api_key_usage_daily(
+    key_id: str | None = None,
+    days: int = Query(30, ge=1, le=90),
+    limit: int = Query(100, ge=1, le=200),
+    auth: AuthContext = Depends(get_auth_context),
+) -> APIKeyUsageDailyResponse:
+    auth.require_bootstrap_admin()
+    today = utc_now().date()
+    parameters = {
+        "start_at": datetime.combine(today - timedelta(days=days - 1), time.min),
+        "end_at": datetime.combine(today + timedelta(days=1), time.min),
+        "limit": limit,
+    }
+    if key_id is not None:
+        parameters["key_id"] = key_id
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            text(bounded_daily_usage_sql(filter_key=key_id is not None)), parameters
+        )
+        return APIKeyUsageDailyResponse(
+            rows=[
+                APIKeyUsageDailyRow.model_validate(dict(row))
+                for row in result.mappings()
+            ]
+        )
 
 
 def _not_found(error: str, message: str) -> dict:
@@ -147,14 +209,14 @@ async def create_api_key(
     the first key's metadata (``api_key`` is ``null`` on replay; the secret
     is never stored) instead of minting a second live key.
     """
-    auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
     await _refuse_bounded_minter(auth)
-    await _require_wallet_exists(request.wallet_id)
+    await _require_wallet_exists(wallet_id)
     guard, replay = await begin_http_idempotency(
         idempotency_key=idempotency_key,
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         endpoint="/v1/api-keys",
-        request_payload=request.model_dump(mode="json"),
+        request_payload={**request.model_dump(mode="json"), "wallet_id": wallet_id},
     )
     if replay is not None:
         return replay
@@ -162,7 +224,7 @@ async def create_api_key(
 
     try:
         result = await service.create_key(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             key_name=request.key_name,
             expires_in_days=request.expires_in_days,
             max_uses=request.max_uses,
@@ -243,7 +305,7 @@ async def rotate_api_key(
     the first rotation (``new_key.api_key`` is ``null`` on replay) instead of
     minting another key or failing on the already-revoked ``key_id``.
     """
-    auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
     _refuse_jwt_minter(auth)
     if request.key_id is None or request.key_id != auth.key_id:
         # Without key_id this is a plain create with no bounds to inherit.
@@ -251,12 +313,12 @@ async def rotate_api_key(
         # bounded caller could adopt an unbounded sibling's authority (with
         # or without revoke_old). A bounded caller may rotate only itself.
         await _refuse_bounded_minter(auth)
-    await _require_wallet_exists(request.wallet_id)
+    await _require_wallet_exists(wallet_id)
     guard, replay = await begin_http_idempotency(
         idempotency_key=idempotency_key,
-        wallet_id=request.wallet_id,
+        wallet_id=wallet_id,
         endpoint="/v1/api-keys/rotate",
-        request_payload=request.model_dump(mode="json"),
+        request_payload={**request.model_dump(mode="json"), "wallet_id": wallet_id},
     )
     if replay is not None:
         return replay
@@ -266,7 +328,7 @@ async def rotate_api_key(
 
     try:
         result = await service.rotate_key(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             key_id=request.key_id,
             revoke_old=request.revoke_old,
             reason=request.reason,
@@ -364,14 +426,14 @@ async def emergency_revoke(
     Use this when a wallet may be compromised.
     Optionally creates a new emergency key.
     """
-    auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
     if request.create_new_key:
         _refuse_jwt_minter(auth)
     service = get_api_key_service()
 
     try:
         result = await service.emergency_revocation(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             reason=request.reason,
             create_new_key=request.create_new_key,
             # A wallet-scoped caller's replacement is bounded by its own key,

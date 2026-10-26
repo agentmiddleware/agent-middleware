@@ -4,8 +4,8 @@
     "title": "Agent Middleware API",
     "description": "## Agent Transaction Integrity\n\n**Make consequential agent actions transactional.**\n\nTransaction-integrity boundary for consequential autonomous actions on the configured upstream-MCP path: one logical action binds scoped authority and configured consumption to at most one gateway dispatch and debit, records delivery_uncertain instead of automatically redispatching, and links gateway evidence for required external reconciliation.\n\nIt is not a full agent middleware platform. This is a durable gateway state machine, not one distributed ACID transaction and not proof of the downstream effect. It is not exactly-once: a remote side effect is deduplicated only when the upstream honors the forwarded idempotency key. See `/WEDGE.md` and `/SECURITY_LIMITATIONS.md`.\n\n### Canonical Loop\n\n`logical action -> authorize -> reserve allowance -> debit -> claim dispatch -> confirmed outcome | delivery_uncertain -> receipt/audit -> authoritative external reconciliation required`\n\n### Product Surface\n\n- **Logical action identity** — accepted key bound to one payload\n- **Bounded authority consumption** — scoped permit and configured allowance\n- **One-shot gateway dispatch/debit** — at most once per accepted action\n- **Explicit uncertainty** — `delivery_uncertain` is not auto-redispatched\n- **Linked gateway evidence** — receipt and audit data for reconciliation\n- **Discovery** — `.well-known/agent.json`, `/mcp/tools.json`, `/llms.txt`, `/v1/discover`\n\n### Proof Surfaces\n\nAgentic-web, browser, content, oracle, sandbox, media, IoT, red-team, and telemetry demos are labeled scaffolding. They mount only when `ENABLE_PROOF_SURFACES=true` and do not define the product.\n\n### Authentication\n\nProtected endpoints require an API key via the `X-API-Key` header.\n\n### For Agents\n\nStart at `/.well-known/agent.json`, then `/llms.txt` and `/mcp/tools.json`. Prefer `PUBLIC_URL` over any localhost server entry.",
     "license": {
-      "name": "Business Source License 1.1",
-      "url": "https://github.com/PetrefiedThunder/agent-middleware/blob/main/LICENSE"
+      "name": "Functional Source License 1.1, Apache-2.0 future license (FSL-1.1-ALv2)",
+      "url": "https://github.com/agentmiddleware/agent-middleware/blob/main/gateway/LICENSE.md"
     },
     "version": "1.3.0"
   },
@@ -1156,9 +1156,16 @@
           {
             "name": "wallet_id",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": "string",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "Wallet Id"
             }
           },
@@ -2287,6 +2294,163 @@
         }
       }
     },
+    "/v1/receipts/resolutions/wallet/{wallet_id}": {
+      "get": {
+        "tags": [
+          "Trust Receipts"
+        ],
+        "summary": "Get Wallet Resolution Chain",
+        "description": "List a wallet's resolution chain for readers with receipt access.",
+        "operationId": "get_wallet_resolution_chain_v1_receipts_resolutions_wallet__wallet_id__get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "wallet_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Wallet Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolutionListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/receipts/{receipt_id}/resolution": {
+      "get": {
+        "tags": [
+          "Trust Receipts"
+        ],
+        "summary": "Get Receipt Resolution",
+        "description": "Return a receipt's resolution to a reader with receipt access.",
+        "operationId": "get_receipt_resolution_v1_receipts__receipt_id__resolution_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "receipt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Receipt Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolutionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/receipts": {
       "get": {
         "tags": [
@@ -2873,7 +3037,7 @@
           "Trust Receipts"
         ],
         "summary": "Get Portable Receipt",
-        "description": "Export a receipt as evidence that survives leaving this plane.\n\nReading a receipt is authorized like any other tenant data. What the\ncaller gets back is not: the bundle can be handed to a downstream agent,\nan auditor, or an operator who holds no credential here, and they can\nstill check the signature against the published keys.",
+        "description": "Export a receipt as evidence that survives leaving this plane.\n\nReading a receipt requires receipt access. After export, a downstream\nagent, auditor, or operator can verify the bundle offline using only\ntrusted public keys.",
         "operationId": "get_portable_receipt_v1_receipts__receipt_id__portable_get",
         "security": [
           {
@@ -3106,12 +3270,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PreflightRequest",
-                "default": {
-                  "base_url": "",
-                  "stripe_secret_key": "",
-                  "campaign_source_url": ""
-                }
+                "$ref": "#/components/schemas/PreflightRequest"
               }
             }
           }
@@ -3146,7 +3305,7 @@
           "MCP"
         ],
         "summary": "Mcp Tools Manifest",
-        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned JSON-RPC subset. Clients can obtain the same list by\nsending ``tools/list`` to ``/mcp/messages``; that endpoint does not\nimplement the complete MCP initialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
+        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned tool surfaces. New integrations should invoke tools through\nthe standard Streamable HTTP endpoint at POST /mcp and can obtain the\nsame list via its ``tools/list`` method. Clients can also obtain the\nlist by sending ``tools/list`` to the legacy ``/mcp/messages``\nendpoint; that endpoint does not implement the complete MCP\ninitialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
         "operationId": "MCP_Tools_Manifest_mcp_tools_json_get",
         "parameters": [
           {
@@ -3444,6 +3603,211 @@
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp": {
+      "post": {
+        "tags": [
+          "MCP Standard Endpoint"
+        ],
+        "summary": "Standard MCP endpoint (official MCP SDK, stateless Streamable HTTP, JSON responses)",
+        "description": "Hand one standard MCP message to the official SDK's transport.\n\nAuthentication and origin validation happen here at the HTTP layer; the\nSDK owns the protocol. The governed ``tools/call`` handler reads the\nauthenticated caller back from ``request.state``.",
+        "operationId": "MCP_Streamable_HTTP_Endpoint_mcp_post",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "jsonrpc"
+                ],
+                "properties": {
+                  "jsonrpc": {
+                    "type": "string",
+                    "const": "2.0"
+                  }
+                },
+                "oneOf": [
+                  {
+                    "title": "JSON-RPC request",
+                    "required": [
+                      "method",
+                      "id"
+                    ],
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "result"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "error"
+                          ]
+                        }
+                      ]
+                    },
+                    "properties": {
+                      "method": {
+                        "type": "string"
+                      },
+                      "params": {
+                        "anyOf": [
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "id": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "title": "JSON-RPC notification",
+                    "required": [
+                      "method"
+                    ],
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "id"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "result"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "error"
+                          ]
+                        }
+                      ]
+                    },
+                    "properties": {
+                      "method": {
+                        "type": "string"
+                      },
+                      "params": {
+                        "anyOf": [
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "title": "JSON-RPC response",
+                    "required": [
+                      "id"
+                    ],
+                    "not": {
+                      "required": [
+                        "method"
+                      ]
+                    },
+                    "oneOf": [
+                      {
+                        "required": [
+                          "result"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "error"
+                        ]
+                      }
+                    ],
+                    "properties": {
+                      "id": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "result": {},
+                      "error": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -5232,6 +5596,28 @@
         }
       }
     },
+    "/docs/concepts/request-keys": {
+      "get": {
+        "tags": [
+          "Static"
+        ],
+        "summary": "Request keys",
+        "description": "Python helper for stable request keys.",
+        "operationId": "get_request_keys_md_docs_concepts_request_keys_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dashboard": {
       "get": {
         "tags": [
@@ -5271,6 +5657,264 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/api-keys/usage/daily": {
+      "get": {
+        "tags": [
+          "API Key Management"
+        ],
+        "summary": "Admin: daily usage by API key",
+        "description": "Read daily call counts and latency for a bounded UTC window.",
+        "operationId": "admin_api_key_usage_daily_v1_admin_api_keys_usage_daily_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Key Id"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 30,
+              "title": "Days"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIKeyUsageDailyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/demo/keys": {
+      "get": {
+        "tags": [
+          "Demo"
+        ],
+        "summary": "How to request a demo API key",
+        "operationId": "demo_key_help_v1_demo_keys_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Demo Key Help V1 Demo Keys Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Demo"
+        ],
+        "summary": "Mint a self-serve demo key (anonymous)",
+        "operationId": "issue_demo_key_v1_demo_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DemoKeyIssueRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoKeyIssueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/demo-keys/funnel": {
+      "get": {
+        "tags": [
+          "Demo"
+        ],
+        "summary": "Admin: demo keys issued vs. used by source (bootstrap only)",
+        "operationId": "admin_demo_key_funnel_v1_admin_demo_keys_funnel_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoKeyFunnelResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
               }
             }
           }
@@ -5530,6 +6174,7 @@
           "use_count": {
             "type": "integer",
             "title": "Use Count",
+            "description": "Bounded-key budget uses, not total calls. See api_key_usage_daily.",
             "default": 0
           }
         },
@@ -5554,6 +6199,78 @@
           "suspended"
         ],
         "title": "APIKeyStatus"
+      },
+      "APIKeyUsageDailyResponse": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/APIKeyUsageDailyRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "APIKeyUsageDailyResponse"
+      },
+      "APIKeyUsageDailyRow": {
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "title": "Key Id"
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "calls": {
+            "type": "integer",
+            "title": "Calls"
+          },
+          "calls_4xx": {
+            "type": "integer",
+            "title": "Calls 4Xx"
+          },
+          "calls_5xx": {
+            "type": "integer",
+            "title": "Calls 5Xx"
+          },
+          "p50_latency_ms": {
+            "type": "number",
+            "title": "P50 Latency Ms"
+          },
+          "p95_latency_ms": {
+            "type": "number",
+            "title": "P95 Latency Ms"
+          },
+          "first_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Call At"
+          },
+          "last_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Call At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key_id",
+          "day",
+          "calls",
+          "calls_4xx",
+          "calls_5xx",
+          "p50_latency_ms",
+          "p95_latency_ms",
+          "first_call_at",
+          "last_call_at"
+        ],
+        "title": "APIKeyUsageDailyRow"
       },
       "APIKeyWithSecret": {
         "properties": {
@@ -6311,9 +7028,16 @@
       "CreateAPIKeyRequest": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id",
-            "description": "Wallet ID to create key for."
+            "description": "Wallet ID to create key for. Defaults to the key's wallet."
           },
           "key_name": {
             "type": "string",
@@ -6350,9 +7074,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "wallet_id"
-        ],
         "title": "CreateAPIKeyRequest",
         "description": "Request to create a new API key for a wallet."
       },
@@ -6482,6 +7203,283 @@
         "title": "CreateSponsorWalletRequest",
         "description": "Create a human sponsor (liability sink) root account."
       },
+      "DemoKeyFunnelResponse": {
+        "properties": {
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/DemoKeyFunnelRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "DemoKeyFunnelResponse"
+      },
+      "DemoKeyFunnelRow": {
+        "properties": {
+          "utm_source": {
+            "type": "string",
+            "title": "Utm Source"
+          },
+          "utm_medium": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Medium"
+          },
+          "utm_campaign": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Campaign"
+          },
+          "referrer_host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referrer Host"
+          },
+          "keys_issued": {
+            "type": "integer",
+            "title": "Keys Issued"
+          },
+          "keys_used": {
+            "type": "integer",
+            "title": "Keys Used"
+          },
+          "first_issued_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Issued At"
+          },
+          "last_issued_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Issued At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "utm_source",
+          "keys_issued",
+          "keys_used",
+          "first_issued_at",
+          "last_issued_at"
+        ],
+        "title": "DemoKeyFunnelRow"
+      },
+      "DemoKeyIssueRequest": {
+        "properties": {
+          "utm_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Source"
+          },
+          "utm_medium": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Medium"
+          },
+          "utm_campaign": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Campaign"
+          },
+          "utm_content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Content"
+          },
+          "utm_term": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Utm Term"
+          },
+          "referrer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referrer",
+            "description": "document.referrer of the page that requested the key."
+          }
+        },
+        "type": "object",
+        "title": "DemoKeyIssueRequest",
+        "description": "Optional acquisition attribution; all fields may be omitted."
+      },
+      "DemoKeyIssueResponse": {
+        "properties": {
+          "api_key": {
+            "type": "string",
+            "title": "Api Key",
+            "description": "Demo API key (shown once; store it now)."
+          },
+          "key_id": {
+            "type": "string",
+            "title": "Key Id"
+          },
+          "key_prefix": {
+            "type": "string",
+            "title": "Key Prefix"
+          },
+          "wallet_id": {
+            "type": "string",
+            "title": "Wallet Id",
+            "description": "Demo agent wallet backing this key."
+          },
+          "sponsor_wallet_id": {
+            "type": "string",
+            "title": "Sponsor Wallet Id"
+          },
+          "tenant": {
+            "type": "string",
+            "title": "Tenant",
+            "default": "demo"
+          },
+          "allowed_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Tools",
+            "description": "Tool allowlist, or null for unrestricted."
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "max_uses": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Uses"
+          },
+          "budget_credits": {
+            "type": "string",
+            "title": "Budget Credits"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url",
+            "description": "API base URL hint for SDK callers."
+          },
+          "note": {
+            "type": "string",
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "api_key",
+          "key_id",
+          "key_prefix",
+          "wallet_id",
+          "sponsor_wallet_id",
+          "budget_credits",
+          "base_url",
+          "note"
+        ],
+        "title": "DemoKeyIssueResponse",
+        "description": "A freshly minted demo credential. The secret is shown once."
+      },
       "DispatchEvidenceResponse": {
         "properties": {
           "attempt_id": {
@@ -6597,9 +7595,16 @@
       "EmergencyKeyRevocationRequest": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id",
-            "description": "Wallet ID to revoke keys for."
+            "description": "Wallet ID to revoke keys for. Defaults to the key's wallet."
           },
           "reason": {
             "type": "string",
@@ -6616,9 +7621,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "wallet_id"
-        ],
         "title": "EmergencyKeyRevocationRequest",
         "description": "Request to immediately revoke all keys for a wallet."
       },
@@ -7114,7 +8116,14 @@
       "McpContext": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id",
             "description": "Wallet to charge for this call"
           },
@@ -7168,9 +8177,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "wallet_id"
-        ],
         "title": "McpContext",
         "description": "MCP execution context passed in tool calls."
       },
@@ -8640,7 +9646,14 @@
       "QuoteCreateRequest": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id"
           },
           "tool": {
@@ -8650,7 +9663,6 @@
         },
         "type": "object",
         "required": [
-          "wallet_id",
           "tool"
         ],
         "title": "QuoteCreateRequest",
@@ -9363,12 +10375,178 @@
         ],
         "title": "RefundReconciliationRetryResponse"
       },
+      "ResolutionListResponse": {
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/ResolutionResponse"
+            },
+            "type": "array",
+            "title": "Records"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "records",
+          "total",
+          "limit",
+          "offset",
+          "has_more",
+          "next_offset"
+        ],
+        "title": "ResolutionListResponse"
+      },
+      "ResolutionResponse": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "const": "resolution-v0.1",
+            "title": "Version"
+          },
+          "issuer": {
+            "type": "string",
+            "title": "Issuer"
+          },
+          "resolution_id": {
+            "type": "string",
+            "title": "Resolution Id"
+          },
+          "receipt_id": {
+            "type": "string",
+            "title": "Receipt Id"
+          },
+          "wallet_id": {
+            "type": "string",
+            "title": "Wallet Id"
+          },
+          "sequence": {
+            "type": "integer",
+            "title": "Sequence"
+          },
+          "prev_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prev Hash"
+          },
+          "receipt_hash": {
+            "type": "string",
+            "title": "Receipt Hash"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "confirmed_success",
+              "confirmed_not_delivered"
+            ],
+            "title": "Outcome"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "payload_hash": {
+            "type": "string",
+            "title": "Payload Hash"
+          },
+          "resolution_hash": {
+            "type": "string",
+            "title": "Resolution Hash"
+          },
+          "signing_input": {
+            "type": "string",
+            "title": "Signing Input"
+          },
+          "signature": {
+            "type": "string",
+            "title": "Signature"
+          },
+          "alg": {
+            "type": "string",
+            "const": "Ed25519",
+            "title": "Alg",
+            "default": "Ed25519"
+          },
+          "kid": {
+            "type": "string",
+            "title": "Kid"
+          },
+          "canonicalization": {
+            "type": "string",
+            "title": "Canonicalization",
+            "default": "awi-canonical-json/1"
+          },
+          "keys_url": {
+            "type": "string",
+            "title": "Keys Url",
+            "default": "/.well-known/trust-keys.json"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "issuer",
+          "resolution_id",
+          "receipt_id",
+          "wallet_id",
+          "sequence",
+          "prev_hash",
+          "receipt_hash",
+          "outcome",
+          "created_at",
+          "payload_hash",
+          "resolution_hash",
+          "signing_input",
+          "signature",
+          "kid"
+        ],
+        "title": "ResolutionResponse"
+      },
       "RotateAPIKeyRequest": {
         "properties": {
           "wallet_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Wallet Id",
-            "description": "Wallet ID owning the key."
+            "description": "Wallet ID owning the key. Defaults to the key's wallet."
           },
           "key_id": {
             "anyOf": [
@@ -9397,9 +10575,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "wallet_id"
-        ],
         "title": "RotateAPIKeyRequest",
         "description": "Request to rotate an API key."
       },
@@ -9707,6 +10882,17 @@
               }
             ],
             "title": "Receipt"
+          },
+          "permit_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Id"
           }
         },
         "type": "object",

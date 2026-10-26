@@ -51,10 +51,9 @@ The endpoint is stateless: each POST gets a fresh SDK transport in JSON mode
 server-initiated stream and GET/DELETE answer 405. The signed receipt is
 returned on every ``tools/call`` result both under
 ``_meta["io.agentmiddleware/receipt"]`` (the spec's extension point) and as a
-top-level ``receipt`` field (the pre-SDK contract). Disabled by default —
-``ENABLE_STANDARD_MCP_ENDPOINT`` must be set explicitly, so the surface cannot
-be advertised (or preflighted by the registry publish gate) before an operator
-turns it on.
+top-level ``receipt`` field (the pre-SDK contract). Enabled by default and
+always authenticated; set ``ENABLE_STANDARD_MCP_ENDPOINT=false`` to answer 404
+and stop advertising it.
 """
 
 from __future__ import annotations
@@ -66,7 +65,6 @@ import uuid
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
-from urllib.parse import urlsplit
 
 import anyio
 import mcp.types as mcp_types
@@ -80,6 +78,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import Message, Receive, Scope, Send
 
 from app.core.auth import AuthContext, get_auth_context
+from app.core.browser_origin import validate_browser_origin
 from app.services.audit_chain import AuditChainContendedError
 from app.services.receipts import ReceiptWriteContendedError
 from app.services.billing_engine import LedgerWriteContendedError
@@ -91,6 +90,7 @@ from app.routers.mcp import (
     HumanApprovalPendingSignal,
     TerminalRecordContendedError,
     ToolPermissionDenied,
+    _ensure_local_mcp_tools_registered,
     _handle_tools_call,
     _handle_tools_list,
     _header_idempotency_key_sources,
@@ -277,6 +277,7 @@ async def _mint_auto_permit(
     record: dict[str, Any],
     client_key: str | None,
     requires_human_approval: bool = False,
+    map_mcp_errors: bool = True,
 ) -> str:
     """Mint the bounded single-tool permit backing this call.
 
@@ -296,12 +297,40 @@ async def _mint_auto_permit(
     ttl_seconds = settings.STANDARD_MCP_PERMIT_TTL_SECONDS
     if requires_human_approval:
         ttl_seconds += approval_window_seconds()
+    budget = _tool_call_budget(record)
+    if auth.tenant == "demo":
+        demo_tools = settings.demo_allowed_tools_list
+        if (
+            tool_name != "partner.echo"
+            or tool_name not in demo_tools
+            or (auth.allowed_tools is not None and tool_name not in auth.allowed_tools)
+        ):
+            error = PermitError("demo_tool_not_allowed")
+            if map_mcp_errors:
+                raise _permit_error(error, tool_name=tool_name, record=record)
+            raise error
+        if requires_human_approval:
+            error = PermitError("human_approval_required")
+            if map_mcp_errors:
+                raise _permit_error(error, tool_name=tool_name, record=record)
+            raise error
+        credit_cap = settings.DEMO_AUTO_PERMIT_MAX_CREDITS
+        if settings.DEMO_MAX_PERMIT_CREDITS is not None:
+            credit_cap = min(credit_cap, settings.DEMO_MAX_PERMIT_CREDITS)
+        if budget > credit_cap:
+            error = PermitError("demo_auto_permit_budget_exceeded")
+            if map_mcp_errors:
+                raise _permit_error(error, tool_name=tool_name, record=record)
+            raise error
+        ttl_seconds = min(ttl_seconds, settings.DEMO_AUTO_PERMIT_TTL_SECONDS)
+        if settings.DEMO_MAX_PERMIT_TTL_MINUTES is not None:
+            ttl_seconds = min(ttl_seconds, settings.DEMO_MAX_PERMIT_TTL_MINUTES * 60)
     permit_request = PermitCreateRequest(
         issuer_wallet_id=wallet_id,
         subject_wallet_id=wallet_id,
         subject_key_id=auth.key_id,
         allowed_tools=[tool_name],
-        max_credits=_tool_call_budget(record),
+        max_credits=budget,
         expires_at=utc_now() + timedelta(seconds=ttl_seconds),
         requires_human_approval=requires_human_approval,
     )
@@ -309,10 +338,12 @@ async def _mint_auto_permit(
     if not client_key:
         try:
             permit = await get_permit_service().create_permit(
-                permit_request, subject_key_id=auth.key_id
+                permit_request, subject_key_id=auth.key_id, auth=auth
             )
         except PermitError as exc:
-            raise _permit_error(exc, tool_name=tool_name, record=record) from exc
+            if map_mcp_errors:
+                raise _permit_error(exc, tool_name=tool_name, record=record) from exc
+            raise
         return permit.permit_id
 
     idem = get_idempotency_service()
@@ -336,15 +367,19 @@ async def _mint_auto_permit(
             request_payload=mint_payload,
         )
     except IdempotencyConflictError as exc:
-        raise _mcp_error(-32003, "idempotency_key_reused") from exc
+        if map_mcp_errors:
+            raise _mcp_error(-32003, "idempotency_key_reused") from exc
+        raise
     except IdempotencyInProgressError as exc:
-        raise _mcp_error(-32005, "idempotency_in_progress") from exc
+        if map_mcp_errors:
+            raise _mcp_error(-32005, "idempotency_in_progress") from exc
+        raise
     if mint_replay and mint_replay.response_json:
         return mint_replay.response_json["permit_id"]
 
     try:
         permit = await get_permit_service().create_permit(
-            permit_request, subject_key_id=auth.key_id
+            permit_request, subject_key_id=auth.key_id, auth=auth
         )
     except PermitError as exc:
         await idem.abandon(
@@ -352,7 +387,9 @@ async def _mint_auto_permit(
             endpoint=_AUTO_PERMIT_ENDPOINT,
             idempotency_key=mint_key,
         )
-        raise _permit_error(exc, tool_name=tool_name, record=record) from exc
+        if map_mcp_errors:
+            raise _permit_error(exc, tool_name=tool_name, record=record) from exc
+        raise
     await idem.complete(
         wallet_id=wallet_id,
         endpoint=_AUTO_PERMIT_ENDPOINT,
@@ -362,6 +399,46 @@ async def _mint_auto_permit(
         status_code=201,
     )
     return permit.permit_id
+
+
+def _delivery_uncertain_tool_result(
+    exc: GovernedToolError, *, tool_name: str
+) -> dict[str, Any]:
+    """Build the model-readable result for an uncertain delivery.
+
+    The call was already charged and carries a signed receipt, so the
+    outcome is returned as a ``CallToolResult`` with ``isError`` set,
+    instead of a JSON-RPC error which reads as retryable. The text tells
+    the model not to resend, and the receipt plus outcome metadata give it
+    the identifiers needed to reconcile.
+    """
+    receipt = dict(exc.receipt) if exc.receipt else None
+    receipt_id = receipt.get("receipt_id") if receipt else None
+    reconcile = (
+        f" Reconcile with receipt '{receipt_id}' via GET /v1/receipts "
+        "before taking any further action."
+        if receipt_id
+        else " Reconcile via GET /v1/receipts before taking any further action."
+    )
+    text = (
+        f"Delivery uncertain for tool '{tool_name}': the call may already "
+        "have executed and the wallet was charged. Do not resend or retry "
+        "this call, with the same or a new idempotency key." + reconcile
+    )
+    meta: dict[str, Any] = {"outcome": "delivery_uncertain"}
+    if receipt is not None:
+        meta[_RECEIPT_META_KEY] = receipt
+    dispatch = exc.extra_data.get("dispatch")
+    if dispatch is not None:
+        meta["dispatch"] = dispatch
+    payload: dict[str, Any] = {
+        "content": [{"type": "text", "text": text}],
+        "isError": True,
+        "_meta": meta,
+    }
+    if receipt is not None:
+        payload["receipt"] = receipt
+    return payload
 
 
 async def _governed_tools_call(
@@ -384,6 +461,9 @@ async def _governed_tools_call(
             "caller's wallet; authenticate with a wallet-scoped API key",
         )
 
+    # Flag-gated local tools register lazily; a fresh gateway must not
+    # require a prior tools/list before they resolve here.
+    _ensure_local_mcp_tools_registered()
     record = get_service_registry().get_local(tool_name)
     if record is None:
         raise _mcp_error(-32001, f"Tool not found: {tool_name}")
@@ -417,6 +497,7 @@ async def _governed_tools_call(
             },
         )
 
+    auto_minted = permit_id is None
     idempotency_key = client_idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
     permit_id = permit_id or await _mint_auto_permit(
         auth=auth,
@@ -442,7 +523,7 @@ async def _governed_tools_call(
         "params": {"name": tool_name, "arguments": arguments},
     }
     try:
-        return await _handle_tools_call(
+        result = await _handle_tools_call(
             call_params,
             auth=auth,
             money=get_agent_money(),
@@ -452,6 +533,9 @@ async def _governed_tools_call(
             idempotency_key=idempotency_key,
             request_payload=request_payload,
         )
+        if auto_minted and auth.tenant == "demo":
+            result["permit_id"] = permit_id
+        return result
     except HumanApprovalPendingSignal as e:
         reason = str(e)
         pending_data = dict(e.data)
@@ -523,6 +607,12 @@ async def _governed_tools_call(
             denial_data["details"] = e.details
         raise _mcp_error(-32003, str(e), denial_data or None) from e
     except GovernedToolError as e:
+        if str(e) == "delivery_uncertain":
+            # An uncertain outcome is already charged and receipted, so it
+            # is returned as a model-readable tool result (isError) rather
+            # than a JSON-RPC error: an error on that channel reads as
+            # retryable, and a retry would risk a second charged dispatch.
+            return _delivery_uncertain_tool_result(e, tool_name=tool_name)
         data = dict(e.extra_data)
         if e.receipt:
             data["receipt"] = e.receipt
@@ -571,7 +661,9 @@ def _build_standard_mcp_server() -> Server:
         Registered directly (not through the ``@server.call_tool()``
         decorator) so governance denials keep their JSON-RPC error codes and
         receipt-bearing ``data`` instead of collapsing into an ``isError``
-        text result.
+        text result. The one exception is ``delivery_uncertain``: that
+        outcome is already charged and receipted, so it is returned as an
+        ``isError`` tool result telling the model not to resend.
         """
         ctx = server.request_context
         http_request = ctx.request if isinstance(ctx.request, Request) else None
@@ -637,21 +729,7 @@ def _validate_origin(request: Request) -> None:
 
     Non-browser MCP clients send no Origin header and pass through.
     """
-    public_url = get_settings().PUBLIC_URL.rstrip("/")
-    request_origin = f"{request.url.scheme}://{request.url.netloc}"
-    if public_url and request.url.netloc != urlsplit(public_url).netloc:
-        raise HTTPException(status_code=421, detail={"error": "host_not_allowed"})
-
-    origin = request.headers.get("origin")
-    if not origin:
-        return
-    # A reverse proxy may expose its internal HTTP scheme through the ASGI
-    # request even though the canonical browser origin is HTTPS. Once an
-    # operator configures PUBLIC_URL, it is the only origin authority;
-    # request-derived origin is a local/unconfigured fallback only.
-    allowed = {public_url} if public_url else {request_origin}
-    if origin.rstrip("/") not in allowed:
-        raise HTTPException(status_code=403, detail={"error": "origin_not_allowed"})
+    validate_browser_origin(request)
 
 
 class _SdkTransportResponse(Response):
@@ -803,6 +881,83 @@ class _SdkTransportResponse(Response):
         "Standard MCP endpoint (official MCP SDK, stateless Streamable HTTP, "
         "JSON responses)"
     ),
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["jsonrpc"],
+                        "properties": {
+                            "jsonrpc": {"type": "string", "const": "2.0"},
+                        },
+                        "oneOf": [
+                            {
+                                "title": "JSON-RPC request",
+                                "required": ["method", "id"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": ["result"]},
+                                        {"required": ["error"]},
+                                    ]
+                                },
+                                "properties": {
+                                    "method": {"type": "string"},
+                                    "params": {
+                                        "anyOf": [{"type": "object"}, {"type": "null"}]
+                                    },
+                                    "id": {
+                                        "anyOf": [
+                                            {"type": "integer"},
+                                            {"type": "string"},
+                                        ]
+                                    },
+                                },
+                            },
+                            {
+                                "title": "JSON-RPC notification",
+                                "required": ["method"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": ["id"]},
+                                        {"required": ["result"]},
+                                        {"required": ["error"]},
+                                    ]
+                                },
+                                "properties": {
+                                    "method": {"type": "string"},
+                                    "params": {
+                                        "anyOf": [{"type": "object"}, {"type": "null"}]
+                                    },
+                                },
+                            },
+                            {
+                                "title": "JSON-RPC response",
+                                "required": ["id"],
+                                "not": {"required": ["method"]},
+                                "oneOf": [
+                                    {"required": ["result"]},
+                                    {"required": ["error"]},
+                                ],
+                                "properties": {
+                                    "id": {
+                                        "anyOf": [
+                                            {"type": "integer"},
+                                            {"type": "string"},
+                                            {"type": "null"},
+                                        ]
+                                    },
+                                    "result": {},
+                                    "error": {"type": "object"},
+                                },
+                            },
+                        ],
+                    }
+                }
+            },
+        }
+    },
 )
 async def handle_standard_mcp(
     request: Request,

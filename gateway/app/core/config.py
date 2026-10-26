@@ -5,7 +5,7 @@ All settings are loaded from environment variables for zero-GUI deployment.
 
 from decimal import Decimal
 from enum import Enum
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
 
+    # Opt-in only; no automatic usage-event cleanup is scheduled.
+    API_KEY_USAGE_RETENTION_DAYS: int | None = Field(default=None, ge=0)
+
     # --- Authentication ---
     API_KEY_HEADER: str = "X-API-Key"
     # Comma-separated list of valid API keys (use a secrets manager in production)
@@ -83,6 +86,88 @@ class Settings(BaseSettings):
     # production-like environments refuse to boot when this is true, and the
     # handler independently fails closed there. See docs/static-dev-api-keys.md.
     ENABLE_DEV_KEY_SELF_PROVISION: bool = False
+
+    # --- Self-serve demo tenant (POST /v1/demo/keys) ---
+    ENABLE_DEMO_TENANT: bool = False
+    DEMO_ALLOWED_TOOLS: str = ""
+    DEMO_KEY_TTL_DAYS: int | None = None
+    DEMO_KEY_MAX_USES: int | None = None
+    DEMO_WALLET_CREDITS: Decimal = Decimal("1000")
+    DEMO_WALLET_DAILY_LIMIT: Decimal | None = None
+    DEMO_MAX_PERMIT_CREDITS: Decimal | None = None
+    DEMO_MAX_PERMIT_TTL_MINUTES: int | None = None
+    DEMO_AUTO_PERMIT_MAX_CREDITS: Decimal = Decimal("5")
+    DEMO_AUTO_PERMIT_TTL_SECONDS: int = 120
+    DEMO_ISSUE_PER_IP_PER_DAY: int = 3
+    DEMO_ISSUE_GLOBAL_PER_HOUR: int = 30
+    DEMO_ISSUE_GLOBAL_PER_DAY: int = 200
+    DEMO_MAX_LIVE_KEYS: int = 500
+    DEMO_ALLOWED_ORIGINS: str = (
+        "https://www.thisisatest.tech,"
+        "https://thisisatest.tech,"
+        "https://www.agentmiddleware.dev,"
+        "https://agentmiddleware.dev"
+    )
+
+    @field_validator(
+        "DEMO_KEY_TTL_DAYS",
+        "DEMO_KEY_MAX_USES",
+        "DEMO_MAX_PERMIT_TTL_MINUTES",
+        "DEMO_AUTO_PERMIT_TTL_SECONDS",
+        "DEMO_ISSUE_PER_IP_PER_DAY",
+        "DEMO_ISSUE_GLOBAL_PER_HOUR",
+        "DEMO_ISSUE_GLOBAL_PER_DAY",
+        "DEMO_MAX_LIVE_KEYS",
+    )
+    @classmethod
+    def _validate_demo_ints(cls, value: int | None, info) -> int | None:
+        if value is None:
+            if info.field_name in (
+                "DEMO_KEY_TTL_DAYS",
+                "DEMO_KEY_MAX_USES",
+                "DEMO_MAX_PERMIT_TTL_MINUTES",
+            ):
+                return None
+            raise ValueError(f"{info.field_name} is required")
+        bounds = {
+            "DEMO_KEY_TTL_DAYS": (1, 30),
+            "DEMO_KEY_MAX_USES": (1, 10_000),
+            "DEMO_MAX_PERMIT_TTL_MINUTES": (1, 1_440),
+            "DEMO_AUTO_PERMIT_TTL_SECONDS": (1, 600),
+            "DEMO_ISSUE_PER_IP_PER_DAY": (1, 1_000),
+            "DEMO_ISSUE_GLOBAL_PER_HOUR": (1, 100_000),
+            "DEMO_ISSUE_GLOBAL_PER_DAY": (1, 1_000_000),
+            "DEMO_MAX_LIVE_KEYS": (1, 100_000),
+        }
+        low, high = bounds[info.field_name]
+        if not low <= value <= high:
+            raise ValueError(f"{info.field_name} must be between {low} and {high}")
+        return value
+
+    @field_validator(
+        "DEMO_WALLET_CREDITS",
+        "DEMO_MAX_PERMIT_CREDITS",
+        "DEMO_WALLET_DAILY_LIMIT",
+        "DEMO_AUTO_PERMIT_MAX_CREDITS",
+    )
+    @classmethod
+    def _validate_demo_credits(cls, value: Decimal | None, info) -> Decimal | None:
+        if value is None:
+            if info.field_name in (
+                "DEMO_MAX_PERMIT_CREDITS",
+                "DEMO_WALLET_DAILY_LIMIT",
+            ):
+                return None
+            raise ValueError(f"{info.field_name} is required")
+        if not value.is_finite() or value <= 0 or value > Decimal("100000"):
+            raise ValueError(
+                f"{info.field_name} must be a positive amount up to 100000"
+            )
+        return value
+
+    @property
+    def demo_allowed_tools_list(self) -> list[str]:
+        return [t.strip() for t in self.DEMO_ALLOWED_TOOLS.split(",") if t.strip()]
 
     # --- Enterprise IGA bridge (OIDC -> PolicyBundle) ---
     # JSON object mapping a trusted enterprise OIDC issuer URL to its pinned
@@ -197,10 +282,10 @@ class Settings(BaseSettings):
     # Spec-compliant stateless Streamable HTTP surface for standard MCP
     # clients. tools/call mints a bounded single-tool permit from the
     # caller's wallet before entering the governed invoke path, so the
-    # permit -> meter -> receipt -> audit loop is unchanged. Off by default:
-    # do not advertise (or registry-publish) a transport that is not
-    # deliberately enabled.
-    ENABLE_STANDARD_MCP_ENDPOINT: bool = False
+    # permit -> meter -> receipt -> audit loop is unchanged. On by default
+    # (owner decision); it always requires an API key. Set false to stop
+    # serving and advertising it.
+    ENABLE_STANDARD_MCP_ENDPOINT: bool = True
     STANDARD_MCP_PERMIT_TTL_SECONDS: int = 120
 
     # --- Public MCP endpoint (POST /mcp/public) ---
@@ -410,7 +495,7 @@ class Settings(BaseSettings):
     )
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     return Settings()
 

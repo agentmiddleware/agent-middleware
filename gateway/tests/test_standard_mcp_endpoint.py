@@ -22,7 +22,7 @@ from app.services.idempotency import (
     IdempotencyInProgressError,
     get_idempotency_service,
 )
-from app.services.mcp_generator import McpGenerator
+from app.services.mcp_generator import MCP_SERVER_VERSION, McpGenerator
 from app.services.service_registry import get_service_registry
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
@@ -66,6 +66,49 @@ def _initialize(protocol_version: str = "2025-06-18") -> dict:
             "clientInfo": {"name": "test-client", "version": "0.0.0"},
         },
     )
+
+
+def test_openapi_documents_distinct_jsonrpc_post_bodies():
+    schema = app.openapi()["paths"]["/mcp"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    assert schema["required"] == ["jsonrpc"]
+    variants = {variant["title"]: variant for variant in schema["oneOf"]}
+    assert set(variants) == {
+        "JSON-RPC request",
+        "JSON-RPC notification",
+        "JSON-RPC response",
+    }
+    request = variants["JSON-RPC request"]
+    assert request["required"] == ["method", "id"]
+    assert request["not"] == {
+        "anyOf": [{"required": ["result"]}, {"required": ["error"]}]
+    }
+    assert variants["JSON-RPC notification"]["required"] == ["method"]
+    assert variants["JSON-RPC notification"]["not"] == {
+        "anyOf": [
+            {"required": ["id"]},
+            {"required": ["result"]},
+            {"required": ["error"]},
+        ]
+    }
+    response = variants["JSON-RPC response"]
+    assert response["required"] == ["id"]
+    assert response["not"] == {"required": ["method"]}
+    assert response["oneOf"] == [
+        {"required": ["result"]},
+        {"required": ["error"]},
+    ]
+    assert "result" in response["properties"]
+    assert {item["type"] for item in request["properties"]["id"]["anyOf"]} == {
+        "integer",
+        "string",
+    }
+    assert {item["type"] for item in response["properties"]["id"]["anyOf"]} == {
+        "integer",
+        "string",
+        "null",
+    }
 
 
 @pytest.mark.anyio
@@ -114,9 +157,36 @@ async def test_discovery_preserves_typed_tools_alongside_no_argument_tool(
 
 
 @pytest.mark.anyio
-async def test_endpoint_disabled_by_default(client):
-    resp = await client.post("/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS)
-    assert resp.status_code == 404
+async def test_endpoint_enabled_by_default_and_requires_auth(client, monkeypatch):
+    monkeypatch.delenv("ENABLE_STANDARD_MCP_ENDPOINT", raising=False)
+    get_settings.cache_clear()
+    try:
+        assert get_settings().ENABLE_STANDARD_MCP_ENDPOINT is True
+        resp = await client.post("/mcp", json=_initialize(), headers=MCP_HEADERS)
+        assert resp.status_code == 401
+        resp = await client.post(
+            "/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS
+        )
+        assert resp.status_code == 200
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_endpoint_returns_404_when_disabled(client, monkeypatch):
+    monkeypatch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", "false")
+    get_settings.cache_clear()
+    try:
+        unauthenticated = await client.post(
+            "/mcp", json=_initialize(), headers=MCP_HEADERS
+        )
+        assert unauthenticated.status_code == 401
+        resp = await client.post(
+            "/mcp", json=_initialize(), headers=BOOTSTRAP_MCP_HEADERS
+        )
+        assert resp.status_code == 404
+    finally:
+        get_settings.cache_clear()
 
 
 @pytest.mark.anyio
@@ -137,6 +207,7 @@ async def test_initialize_negotiates_requested_protocol(client, standard_mcp_ena
     assert result["protocolVersion"] == "2025-03-26"
     assert result["capabilities"]["tools"] == {"listChanged": False}
     assert result["serverInfo"]["name"] == McpGenerator.MANIFEST_NAME
+    assert result["serverInfo"]["version"] == MCP_SERVER_VERSION
     assert "Transaction-integrity boundary" in result["instructions"]
     assert "delivery_uncertain" in result["instructions"]
     assert "legacy compatibility identifier" in result["instructions"]
@@ -239,6 +310,23 @@ async def test_standard_mcp_rejects_same_host_different_origin(
 
 
 @pytest.mark.anyio
+async def test_standard_mcp_rejects_rebound_host_without_public_url(
+    client, standard_mcp_enabled
+):
+    assert not get_settings().PUBLIC_URL
+    resp = await client.post(
+        "/mcp",
+        json=_rpc("ping"),
+        headers={
+            **BOOTSTRAP_MCP_HEADERS,
+            "Host": "rebind.evil",
+            "Origin": "http://rebind.evil",
+        },
+    )
+    assert resp.status_code == 421
+
+
+@pytest.mark.anyio
 async def test_standard_mcp_uses_public_url_not_proxy_observed_scheme(
     client, standard_mcp_enabled, monkeypatch
 ):
@@ -281,6 +369,8 @@ async def test_tools_call_requires_wallet_scoped_key(client, standard_mcp_enable
     error = resp.json()["error"]
     assert error["code"] == -32003
     assert "wallet_scoped_key_required" in error["message"]
+    assert error["data"]["code"] == "wallet_scoped_key_required"
+    assert error["data"]["docs_url"].endswith("#wallet_scoped_key_required")
 
 
 @pytest.mark.anyio
@@ -292,6 +382,43 @@ async def test_tools_call_unknown_tool(client, standard_mcp_enabled, clean_datab
         headers={**provisioned["agent_headers"], **MCP_HEADERS},
     )
     assert resp.json()["error"]["code"] == -32001
+
+
+@pytest.mark.anyio
+async def test_tools_call_dogfood_tool_works_without_prior_tools_list(
+    client, standard_mcp_enabled, clean_database, monkeypatch, tmp_path
+):
+    """A fresh gateway must resolve flag-gated tools on tools/call alone."""
+    from app.services import dogfood_tool
+
+    monkeypatch.setenv("ENABLE_DOGFOOD_TOOL", "true")
+    get_settings.cache_clear()
+    monkeypatch.setattr(dogfood_tool, "DOGFOOD_NOTES_PATH", tmp_path / "notes.jsonl")
+    # Simulate a freshly started gateway: nothing has run tools/list yet.
+    dogfood_tool.unregister_dogfood_tool()
+    get_service_registry().unregister_local(dogfood_tool.DOGFOOD_TOOL_ID)
+
+    provisioned = await provision_agent_wallet(client)
+    try:
+        resp = await client.post(
+            "/mcp",
+            json=_rpc(
+                "tools/call",
+                params={
+                    "name": dogfood_tool.DOGFOOD_TOOL_ID,
+                    "arguments": {"text": "fresh"},
+                },
+            ),
+            headers={**provisioned["agent_headers"], **MCP_HEADERS},
+        )
+        body = resp.json()
+        assert "error" not in body, body
+        assert body["result"]["isError"] is False
+        assert body["result"]["receipt"]["wallet_id"] == provisioned["agent_wallet_id"]
+    finally:
+        dogfood_tool.unregister_dogfood_tool()
+        monkeypatch.setenv("ENABLE_DOGFOOD_TOOL", "false")
+        get_settings.cache_clear()
 
 
 @pytest.mark.anyio
@@ -415,10 +542,10 @@ async def test_tools_call_reports_auto_permit_contention_as_retryable(
         registry.unregister_local(tool_name)
 
     assert response.status_code == 200
-    assert response.json()["error"] == {
-        "code": -32005,
-        "message": "idempotency_in_progress",
-    }
+    error = response.json()["error"]
+    assert error["code"] == -32005
+    assert error["message"] == "idempotency_in_progress"
+    assert error["data"]["code"] == "idempotency_in_progress"
     assert calls == 0
 
 
@@ -460,10 +587,10 @@ async def test_tools_call_reports_governed_invoke_contention_with_existing_code(
         registry.unregister_local(tool_name)
 
     assert response.status_code == 200
-    assert response.json()["error"] == {
-        "code": -32005,
-        "message": "idempotency_in_progress",
-    }
+    error = response.json()["error"]
+    assert error["code"] == -32005
+    assert error["message"] == "idempotency_in_progress"
+    assert error["data"]["code"] == "idempotency_in_progress"
 
 
 # ── Bodies the reply could not carry are refused before dispatch ─────────────

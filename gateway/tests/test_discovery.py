@@ -6,6 +6,7 @@ to decide whether to use this API.
 
 import pytest
 from httpx import AsyncClient, ASGITransport
+from app.core.config import get_settings
 from app.main import app
 
 
@@ -100,6 +101,113 @@ async def test_doc_index(client):
     assert len(data["services"]) >= 5
     assert all("surface" in s for s in data["services"])
     assert any(s["id"] == "mcp-trust-plane" for s in data["services"])
+
+
+@pytest.fixture
+def standard_mcp_enabled(monkeypatch):
+    monkeypatch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", "true")
+    get_settings.cache_clear()
+    yield
+    monkeypatch.delenv("ENABLE_STANDARD_MCP_ENDPOINT", raising=False)
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def standard_mcp_disabled(monkeypatch):
+    monkeypatch.setenv("ENABLE_STANDARD_MCP_ENDPOINT", "false")
+    get_settings.cache_clear()
+    yield
+    monkeypatch.delenv("ENABLE_STANDARD_MCP_ENDPOINT", raising=False)
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_doc_index_names_standard_mcp_as_the_governed_invoke_surface(
+    client, standard_mcp_enabled
+):
+    """Standard MCP is the canonical path, so the catalog must lead with it.
+
+    An agent reads this entry to find out how to call a tool. Pointing it at the
+    project-specific JSON-RPC transport sends conforming clients down a path
+    they would otherwise never need.
+    """
+
+    index = (await client.get("/docs/index")).json()
+    service = next(s for s in index["services"] if s["id"] == "mcp-trust-plane")
+
+    assert service["base_path"] == "/mcp"
+    assert service["transport"] == "standard_streamable_http"
+    assert service["quickstart_endpoint"] == "POST /mcp"
+    # The legacy transport stays advertised rather than hidden, but not
+    # because it is the only one that accepts an externally issued permit:
+    # both do. See test_doc_index_describes_the_caller_supplied_permit_path.
+    assert service["legacy_json_rpc_endpoint"] == "/mcp/messages"
+
+
+@pytest.mark.anyio
+async def test_doc_index_describes_the_caller_supplied_permit_path(
+    client, standard_mcp_enabled
+):
+    """The catalog must name the _meta key, not claim permits cannot be carried.
+
+    /mcp reads a caller-supplied permit from
+    params._meta["io.agentmiddleware/permit_id"] (and legacy
+    mcpContext.permit_id) in _action_permit_reference, and only mints one when
+    the caller supplied none -- mcp_standard.py sets
+    ``auto_minted = permit_id is None``. Earlier copy here asserted the
+    opposite, which steered agents holding a delegated permit to the legacy
+    transport for a capability the standard endpoint already has.
+    """
+
+    index = (await client.get("/docs/index")).json()
+    service = next(s for s in index["services"] if s["id"] == "mcp-trust-plane")
+
+    assert 'params._meta["io.agentmiddleware/permit_id"]' in (service["transport_note"])
+    assert "only when none is supplied" in service["transport_note"]
+    # The legacy note must not sell itself as the way to present a permit.
+    assert "instead of self-issuing" not in service["legacy_json_rpc_note"]
+    assert "params.mcpContext.permit_id" in service["legacy_json_rpc_note"]
+
+
+@pytest.mark.anyio
+async def test_doc_index_falls_back_when_standard_mcp_is_disabled(
+    client, standard_mcp_disabled
+):
+    """The catalog must never advertise a path the deployment does not serve.
+
+    `/mcp` answers 404 to an authenticated caller when the endpoint is off
+    (`test_standard_mcp_endpoint.py::test_endpoint_returns_404_when_disabled`
+    owns that contract), so naming it as base_path here would hand every reader
+    a dead path -- the class of overclaim the discovery-honesty rules exist to
+    prevent.
+    """
+
+    index = (await client.get("/docs/index")).json()
+    service = next(s for s in index["services"] if s["id"] == "mcp-trust-plane")
+
+    assert service["base_path"] == "/mcp/messages"
+    assert service["transport"] == "legacy_project_json_rpc"
+    assert service["quickstart_endpoint"] == "POST /mcp/messages"
+    assert service["standard_streamable_http_status"] == "disabled"
+
+
+@pytest.mark.anyio
+async def test_request_keys_guide_is_listed_and_served(client):
+    index = (await client.get("/docs/index")).json()
+    assert any(
+        section["path"] == "/docs/concepts/request-keys"
+        for section in index["sections"]
+    )
+
+    guide = await client.get("/docs/concepts/request-keys")
+    assert guide.status_code == 200
+    assert guide.headers["content-type"].startswith("text/markdown")
+    assert guide.text.startswith("# Request keys\n")
+    assert "idempotency_key_reused" in guide.text
+    operation = (await client.get("/openapi.json")).json()["paths"][
+        "/docs/concepts/request-keys"
+    ]["get"]
+    assert "text/markdown" in operation["responses"]["200"]["content"]
 
 
 @pytest.mark.anyio

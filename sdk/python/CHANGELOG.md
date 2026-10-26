@@ -5,15 +5,32 @@
 `pyproject.toml` carries `0.5.0` from here on. `0.4.0` is published and
 tagged `python-sdk-v0.4.0`, and the entries below are new surface area on
 top of it, so leaving the source at `0.4.0` would have shipped something
-materially different under a version already in the wild. A minor bump:
-everything here is additive, with one bounded exception: `settle_402()` now
-prefers `amount_usd` over the legacy `amount` alias when a requirement carries
-both with different values (see below). `parse_402_response()` always sets the
-two equal, so the normal path is unchanged. The tag is not cut by this
-change — `python-sdk-v0.5.0` is still a release decision.
+materially different under a version already in the wild. This minor bump
+includes compatibility changes: `settle_402()` now prefers `amount_usd` over
+the legacy `amount` alias when both differ, `charge()` now raises
+`IdempotencyConflictError` for every 409 response, and
+`B2AEdgeClient.execute_awi_action()` requires a permit and key.
+`parse_402_response()` always sets the two amounts equal, so its normal path
+is unchanged. The tag is not cut by this change. `python-v0.5.0` is still a
+release decision.
+
+### Distribution name
+
+The Python distribution is now `amw-sdk`. After publication, install it with
+`pip install amw-sdk`.
+Both `amw` and `b2a_sdk` remain available as import packages.
+
+### Migrating from b2a-sdk
+
+`b2a-sdk` was never published to PyPI. For a local install or the 0.4.0 wheel,
+run `pip uninstall b2a-sdk` before `pip install amw-sdk`. Existing imports
+remain unchanged.
 
 ### Receipt verifier
 
+- `verify_permit_bundle()` checks the signed permit's required fields and
+  rejects a signed receipt as permit evidence. `VerificationResult.permit_id`
+  reports the signed permit id without changing existing positional arguments.
 - An edited `alg` or `canonicalization` inside `signing_input` is `invalid`
   when the signature does not verify and the key is available. Those claims
   are `unsupported` only after the signature over the exact bytes checks out.
@@ -23,17 +40,21 @@ change — `python-sdk-v0.5.0` is still a release decision.
 
 ### Audit follow-up (2026-10-01)
 
-Security and correctness fixes from the 2026-08-27 repository audit. The only
-incompatible change is `B2AEdgeClient.execute_awi_action()`, and 0.5.0 is
-still unreleased.
+Security and correctness fixes from the 2026-08-27 repository audit. The
+incompatible changes are `B2AEdgeClient.execute_awi_action()` and the 409
+exception type from `AgentMiddlewareClient.charge()`. Version 0.5.0 is still
+unreleased.
 
 - **Replay-safe legacy charges**: `AgentMiddlewareClient.charge()` takes a
   keyword-only `idempotency_key`, validated before anything is sent and
-  forwarded as `Idempotency-Key`; a 409 on a keyed charge raises
-  `IdempotencyConflictError`. `@billable` and `@combined` take an
-  `idempotency_key_factory`, called with the decorated function's arguments,
-  so retries of one logical call derive the same key. Calls without a key are
-  unchanged and are not replay-safe.
+  forwarded as `Idempotency-Key`. Without a caller key, it mints a fresh key
+  for each `charge()` call; retries across separate calls must reuse a caller
+  key. `max_attempts` retries transport failures with the same key and a short
+  delay. Every 409 now raises `IdempotencyConflictError`, including calls
+  without a caller key. Callers that previously caught `httpx.HTTPStatusError`
+  for an unkeyed 409 must catch `IdempotencyConflictError` instead. `@billable`
+  and `@combined` take an `idempotency_key_factory`, called with the decorated
+  function's arguments, so retries of one logical call derive the same key.
 - **`create_agent_wallet(daily_limit=0)`** now sends the zero cap ("spend
   nothing"). A truthiness test used to drop it, which the server reads as
   "no cap".
@@ -53,6 +74,12 @@ still unreleased.
 
 ### Added
 
+- **Legacy MCP `serve` result format**: Successful served-tool calls now pass
+  through the gateway's MCP `content` and `structuredContent` directly. Older
+  clients that parse the full gateway JSON response from `content[0].text` can
+  start `python -m b2a_sdk.mcp serve --legacy-result-format` to retain that
+  envelope. Permit denials and pending human approvals return actionable MCP
+  results with retry guidance.
 - **ACP (Agentic Commerce Protocol) checkout**: Add `ACPLineItem`,
   `ACPCheckoutRequest`, `ACPCheckoutResponse` models and
   `AgentMiddlewareClient.acp_checkout()` method for POST /v1/billing/acp/checkout.

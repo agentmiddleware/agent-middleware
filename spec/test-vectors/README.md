@@ -1,14 +1,19 @@
 # Test vectors
 
-- `keys.json`: key set holding the public half of the fixed test seed
-  `bytes(range(32))`. **Test use only.**
-- `receipts.json`: cases with a `bundle`, optional `keys` override, and the
-  `expect`ed verifier status. Built from the gateway's golden receipt fixtures
-  plus tampered variants. Synthetic cases add retired and disabled keys,
-  envelope fields that disagree with the signed payload, a signed
-  payload_hash that does not match, an unsupported algorithm, and malformed
-  bundles.
-- `generate.py`: regenerates both files from `gateway/tests/fixtures/`.
+- `keys.json`: public half of the fixed receipt and permit test seed. Test use only.
+- `receipts.json`: receipt bundles from the gateway's golden fixtures, their
+  tampered variants, and the existing lifecycle, envelope, advisory hash,
+  float, P-256, and malformed cases.
+- `rotation.json`: the existing rotated receipt case, with both active public
+  keys supplied for that case. The default receipt corpus keeps its single-key
+  shape used by the gateway fixture tests.
+- `permits.json`: permit bundles from the gateway's golden fixtures, their
+  tampered variants, and an unsupported algorithm case.
+- `generate.py`: regenerates the JSON files from the golden fixtures. It checks
+  fixture signatures before writing any file.
+
+The receipt and permit suites each exercise `verified`, `invalid`, `mismatch`,
+`unknown_key`, `malformed`, and `unsupported`.
 
 Check an implementation:
 

@@ -11,7 +11,39 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.config import get_settings
 from app.main import app
+from app.routers.well_known import _build_agent_manifest
 from app.services.mcp_generator import McpGenerator
+
+
+PLAIN_DESCRIPTION = (
+    "Agent Middleware is a gateway for an agent's configured upstream tools. "
+    "For governed calls, it checks a signed permit and sends each accepted "
+    "upstream request at most once per key; its signed receipts can be "
+    "verified offline."
+)
+PRECISE_DESCRIPTION = (
+    "Transaction-integrity boundary for consequential autonomous actions on the "
+    "configured upstream-MCP path: one logical action binds scoped authority and "
+    "configured consumption to at most one gateway dispatch and debit, records "
+    "delivery_uncertain instead of automatically redispatching, and links gateway "
+    "evidence for required external reconciliation."
+)
+
+
+def _assert_plain_description(description: str) -> None:
+    assert description == PLAIN_DESCRIPTION
+    assert len(description) < 300
+    assert description.count(".") == 2
+    assert not any(dash in description for dash in ("-", "–", "—"))
+    assert not any(
+        jargon in description.lower()
+        for jargon in (
+            "trust plane",
+            "transaction boundary",
+            "wedge",
+            "bounded authority",
+        )
+    )
 
 
 @pytest.fixture
@@ -19,6 +51,22 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+@pytest.mark.anyio
+async def test_permissive_discovery_scopes_guarantees_to_governed_calls(
+    client, monkeypatch
+):
+    cfg = get_settings()
+    monkeypatch.setattr(cfg, "TRUST_MODE_ENABLED", True)
+    monkeypatch.setattr(cfg, "ALLOW_LEGACY_UNPERMITTED_MCP", True)
+
+    for path in ("/mcp/tools.json", "/.well-known/agent.json"):
+        resp = await client.get(path)
+        assert resp.status_code == 200
+        description = resp.json()["description"]
+        _assert_plain_description(description)
+        assert "For governed calls," in description
 
 
 @pytest.fixture
@@ -49,14 +97,40 @@ async def test_tools_json_envelope_has_versioned_transaction_positioning(client)
     assert body["name"] == McpGenerator.MANIFEST_NAME
     assert "B2A Service Marketplace" not in body["name"]
     assert "B2A" not in body["name"]
-    assert "transaction-integrity boundary" in body["description"].lower()
+    _assert_plain_description(body["description"])
+    assert body["details"] == (
+        PRECISE_DESCRIPTION
+        + " Tools listed here are executable local, configured upstream, or "
+        "dogfood endpoints — not a metadata-only service catalog."
+    )
     assert body["positioning"]["schema_version"] == "1.0"
     assert body["positioning"]["id"] == (
         "transaction_integrity_for_consequential_autonomous_actions"
     )
-    assert "executable" in body["description"].lower()
-    assert "configured upstream" in body["description"].lower()
-    assert "metadata-only" in body["description"].lower()
+
+
+@pytest.mark.anyio
+async def test_agent_json_preserves_precise_copy_beside_plain_description(
+    client, proof_surfaces_off
+):
+    resp = await client.get("/.well-known/agent.json")
+    assert resp.status_code == 200
+    body = resp.json()
+    _assert_plain_description(body["description"])
+    assert body["details"] == PRECISE_DESCRIPTION
+    assert body["name"] == "agent-middleware-api"
+    assert "agent_first" in body
+
+
+def test_agent_json_preserves_precise_proof_surface_copy(monkeypatch):
+    monkeypatch.setattr(get_settings(), "ENABLE_PROOF_SURFACES", True)
+    body = _build_agent_manifest().model_dump(mode="json")
+    _assert_plain_description(body["description"])
+    assert body["details"] == (
+        PRECISE_DESCRIPTION
+        + " Additional routers are labeled proof surfaces, outside the "
+        "transaction-integrity boundary."
+    )
 
 
 @pytest.mark.anyio
@@ -77,7 +151,8 @@ async def test_discover_pricing_and_guides_are_trust_plane(client, proof_surface
     assert "awi_adoption" not in guides
     assert guides["mcp_json_rpc"] == "/mcp/messages"
     assert guides["mcp_json_rpc_status"] == "legacy_project_transport"
-    assert "standard_mcp" not in guides
+    # The standard MCP endpoint is on by default.
+    assert guides["standard_mcp"] == "/mcp"
     assert guides["wedge"] == "/WEDGE.md"
     assert "partner.notes.write" in guides["dogfood"]
 
@@ -126,10 +201,11 @@ async def test_agent_json_sdk_integrations_are_honest(client):
     assert source_version is not None, "sdk/python/pyproject.toml has no version"
     assert python_sdk["version"] == source_version.group(1)
     assert python_sdk["install"] == "pip install -e ./sdk/python"
-    assert "pip install b2a-sdk" not in json.dumps(python_sdk)
+    assert "pip install amw-sdk" not in json.dumps(python_sdk)
     assert "not published" in python_sdk["note"].lower()
-    # No release has been cut from this repository yet.
-    assert python_sdk["latest_release_tag"] is None
+    # 0.4.0 was cut as tag python-sdk-v0.4.0 (see sdk/python/CHANGELOG.md);
+    # the source tree has since moved to an unreleased 0.5.0.
+    assert python_sdk["latest_release_tag"] == "python-sdk-v0.4.0"
 
     typescript_sdk = integrations["typescript_sdk"]
     assert isinstance(typescript_sdk, dict)
@@ -139,8 +215,9 @@ async def test_agent_json_sdk_integrations_are_honest(client):
     assert integrations["mcp"] is True
     assert integrations["mcp_json_rpc"] == "/mcp/messages"
     assert integrations["mcp_json_rpc_status"] == "legacy_project_transport"
-    assert "preferred_integration" not in integrations
-    assert "standard_mcp_streamable_http" not in integrations
+    # The standard MCP endpoint is on by default, so it is the preferred path.
+    assert integrations["preferred_integration"] == "standard_mcp_streamable_http"
+    assert integrations["standard_mcp_streamable_http"] == "/mcp"
 
 
 @pytest.mark.anyio
@@ -148,7 +225,7 @@ async def test_llm_txt_does_not_advertise_unpublished_sdk_installs(client):
     resp = await client.get("/llm.txt")
     assert resp.status_code == 200
     text = resp.text
-    assert "pip install b2a-sdk" not in text
+    assert "pip install amw-sdk" not in text
     assert "npm install @b2a/sdk" not in text
     assert "pip install -e ./sdk/python" in text
     assert "transaction-integrity boundary" in text

@@ -1,6 +1,7 @@
 """Exercise Make's forwarding into the real guard without connecting to a DB."""
 
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
@@ -13,10 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def proof_environment(tmp_path):
     (tmp_path / "uv").write_text(
-        f"#!{sys.executable}\n"
+        "#!/bin/sh\n"
+        f"exec {shlex.quote(sys.executable)} - <<'PY'\n"
         "from tests.test_mcp_postgres_multiprocess import _require_explicit_isolation\n"
         "_require_explicit_isolation()\n"
         "print('isolation validated; no database connection attempted')\n"
+        "PY\n"
     )
     (tmp_path / "uv").chmod(0o700)
     (tmp_path / "alembic").write_text('#!/bin/sh\ntouch "$MIGRATION_MARKER"\nexit 0\n')
@@ -37,7 +40,7 @@ def proof_environment(tmp_path):
     "target", ["prove-crash-recovery", "prove-trust-plane-postgres"]
 )
 @pytest.mark.parametrize(
-    "overrides, accepted",
+    ("overrides", "accepted"),
     [
         ({}, True),
         ({"ENVIRONMENT": "production"}, False),

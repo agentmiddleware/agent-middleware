@@ -193,14 +193,14 @@ async def test_non_finite_transfer_moves_no_money(clean_database):
     money = get_agent_money()
     sponsor, agent = await _funded_agent(money)
     before = (await money.get_wallet(agent.wallet_id)).balance
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match=r"^Transfer amount must be positive$"):
         await money.transfer(
             from_wallet_id=agent.wallet_id,
             to_wallet_id=sponsor.wallet_id,
             amount=Decimal("Infinity"),
             caller=CallerIdentity.for_wallet(agent.wallet_id),
         )
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match=r"^Transfer amount must be positive$"):
         await money.transfer(
             from_wallet_id=agent.wallet_id,
             to_wallet_id=sponsor.wallet_id,

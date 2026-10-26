@@ -34,6 +34,7 @@ gateway/tests/test_iga_policy.py:generic-api-key:1124
 gateway/tests/test_iga_policy.py:generic-api-key:1201
 gateway/tests/test_iga_policy.py:generic-api-key:987
 gateway/tests/test_jev_risk_guard.py:amw-private-key-material:597
+3a9e65f699e8362cb7cf61253d697b103ddc61ed:gateway/tests/test_jev_risk_guard.py:amw-private-key-material:605
 gateway/tests/test_jwt_auth.py:generic-api-key:24
 gateway/tests/test_mcp_dispatch_reconciliation.py:generic-api-key:1286
 gateway/tests/test_mcp_internal_error_disclosure.py:generic-api-key:302
@@ -83,3 +84,17 @@ b832ed901f992cd225b41d74916db202c82a81c4:gateway/tests/test_x402.py:generic-api-
 923cc826add7856cb81a632d23ba99d85c067559:spec/test-vectors/generate.py:generic-api-key:378
 e1abe47d7987cc9a4e9521faeebd6becc9d59504:spec/test-vectors/generate.py:generic-api-key:350
 e1abe47d7987cc9a4e9521faeebd6becc9d59504:spec/test-vectors/generate.py:generic-api-key:379
+# Reviewed request key test vector outputs from a superseded commit.
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:26
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:49
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:82
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:130
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:161
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:205
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:234
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:257
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:277
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:301
+d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:315
+# Reviewed placeholder in a docs curl example from a superseded commit.
+e31a5a1e89bd3886e00389ec62b9f0b6885a9665:gateway/docs/quickstart.md:curl-auth-header:430

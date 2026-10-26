@@ -66,7 +66,9 @@ CI runs tier 2 on every pull request in `postgres-concurrency` and
 Postgres service databases and set `AMW_TEST_DB_DISPOSABLE=1` in their job
 environment; the shared fixture then accepts PostgreSQL URLs with
 `ENVIRONMENT=test`. `postgres-proofs` runs row-lock, action
-accounting, migration, asyncpg driver, and both multiprocess crash suites
+accounting, migration, asyncpg driver, concurrent-invoke accounting
+(`tests/test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted`),
+and both multiprocess crash suites
 (`tests/test_mcp_postgres_multiprocess.py` and
 `tests/test_action_multiprocess.py`) with `CI_STRICT=1`; its final step
 fails if any proof logged a skip.

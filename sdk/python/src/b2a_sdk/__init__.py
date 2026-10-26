@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING
 
 # Dependency-minimal surface, imported eagerly: errors, models, and the offline
@@ -40,6 +41,12 @@ from .receipt_verifier import (
     key_set_from_document,
     verify_bundle,
 )
+from .request_key import RequestKeyExplanation, request_key
+from .resolution_verifier import (
+    ResolutionVerificationResult,
+    verify_resolution,
+    verify_resolution_chain,
+)
 
 __version__ = "0.5.0"
 
@@ -52,6 +59,7 @@ __version__ = "0.5.0"
 _LAZY_ATTRS = {
     "AgentMiddlewareClient": "client",
     "B2AClient": "client",
+    "Client": "sync_client",
     "B2AEdgeClient": "edge_client",
     "GovernedEdgeSession": "edge_client",
     "LocalDecision": "edge_client",
@@ -60,12 +68,13 @@ _LAZY_ATTRS = {
     "billable": "decorators",
     "combined": "decorators",
     "monitored": "decorators",
+    "new_idempotency_key": "client",
     "parse_402_response": "x402",
     "SyncAgentMiddlewareClient": "sync_client",
 }
 
 if TYPE_CHECKING:  # let type checkers and IDEs resolve the lazy names statically
-    from .client import AgentMiddlewareClient, B2AClient
+    from .client import AgentMiddlewareClient, B2AClient, new_idempotency_key
     from .decorators import billable, combined, monitored
     from .edge_client import (
         B2AEdgeClient,
@@ -73,7 +82,7 @@ if TYPE_CHECKING:  # let type checkers and IDEs resolve the lazy names staticall
         LocalDecision,
         LocalPermitValidator,
     )
-    from .sync_client import SyncAgentMiddlewareClient
+    from .sync_client import Client, SyncAgentMiddlewareClient
     from .x402 import X402Client, parse_402_response
 
 
@@ -104,6 +113,7 @@ __all__ = [
     "AuthorizationError",
     "B2AClient",
     "B2AEdgeClient",
+    "Client",
     "DeliveryUncertainError",
     "EvidenceBundle",
     "GovernedEdgeSession",
@@ -117,6 +127,8 @@ __all__ = [
     "PermitRequest",
     "Receipt",
     "ReceiptVerification",
+    "ResolutionVerificationResult",
+    "RequestKeyExplanation",
     "SyncAgentMiddlewareClient",
     "ToolDefinition",
     "TransportError",
@@ -127,7 +139,13 @@ __all__ = [
     "billable",
     "combined",
     "monitored",
+    "new_idempotency_key",
     "key_set_from_document",
     "parse_402_response",
+    "request_key",
     "verify_bundle",
+    "verify_resolution",
+    "verify_resolution_chain",
 ]
+
+warnings.warn("b2a_sdk is deprecated; import amw instead", DeprecationWarning, stacklevel=1)

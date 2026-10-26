@@ -1,0 +1,58 @@
+# Ruff lint for every discovered Python project. Runs as ONE job instead of a
+# per-project matrix: each project takes seconds, and per-job minute rounding
+# costs more than the lint itself.
+name: Lint
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUFF_VERSION: "0.17.1"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Check and format every Python project
+        run: |
+          set -euo pipefail
+          discovery=$(python3 .github/scripts/detect_projects.py)
+          project_lines=$(
+            printf '%s\n' "$discovery" \
+              | sed -n 's/^python=//p' \
+              | python3 -c 'import json, sys; raw = sys.stdin.read().strip()
+          if not raw:
+              raise SystemExit("missing python= line from detect_projects.py")
+          for project in json.loads(raw):
+              print(project)'
+          )
+          mapfile -t projects <<< "$project_lines"
+          # A here-string always ends in a newline, so no projects becomes one blank element.
+          if [ "${#projects[@]}" -eq 0 ] || [ -z "${projects[0]:-}" ]; then
+            echo "::error::no Python projects discovered"
+            exit 1
+          fi
+          for project in "${projects[@]}"; do
+            echo "::group::lint $project"
+            (cd "$project" \
+              && uv run --no-project --with "ruff==${RUFF_VERSION}" ruff check . \
+              && uv run --no-project --with "ruff==${RUFF_VERSION}" ruff format --check .) || exit $?
+            echo "::endgroup::"
+          done

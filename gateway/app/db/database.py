@@ -16,6 +16,7 @@ tables and fails closed if they are missing.
 
 import logging
 import os
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, AsyncGenerator
@@ -35,6 +36,7 @@ from ..core.config import get_settings
 from ..core.db_urls import as_sqlalchemy_url
 from ..core.time import to_naive_utc
 from ..core.trust_mode import is_production_like_environment
+from .api_key_usage_view import CREATE_API_KEY_USAGE_DAILY_VIEW_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +61,41 @@ REQUIRED_TRUST_TABLES = frozenset(
         "audit_chain_heads",
         "signing_keys",
         "human_approvals",
+        "receipt_resolutions",
+        "resolution_chain_heads",
+        "api_key_usage_events",
     }
 )
 REQUIRED_TRUST_COLUMNS = {
+    "api_key_usage_events": frozenset(
+        {
+            "id",
+            "key_id",
+            "tenant",
+            "method",
+            "endpoint",
+            "status_code",
+            "latency_ms",
+            "created_at",
+        }
+    ),
     "mcp_dispatch_attempts": frozenset({"dispatch_claim_hash"}),
+    "resolution_chain_heads": frozenset({"last_sequence", "last_hash"}),
+    "receipt_resolutions": frozenset(
+        {
+            "receipt_id",
+            "wallet_id",
+            "sequence",
+            "prev_hash",
+            "receipt_hash",
+            "outcome",
+            "signing_input",
+            "signature",
+            "signature_key_id",
+            "payload_hash",
+            "resolution_hash",
+        }
+    ),
     "permits": frozenset(
         {
             "repeat_window_seconds",
@@ -124,6 +157,59 @@ def _get_database_url() -> str | None:
     return as_sqlalchemy_url(raw)
 
 
+class _StatementReleasingCursor(sqlite3.Cursor):
+    """Release a failed statement on the aiosqlite worker thread that ran it.
+
+    Through CPython 3.11, ``sqlite3.Cursor.execute``/``executemany`` leave the
+    prepared statement attached to the cursor when the step fails (unique
+    violation, "database is locked", ...); 3.12 resets and drops it in the
+    error path of the C-level query executor instead. A cursor that still owns
+    a statement resets it again when it is destroyed, and that sqlite3_reset()
+    call takes the connection mutex. The destruction happens wherever the
+    cyclic GC runs, in practice the event-loop thread, since the failed
+    cursor survives in the traceback of the exception the caller handled,
+    while aiosqlite executes statements on a per-connection worker thread. If
+    that worker is inside sqlite3_step() waiting in SQLite's busy handler (it
+    holds the mutex for the whole wait), the event loop blocks until the busy
+    timeout expires; the writer being waited for can only commit from the
+    event loop, so the wait always runs to the full timeout. Under concurrent
+    governed MCP writes this surfaced as a 30 s stall plus "database is
+    locked", on the Python 3.11 CI leg only. Closing the cursor here, on the
+    worker thread that owns the connection, resets and detaches the statement
+    immediately, so its later destruction never enters SQLite. On 3.12+ the
+    close is a no-op for the statement and remains harmless.
+    """
+
+    def execute(self, sql, parameters=(), /):  # noqa: ANN001, ANN201
+        try:
+            return super().execute(sql, parameters)
+        except BaseException:
+            self._release_statement()
+            raise
+
+    def executemany(self, sql, seq_of_parameters, /):  # noqa: ANN001, ANN201
+        try:
+            return super().executemany(sql, seq_of_parameters)
+        except BaseException:
+            self._release_statement()
+            raise
+
+    def _release_statement(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            # The connection is already closed or otherwise unusable, so the
+            # statement cannot be reset; the original error is what matters.
+            pass
+
+
+class _StatementReleasingConnection(sqlite3.Connection):
+    """sqlite3 connection whose cursors are ``_StatementReleasingCursor``."""
+
+    def cursor(self, factory=_StatementReleasingCursor):  # noqa: ANN001, ANN201
+        return super().cursor(factory)
+
+
 def get_engine() -> AsyncEngine | None:
     """Get or create the async database engine.
 
@@ -148,8 +234,13 @@ def get_engine() -> AsyncEngine | None:
             # SQLite doesn't benefit from a large pool (single-writer) and
             # choking on concurrent writes manifests as OperationalError
             # "database is locked". connect_args + WAL mode below solve it
-            # for dev/test; production runs on PostgreSQL.
-            engine_kwargs["connect_args"] = {"timeout": 30}
+            # for dev/test; production runs on PostgreSQL. The connection
+            # factory keeps failed statements from being released on the
+            # event-loop thread (see _StatementReleasingCursor).
+            engine_kwargs["connect_args"] = {
+                "timeout": 30,
+                "factory": _StatementReleasingConnection,
+            }
         else:
             engine_kwargs["pool_size"] = get_settings().DB_POOL_SIZE
             engine_kwargs["max_overflow"] = get_settings().DB_MAX_OVERFLOW
@@ -208,7 +299,7 @@ def _normalize_bind_parameters(parameters: Any) -> Any:
             to_naive_utc(value) if isinstance(value, datetime) else value
             for value in parameters
         ]
-        if all(a is b for a, b in zip(rewritten_seq, parameters)):
+        if all(a is b for a, b in zip(rewritten_seq, parameters, strict=True)):
             return parameters
         return tuple(rewritten_seq) if isinstance(parameters, tuple) else rewritten_seq
     return parameters
@@ -243,7 +334,7 @@ def _install_naive_utc_bind_guard(engine: AsyncEngine) -> None:
     ):
         if executemany and isinstance(parameters, (list, tuple)):
             normalized = [_normalize_bind_parameters(p) for p in parameters]
-            if all(a is b for a, b in zip(normalized, parameters)):
+            if all(a is b for a, b in zip(normalized, parameters, strict=True)):
                 return statement, parameters
             return statement, normalized
         return statement, _normalize_bind_parameters(parameters)
@@ -283,6 +374,10 @@ def is_database_configured() -> bool:
 def _missing_required_tables(sync_conn) -> set[str]:  # noqa: ANN001
     existing = set(sa_inspect(sync_conn).get_table_names())
     return set(REQUIRED_TRUST_TABLES) - existing
+
+
+def _missing_required_views(sync_conn) -> set[str]:  # noqa: ANN001
+    return {"api_key_usage_daily"} - set(sa_inspect(sync_conn).get_view_names())
 
 
 def _missing_required_columns(sync_conn) -> set[str]:  # noqa: ANN001
@@ -341,6 +436,7 @@ async def verify_required_schema(engine: AsyncEngine) -> None:
     async with engine.connect() as conn:
         missing = await conn.run_sync(_missing_required_tables)
         missing_columns = await conn.run_sync(_missing_required_columns)
+        missing_views = await conn.run_sync(_missing_required_views)
         stale = await conn.run_sync(_stale_alembic_message)
     # A stamped database can be both behind head and missing tables introduced
     # by later revisions. Report the revision mismatch first: it is the
@@ -362,6 +458,12 @@ async def verify_required_schema(engine: AsyncEngine) -> None:
             + ". Bring the schema to the packaged Alembic head before starting "
             "the API (normally `alembic upgrade head`; review an unstamped "
             "legacy schema before stamping its exact existing revision)."
+        )
+    if missing_views:
+        raise SchemaInitError(
+            "Required database views missing: "
+            + ", ".join(sorted(missing_views))
+            + ". Bring the schema to the packaged Alembic head before starting the API."
         )
 
 
@@ -385,6 +487,8 @@ async def init_db() -> None:
     if allows_metadata_create_all(dialect_name=dialect, environment=environment):
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
+            if "api_key_usage_daily" in await conn.run_sync(_missing_required_views):
+                await conn.exec_driver_sql(CREATE_API_KEY_USAGE_DAILY_VIEW_SQL)
             missing_columns = await conn.run_sync(_missing_required_columns)
         if missing_columns:
             raise SchemaInitError(

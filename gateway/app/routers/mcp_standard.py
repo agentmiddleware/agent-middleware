@@ -300,18 +300,45 @@ def _unkeyed_clock() -> float:
     return time.time()
 
 
-def _effective_unkeyed_retry_window() -> int:
-    """Retry window in seconds, capped at the auto permit TTL.
+def _auto_permit_ttl_seconds(
+    *, tenant: str | None, requires_human_approval: bool
+) -> int:
+    """TTL in seconds of the auto permit ``_mint_auto_permit`` would mint.
+
+    An approval-gated permit must stay valid for the whole decision window
+    plus the normal TTL as execution margin: permit expiry is validated
+    before the approval is polled, so a shorter-lived permit would strand a
+    decision made late in the window as a terminal permit_expired denial.
+    Demo permits are further capped by the demo TTL limits.
+    """
+    settings = get_settings()
+    ttl_seconds = settings.STANDARD_MCP_PERMIT_TTL_SECONDS
+    if requires_human_approval:
+        ttl_seconds += approval_window_seconds()
+    if tenant == "demo":
+        ttl_seconds = min(ttl_seconds, settings.DEMO_AUTO_PERMIT_TTL_SECONDS)
+        if settings.DEMO_MAX_PERMIT_TTL_MINUTES is not None:
+            ttl_seconds = min(ttl_seconds, settings.DEMO_MAX_PERMIT_TTL_MINUTES * 60)
+    return ttl_seconds
+
+
+def _effective_unkeyed_retry_window(
+    *, tenant: str | None = None, requires_human_approval: bool = False
+) -> int:
+    """Retry window in seconds, capped at the TTL of the auto permit minted.
 
     A joined slot reuses the permit minted for the first attempt, so a window
     longer than that permit's lifetime would resolve a late retry to an
-    expired permit (a denial instead of a replay or a fresh mint). 0 disables.
+    expired permit (a denial instead of a replay or a fresh mint). The cap is
+    the TTL the mint will actually use, including the demo limits. 0 disables.
     """
-    settings = get_settings()
-    window = settings.MCP_UNKEYED_RETRY_WINDOW_SECONDS
+    window = get_settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS
     if window <= 0:
         return 0
-    return min(window, max(settings.STANDARD_MCP_PERMIT_TTL_SECONDS, 0))
+    ttl_seconds = _auto_permit_ttl_seconds(
+        tenant=tenant, requires_human_approval=requires_human_approval
+    )
+    return min(window, max(ttl_seconds, 0))
 
 
 async def _acquire_unkeyed_retry_lock(wallet_id: str, lock_key: str) -> str:
@@ -386,7 +413,9 @@ async def _resolve_unkeyed_retry(
     * the auto permit is minted before the lock is released, so any later
       caller sees the chosen slot.
     """
-    window = _effective_unkeyed_retry_window()
+    window = _effective_unkeyed_retry_window(
+        tenant=auth.tenant, requires_human_approval=requires_human_approval
+    )
     wallet_id = auth.wallet_id
     if window <= 0 or not wallet_id or record.get("read_only"):
         return None
@@ -480,13 +509,9 @@ async def _mint_auto_permit(
     if not wallet_id:  # narrowed by the caller; fail closed regardless
         raise _mcp_error(-32003, "wallet_scoped_key_required")
     settings = get_settings()
-    # An approval-gated permit must stay valid for the whole decision window
-    # plus the normal TTL as execution margin: permit expiry is validated
-    # before the approval is polled, so a shorter-lived permit would strand a
-    # decision made late in the window as a terminal permit_expired denial.
-    ttl_seconds = settings.STANDARD_MCP_PERMIT_TTL_SECONDS
-    if requires_human_approval:
-        ttl_seconds += approval_window_seconds()
+    ttl_seconds = _auto_permit_ttl_seconds(
+        tenant=auth.tenant, requires_human_approval=requires_human_approval
+    )
     budget = _tool_call_budget(record)
     if auth.tenant == "demo":
         demo_tools = settings.demo_allowed_tools_list
@@ -512,9 +537,6 @@ async def _mint_auto_permit(
             if map_mcp_errors:
                 raise _permit_error(error, tool_name=tool_name, record=record)
             raise error
-        ttl_seconds = min(ttl_seconds, settings.DEMO_AUTO_PERMIT_TTL_SECONDS)
-        if settings.DEMO_MAX_PERMIT_TTL_MINUTES is not None:
-            ttl_seconds = min(ttl_seconds, settings.DEMO_MAX_PERMIT_TTL_MINUTES * 60)
     permit_request = PermitCreateRequest(
         issuer_wallet_id=wallet_id,
         subject_wallet_id=wallet_id,

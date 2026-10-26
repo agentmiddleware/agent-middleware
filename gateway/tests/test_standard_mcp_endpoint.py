@@ -1288,3 +1288,26 @@ async def test_unkeyed_mint_failure_releases_row_for_retry(
         assert invocations == ["hi"]
     finally:
         get_service_registry().unregister_local("echo-mint-fail")
+
+
+def test_effective_unkeyed_retry_window_capped_at_demo_permit_ttl(monkeypatch):
+    """Bugbot: demo auto permits are shorter-lived; the window must follow."""
+    from app.core.config import get_settings
+    from app.routers import mcp_standard
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "STANDARD_MCP_PERMIT_TTL_SECONDS", 120)
+    monkeypatch.setattr(settings, "MCP_UNKEYED_RETRY_WINDOW_SECONDS", 300)
+    monkeypatch.setattr(settings, "DEMO_AUTO_PERMIT_TTL_SECONDS", 45)
+    monkeypatch.setattr(settings, "DEMO_MAX_PERMIT_TTL_MINUTES", None)
+    assert mcp_standard._effective_unkeyed_retry_window(tenant="demo") == 45
+    assert mcp_standard._effective_unkeyed_retry_window(tenant="acme") == 120
+    monkeypatch.setattr(settings, "DEMO_AUTO_PERMIT_TTL_SECONDS", 200)
+    monkeypatch.setattr(settings, "DEMO_MAX_PERMIT_TTL_MINUTES", 1)
+    assert mcp_standard._effective_unkeyed_retry_window(tenant="demo") == 60
+    # The window always equals the TTL the mint itself uses.
+    assert mcp_standard._effective_unkeyed_retry_window(
+        tenant="demo"
+    ) == mcp_standard._auto_permit_ttl_seconds(
+        tenant="demo", requires_human_approval=False
+    )

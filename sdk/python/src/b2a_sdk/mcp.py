@@ -25,6 +25,11 @@ import httpx
 DEFAULT_API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
 _ASCII_PRINTABLE_MIN = 32
 _ASCII_PRINTABLE_MAX = 126
+_UNCERTAIN_OUTCOME_HINT = (
+    "The outcome is unknown; this call may already have run and charged. "
+    "Verify the outcome before retrying. Supply io.agentmiddleware/idempotency_key "
+    "in request _meta on future calls."
+)
 
 
 def _printable_ascii_idempotency_key(idempotency_key: str) -> str:
@@ -98,11 +103,28 @@ def _gateway_server_error(response: httpx.Response, keyed: bool) -> dict[str, An
         "retryable": keyed,
     }
     if not keyed:
-        structured["hint"] = (
-            "The outcome is unknown; this call may already have run and charged. "
-            "Verify the outcome before retrying. Supply io.agentmiddleware/idempotency_key "
-            "in request _meta on future calls."
-        )
+        structured["hint"] = _UNCERTAIN_OUTCOME_HINT
+    return structured
+
+
+def _gateway_response_uncertain(
+    *, keyed: bool, response: httpx.Response | None = None
+) -> dict[str, Any]:
+    """A missing or unusable gateway response does not prove the call did not run."""
+    structured: dict[str, Any] = {
+        "error": "gateway_response_uncertain",
+        "code": "gateway_response_uncertain",
+        "message": "POST /mcp did not return a usable response.",
+        "correlation_id": (
+            response.headers.get("X-Correlation-ID") or response.headers.get("X-Request-ID")
+            if response is not None
+            else None
+        ),
+        "http_status": response.status_code if response is not None else None,
+        "retryable": keyed,
+    }
+    if not keyed:
+        structured["hint"] = _UNCERTAIN_OUTCOME_HINT
     return structured
 
 
@@ -273,18 +295,26 @@ async def serve_async(
         if idempotency_key is not None:
             headers["Idempotency-Key"] = _printable_ascii_idempotency_key(idempotency_key)
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{api_url}/mcp",
-                headers=headers,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {"name": service_id, "arguments": input_data},
-                },
-                timeout=30.0,
-                follow_redirects=False,
-            )
+            try:
+                response = await client.post(
+                    f"{api_url}/mcp",
+                    headers=headers,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": service_id, "arguments": input_data},
+                    },
+                    timeout=30.0,
+                    follow_redirects=False,
+                )
+            except httpx.RequestError:
+                structured = _gateway_response_uncertain(keyed=idempotency_key is not None)
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
             if 400 <= response.status_code < 500:
                 try:
                     body = response.json()
@@ -308,17 +338,29 @@ async def serve_async(
                     structuredContent=structured,
                 )
             response.raise_for_status()
-            envelope = response.json()
-            if "error" in envelope:
-                error = envelope["error"]
-                structured = error if isinstance(error, dict) else {"error": error}
+            try:
+                envelope = response.json()
+                if not isinstance(envelope, dict):
+                    raise ValueError("gateway response must be an object")
+                if "error" in envelope:
+                    error = envelope["error"]
+                    structured = error if isinstance(error, dict) else {"error": error}
+                    return CallToolResult(
+                        content=[TextContent(type="text", text=json.dumps(structured))],
+                        isError=True,
+                        structuredContent=structured,
+                    )
+                result = envelope["result"]
+                return result if legacy_result_format else CallToolResult.model_validate(result)
+            except (ValueError, KeyError, TypeError):
+                structured = _gateway_response_uncertain(
+                    keyed=idempotency_key is not None, response=response
+                )
                 return CallToolResult(
                     content=[TextContent(type="text", text=json.dumps(structured))],
                     isError=True,
                     structuredContent=structured,
                 )
-            result = envelope["result"]
-            return result if legacy_result_format else CallToolResult.model_validate(result)
 
     for tool in tools:
         name = tool.get("name", "unknown")

@@ -581,3 +581,50 @@ def test_serve_async_unkeyed_gateway_5xx_is_not_retryable(monkeypatch, tmp_path)
         assert json.loads(result.content[0].text) == expected
     assert len(requests) == 2
     assert all("Idempotency-Key" not in request.headers for request in requests)
+
+
+@pytest.mark.parametrize("key", [None, "invoke-123"])
+@pytest.mark.parametrize(
+    "failure",
+    ["timeout", "invalid_json", "request_id", "non_object", "missing_result", "invalid_result"],
+)
+def test_serve_async_uncertain_gateway_response_preserves_retry_safety(
+    monkeypatch, tmp_path, key, failure
+):
+    httpx = pytest.importorskip("httpx")
+
+    def respond(request):
+        if failure == "timeout":
+            raise httpx.ReadTimeout("response lost", request=request)
+        if failure == "invalid_json":
+            return httpx.Response(200, content=b"", headers={"X-Correlation-ID": _CORRELATION_ID})
+        if failure == "request_id":
+            return httpx.Response(200, content=b"", headers={"X-Request-ID": _CORRELATION_ID})
+        if failure == "non_object":
+            return httpx.Response(200, json=[])
+        if failure == "invalid_result":
+            return httpx.Response(200, json={"result": {"content": "not-a-list"}})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1})
+
+    handler, requests, server, meta = _serve_tool_bridge(monkeypatch, tmp_path, respond)
+    direct = _call_handler(handler, server, meta, key)
+    via_fastmcp = asyncio.run(server.call_tool("partner.search", {"kwargs": {"query": "sample"}}))
+
+    for result in (direct, via_fastmcp):
+        assert result.isError is True
+        assert result.structuredContent["error"] == "gateway_response_uncertain"
+        assert result.structuredContent["retryable"] is (key is not None)
+        assert result.structuredContent["http_status"] == (None if failure == "timeout" else 200)
+        assert result.structuredContent["correlation_id"] == (
+            _CORRELATION_ID if failure in {"invalid_json", "request_id"} else None
+        )
+        assert json.loads(result.content[0].text) == result.structuredContent
+        assert "response lost" not in result.content[0].text
+        assert "unused.invalid" not in result.content[0].text
+        assert "test-key" not in result.content[0].text
+        if key is None:
+            assert "may already have run and charged" in result.structuredContent["hint"]
+        else:
+            assert "hint" not in result.structuredContent
+    assert len(requests) == 2
+    assert [request.headers.get("Idempotency-Key") for request in requests] == [key, key]

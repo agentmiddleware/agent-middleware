@@ -329,7 +329,20 @@ def test_integrity_check_accepts_nested_files_and_reports_missing_files(tmp_path
     assert not report.ok
 
 
-@pytest.mark.parametrize("unsafe", ["../outside.txt", "/outside.txt", "bad\x00name", 4])
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "../outside.txt",
+        "/outside.txt",
+        "bad\x00name",
+        4,
+        "C:/x",
+        "C:\\x",
+        "c:x",
+        "//server/share",
+        "\\\\server\\share",
+    ],
+)
 def test_integrity_check_never_hashes_unsafe_manifest_paths(
     tmp_path, monkeypatch, unsafe
 ):
@@ -344,6 +357,7 @@ def test_integrity_check_never_hashes_unsafe_manifest_paths(
     report = verify_bundle_integrity(bundle)
     assert not report.ok
     assert report.checked == 0
+    assert any("not read" in problem for problem in report.problems)
 
 
 def test_integrity_check_rejects_escaping_parent_link_and_linked_manifest(

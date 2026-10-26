@@ -201,6 +201,33 @@ def test_a_failing_baseline_is_not_reported_as_sufficient():
     assert conclusion.kind is ConclusionKind.INCONCLUSIVE
     assert conclusion.kind is not ConclusionKind.EXISTING_INTEGRATION_SUFFICIENT
     assert conclusion.kind is not ConclusionKind.NATIVE_CONTROLS_SUFFICIENT
+    assert (
+        "none has both a PASS verdict and the required downstream execution"
+        in conclusion.text
+    )
+    assert (
+        "cannot establish that the intended business action succeeded"
+        in conclusion.text
+    )
+
+
+@pytest.mark.parametrize(
+    "baseline", [Configuration.DIRECT_NAIVE, Configuration.DIRECT_NATIVE]
+)
+def test_pass_verdict_without_downstream_execution_is_inconclusive(baseline):
+    result = _result(
+        [
+            _entry(baseline, verdict=Verdict.PASS, executions=0),
+            _entry(Configuration.GATEWAY_NATIVE, verdict=Verdict.PASS, executions=1),
+        ]
+    )
+
+    conclusion = build_comparison(result).conclusion
+    assert conclusion.kind is ConclusionKind.INCONCLUSIVE
+    assert (
+        "none has both a PASS verdict and the required downstream execution"
+        in conclusion.text
+    )
 
 
 @pytest.mark.parametrize(

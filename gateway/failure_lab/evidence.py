@@ -1277,6 +1277,7 @@ def _unsafe_bundle_path(root: Path, relative: str) -> str | None:
         not isinstance(relative, str)
         or not relative
         or relative.startswith(("/", "\\"))
+        or re.match(r"^[A-Za-z]:", relative)
         or "\\" in relative
         or "\x00" in relative
     ):

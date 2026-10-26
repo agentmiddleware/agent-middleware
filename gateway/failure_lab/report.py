@@ -432,13 +432,11 @@ def _conclude(
         ):
             return Conclusion(
                 ConclusionKind.INCONCLUSIVE,
-                "A baseline ran, but it executed the business action fewer "
-                "times than this test requires, or its verdict does not "
-                "establish success. "
-                "A count of zero duplicate effects in that case does not show "
-                "that the baseline did the work this test requires: doing "
-                "nothing produces no duplicate. This report does not call "
-                "that baseline sufficient.",
+                "The available baseline measurements do not establish success "
+                "in this test: none has both a PASS verdict and "
+                "the required downstream execution. A zero duplicate count "
+                "alone cannot establish that the intended business action "
+                "succeeded.",
                 0,
                 0,
                 differences,

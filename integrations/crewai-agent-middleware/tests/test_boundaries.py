@@ -86,21 +86,9 @@ def _tool(transport: httpx.MockTransport, **kwargs) -> tuple[CrewAIB2ATool, B2AC
 
 
 def _shutdown(tool: CrewAIB2ATool, client: B2AClient) -> None:
-    """Close the HTTP client on the loop that used it, then stop that loop."""
-    loop = getattr(tool, "_sync_loop", None)
-    if loop is not None and not loop.is_closed():
-        try:
-            loop.run_until_complete(client.close())
-        except RuntimeError:
-            pass
-    closer = getattr(tool, "close", None)
-    if callable(closer):
-        closer()
-        return
-    try:
-        asyncio.run(client.close())
-    except RuntimeError:
-        pass
+    """Close the sync runner and the separately borrowed client."""
+    tool.close()
+    asyncio.run(client.close())
 
 
 def test_api_key_is_not_visible_in_repr_or_dump():
@@ -150,6 +138,7 @@ def test_sync_run_calls_the_api_twice_without_a_running_loop():
     tool._sync_client = B2AClient(
         api_key="test-key", base_url="https://middleware.test", transport=transport
     )
+    tool.sync_client_factory = lambda: tool._sync_client
     call = {
         "operation": "call_tool",
         "tool_name": "partner.search",

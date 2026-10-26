@@ -17,6 +17,7 @@ from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import AuditChainHeadModel, ControlPlaneAuditEventModel
 from app.services.audit_chain import (
+    AuditChainContendedError,
     AuditChainHeadMissingError,
     _sign_with_previous,
     verify_audit_chain,
@@ -442,6 +443,36 @@ async def test_append_refuses_to_start_a_new_genesis_when_the_head_is_gone(
     result = await verify_audit_chain(wallet_id=wallet_id)
     assert result.valid is False
     assert result.reason == "audit_chain_head_missing"
+
+
+@pytest.mark.anyio
+async def test_missing_head_error_is_non_retryable(clean_database, monkeypatch):
+    wallet_id = f"wlt-{uuid4()}"
+    await record_audit_event(event="trust.headappend", wallet_id=wallet_id)
+
+    factory = get_session_factory()
+    async with factory() as session:
+        head = await session.get(AuditChainHeadModel, wallet_id)
+        assert head is not None
+        await session.delete(head)
+        await session.commit()
+
+    from app.services import audit_chain
+
+    attempts = 0
+
+    def counted_factory():
+        nonlocal attempts
+        attempts += 1
+        return factory()
+
+    monkeypatch.setattr(audit_chain, "get_session_factory", lambda: counted_factory)
+    with pytest.raises(AuditChainHeadMissingError) as excinfo:
+        await record_audit_event(event="trust.headappend", wallet_id=wallet_id)
+
+    assert excinfo.value.reason == "audit_chain_head_missing"
+    assert not isinstance(excinfo.value, AuditChainContendedError)
+    assert attempts == 1
 
 
 @pytest.mark.anyio

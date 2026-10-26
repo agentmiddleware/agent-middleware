@@ -307,7 +307,6 @@ async def append_chained_audit_event(
     # spending the full budget on it only delays the real error.
     integrity_race_attempts = 2
     integrity_failures = 0
-    missing_head_observations = 0
     for attempt in range(attempts):
         session = factory()
         try:
@@ -350,13 +349,11 @@ async def append_chained_audit_event(
                         )
                     ).first()
                     if prior is not None:
-                        # The head SELECT may precede another writer's first
-                        # commit while this event SELECT follows it. Retry in
-                        # a new transaction before calling the head missing.
-                        missing_head_observations += 1
-                        if missing_head_observations > 1:
-                            raise AuditChainHeadMissingError("audit_chain_head_missing")
-                        raise _HeadConflict()
+                        # A first writer may have committed between the head
+                        # and event reads. Only that race warrants a retry.
+                        if await session.get(AuditChainHeadModel, wallet_key):
+                            raise _HeadConflict()
+                        raise AuditChainHeadMissingError("audit_chain_head_missing")
                 model.seq = observed_seq + 1
                 _sign_with_previous(model, previous_hash, signing_key_id=key.key_id)
                 now = utc_now()

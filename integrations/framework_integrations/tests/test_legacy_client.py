@@ -9,7 +9,7 @@ from framework_integrations.client import B2AClient, B2AConfig
 
 
 def _client(handler):
-    client = B2AClient(B2AConfig(api_key="k", wallet_id="w1"))
+    client = B2AClient(B2AConfig(api_key="k", wallet_id="w1", agent_id="agent-1"))
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return client
 
@@ -73,7 +73,7 @@ def test_decide_refuses_empty_options_before_any_request():
 
     async def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return httpx.Response(200, json={"decision": "b"})
+        return httpx.Response(200, json={"action": "b"})
 
     client = _client(handler)
     try:
@@ -85,13 +85,14 @@ def test_decide_refuses_empty_options_before_any_request():
         asyncio.run(_close(client))
 
 
-def test_decide_falls_back_to_first_option():
+def test_decide_refuses_a_response_without_an_action():
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={})
 
     client = _client(handler)
     try:
-        assert asyncio.run(client.decide({"x": 1}, ["a", "b"])) == "a"
+        with pytest.raises(ValueError, match="action"):
+            asyncio.run(client.decide({"x": 1}, ["a", "b"]))
     finally:
         asyncio.run(_close(client))
 
@@ -143,10 +144,11 @@ def test_thin_wrappers_shape_and_auth():
     async def handler(request: httpx.Request) -> httpx.Response:
         captured[request.url.path] = {
             "headers": dict(request.headers),
+            "params": dict(request.url.params),
             "body": json.loads(request.content) if request.content else None,
         }
         if request.url.path.endswith("wallets/w1"):
-            return httpx.Response(200, json={"balance": "7.5"})
+            return httpx.Response(200, json={"balance": 7.5})
         return httpx.Response(200, json={"ok": True})
 
     client = _client(handler)
@@ -160,7 +162,9 @@ def test_thin_wrappers_shape_and_auth():
         asyncio.run(client.get_mcp_tools())
         for path, data in captured.items():
             assert data["headers"]["x-api-key"] == "k", path
-        assert captured["/v1/telemetry/events"]["body"]["agent_id"] == "w1"
-        assert captured["/v1/comms/messages"]["body"]["from_agent_id"] == "w1"
+        telemetry = captured["/v1/telemetry/events/single"]["body"]
+        assert telemetry["message"] == "ev"
+        assert telemetry["metadata"] == {"a": 1, "event": "ev"}
+        assert captured["/v1/comms/messages"]["params"]["from_agent"] == "agent-1"
     finally:
         asyncio.run(_close(client))

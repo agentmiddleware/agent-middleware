@@ -8,6 +8,8 @@ without a permit, and tools the permit does name, keep "Tool not found".
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
@@ -108,9 +110,9 @@ async def test_jsonrpc_unregistered_tool_outside_permit_is_permit_denial(
         json=_jsonrpc_body(
             tool_name=UNKNOWN,
             wallet_id=provisioned["agent_wallet_id"],
-            request_id="unknown-tool-permit-call",
+            request_id=f"unknown-tool-permit-call-{uuid4()}",
             permit_id=permit["permit_id"],
-            idempotency_key="unknown-tool-permit-idem",
+            idempotency_key=f"unknown-tool-permit-idem-{uuid4()}",
         ),
         headers=provisioned["agent_headers"],
     )
@@ -147,9 +149,9 @@ async def test_jsonrpc_permit_denial_for_unregistered_tool_replays(
     body = _jsonrpc_body(
         tool_name=UNKNOWN,
         wallet_id=provisioned["agent_wallet_id"],
-        request_id="unknown-tool-permit-replay",
+        request_id=f"unknown-tool-permit-replay-{uuid4()}",
         permit_id=permit["permit_id"],
-        idempotency_key="unknown-tool-permit-replay-idem",
+        idempotency_key=f"unknown-tool-permit-replay-idem-{uuid4()}",
     )
     first = await client.post(
         "/mcp/messages", json=body, headers=provisioned["agent_headers"]
@@ -254,9 +256,9 @@ async def test_unregistered_tool_named_by_permit_is_still_not_found(
         json=_jsonrpc_body(
             tool_name=UNKNOWN,
             wallet_id=provisioned["agent_wallet_id"],
-            request_id="named-unknown-rpc",
+            request_id=f"named-unknown-rpc-{uuid4()}",
             permit_id=permit["permit_id"],
-            idempotency_key="named-unknown-rpc-idem",
+            idempotency_key=f"named-unknown-rpc-idem-{uuid4()}",
         ),
         headers=provisioned["agent_headers"],
     )
@@ -272,8 +274,8 @@ async def test_unregistered_tool_without_permit_is_unchanged(client, clean_datab
         json=_jsonrpc_body(
             tool_name=UNKNOWN,
             wallet_id=provisioned["agent_wallet_id"],
-            request_id="no-permit-unknown",
-            idempotency_key="no-permit-unknown-idem",
+            request_id=f"no-permit-unknown-{uuid4()}",
+            idempotency_key=f"no-permit-unknown-idem-{uuid4()}",
         ),
         headers=provisioned["agent_headers"],
     )
@@ -371,9 +373,9 @@ async def test_foreign_wallet_permit_does_not_leak_allowlist(client, clean_datab
             json=_jsonrpc_body(
                 tool_name=UNKNOWN,
                 wallet_id=attacker["agent_wallet_id"],
-                request_id=f"foreign-permit-{i}",
+                request_id=f"foreign-permit-{uuid4()}",
                 permit_id=permit["permit_id"],
-                idempotency_key=f"foreign-permit-idem-{i}",
+                idempotency_key=f"foreign-permit-idem-{uuid4()}",
             ),
             headers=attacker["agent_headers"],
         )
@@ -398,15 +400,15 @@ async def test_permit_denial_without_idempotency_key_mints_no_receipt(
         json=_jsonrpc_body(
             tool_name=UNKNOWN,
             wallet_id=provisioned["agent_wallet_id"],
-            request_id="no-idem-unknown",
+            request_id=f"no-idem-unknown-{uuid4()}",
             permit_id=permit["permit_id"],
         ),
         headers=provisioned["agent_headers"],
     )
     error = resp.json()["error"]
-    if error["code"] == -32003:
-        assert error["message"] == "permit_tool_not_allowed"
-        assert not error.get("data", {}).get("receipt")
+    assert error["code"] == -32003
+    assert error["message"] == "permit_tool_not_allowed"
+    assert not error.get("data", {}).get("receipt")
     assert await _receipt_count(provisioned["agent_wallet_id"]) == before
 
 
@@ -427,9 +429,9 @@ async def test_action_permit_unregistered_tool_gets_permit_decision(
         json=_jsonrpc_body(
             tool_name=UNKNOWN,
             wallet_id=provisioned["agent_wallet_id"],
-            request_id="action-permit-unknown",
+            request_id=f"action-permit-unknown-{uuid4()}",
             permit_id=permit["permit_id"],
-            idempotency_key="action-permit-unknown-idem",
+            idempotency_key=f"action-permit-unknown-idem-{uuid4()}",
         ),
         headers=provisioned["agent_headers"],
     )
@@ -439,3 +441,51 @@ async def test_action_permit_unregistered_tool_gets_permit_decision(
     assert error["message"].startswith("permit_")
     # No idempotency record exists on the action path, so no receipt.
     assert await _receipt_count(provisioned["agent_wallet_id"]) == before
+
+
+async def _forge_signature(permit_id: str) -> None:
+    async with get_session_factory()() as session:
+        model = await session.get(PermitModel, permit_id)
+        sig = model.signature
+        model.signature = ("A" if sig[0] != "A" else "B") + sig[1:]
+        await session.commit()
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+@pytest.mark.parametrize("action", [False, True], ids=["tool", "action"])
+async def test_bad_signature_rejected_before_allowlist_is_read(
+    client, clean_database, action
+):
+    """A tampered permit is refused on its signature, never on its allowlist.
+
+    Before the fix the allowlist was read (and echoed) before the signature
+    was checked, so a forged row produced permit_tool_not_allowed with the
+    row's allowed_tools in the details.
+    """
+    provisioned, permit = await _permit_for_allowed_tool(client)
+    await _forge_signature(permit["permit_id"])
+    if action:
+        async with get_session_factory()() as session:
+            model = await session.get(PermitModel, permit["permit_id"])
+            model.action_contract_version = 1
+            await session.commit()
+    before = await _receipt_count(provisioned["agent_wallet_id"])
+    resp = await client.post(
+        "/mcp/messages",
+        json=_jsonrpc_body(
+            tool_name=UNKNOWN,
+            wallet_id=provisioned["agent_wallet_id"],
+            request_id=f"forged-permit-{uuid4()}",
+            permit_id=permit["permit_id"],
+            idempotency_key=f"forged-permit-idem-{uuid4()}",
+        ),
+        headers=provisioned["agent_headers"],
+    )
+    error = resp.json()["error"]
+    assert error["code"] == -32003
+    assert error["message"] == "permit_signature_invalid"
+    assert "allowed_tools" not in str(error)
+    assert ALLOWED not in str(error)
+    if action:
+        assert await _receipt_count(provisioned["agent_wallet_id"]) == before

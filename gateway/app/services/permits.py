@@ -988,6 +988,17 @@ class PermitService:
             return PermitValidation(
                 False, "permit_key_mismatch", model, {"bound_to": "subject_key_id"}
             )
+        # Verify the signature before reading any permit content. Every check
+        # below reads signed fields (allowed_tools, scopes, budgets) and some
+        # echo them back in denial details, so a forged or tampered row must
+        # be rejected before its allowlist is trusted or disclosed.
+        if not await self.verify_signature(model, session=session):
+            return PermitValidation(
+                False,
+                "permit_signature_invalid",
+                model,
+                {"key_id": model.key_id},
+            )
         # An empty allowlist names no tool, so it admits none. The previous
         # `if allowed_tools and ...` form skipped this check for empty lists
         # and let the scope check below decide, so a permit carrying explicit
@@ -1109,13 +1120,6 @@ class PermitService:
                     {"field": hit, "forbidden_fields": forbidden},
                 )
 
-        if not await self.verify_signature(model, session=session):
-            return PermitValidation(
-                False,
-                "permit_signature_invalid",
-                model,
-                {"key_id": model.key_id},
-            )
         return PermitValidation(True, None, model)
 
     @staticmethod
@@ -2248,7 +2252,13 @@ class PermitService:
         *,
         session: AsyncSession | None = None,
     ) -> bool:
-        payload = self._verification_payload(model)
+        # A row whose signed fields cannot even be rebuilt (for example a
+        # partial action contract) cannot carry a valid signature. Fail
+        # closed instead of raising, now that this runs before other checks.
+        try:
+            payload = self._verification_payload(model)
+        except ValueError:
+            return False
         return await get_signing_key_service().verify_payload(
             payload,
             signature=model.signature,

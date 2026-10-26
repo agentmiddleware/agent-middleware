@@ -737,7 +737,7 @@ def render_console(
     recorded = html.escape(str(transcript.get("recorded_at", ""))[:10])
     parts.append(
         '<figcaption class="console-bar">'
-        f'<span class="console-title" id="{labelled_by}">governed loop · recorded</span>'
+        f'<span class="console-title" id="{labelled_by}">local demo recording</span>'
         f'<span class="console-meta">make prove-trust-plane · <time datetime="{recorded}">{recorded}</time></span>'
         "</figcaption>"
     )
@@ -770,7 +770,7 @@ def render_console(
     parts.append(
         '<p class="console-foot">'
         + html.escape(transcript["source"]["label"])
-        + ' <a href="/proof/transcript.json">Read the full recording.</a>'
+        + ' <a href="/proof/transcript.json">Read the full local demo recording.</a>'
         "</p>"
     )
     parts.append("</figure>")

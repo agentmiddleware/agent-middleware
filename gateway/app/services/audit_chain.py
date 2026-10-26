@@ -117,19 +117,21 @@ def _chain_wallet_filter(wallet_id: str | None) -> ColumnElement[bool]:
 
 def _first_sequence_break(
     events: list[ControlPlaneAuditEventModel],
-    last_seq: int,
 ) -> str | None:
-    """Event id where ``seq`` stops being 1..last_seq, in chain order.
+    """Event id where a run of seq-signed rows stops being contiguous.
 
-    ``seq`` is not signed. A stored tail can be renumbered so it still
-    matches the head while a hole or a duplicate sits in front of it.
-    ``events`` must already be ordered by seq, then created_at.
+    Legacy signatures omit ``seq``, so their stored numbers cannot establish
+    contiguity. ``events`` must already be ordered by seq, then created_at.
     """
-    for index, event in enumerate(events, start=1):
-        if index > last_seq or event.seq != index:
+    expected_seq: int | None = 1
+    for event in events:
+        payload = _payload_matching_stored_hash(event)
+        if payload is not None and "seq" not in payload:
+            expected_seq = None
+            continue
+        if expected_seq is not None and event.seq != expected_seq:
             return event.event_id
-    if len(events) != last_seq:
-        return events[-1].event_id if events else None
+        expected_seq = event.seq + 1
     return None
 
 
@@ -687,7 +689,7 @@ async def _verify_single_chain(
                 "audit_chain_truncated",
                 last_event.event_id if last_event else None,
             )
-        broken_id = _first_sequence_break(all_events, head.last_seq)
+        broken_id = _first_sequence_break(all_events)
         if broken_id is not None:
             return AuditChainVerification(
                 False,

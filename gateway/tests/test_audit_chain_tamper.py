@@ -15,8 +15,14 @@ from sqlalchemy import select
 from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import AuditChainHeadModel, ControlPlaneAuditEventModel
-from app.services.audit_chain import AuditChainHeadMissingError, verify_audit_chain
+from app.services.audit_chain import (
+    AuditChainHeadMissingError,
+    _sign_with_previous,
+    verify_audit_chain,
+)
 from app.services.audit_log import record_audit_event
+from app.services.signing_keys import get_signing_key_service, sha256_hex
+from tests.test_audit_chain import _payload_without_seq
 
 
 @pytest.mark.anyio
@@ -56,12 +62,7 @@ async def test_middle_deletion_breaks_the_hash_link(clean_database):
 
 @pytest.mark.anyio
 async def test_renumbered_sequence_gap_is_rejected(clean_database):
-    """A hole in seq is a break even when the hash walk still lines up.
-
-    seq is not covered by the signature. Moving the tail's seq up to a
-    new head seq keeps the hash order and the head hash, so a check that
-    only compares the tail to the head reports the chain as valid.
-    """
+    """Renumbering breaks a signature; a signed gap breaks contiguity."""
     wallet_id = "wlt-seq-gap"
     for n in range(3):
         await record_audit_event(
@@ -81,12 +82,40 @@ async def test_renumbered_sequence_gap_is_rejected(clean_database):
             .scalars()
             .all()
         )
-        rows[-1].seq = 4
+        rows[-1].seq += 1
         head = await session.get(AuditChainHeadModel, wallet_id)
         assert head is not None
-        head.last_seq = 4
+        head.last_seq = rows[-1].seq
         session.add(rows[-1])
         session.add(head)
+        await session.commit()
+
+    result = await verify_audit_chain(wallet_id=wallet_id)
+    assert result.valid is False
+    assert result.reason == "audit_payload_hash_mismatch"
+
+    async with factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ControlPlaneAuditEventModel)
+                    .where(ControlPlaneAuditEventModel.wallet_id == wallet_id)
+                    .order_by(ControlPlaneAuditEventModel.seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        tail = rows[-1]
+        assert tail.signature_key_id is not None
+        # Seq-less signatures are exempt; only a valid seq-signed gap reaches
+        # the contiguity check.
+        _sign_with_previous(
+            tail, rows[-2].chain_hash, signing_key_id=tail.signature_key_id
+        )
+        head = await session.get(AuditChainHeadModel, wallet_id)
+        assert head is not None
+        head.last_chain_hash = tail.chain_hash
         await session.commit()
 
     result = await verify_audit_chain(wallet_id=wallet_id)
@@ -104,16 +133,15 @@ async def test_renumbered_sequence_gap_is_rejected(clean_database):
 
 @pytest.mark.anyio
 async def test_duplicate_sequence_is_rejected(clean_database):
-    """Two rows with one seq must not verify just because the tail matches.
-
-    Collapsing the tail onto the previous seq and pointing the head at
-    that same seq keeps hash order (created_at breaks the tie) and
-    satisfies the tail check.
-    """
+    """A duplicate breaks its signature and, if re-signed, contiguity."""
     wallet_id = "wlt-dup-seq"
+    base = utc_now()
     for n in range(3):
         await record_audit_event(
-            event="trust.dup", wallet_id=wallet_id, metadata={"n": n}
+            event="trust.dup",
+            wallet_id=wallet_id,
+            created_at=base + timedelta(seconds=n),
+            metadata={"n": n},
         )
 
     factory = get_session_factory()
@@ -136,6 +164,35 @@ async def test_duplicate_sequence_is_rejected(clean_database):
         head.last_chain_hash = rows[-1].chain_hash
         session.add(rows[-1])
         session.add(head)
+        await session.commit()
+
+    result = await verify_audit_chain(wallet_id=wallet_id)
+    assert result.valid is False
+    assert result.reason == "audit_payload_hash_mismatch"
+
+    async with factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ControlPlaneAuditEventModel)
+                    .where(ControlPlaneAuditEventModel.wallet_id == wallet_id)
+                    .order_by(
+                        ControlPlaneAuditEventModel.seq,
+                        ControlPlaneAuditEventModel.created_at,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        tail = rows[-1]
+        assert tail.signature_key_id is not None
+        _sign_with_previous(
+            tail, rows[-2].chain_hash, signing_key_id=tail.signature_key_id
+        )
+        head = await session.get(AuditChainHeadModel, wallet_id)
+        assert head is not None
+        head.last_chain_hash = tail.chain_hash
         await session.commit()
 
     result = await verify_audit_chain(wallet_id=wallet_id)
@@ -317,16 +374,35 @@ async def test_legacy_seq_zero_chain_without_a_head_still_verifies(clean_databas
         rows = (
             (
                 await session.execute(
-                    select(ControlPlaneAuditEventModel).where(
-                        ControlPlaneAuditEventModel.wallet_id == wallet_id
-                    )
+                    select(ControlPlaneAuditEventModel)
+                    .where(ControlPlaneAuditEventModel.wallet_id == wallet_id)
+                    .order_by(ControlPlaneAuditEventModel.created_at)
                 )
             )
             .scalars()
             .all()
         )
+        previous_hash = None
         for row in rows:
             row.seq = 0
+            row.previous_hash = previous_hash
+            payload = _payload_without_seq(row)
+            row.payload_hash = sha256_hex(payload)
+            payload["payload_hash"] = row.payload_hash
+            assert row.signature_key_id is not None
+            row.signature, row.signature_key_id, _ = (
+                get_signing_key_service().sign_payload_with_key_id(
+                    payload, row.signature_key_id
+                )
+            )
+            row.chain_hash = sha256_hex(
+                {
+                    "previous_hash": previous_hash,
+                    "payload_hash": row.payload_hash,
+                    "signature": row.signature,
+                }
+            )
+            previous_hash = row.chain_hash
             session.add(row)
         head = await session.get(AuditChainHeadModel, wallet_id)
         assert head is not None

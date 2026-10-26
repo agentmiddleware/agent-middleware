@@ -89,7 +89,9 @@ def migrate(url, revision, direction="upgrade"):
 def test_action_migration_retains_legacy_and_blocks_authority_loss(
     tmp_path, start_revision, authority
 ):
-    head_revision = current_head_revision()
+    # Exercise the 042 downgrade without crossing the irreversible SQLite
+    # boolean repair in later migrations.
+    head_revision = "044_receipt_resolutions"
     path = tmp_path / "migration.sqlite"
     url = f"sqlite+aiosqlite:///{path}"
     result = migrate(url, "040_permit_repeat_window")
@@ -121,7 +123,7 @@ def test_action_migration_retains_legacy_and_blocks_authority_loss(
                     ("",),
                     ("w",),
                 ]
-    result = migrate(url, "head")
+    result = migrate(url, head_revision)
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT version_num FROM alembic_version").fetchone() == (

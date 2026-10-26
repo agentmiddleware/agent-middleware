@@ -191,6 +191,7 @@ async def lifespan(app: FastAPI):
         enable_dogfood_second_tool=bool(settings.ENABLE_DOGFOOD_SECOND_TOOL),
         simulation_modes=get_simulation_modes(),
         cors_origins=settings.CORS_ORIGINS,
+        tenant_rls_mode=settings.TENANT_RLS_MODE,
     )
     # A public deployment whose manifest tells agents the operator has no
     # contact is a discovery-honesty defect, not a neutral default. Partial
@@ -1254,7 +1255,8 @@ async def root(request: Request):
         "Redis is configured but does not answer within 1 second; in "
         "production-like environments the rate limiter then refuses /v1 "
         "requests, so the API is not serving even though the process is up. "
-        "`checks.redis` is `up`, `down`, or `not_configured`."
+        "`checks.redis` is `up`, `down`, or `not_configured`. "
+        "`tenant_rls_mode` is `off` or `enforce`."
     ),
 )
 async def health():
@@ -1271,6 +1273,9 @@ async def health():
             # path. A bare SHA cannot be told apart from a stale stamp; a SHA
             # plus "stamped" can only mean the deployment is behind main.
             "build_provenance": get_build_provenance(),
+            # "off" or "enforce": whether migrations enable wallet RLS. A
+            # validated enum, never a credential.
+            "tenant_rls_mode": get_settings().TENANT_RLS_MODE,
             "checks": {"redis": redis_status},
         },
     )

@@ -5952,7 +5952,7 @@
           "Discovery"
         ],
         "summary": "Liveness check",
-        "description": "Returns 200 with status `healthy` when the API is running and its Redis (shared rate limiter) answers a PING, or when REDIS_URL is not configured (no PING is sent). Returns 503 with status `degraded` when Redis is configured but does not answer within 1 second; in production-like environments the rate limiter then refuses /v1 requests, so the API is not serving even though the process is up. `checks.redis` is `up`, `down`, or `not_configured`.",
+        "description": "Returns 200 with status `healthy` when the API is running and its Redis (shared rate limiter) answers a PING, or when REDIS_URL is not configured (no PING is sent). Returns 503 with status `degraded` when Redis is configured but does not answer within 1 second; in production-like environments the rate limiter then refuses /v1 requests, so the API is not serving even though the process is up. `checks.redis` is `up`, `down`, or `not_configured`. `tenant_rls_mode` is `off` or `enforce`.",
         "operationId": "health_health_get",
         "responses": {
           "200": {

@@ -22,7 +22,7 @@ export BOOTSTRAP_KEY=...   # from secret manager / Railway variables — not a d
 
 # One-shot provisioner. The minted secret is never printed; it is written
 # to --key-file (created mode 0600, refused if the path already exists).
-# Without --key-file, stdout shows only a masked form.
+# Without --key-file, stdout shows only non-secret identifiers (key id).
 uv run --with-requirements requirements.txt \
   python scripts/partner_api_key_bootstrap.py \
   --api-url "$API_URL" \

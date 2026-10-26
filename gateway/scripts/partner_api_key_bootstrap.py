@@ -5,8 +5,8 @@ Uses a bootstrap/admin key (VALID_API_KEYS) only to provision:
   sponsor wallet → agent wallet → DB-scoped agent API key.
 
 The minted agent secret is never printed to stdout or stderr. Pass --key-file
-PATH to write it (created mode 0600, fails if PATH exists); otherwise only a
-masked form is shown (first 8 chars of the key prefix area + "..." + last 4).
+PATH to write it (created mode 0600, fails if PATH exists); stdout shows
+only non-secret identifiers (key id, wallet ids, key prefix).
 Requires network access to --api-url.
 Does not mint keys without a bootstrap secret (fail closed).
 
@@ -29,15 +29,6 @@ import httpx
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"error: {message}")
-
-
-def _mask_api_key(key: str) -> str:
-    """Return a display form that is not the full secret.
-
-    Uses the first 8 characters of the key prefix area, an ellipsis, and
-    the last 4 characters.
-    """
-    return f"{key[:8]}...{key[-4:]}"
 
 
 def _write_key_file(path: str, api_key: str) -> None:
@@ -183,7 +174,9 @@ def provision(
             key_body["max_uses"] = max_uses
         key = _post(client, "/v1/api-keys", key_body)
         api_key = key.get("api_key")
-        _require(bool(api_key), "api_key missing (write with --key-file; never printed)")
+        _require(
+            bool(api_key), "api_key missing (write with --key-file; never printed)"
+        )
 
         return {
             "api_url": base,
@@ -248,7 +241,7 @@ def main() -> int:
         "--json",
         action="store_true",
         help=(
-            "Print JSON to stdout with api_key replaced by api_key_masked "
+            "Print JSON identity fields to stdout without the secret "
             "(and key_file when --key-file is given). Default: human summary."
         ),
     )
@@ -256,8 +249,8 @@ def main() -> int:
         "--key-only",
         action="store_true",
         help=(
-            "Print only the --key-file path, or the masked key when --key-file "
-            "is omitted. Never prints the full minted secret."
+            "Print only the --key-file path, or the key_id when --key-file "
+            "is omitted. Never prints the minted secret."
         ),
     )
     parser.add_argument(
@@ -300,31 +293,45 @@ def main() -> int:
         json_mode=args.json,
     )
 
+    # Non-secret identifiers for stdout. The minted secret below flows
+    # only to --key-file and never to print/log.
+    api_url = str(result["api_url"])
+    sponsor_wallet_id = str(result["sponsor_wallet_id"])
+    agent_wallet_id = str(result["agent_wallet_id"])
+    wallet_id = str(result["wallet_id"])
+    agent_id = str(result["agent_id"])
+    key_id = result.get("key_id")
+    key_prefix = result.get("key_prefix")
     api_key = str(result["api_key"])
-    masked = _mask_api_key(api_key)
     key_file = args.key_file
     if key_file:
         _write_key_file(key_file, api_key)
 
     if args.key_only:
-        print(key_file if key_file else masked)
+        print(key_file if key_file else key_id)
     elif args.json:
         # Machine-readable: JSON to stdout, all status to stderr.
-        # Never print bootstrap_key or the full minted api_key.
-        payload = {k: v for k, v in result.items() if k != "api_key"}
-        payload["api_key_masked"] = masked
+        # Never print bootstrap_key or the minted api_key.
+        payload: dict[str, Any] = {
+            "api_url": api_url,
+            "sponsor_wallet_id": sponsor_wallet_id,
+            "agent_wallet_id": agent_wallet_id,
+            "wallet_id": wallet_id,
+            "agent_id": agent_id,
+            "key_id": key_id,
+            "key_prefix": key_prefix,
+        }
         if key_file:
             payload["key_file"] = key_file
         print(json.dumps(payload, indent=2))
     else:
-        # Human-readable summary to stdout. Masked key only.
+        # Human-readable summary to stdout. Non-secret identifiers only.
         print("Partner API key bootstrap OK")
-        print(f"  api_url:            {result['api_url']}")
-        print(f"  sponsor_wallet_id:  {result['sponsor_wallet_id']}")
-        print(f"  agent_wallet_id:    {result['agent_wallet_id']}")
-        print(f"  key_id:             {result['key_id']}")
-        print(f"  key_prefix:         {result['key_prefix']}")
-        print(f"  api_key (masked):   {masked}")
+        print(f"  api_url:            {api_url}")
+        print(f"  sponsor_wallet_id:  {sponsor_wallet_id}")
+        print(f"  agent_wallet_id:    {agent_wallet_id}")
+        print(f"  key_id:             {key_id}")
+        print(f"  key_prefix:         {key_prefix}")
         if key_file:
             print(f"  key_file:           {key_file}")
     return 0

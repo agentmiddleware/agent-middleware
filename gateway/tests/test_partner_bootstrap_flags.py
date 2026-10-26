@@ -8,18 +8,37 @@ CLI modes never print the minted secret; --key-file writes it at mode 0600.
 from __future__ import annotations
 
 import json
+import secrets
 import stat
 import sys
+import time
+import uuid
 
 import pytest
 
 import scripts.partner_api_key_bootstrap as bootstrap
 
-# Test-generated minted secret. Long enough that the masked form is not a
-# substring of the full key and the full key is not a substring of the mask.
-MINTED_KEY = "b2a_test_generated_key_wxyz"
-MASKED_KEY = "b2a_test...wxyz"
-BOOTSTRAP_SECRET = "synthetic-bootstrap-secret"
+# Runtime-generated fixtures only (no hardcoded secrets or ids). Distinct
+# "mnt-"/"kpfx-" alphabets keep the minted secret's head/tail out of the
+# server-provided prefix shown on stdout; the guard loop below removes any
+# residual hex collision so leak assertions stay meaningful every run.
+MINTED_KEY = f"mnt-{secrets.token_hex(16)}-{time.time_ns():x}"
+BOOTSTRAP_SECRET = f"boot-{secrets.token_hex(16)}-{time.time_ns():x}"
+KEY_ID = f"key-{uuid.uuid4().hex[:12]}"
+KEY_PREFIX = f"kpfx-{secrets.token_hex(3)}"
+WAL_SPONSOR = f"wal-{uuid.uuid4().hex[:12]}"
+WAL_AGENT = f"wal-{uuid.uuid4().hex[:12]}"
+while (
+    MINTED_KEY[:8] in KEY_PREFIX
+    or MINTED_KEY[-4:] in KEY_PREFIX
+    or MINTED_KEY[-4:] in KEY_ID
+    or MINTED_KEY[-4:] in WAL_AGENT
+    or MINTED_KEY[-4:] in WAL_SPONSOR
+):
+    KEY_PREFIX = f"kpfx-{secrets.token_hex(3)}"
+    KEY_ID = f"key-{uuid.uuid4().hex[:12]}"
+    WAL_SPONSOR = f"wal-{uuid.uuid4().hex[:12]}"
+    WAL_AGENT = f"wal-{uuid.uuid4().hex[:12]}"
 
 
 class _FakeResponse:
@@ -50,11 +69,11 @@ class _FakeClient:
     def post(self, path, json):
         self.posts.append((path, json))
         if path == "/v1/billing/wallets/sponsor":
-            return _FakeResponse({"wallet_id": "wal_sponsor"})
+            return _FakeResponse({"wallet_id": WAL_SPONSOR})
         if path == "/v1/billing/wallets/agent":
-            return _FakeResponse({"wallet_id": "wal_agent"})
+            return _FakeResponse({"wallet_id": WAL_AGENT})
         return _FakeResponse(
-            {"api_key": MINTED_KEY, "key_id": "key_1", "key_prefix": "b2a_test"}
+            {"api_key": MINTED_KEY, "key_id": KEY_ID, "key_prefix": KEY_PREFIX}
         )
 
 
@@ -102,6 +121,13 @@ def _run_main(monkeypatch, extra: list[str]) -> int:
     return bootstrap.main()
 
 
+def _assert_no_secret_leak(combined: str) -> None:
+    assert MINTED_KEY not in combined
+    assert MINTED_KEY[:8] not in combined
+    assert MINTED_KEY[-4:] not in combined
+    assert BOOTSTRAP_SECRET not in combined
+
+
 def test_bounds_flags_reach_request_bodies(monkeypatch):
     result, posts = _provision(
         monkeypatch,
@@ -122,33 +148,30 @@ def test_bounds_default_to_absent(monkeypatch):
     assert "max_uses" not in posts["/v1/api-keys"]
 
 
-def test_mask_form_is_prefix8_ellipsis_last4():
-    assert bootstrap._mask_api_key(MINTED_KEY) == MASKED_KEY
-    assert MASKED_KEY == f"{MINTED_KEY[:8]}...{MINTED_KEY[-4:]}"
-    assert MINTED_KEY not in MASKED_KEY
-
-
 @pytest.mark.parametrize("mode", ["--key-only", "--json", None])
 def test_cli_output_modes_never_print_full_key(monkeypatch, capsys, mode):
     extra = [mode] if mode else []
     assert _run_main(monkeypatch, extra) == 0
     captured = capsys.readouterr()
     combined = captured.out + captured.err
-    assert MINTED_KEY not in combined
-    assert BOOTSTRAP_SECRET not in combined
+    _assert_no_secret_leak(combined)
     assert "[created]" in captured.err
     assert "[created]" not in captured.out
-    assert MASKED_KEY in captured.out
     if mode == "--key-only":
-        assert captured.out == f"{MASKED_KEY}\n"
+        assert captured.out == f"{KEY_ID}\n"
     elif mode == "--json":
         payload = json.loads(captured.out)
         assert "api_key" not in payload
-        assert payload["api_key_masked"] == MASKED_KEY
+        assert "api_key_masked" not in payload
         assert "key_file" not in payload
+        assert payload["key_id"] == KEY_ID
+        assert payload["wallet_id"] == WAL_AGENT
+        assert payload["key_prefix"] == KEY_PREFIX
     else:
         assert captured.out.startswith("Partner API key bootstrap OK\n")
-        assert f"api_key (masked):   {MASKED_KEY}\n" in captured.out
+        assert f"key_id:             {KEY_ID}\n" in captured.out
+        assert f"key_prefix:         {KEY_PREFIX}\n" in captured.out
+        assert "api_key" not in captured.out
 
 
 @pytest.mark.parametrize("mode", ["--key-only", "--json", None])
@@ -162,21 +185,20 @@ def test_cli_key_file_writes_0600_and_omits_full_key_from_stdio(
     assert _run_main(monkeypatch, extra) == 0
     captured = capsys.readouterr()
     combined = captured.out + captured.err
-    assert MINTED_KEY not in combined
-    assert BOOTSTRAP_SECRET not in combined
+    _assert_no_secret_leak(combined)
     assert str(key_path) in captured.out
     assert key_path.read_text(encoding="utf-8") == MINTED_KEY
     assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
     if mode == "--key-only":
         assert captured.out == f"{key_path}\n"
-        assert MASKED_KEY not in captured.out
     elif mode == "--json":
         payload = json.loads(captured.out)
         assert "api_key" not in payload
-        assert payload["api_key_masked"] == MASKED_KEY
+        assert "api_key_masked" not in payload
         assert payload["key_file"] == str(key_path)
+        assert payload["key_id"] == KEY_ID
     else:
-        assert f"api_key (masked):   {MASKED_KEY}\n" in captured.out
+        assert "api_key" not in captured.out
         assert f"key_file:           {key_path}\n" in captured.out
 
 

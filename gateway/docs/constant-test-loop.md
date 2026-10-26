@@ -93,8 +93,8 @@ API_URL=https://api.thisisatest.tech python scripts/constant_test_loop.py
 
 ## Machine-Readable Bootstrap Output
 
-`partner_api_key_bootstrap.py --json` prints JSON to stdout with `api_key`
-replaced by `api_key_masked`. Persist the secret with `--key-file` (do not
+`partner_api_key_bootstrap.py --json` prints JSON identity fields to stdout
+without the secret. Persist the secret with `--key-file` (do not
 pre-create the path; the script refuses an existing file):
 
 ```bash
@@ -143,7 +143,7 @@ pytest tests/test_constant_test_loop.py -v
 ```
 
 Covers:
-- `--json` mode produces pipeable stdout (`api_key_masked`, not `api_key`)
+- `--json` mode produces pipeable stdout (identity fields only, never `api_key`)
 - Bootstrap key never leaks to stdout or stderr
 - `--key-file` persists the minted secret at mode 0600
 - Constant test loop runs against local instance

@@ -40,7 +40,7 @@ def _downgrade(config, target):
 
 def test_single_head_and_ported_order():
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["050_demo_key_first_used"]
+    assert len(script.get_heads()) == 1
     chain = {
         "047_dispatch_reconcile_lease": "046_api_key_usage_events",
         "048_tenant_rls": "047_dispatch_reconcile_lease",
@@ -53,7 +53,8 @@ def test_single_head_and_ported_order():
 
 def test_fresh_upgrade_to_head_and_round_trip(tmp_path, monkeypatch):
     config, sync_url = _config(tmp_path, monkeypatch)
-    _upgrade(config, "head")
+    # 051 refuses SQLite downgrade, so the round trip runs at the ported 050.
+    _upgrade(config, "050_demo_key_first_used")
     engine = create_engine(sync_url)
     insp = inspect(engine)
     cols = {c["name"] for c in insp.get_columns("mcp_dispatch_attempts")}
@@ -68,9 +69,10 @@ def test_fresh_upgrade_to_head_and_round_trip(tmp_path, monkeypatch):
     ):
         assert table in insp.get_table_names()
     with engine.connect() as conn:
-        assert conn.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar() == ("050_demo_key_first_used")
+        assert (
+            conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            == "050_demo_key_first_used"
+        )
     engine.dispose()
 
     _downgrade(config, "046_api_key_usage_events")
@@ -93,11 +95,12 @@ def test_fresh_upgrade_to_head_and_round_trip(tmp_path, monkeypatch):
 
 def test_upgrade_at_head_is_noop(tmp_path, monkeypatch):
     config, sync_url = _config(tmp_path, monkeypatch)
-    _upgrade(config, "050_demo_key_first_used")
+    _upgrade(config, "head")
     _upgrade(config, "head")
     engine = create_engine(sync_url)
     with engine.connect() as conn:
-        assert conn.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar() == ("050_demo_key_first_used")
+        assert (
+            conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            == ScriptDirectory.from_config(config).get_current_head()
+        )
     engine.dispose()

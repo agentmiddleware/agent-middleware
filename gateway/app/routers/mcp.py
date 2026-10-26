@@ -21,6 +21,7 @@ import inspect
 import json
 import logging
 import math
+import re
 import uuid
 from dataclasses import asdict
 from decimal import Decimal
@@ -33,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..audit.lightweight import record_audit
 from ..core.config import DuplicateGuardMode, get_settings
+from ..core.reason_codes import REFUSAL_REASON_CODES
 from ..policy.jev_guard import evaluate_jev_guard
 from ..services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
 from ..core.auth import (
@@ -407,16 +409,127 @@ def _safe_jsonrpc_id(value: Any) -> str | int | float | None:
     return None
 
 
+INTERNAL_ERROR_MESSAGE = "internal_error"
+
+# Public JSON-RPC messages are canned constants. Exception text is logged
+# under a request id and never copied into the client payload.
+_MCP_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_JSONRPC_PUBLIC_MESSAGES: dict[int, str] = {
+    -32600: "Invalid Request",
+    -32601: "Method not found",
+    -32602: "Invalid params",
+    -32603: INTERNAL_ERROR_MESSAGE,
+    -32001: "Tool not found",
+    -32002: "Tool not executable",
+    -32003: "Permission denied",
+    -32004: "insufficient_funds",
+    -32005: "idempotency_in_progress",
+    -32006: "upstream_error",
+}
+_PUBLIC_REASON_MESSAGES: dict[str, str] = {
+    code: code
+    for code in (
+        *REFUSAL_REASON_CODES,
+        "Missing tool name",
+        "Missing wallet_id in mcpContext",
+        "idempotency_key_required",
+        "idempotency_in_progress",
+        "invalid_idempotency_key",
+        "permit_required",
+        "quote_already_consumed",
+        "human_approval_pending",
+        "human_approval_unavailable",
+        "ledger_write_contended",
+        "audit_chain_head_contention",
+        "receipt_write_contended",
+        "permit_write_contended",
+        "tool_execution_failed",
+    )
+}
+_PUBLIC_MESSAGE_BY_EXC_TYPE: dict[type[BaseException], str] = {
+    InvalidIdempotencyKeyError: "invalid_idempotency_key",
+    GovernedRequestInvalid: "Invalid params",
+    HumanApprovalPendingSignal: "human_approval_pending",
+    IdempotencyInProgressError: "idempotency_in_progress",
+    LedgerWriteContendedError: "ledger_write_contended",
+    AuditChainContendedError: "audit_chain_head_contention",
+    ReceiptWriteContendedError: "receipt_write_contended",
+    PermitWriteContendedError: "permit_write_contended",
+    ToolPermissionDenied: "Permission denied",
+    PermissionError: "Permission denied",
+    ToolExecutionError: "tool_execution_failed",
+}
+
+
+def _mcp_request_id(request: Request) -> str:
+    """Return a short correlation id from X-Request-ID, or a fresh uuid4 hex.
+
+    The header is accepted only when it is short and charset-limited so a
+    client cannot inject log or JSON delimiters through it.
+    """
+    raw = request.headers.get("x-request-id")
+    if raw is not None and _MCP_REQUEST_ID_RE.fullmatch(raw):
+        return raw
+    return uuid.uuid4().hex
+
+
+def _public_jsonrpc_message(exc: BaseException, *, code: int) -> str:
+    """Canned client message for ``exc``. Never returns ``str(exc)``."""
+    text = str(exc)
+    canned = _PUBLIC_REASON_MESSAGES.get(text)
+    if canned is not None:
+        return canned
+    if text.startswith("Invalid params"):
+        return "Invalid params"
+    if text.startswith("invalid_idempotency_key"):
+        return "invalid_idempotency_key"
+    if text.startswith("Tool not found"):
+        return "Tool not found"
+    if text.startswith("Tool not executable"):
+        return "Tool not executable"
+    if text.startswith("refund_failed"):
+        return "refund_failed"
+    for exc_type, message in _PUBLIC_MESSAGE_BY_EXC_TYPE.items():
+        if isinstance(exc, exc_type):
+            return message
+    return _JSONRPC_PUBLIC_MESSAGES.get(code, INTERNAL_ERROR_MESSAGE)
+
+
 def _jsonrpc_error_response(
     request_id: str | int | float | None,
     code: int,
     message: str,
     data: dict[str, Any] | None = None,
 ) -> JSONResponse:
+    """Build a JSON-RPC error. ``message`` must be a canned public string."""
     error_payload: dict[str, Any] = {"code": code, "message": message}
     if data:
-        error_payload["data"] = data
+        error_payload["data"] = dict(data)
     return JSONResponse({"jsonrpc": "2.0", "id": request_id, "error": error_payload})
+
+
+def _public_jsonrpc_error(
+    exc: BaseException,
+    *,
+    request: Request,
+    rpc_id: str | int | float | None,
+    code: int,
+    data: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """Log ``str(exc)`` with a request id and return a canned JSON-RPC error."""
+    request_id = _mcp_request_id(request)
+    logger.error(
+        "mcp_jsonrpc_error surface=/mcp/messages request_id=%s code=%s class=%s error=%s",
+        request_id,
+        code,
+        type(exc).__name__,
+        exc,
+    )
+    payload_data = dict(data or {})
+    payload_data["request_id"] = request_id
+    return _jsonrpc_error_response(
+        rpc_id, code, _public_jsonrpc_message(exc, code=code), payload_data
+    )
 
 
 class McpContext(BaseModel):
@@ -592,11 +705,17 @@ async def handle_messages(
                 ]
             )
         except InvalidIdempotencyKeyError as e:
-            return _jsonrpc_error_response(
-                request_id, -32602, str(e), e.as_error_data()
+            return _public_jsonrpc_error(
+                e,
+                request=request,
+                rpc_id=request_id,
+                code=-32602,
+                data=e.as_error_data(),
             )
         except GovernedRequestInvalid as e:
-            return _jsonrpc_error_response(request_id, -32602, str(e))
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=-32602
+            )
         try:
             result = await _handle_tools_call(
                 call_params,
@@ -616,18 +735,12 @@ async def handle_messages(
                 }
             )
         except HumanApprovalPendingSignal as e:
-            error_payload: dict[str, Any] = {
-                "code": e.jsonrpc_code,
-                "message": str(e),
-            }
-            if e.data:
-                error_payload["data"] = e.data
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": error_payload,
-                }
+            return _public_jsonrpc_error(
+                e,
+                request=request,
+                rpc_id=request_id,
+                code=e.jsonrpc_code,
+                data=dict(e.data) if e.data else None,
             )
         except (
             IdempotencyInProgressError,
@@ -638,11 +751,12 @@ async def handle_messages(
         ) as e:
             # All five mean the same thing to a caller: nothing terminal was
             # recorded, retry the same idempotency key. -32005 is this
-            # surface's retryable code and str(e) carries which one it was, so
-            # a client can distinguish "a winner is mid-flight" from "the write
-            # lost its snapshot", "the audit chain stayed busy", "the receipt
-            # insert did" or "the permit write did" without any of them landing
-            # as internal_error.
+            # surface's retryable code. The public message is a canned string
+            # per exception class so a client can distinguish "a winner is
+            # mid-flight" from "the write lost its snapshot", "the audit chain
+            # stayed busy", "the receipt insert did" or "the permit write did"
+            # without any of them landing as internal_error, and without
+            # exception text reaching the wire.
             #
             # Only a refusal that ran nothing reaches here as
             # AuditChainContendedError, ReceiptWriteContendedError or
@@ -655,15 +769,8 @@ async def handle_messages(
             # the base also carries permit_not_found,
             # dispatch_attempt_not_found and the budget denials, none of which
             # are retryable contention.
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32005,
-                        "message": str(e),
-                    },
-                }
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=-32005
             )
         except TerminalRecordContendedError as e:
             # The same contention, on the other side of the charge. Its own
@@ -682,79 +789,54 @@ async def handle_messages(
                 }
             )
         except ToolPermissionDenied as e:
-            error_payload = {
-                "code": -32003,
-                "message": str(e),
-            }
             data: dict[str, Any] = {}
             if e.receipt:
                 data["receipt"] = e.receipt
             if e.details:
                 data["details"] = e.details
-            if data:
-                error_payload["data"] = data
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": error_payload,
-                }
+            return _public_jsonrpc_error(
+                e,
+                request=request,
+                rpc_id=request_id,
+                code=-32003,
+                data=data or None,
             )
         except GovernedToolError as e:
-            error_payload = {
-                "code": e.jsonrpc_code,
-                "message": str(e),
-            }
             error_data = dict(e.extra_data)
             if e.receipt:
                 error_data["receipt"] = e.receipt
-            if error_data:
-                error_payload["data"] = error_data
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": error_payload,
-                }
+            return _public_jsonrpc_error(
+                e,
+                request=request,
+                rpc_id=request_id,
+                code=e.jsonrpc_code,
+                data=error_data or None,
             )
         except PermissionError as e:
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32003,
-                        "message": str(e),
-                    },
-                }
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=-32003
             )
         except ToolExecutionError as e:
-            # Legacy (unpermitted) tool failure: compensation is complete and,
-            # as on the governed path, the message is the tool's own error.
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32603,
-                        "message": str(e),
-                    },
-                }
+            # Legacy (unpermitted) tool failure: compensation is complete.
+            # The tool's own error stays in the server log; the client gets
+            # a canned message and a request id.
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=-32603
             )
         except ValueError as e:
             code = _value_error_jsonrpc_code(str(e))
             if code is None:
-                error_payload = _internal_error(
-                    e, surface="/mcp/messages", request_id=request_id
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": _internal_error(
+                            e, surface="/mcp/messages", request_id=request_id
+                        ),
+                    }
                 )
-            else:
-                error_payload = {"code": code, "message": str(e)}
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": error_payload,
-                }
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=code
             )
         except Exception as e:
             return JSONResponse(
@@ -4336,10 +4418,11 @@ def _trust_metadata(
 def _value_error_jsonrpc_code(message: str) -> int | None:
     """JSON-RPC code for a ``ValueError`` the pipeline raised on purpose.
 
-    Every message here is contract: the Python SDK and existing clients match
-    these strings. ``None`` means the text is not one of ours — a library or
-    driver error that happens to subclass ``ValueError`` — and the route must
-    answer with ``internal_error`` instead of echoing it.
+    Classification inspects the exception text; the client-facing message is a
+    canned constant from ``_public_jsonrpc_message``. ``None`` means the text
+    is not one of ours — a library or driver error that happens to subclass
+    ``ValueError`` — and the route must answer with ``internal_error`` instead
+    of echoing it.
     """
     if message in {"Missing tool name", "Missing wallet_id in mcpContext"}:
         return -32602
@@ -4377,9 +4460,6 @@ def _receipt_contention_after_effects() -> TerminalRecordContendedError:
     so reconciliation owns the record from here.
     """
     return TerminalRecordContendedError(RECEIPT_WRITE_CONTENDED_AFTER_EFFECTS)
-
-
-INTERNAL_ERROR_MESSAGE = "internal_error"
 
 
 def _internal_error(

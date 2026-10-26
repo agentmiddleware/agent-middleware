@@ -23,11 +23,10 @@ import re
 import shutil
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, urlparse
-
 
 SITE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = SITE_ROOT.parent
@@ -43,7 +42,7 @@ CONTACT_FIELDS = {
 BOOKING_TOKEN = "@@PUBLIC_BOOKING_URL@@"
 BOOKING_CONTEXT_TOKEN = "@@BOOKING_CONTEXT@@"
 PILOT_EMAIL_TOKEN = "@@PILOT_EMAIL_HREF@@"
-PILOT_EMAIL_BODY = """One-tool paid pilot enquiry
+PILOT_EMAIL_BODY = """One tool paid pilot enquiry
 
 1. Tool or action (synthetic or redacted only):
 2. What goes wrong on retry:
@@ -526,9 +525,7 @@ def load_transcript() -> dict:
     try:
         transcript = json.loads(TRANSCRIPT.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise LaunchConfigurationError(
-            "site/proof/transcript.json is missing"
-        ) from exc
+        raise LaunchConfigurationError("site/proof/transcript.json is missing") from exc
     except json.JSONDecodeError as exc:
         raise LaunchConfigurationError(
             f"site/proof/transcript.json is not valid JSON: {exc}"
@@ -691,7 +688,7 @@ def published_receipt_issued_date() -> str:
     try:
         bundle = json.loads(LIVE_RECEIPT.read_text(encoding="utf-8"))
         created_at = json.loads(bundle["signing_input"])["created_at"]
-        issued = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        issued = datetime.fromisoformat(str(created_at))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise LaunchConfigurationError(
             f"site/proof/receipt.json has no readable created_at: {exc}"
@@ -816,6 +813,7 @@ def faq_jsonld(
         raise LaunchConfigurationError(
             "FAQ answers must not be empty: " + "; ".join(empty)
         )
+
     def resolve(value: str) -> str:
         for token, replacement in (replacements or {}).items():
             value = value.replace(token, replacement)
@@ -869,7 +867,7 @@ def _validated_output_path(output: Path) -> Path:
 def _build_timestamps() -> dict[str, str]:
     """Return the date tokens shared by the sitemap and security.txt."""
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires = now + timedelta(days=SECURITY_TXT_LIFETIME_DAYS)
     return {
         BUILD_DATE_TOKEN: now.date().isoformat(),
@@ -895,7 +893,7 @@ def render_site(output: Path, environment: dict[str, str]) -> None:
         "mailto:"
         + quote(text_replacements["@@PUBLIC_CONTACT_EMAIL@@"], safe="@")
         + "?subject="
-        + quote("One-tool paid pilot enquiry", safe="")
+        + quote("One tool paid pilot enquiry", safe="")
         + "&body="
         + quote(PILOT_EMAIL_BODY, safe="")
     )

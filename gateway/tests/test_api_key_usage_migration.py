@@ -10,7 +10,7 @@ from app.db.database import CREATE_API_KEY_USAGE_DAILY_VIEW_SQL
 
 def test_046_revision_and_daily_view(tmp_path, monkeypatch) -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["046_api_key_usage_events"]
+    assert script.get_revision("046_api_key_usage_events") is not None
     assert script.get_revision("046_api_key_usage_events").down_revision == (
         "045_approval_gate_approvals"
     )

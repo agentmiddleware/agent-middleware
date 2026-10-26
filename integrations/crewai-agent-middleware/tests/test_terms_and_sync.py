@@ -115,7 +115,15 @@ async def _handler(request: httpx.Request) -> httpx.Response:
 
 def _tool():
     base = B2AClient(api_key="k", transport=httpx.MockTransport(_handler))
-    tool = CrewAIB2ATool(api_key="k", wallet_id="wallet-1")
+    # A borrowed client stays on the caller's loop, so sync calls need their
+    # own runner-loop client from sync_client_factory.
+    tool = CrewAIB2ATool(
+        api_key="k",
+        wallet_id="wallet-1",
+        sync_client_factory=lambda: B2AClient(
+            api_key="k", transport=httpx.MockTransport(_handler)
+        ),
+    )
     tool.client = base
     return base, tool
 
@@ -181,19 +189,18 @@ def test_sync_run_balance_and_unknown_operation(clean_event_loop):
         assert tool._run(operation="balance") == "Balance: 4.5 credits"
         assert tool._run(operation="nope") == "Unknown operation: nope"
     finally:
+        tool.close()
         clean_event_loop.run_until_complete(base.close())
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="CrewAI sync _run cannot drive the async client from inside a running "
-    "event loop (run_until_complete raises); needs a bridge thread. "
-    "See crewai_b2a/tool.py CrewAIB2ATool._run.",
-)
 async def test_sync_run_inside_a_running_loop_executes():
-    _, tool = _tool()
-    assert tool._run(operation="balance") == "Balance: 4.5 credits"
+    base, tool = _tool()
+    try:
+        assert tool._run(operation="balance") == "Balance: 4.5 credits"
+    finally:
+        tool.close()
+        await base.close()
 
 
 def test_permit_caches_do_not_leak_between_instances():

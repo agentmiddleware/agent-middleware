@@ -1,0 +1,5 @@
+{
+  "signature_b64_over_test_seed": "0yzqc74K4pSRk4GTbh84j9oT0p2x1PF5nql2o3nj4uogrUBEukMfd8WDMlBrNsSrsXFbugLlSKWcex5ONB8xCg==",
+  "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"created_at\":\"2026-09-14T17:00:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"dispatch_attempt_id\":\"disp_golden_0001\",\"enforcement_mode\":\"permissive\",\"idempotency_record_id\":\"idem_golden_0001\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"cf576b4daa8eb839999dc82d2c11bd21b37d522caefcbcc916d0dfee35947eff\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0006\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-0001\"}",
+  "signing_input_sha256": "b6974c6a391007871b52f9b076aac25b8053ada1dadb2c2c8ca81a82b025fd9b"
+}

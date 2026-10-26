@@ -8,17 +8,22 @@ gets the original result instead of repeating the side effect.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, overload
 
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 
 from ..services.idempotency import (
+    IDEMPOTENCY_KEY_HEADER_SOURCE,
     IdempotencyConflictError,
     IdempotencyInProgressError,
     IdempotencyService,
+    InvalidIdempotencyKeyError,
+    decode_idempotency_key_header,
     get_idempotency_service,
+    resolve_client_idempotency_key,
 )
 
 
@@ -92,3 +97,55 @@ async def begin_http_idempotency(
             status_code=replay.status_code, content=replay.response_json
         )
     return guard, None
+
+
+@overload
+def resolve_idempotency_key_lines(
+    lines: Sequence[str] | None, *, required: Literal[True]
+) -> str: ...
+@overload
+def resolve_idempotency_key_lines(
+    lines: Sequence[str] | None, *, required: Literal[False] = ...
+) -> str | None: ...
+def resolve_idempotency_key_lines(
+    lines: Sequence[str] | None,
+    *,
+    required: bool = False,
+) -> str | None:
+    """Return the one Idempotency-Key named by every header line.
+
+    Callers pass ``list[str]`` from Header so a second line is visible. A
+    single-value header parameter keeps only the first line, and a later
+    call that sends only the dropped line is a second charge, transfer, or
+    permit. Identical lines collapse. Differing lines, a blank line, a
+    control character, or a key longer than the store column are refused
+    here, before a replay slot is opened. No lines means the caller did not
+    send the header. ``required`` turns that absence into the same 400.
+    FastAPI still answers 422 when a required Header parameter is omitted.
+    """
+    try:
+        key = resolve_client_idempotency_key(
+            [
+                (IDEMPOTENCY_KEY_HEADER_SOURCE, decode_idempotency_key_header(line))
+                for line in lines or ()
+            ]
+        )
+    except InvalidIdempotencyKeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": str(exc), **exc.as_error_data()},
+        ) from exc
+    if required and key is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": (
+                    "invalid_idempotency_key: Idempotency-Key header must "
+                    "contain a non-whitespace character"
+                ),
+                "error": "invalid_idempotency_key",
+                "reason_code": "idempotency_key_blank",
+                "source": IDEMPOTENCY_KEY_HEADER_SOURCE,
+            },
+        )
+    return key

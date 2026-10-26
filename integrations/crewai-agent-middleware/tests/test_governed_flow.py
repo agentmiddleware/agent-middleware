@@ -8,10 +8,18 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from b2a_sdk.errors import (
+    AuthenticationError,
+    AuthorizationError,
     DeliveryUncertainError,
     IdempotencyConflictError,
     InsufficientFundsError,
     PermitDeniedError,
+)
+from crewai.agents.parser import AgentAction
+from crewai.tools.tool_failure import ToolExecutionFailedError
+from crewai.utilities.tool_utils import (
+    aexecute_tool_and_check_finality,
+    execute_tool_and_check_finality,
 )
 
 from crewai_b2a import B2AClient, CrewAIB2ATool
@@ -469,6 +477,147 @@ def _connection_reset_handler():
         raise httpx.ConnectError("connection reset", request=request)
 
     return handler
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [(401, AuthenticationError), (403, AuthorizationError)],
+)
+@pytest.mark.asyncio
+async def test_arun_propagates_gateway_auth_denial(status, error_type):
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/v1/permits"
+        return httpx.Response(status, json={"detail": "access denied"})
+
+    tool, client = _governed_tool(handler)
+    try:
+        with pytest.raises(error_type):
+            await tool._arun(**_BILLING_CALL)
+    finally:
+        await client.close()
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [(401, AuthenticationError), (403, AuthorizationError)],
+)
+def test_run_propagates_gateway_auth_denial(status, error_type):
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/v1/permits"
+        return httpx.Response(status, json={"detail": "access denied"})
+
+    tool, client = _governed_tool(handler)
+    with pytest.raises(error_type):
+        _run_on_fresh_loop(tool, client, **_BILLING_CALL)
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("reason", "outcome", "error_type"),
+    [
+        ("insufficient_funds", "insufficient_funds", InsufficientFundsError),
+        ("permit_tool_not_allowed", "denied", PermitDeniedError),
+        ("delivery_uncertain", "delivery_uncertain", DeliveryUncertainError),
+        ("idempotency_key_reused", "denied", IdempotencyConflictError),
+    ],
+)
+def test_crewai_dispatch_stops_on_terminal_gateway_error(reason, outcome, error_type):
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/mcp/messages":
+            calls += 1
+        return await _mcp_error_handler(reason, outcome)(request)
+
+    tool, client = _governed_tool(handler)
+    structured_tool = tool.to_structured_tool()
+    call_json = json.dumps(_BILLING_CALL)
+    action = AgentAction(
+        thought="",
+        tool=tool.name,
+        tool_input=call_json,
+        text=f"Action: {tool.name}\nAction Input: {call_json}",
+    )
+    try:
+        with pytest.raises(ToolExecutionFailedError) as exc_info:
+            execute_tool_and_check_finality(action, [structured_tool])
+    finally:
+        tool.close()
+        asyncio.run(client.close())
+    assert calls == 1
+    assert exc_info.value.record.failure.code == error_type.__name__
+    assert not exc_info.value.record.failure.retryable
+
+
+@pytest.mark.asyncio
+async def test_crewai_async_dispatch_stops_on_delivery_uncertain():
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/mcp/messages":
+            calls += 1
+        return await _mcp_error_handler("delivery_uncertain", "delivery_uncertain")(
+            request
+        )
+
+    tool, client = _governed_tool(handler)
+    call_json = json.dumps(_BILLING_CALL)
+    action = AgentAction(
+        thought="",
+        tool=tool.name,
+        tool_input=call_json,
+        text=f"Action: {tool.name}\nAction Input: {call_json}",
+    )
+    try:
+        with pytest.raises(ToolExecutionFailedError) as exc_info:
+            await aexecute_tool_and_check_finality(action, [tool.to_structured_tool()])
+    finally:
+        tool.close()
+        await client.close()
+    assert calls == 1
+    assert exc_info.value.record.failure.code == "DeliveryUncertainError"
+
+
+@pytest.mark.parametrize(
+    ("status", "error_type"),
+    [(401, AuthenticationError), (403, AuthorizationError)],
+)
+def test_crewai_dispatch_stops_on_auth_denial(status, error_type):
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/v1/permits"
+        return httpx.Response(status, json={"detail": "access denied"})
+
+    tool, client = _governed_tool(handler)
+    call_json = json.dumps(_BILLING_CALL)
+    action = AgentAction(
+        thought="",
+        tool=tool.name,
+        tool_input=call_json,
+        text=f"Action: {tool.name}\nAction Input: {call_json}",
+    )
+    try:
+        with pytest.raises(ToolExecutionFailedError) as exc_info:
+            execute_tool_and_check_finality(action, [tool.to_structured_tool()])
+    finally:
+        tool.close()
+        asyncio.run(client.close())
+    assert calls == 1
+    assert exc_info.value.record.failure.code == error_type.__name__
 
 
 @pytest.mark.asyncio

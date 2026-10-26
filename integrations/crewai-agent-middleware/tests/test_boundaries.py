@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from b2a_sdk.errors import DeliveryUncertainError
+from b2a_sdk.errors import AuthenticationError, DeliveryUncertainError
 
 from crewai_b2a import B2AClient, CrewAIB2ATool
 
@@ -367,13 +367,14 @@ async def test_auth_failure_does_not_invoke_or_stick():
 
     tool, client = _tool(httpx.MockTransport(handler))
     try:
-        denied = await tool._arun(
-            operation="call_tool",
-            tool_name="partner.search",
-            idempotency_key="invoke-auth",
-            permit_idempotency_key="permit-auth",
-            arguments={},
-        )
+        with pytest.raises(AuthenticationError, match="invalid api key"):
+            await tool._arun(
+                operation="call_tool",
+                tool_name="partner.search",
+                idempotency_key="invoke-auth",
+                permit_idempotency_key="permit-auth",
+                arguments={},
+            )
         retried = await tool._arun(
             operation="call_tool",
             tool_name="partner.search",
@@ -384,7 +385,6 @@ async def test_auth_failure_does_not_invoke_or_stick():
     finally:
         await client.close()
 
-    assert denied == "Error: invalid api key"
     assert invokes["n"] == 1
     assert permits["n"] == 2
     assert "receipt-success" in retried

@@ -48,9 +48,20 @@ def _load_wrapper(monkeypatch, framework):
             class BaseTool(BaseModel):
                 model_config = ConfigDict(arbitrary_types_allowed=True)
 
-            for name in ("crewai", "crewai.tools"):
+            for name in (
+                "crewai",
+                "crewai.tools",
+                "crewai.tools.structured_tool",
+                "crewai.tools.tool_failure",
+            ):
                 monkeypatch.setitem(sys.modules, name, ModuleType(name))
+            sys.modules["crewai"].__path__ = []
+            sys.modules["crewai.tools"].__path__ = []
             sys.modules["crewai.tools"].BaseTool = BaseTool
+            sys.modules["crewai.tools.structured_tool"].CrewStructuredTool = object
+            failure_module = sys.modules["crewai.tools.tool_failure"]
+            failure_module.ToolFailure = object
+            failure_module.ToolFailurePolicy = SimpleNamespace(RAISE="raise")
         else:
 
             class StructuredTool:
@@ -321,23 +332,27 @@ def test_crewai_sync_entry_point_reuses_body_after_lost_ack(monkeypatch):
     module = _load_wrapper(monkeypatch, "crewai")
     gateway = Gateway()
     transport = httpx.MockTransport(gateway)
-    loop = asyncio.new_event_loop()
-    monkeypatch.setattr(asyncio, "get_event_loop", lambda: loop)
-    client = AgentMiddlewareClient(
+    client = module.B2AClient(
         "synthetic",
         base_url="http://local.invalid",
         transport=transport,
     )
-    tool = module.CrewAIB2ATool(api_key="synthetic", wallet_id="wallet-local")
-    tool.client = client
-    tool._sync_client = AgentMiddlewareClient(
-        "synthetic", base_url="http://local.invalid", transport=transport
+    tool = module.CrewAIB2ATool(
+        api_key="synthetic", wallet_id="wallet-local", client=client
     )
     try:
+        assert tool._run("call_tool", **CALL) == (
+            "Error: sync_client_factory is required for sync calls with a borrowed client"
+        )
+        assert tool._sync_runner_loop is None
+        assert tool._sync_client is None
+        assert gateway.permit_bodies == []
+        tool.sync_client_factory = lambda: module.B2AClient(
+            "synthetic", base_url="http://local.invalid", transport=transport
+        )
         assert tool._run("call_tool", **CALL).startswith("Error:")
         assert "receipt-original" in tool._run("call_tool", **CALL)
         assert gateway.permit_bodies[0] == gateway.permit_bodies[1]
     finally:
         tool.close()
-        loop.run_until_complete(client.close())
-        loop.close()
+        asyncio.run(client.close())

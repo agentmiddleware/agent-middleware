@@ -457,11 +457,7 @@ class CrewAIB2ATool(BaseTool):
             and not self._owns_client
             and self.sync_client_factory is None
         ):
-            try:
-                asyncio.get_running_loop()
-                return "Error: sync_client_factory is required for sync calls with a borrowed client"
-            except RuntimeError:
-                pass
+            return "Error: sync_client_factory is required for sync calls with a borrowed client"
         replay_permit = self._begin_permit_call(operation, permit_idempotency_key)
         coro = self._execute(
             operation,

@@ -22,6 +22,10 @@ This repository starts with a fresh history. Releases are listed here once tagge
   startup instead of on the first receipt write.
 - CI: the Postgres proofs job sets `TENANT_RLS_OFF_MIGRATION_DATABASE_URL`, so the
   048 default-off migration proof runs instead of skipping.
+- Build: the image commit stamp now resolves `RELEASE_COMMIT_SHA` (explicit
+  override), then `RAILWAY_GIT_COMMIT_SHA`, then a CI `GIT_COMMIT_SHA` build arg,
+  then the staged `.build_commit_sha`. Each set value must be a 7-40 hex SHA and
+  all set values must agree, so a stale pin fails the build instead of stamping it.
 - Migrations: 053 recreates `receipt_resolutions`, `resolution_chain_heads`,
   `approval_gate_approvals`, `api_key_usage_events` and the `api_key_usage_daily`
   view on databases built by the archived api chain, only when missing.

@@ -79,7 +79,17 @@ REQUIRED_TRUST_COLUMNS = {
             "created_at",
         }
     ),
-    "mcp_dispatch_attempts": frozenset({"dispatch_claim_hash"}),
+    "mcp_dispatch_attempts": frozenset(
+        {
+            "dispatch_claim_hash",
+            "reconcile_status",
+            "reconcile_lease_owner",
+            "reconcile_lease_expires_at",
+            "reconcile_next_probe_at",
+            "reconcile_probe_count",
+            "reconciled_at",
+        }
+    ),
     "resolution_chain_heads": frozenset({"last_sequence", "last_hash"}),
     "receipt_resolutions": frozenset(
         {
@@ -115,6 +125,8 @@ REQUIRED_TRUST_COLUMNS = {
             "action_schema_version",
             "action_public_tool_id",
             "action_upstream_binding_hash",
+            "enforcement_mode",
+            "gateway_build",
         }
     ),
 }

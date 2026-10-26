@@ -7,6 +7,8 @@ description: Run the public PayPal checkout example with mock services first.
 
 # PayPal sandbox demo
 
+Preview. Not yet run against the PayPal sandbox.
+
 Run the [public PayPal agent example](https://github.com/agentmiddleware/amw-paypal-agent-demo) with mock services first. It includes its own `mini_gateway/` reference implementation and vendored AMW client code. It does not connect to a production AMW gateway.
 
 ```bash
@@ -17,7 +19,7 @@ python3 -m venv .venv
 .venv/bin/python demo.py --mock-paypal --mock-llm
 ```
 
-The demo includes a checkout, a lost response followed by a retry, an over-budget denial, and offline Receipt verification. Its offline path needs no PayPal or OpenAI key. To attempt the PayPal sandbox path with a scripted model, supply sandbox credentials and a sandbox test card, then run:
+The demo includes a checkout, a lost response followed by a retry, an over budget denial, and offline Receipt verification. Its offline path needs no PayPal or OpenAI key. To attempt the PayPal sandbox path with a scripted model, supply sandbox credentials and a sandbox test card, then run:
 
 ```bash
 export PAYPAL_CLIENT_ID='YOUR_PAYPAL_SANDBOX_CLIENT_ID'

@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
 
 from app.core.config import get_settings
+from app.db.database import get_session_factory
+from app.db.models import LedgerEntryModel, ReceiptModel
 from app.main import app
 from app.routers import mcp as mcp_router
 from app.services.receipts import get_receipt_service
@@ -137,9 +140,42 @@ async def test_jsonrpc_permit_denial_for_unregistered_tool_replays(
     replay = await client.post(
         "/mcp/messages", json=body, headers=provisioned["agent_headers"]
     )
-    assert first.json()["error"]["message"] == "permit_tool_not_allowed"
-    assert replay.json()["error"]["code"] == -32003
-    assert replay.json()["error"]["message"] == "permit_tool_not_allowed"
+    first_error = first.json()["error"]
+    replay_error = replay.json()["error"]
+    assert first_error["code"] == replay_error["code"] == -32003
+    assert first_error["message"] == "permit_tool_not_allowed"
+    assert replay_error["message"] == first_error["message"]
+    expected_details = {
+        "requested_tool": UNKNOWN,
+        "allowed_tools": [ALLOWED],
+    }
+    assert first_error["data"]["details"] == expected_details
+    assert replay_error["data"]["details"] == expected_details
+    assert first_error["data"]["receipt"] == replay_error["data"]["receipt"]
+    await _assert_denial_receipt(
+        replay_error["data"]["receipt"],
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+    )
+    async with get_session_factory()() as session:
+        receipts = await session.scalar(
+            select(func.count())
+            .select_from(ReceiptModel)
+            .where(
+                ReceiptModel.wallet_id == provisioned["agent_wallet_id"],
+                ReceiptModel.tool == UNKNOWN,
+            )
+        )
+        debits = await session.scalar(
+            select(func.count())
+            .select_from(LedgerEntryModel)
+            .where(
+                LedgerEntryModel.wallet_id == provisioned["agent_wallet_id"],
+                LedgerEntryModel.action == "debit",
+            )
+        )
+    assert receipts == 1
+    assert debits == 0
 
 
 @pytest.mark.anyio

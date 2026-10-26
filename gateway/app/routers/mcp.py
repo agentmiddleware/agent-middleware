@@ -1203,7 +1203,7 @@ async def _deny_unregistered_tool_outside_permit(
     idem_begin: IdempotencyBegin | None,
     idem_started: bool,
     permit_id: str,
-    wallet_id: str | None,
+    wallet_id: str,
     auth: AuthContext,
     tool_name: str,
     arguments: dict[str, Any],
@@ -1288,6 +1288,7 @@ async def _deny_unregistered_tool_outside_permit(
             reason_code=reason,
             outcome="denied",
             status_code=403,
+            response_extra_data={"details": validation.details},
         )
     else:
         await _complete_governed_denial_idempotency(
@@ -4353,6 +4354,7 @@ async def _raise_replayed_error(replay: Any) -> None:
         return
     reason = str(replay.response_json.get("error") or "governed_call_failed")
     receipt = replay.response_json.get("receipt")
+    details = replay.response_json.get("details")
     extra_data = {}
     reconciliation = replay.response_json.get("refund_reconciliation")
     if isinstance(reconciliation, dict):
@@ -4387,7 +4389,11 @@ async def _raise_replayed_error(replay: Any) -> None:
     if isinstance(dispatch, dict):
         extra_data["dispatch"] = dispatch
     if replay.status_code == 403:
-        raise ToolPermissionDenied(reason, receipt=receipt)
+        raise ToolPermissionDenied(
+            reason,
+            receipt=receipt,
+            details=details if isinstance(details, dict) else None,
+        )
     raise GovernedToolError(
         reason,
         receipt=receipt,

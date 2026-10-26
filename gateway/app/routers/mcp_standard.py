@@ -507,13 +507,15 @@ async def _governed_tools_call(
 
     auto_minted = permit_id is None
     idempotency_key = client_idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
-    permit_id = permit_id or await _mint_auto_permit(
-        auth=auth,
-        tool_name=tool_name,
-        record=record,
-        client_key=client_idempotency_key,
-        requires_human_approval=requires_human_approval,
-    )
+    if not permit_id:
+        assert record is not None  # Checked before any auto-mint.
+        permit_id = await _mint_auto_permit(
+            auth=auth,
+            tool_name=tool_name,
+            record=record,
+            client_key=client_idempotency_key,
+            requires_human_approval=requires_human_approval,
+        )
 
     call_params = {
         "name": tool_name,

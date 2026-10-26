@@ -12,6 +12,12 @@ This repository starts with a fresh history. Releases are listed here once tagge
   loading the calls file raises `ReplayError` naming the record.
 - Replay: new `amw-replay --require-verified` flag exits 2 unless every
   recorded receipt verified against `--recorded-keys`.
+- Receipts: new optional signed fields `enforcement_mode` ("enforce" or
+  "permissive") and `gateway_build` (build commit). Each is signed only when set,
+  so older receipts still verify. Migration 052 adds the columns.
+- Migrations: 053 recreates `receipt_resolutions`, `resolution_chain_heads`,
+  `approval_gate_approvals`, `api_key_usage_events` and the `api_key_usage_daily`
+  view on databases built by the archived api chain, only when missing.
 - Replay: whitespace-only recorded `approval_id` now raises `ReplayError` like the
   empty string, and `amw-replay` writes `receipts.jsonl`, `summary.json`, and
   `keys.json` atomically (temp file in the output dir, then rename), leaving no

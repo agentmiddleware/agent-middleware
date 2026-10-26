@@ -373,12 +373,22 @@ async def _check_upstream_mcp() -> dict[str, Any]:
     from ..services.upstream_mcp import get_upstream_mcp_metrics_snapshot
 
     registry = get_service_registry()
-    service = registry.get_local(settings.MCP_UPSTREAM_PUBLIC_TOOL_ID)
-    executor = registry.get_executor(settings.MCP_UPSTREAM_PUBLIC_TOOL_ID)
-    if (
-        not service
-        or service.get("execution_backend") != "upstream_mcp"
-        or executor is None
+    if settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED:
+        services = [
+            service
+            for service in await registry.list_local()
+            if service.get("execution_backend") == "upstream_mcp"
+            and str(service.get("service_id", "")).startswith(
+                settings.MCP_UPSTREAM_PUBLIC_TOOL_ID + "."
+            )
+        ]
+    else:
+        service = registry.get_local(settings.MCP_UPSTREAM_PUBLIC_TOOL_ID)
+        services = [service] if service else []
+    if not services or any(
+        service.get("execution_backend") != "upstream_mcp"
+        or registry.get_executor(service["service_id"]) is None
+        for service in services
     ):
         return {
             "status": "down",
@@ -386,6 +396,7 @@ async def _check_upstream_mcp() -> dict[str, Any]:
             "public_tool_id": settings.MCP_UPSTREAM_PUBLIC_TOOL_ID,
             "error": "configured upstream tool is not registered",
         }
+    service = services[0]
     dispatch_metrics = await get_mcp_dispatch_attempt_service().summarize(
         idle_seconds=dispatch_reconciliation_idle_seconds(
             connect_timeout_seconds=settings.MCP_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
@@ -398,8 +409,17 @@ async def _check_upstream_mcp() -> dict[str, Any]:
     return {
         "status": "up",
         "enabled": True,
-        "public_tool_id": service.get("service_id"),
-        "upstream_tool_name": service.get("upstream_tool_name"),
+        "public_tool_id": (
+            settings.MCP_UPSTREAM_PUBLIC_TOOL_ID
+            if settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED
+            else service.get("service_id")
+        ),
+        "upstream_tool_count": len(services),
+        "upstream_tool_name": (
+            None
+            if settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED
+            else service.get("upstream_tool_name")
+        ),
         "upstream_origin": service.get("upstream_origin"),
         "call_metrics": get_upstream_mcp_metrics_snapshot(),
         "dispatch_metrics": {

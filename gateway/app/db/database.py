@@ -125,6 +125,8 @@ REQUIRED_TRUST_COLUMNS = {
             "action_schema_version",
             "action_public_tool_id",
             "action_upstream_binding_hash",
+            "enforcement_mode",
+            "gateway_build",
         }
     ),
 }

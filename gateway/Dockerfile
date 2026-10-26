@@ -5,7 +5,13 @@ FROM python:3.12-slim AS build-metadata
 # named COPY that fails on clean trees. .dockerignore excludes local secrets.
 WORKDIR /context
 COPY . /context/
+# Commit sources, highest precedence first: RELEASE_COMMIT_SHA (explicit
+# override), RAILWAY_GIT_COMMIT_SHA (Railway passes it because it is declared
+# here), GIT_COMMIT_SHA (CI build arg), then the staged root stamp. All set
+# sources must agree. BUILD_COMMIT_SHA/COMMIT_SHA are not read (stale vars).
 ARG RELEASE_COMMIT_SHA
+ARG RAILWAY_GIT_COMMIT_SHA
+ARG GIT_COMMIT_SHA
 RUN mkdir /stamp \
     && STAGED_SHA_PATH=/context/.build_commit_sha \
        BUILD_SHA_PATH=/stamp/.build_commit_sha \

@@ -16,8 +16,8 @@ Sources, in precedence order:
 Every source that is set must be a 7-40 character hex SHA, and every set
 source must agree (case-insensitively); otherwise the build fails. A stale
 pinned value therefore cannot win over the real commit: it fails the build.
-The build also fails when no source is set. ``BUILD_COMMIT_SHA`` and
-``COMMIT_SHA`` are deliberately not read, because they are commonly stale
+The build also fails when no source is set. ``BUILD_COMMIT_SHA`` and plain
+COMMIT_SHA are deliberately not read, because they are commonly stale
 Railway service variables.
 
 ``STAGED_SHA_PATH`` and ``BUILD_SHA_PATH`` select the input and output paths

@@ -1985,7 +1985,8 @@ async def test_precanonical_alternate_transport_identity_fails_closed(
                 headers=provisioned["agent_headers"],
             )
             assert response.status_code == 409
-            assert response.json()["detail"] == "idempotency_key_reused"
+            assert response.json()["detail"]["error"] == "idempotency_key_reused"
+            assert "request_id" in response.json()["detail"]
 
         assert executor.dispatch_count == 0
         assert await _wallet_debit_and_canonical_counts(

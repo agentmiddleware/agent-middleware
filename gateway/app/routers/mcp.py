@@ -22,6 +22,7 @@ import json
 import logging
 import math
 import re
+import unicodedata
 import uuid
 from dataclasses import asdict
 from decimal import Decimal
@@ -467,14 +468,15 @@ _PUBLIC_MESSAGE_BY_EXC_TYPE: dict[type[BaseException], str] = {
     ToolExecutionError: "tool_execution_failed",
 }
 
-# Refusal codes whose ``code: detail`` suffix may reach the wire, and only on
-# the denial path (a ToolPermissionDenied/PermissionError). ``permit_forbidden_field``
+# Refusal codes whose ``code: detail`` suffix is recognized on the denial
+# path (a ToolPermissionDenied/PermissionError). ``permit_forbidden_field``
 # is the one documented producer-controlled detail: the suffix names the entry
 # of the permit's own forbidden-fields list that the caller's arguments hit
 # (docs/denial-details.md), and the field name already travels in the denial's
-# details payload. Every other refusal code is answered bare. In particular a
-# wrapped tool failure must never smuggle arbitrary tool output onto the wire
-# by mimicking a ``code: detail`` prefix.
+# details payload and the server log. The wire always gets the bare reason
+# code; the suffix never reaches the client. In particular a wrapped tool
+# failure must never smuggle arbitrary tool output onto the wire by mimicking
+# a ``code: detail`` prefix.
 _REFUSAL_DETAIL_ALLOWLIST: frozenset[str] = frozenset({"permit_forbidden_field"})
 
 
@@ -495,13 +497,14 @@ def _public_jsonrpc_message(exc: BaseException, *, code: int) -> str:
 
     Governed denial reason codes (``delivery_uncertain``,
     ``permit_forbidden_field``, ...) are contract, not exception text:
-    clients match them and receipts sign them. A ``code: detail`` suffix
-    reaches the wire only for a code in ``_REFUSAL_DETAIL_ALLOWLIST`` carried
-    by a denial exception; every other refusal code is answered bare (text
-    before the first colon), so a wrapped tool failure can neither select the
-    denial contract nor smuggle arbitrary tool output through it. Anything
-    else that is not one of the fixed public strings below is replaced by a
-    canned message and the original text stays server-side in the log.
+    clients match them and receipts sign them. Every refusal code is
+    answered bare (text before the first colon); a ``code: detail`` suffix
+    never reaches the wire, even for a code in
+    ``_REFUSAL_DETAIL_ALLOWLIST`` carried by a denial exception, so a
+    wrapped tool failure can neither select the denial contract nor smuggle
+    arbitrary tool output through it. Anything else that is not one of the
+    fixed public strings below is replaced by a canned message and the
+    original text stays server-side in the log.
     """
     if isinstance(exc, ToolExecutionError):
         # A wrapped tool failure, classified by type before any text matching:
@@ -525,7 +528,8 @@ def _public_jsonrpc_message(exc: BaseException, *, code: int) -> str:
     if is_refusal_reason_code(text):
         bare_code = text.split(":", 1)[0].strip()
         if bare_code in _REFUSAL_DETAIL_ALLOWLIST and isinstance(exc, PermissionError):
-            return text
+            # Allowlisted detail stays server-side; the wire gets the fixed code.
+            return bare_code
         return bare_code
     for exc_type, message in _PUBLIC_MESSAGE_BY_EXC_TYPE.items():
         if isinstance(exc, exc_type):
@@ -546,6 +550,41 @@ def _jsonrpc_error_response(
     return JSONResponse({"jsonrpc": "2.0", "id": request_id, "error": error_payload})
 
 
+def _sanitize_log_message(value: object, limit: int = 500) -> str:
+    """Make exception text safe for a single log line, capped at ``limit`` chars.
+
+    Every ``Cc`` control character (which includes CR and LF) plus U+2028 and
+    U+2029 is replaced with an escaped form or a space so a crafted message
+    cannot inject log lines or break line-oriented collectors. Over-long
+    messages are truncated with a ``...[truncated]`` suffix.
+    """
+    text = str(value)
+    parts: list[str] = []
+    for char in text:
+        if char == "\n":
+            parts.append("\\n")
+        elif char == "\r":
+            parts.append("\\r")
+        elif char == "\t":
+            parts.append("\\t")
+        elif char in ("\u2028", "\u2029"):
+            parts.append(" ")
+        elif unicodedata.category(char) == "Cc":
+            code_point = ord(char)
+            if code_point < 0x100:
+                parts.append(f"\\x{code_point:02x}")
+            elif code_point < 0x10000:
+                parts.append(f"\\u{code_point:04x}")
+            else:
+                parts.append(f"\\U{code_point:08x}")
+        else:
+            parts.append(char)
+    sanitized = "".join(parts)
+    if len(sanitized) > limit:
+        return sanitized[:limit] + "...[truncated]"
+    return sanitized
+
+
 def _public_jsonrpc_error(
     exc: BaseException,
     *,
@@ -556,12 +595,12 @@ def _public_jsonrpc_error(
 ) -> JSONResponse:
     """Log ``str(exc)`` with a request id and return a public JSON-RPC error."""
     request_id = _mcp_request_id(request)
-    logger.exception(
+    logger.error(
         "mcp_jsonrpc_error surface=/mcp/messages request_id=%s code=%s class=%s error=%r",
         request_id,
         code,
         type(exc).__name__,
-        exc,
+        _sanitize_log_message(exc),
     )
     payload_data = dict(data or {})
     payload_data["request_id"] = request_id
@@ -573,12 +612,12 @@ def _public_jsonrpc_error(
 def _log_rest_error(exc: BaseException, *, request: Request, status_code: int) -> str:
     """Log a REST invoke failure with a request id; return the id for the body."""
     request_id = _mcp_request_id(request)
-    logger.exception(
+    logger.error(
         "mcp_rest_error surface=/mcp/tools/{service_id}/invoke request_id=%s status=%s class=%s error=%r",
         request_id,
         status_code,
         type(exc).__name__,
-        exc,
+        _sanitize_log_message(exc),
     )
     return request_id
 
@@ -831,12 +870,12 @@ async def handle_messages(
             # is a stable code and stays on the wire; the request id joins it
             # so the operator can find this log line from the client payload.
             terminal_request_id = _mcp_request_id(request)
-            logger.exception(
+            logger.error(
                 "mcp_jsonrpc_error surface=/mcp/messages request_id=%s code=%s class=%s error=%r",
                 terminal_request_id,
                 e.jsonrpc_code,
                 type(e).__name__,
-                e,
+                _sanitize_log_message(e),
             )
             terminal_data = _terminal_record_contended_data(e.reason)
             terminal_data["request_id"] = terminal_request_id
@@ -4979,11 +5018,27 @@ async def invoke_tool(
                 exc, surface="/mcp/tools/{service_id}/invoke"
             )
         if message == "insufficient_funds":
-            _log_rest_error(exc, request=http_request, status_code=402)
-            raise HTTPException(status_code=402, detail=message)
+            rest_request_id = _log_rest_error(
+                exc, request=http_request, status_code=402
+            )
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "insufficient_funds",
+                    "request_id": rest_request_id,
+                },
+            )
         if message == "idempotency_key_reused":
-            _log_rest_error(exc, request=http_request, status_code=409)
-            raise HTTPException(status_code=409, detail=message)
+            rest_request_id = _log_rest_error(
+                exc, request=http_request, status_code=409
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "idempotency_key_reused",
+                    "request_id": rest_request_id,
+                },
+            )
         if message in {"wallet_frozen", "wallet_expired"}:
             rest_request_id = _log_rest_error(
                 exc, request=http_request, status_code=403
@@ -4993,13 +5048,34 @@ async def invoke_tool(
                 detail={"error": message, "request_id": rest_request_id},
             )
         if message.startswith("Tool not found"):
-            _log_rest_error(exc, request=http_request, status_code=404)
-            raise HTTPException(status_code=404, detail=message)
+            rest_request_id = _log_rest_error(
+                exc, request=http_request, status_code=404
+            )
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "Tool not found", "request_id": rest_request_id},
+            )
         if message.startswith("Tool not executable"):
-            _log_rest_error(exc, request=http_request, status_code=501)
-            raise HTTPException(status_code=501, detail=message)
-        _log_rest_error(exc, request=http_request, status_code=400)
-        raise HTTPException(status_code=400, detail=message)
+            rest_request_id = _log_rest_error(
+                exc, request=http_request, status_code=501
+            )
+            raise HTTPException(
+                status_code=501,
+                detail={
+                    "error": "Tool not executable",
+                    "request_id": rest_request_id,
+                },
+            )
+        rest_request_id = _log_rest_error(exc, request=http_request, status_code=400)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": _public_jsonrpc_message(
+                    exc, code=_value_error_jsonrpc_code(message) or -32602
+                ),
+                "request_id": rest_request_id,
+            },
+        )
     except Exception as exc:
         return _internal_error_tool_result(
             exc, surface="/mcp/tools/{service_id}/invoke"

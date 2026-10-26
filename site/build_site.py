@@ -28,7 +28,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-
 SITE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = SITE_ROOT.parent
 DEFAULT_OUTPUT = SITE_ROOT / "dist"

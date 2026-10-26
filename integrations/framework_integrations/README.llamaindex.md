@@ -2,6 +2,15 @@
 
 Use Agent Middleware API tools with LlamaIndex agents.
 
+## Status: legacy ungoverned factory
+
+`get_llamaindex_tools` below is a legacy ungoverned factory: its tools call
+the API with no permit, no idempotency key, and no signed receipt, and it
+emits a `DeprecationWarning`. For governed calls, prefer the
+**permit -> invoke -> signed receipt** wrappers (`CrewAIB2ATool`,
+the autogen / langchain / openai integrations, or `LangGraphGovernedTools` /
+`PydanticAIGovernedTools`).
+
 ## Installation
 
 No PyPI package is published. The SDK distribution will be published as

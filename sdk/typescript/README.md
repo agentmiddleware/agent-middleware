@@ -12,6 +12,7 @@ import { keySetFromDocument, verifyBundle } from "@agent-middleware/verify";
 
 const keys = keySetFromDocument(JSON.parse(trustKeysJson)); // /.well-known/trust-keys.json
 const result = verifyBundle(JSON.parse(bundleJson), keys);
+// A JSON string or its UTF-8 bytes are accepted too: verifyBundle(bundleJson, keys)
 if (result.ok) console.log(result.claims?.tool, result.claims?.credits_charged);
 else console.log(result.status, result.reason); // invalid | mismatch | unknown_key | malformed | unsupported
 ```

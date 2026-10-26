@@ -50,12 +50,16 @@ from app.services.quotes import get_quote_service
 from app.services.receipts import ReceiptService, get_receipt_service
 from app.services.service_registry import get_service_registry
 from app.services.signing_keys import sha256_hex
+from app.core.config import Settings
 from app.services.upstream_mcp import (
+    DiscoveredUpstreamTool,
+    UpstreamMcpAdapter,
     UpstreamMcpDeliveryUncertainError,
     UpstreamMcpPreDispatchError,
     UpstreamMcpResponseRejectedError,
     UpstreamMcpResult,
     UpstreamMcpReturnedError,
+    register_configured_upstream_mcp,
 )
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
@@ -610,6 +614,165 @@ async def test_governed_upstream_success_replays_without_second_debit_or_dispatc
         )
     finally:
         get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+async def test_configured_multi_tool_calls_keep_per_tool_governance(
+    client: AsyncClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    names = ("partner.read", "partner.write")
+    dispatched: list[str] = []
+
+    async def discover(self: UpstreamMcpAdapter) -> list[DiscoveredUpstreamTool]:
+        return [
+            DiscoveredUpstreamTool(
+                name=name,
+                description="Remote tool",
+                input_schema={
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                },
+                output_schema=None,
+            )
+            for name in names
+        ]
+
+    async def call(
+        self: UpstreamMcpAdapter,
+        arguments: dict[str, Any],
+        *,
+        invocation_id: str,
+        idempotency_key: str,
+        before_dispatch: Callable[[], Awaitable[None]],
+    ) -> UpstreamMcpResult:
+        assert invocation_id and idempotency_key
+        await before_dispatch()
+        dispatched.append(self.configuration.tool_name)
+        return _upstream_result(
+            {
+                "content": [{"type": "text", "text": self.configuration.tool_name}],
+                "isError": False,
+            }
+        )
+
+    monkeypatch.setattr(UpstreamMcpAdapter, "discover_tools", discover)
+    monkeypatch.setattr(UpstreamMcpAdapter, "call_tool", call)
+    settings = Settings(
+        _env_file=None,
+        ENVIRONMENT="local",
+        MCP_UPSTREAM_ENABLED=True,
+        MCP_UPSTREAM_URL="https://partner.example/mcp",
+        MCP_UPSTREAM_TOOL_NAME="",
+        MCP_UPSTREAM_PUBLIC_TOOL_ID="partner.multi",
+        MCP_UPSTREAM_MULTI_TOOL_ENABLED=True,
+        MCP_UPSTREAM_BEARER_TOKEN="test-only-token",
+        MCP_UPSTREAM_CREDITS_PER_CALL="2",
+    )
+    registry = get_service_registry()
+    registered = await register_configured_upstream_mcp(
+        settings=settings, registry=registry
+    )
+    assert isinstance(registered, list)
+    ids = {
+        service["upstream_tool_name"]: service["service_id"] for service in registered
+    }
+    provisioned = await provision_agent_wallet(client)
+    try:
+        permit_response = await client.post(
+            "/v1/permits",
+            json={
+                "issuer_wallet_id": provisioned["agent_wallet_id"],
+                "subject_wallet_id": provisioned["agent_wallet_id"],
+                "subject_key_id": provisioned["key_id"],
+                "allowed_tools": list(ids.values()),
+                "scopes": [
+                    *(f"tool:{tool_id}:invoke" for tool_id in ids.values()),
+                    "billing:charge",
+                ],
+                "max_credits": 50,
+                "expires_at": (utc_now() + timedelta(minutes=30)).isoformat(),
+            },
+            headers={**BOOTSTRAP_HEADERS, "Idempotency-Key": "multi-permit"},
+        )
+        assert permit_response.status_code == 201
+        permit = permit_response.json()
+        for name in names:
+            body = _call_body(
+                tool_name=ids[name],
+                wallet_id=provisioned["agent_wallet_id"],
+                permit_id=permit["permit_id"],
+                idempotency_key=f"multi-call-{name}",
+            )
+            first = await client.post(
+                "/mcp/messages", json=body, headers=provisioned["agent_headers"]
+            )
+            replay = await client.post(
+                "/mcp/messages", json=body, headers=provisioned["agent_headers"]
+            )
+            assert first.status_code == replay.status_code == 200
+            assert first.json()["result"] == replay.json()["result"]
+            persisted = await _load_persisted_invocation(
+                wallet_id=provisioned["agent_wallet_id"],
+                permit_id=permit["permit_id"],
+                idempotency_key=f"multi-call-{name}",
+            )
+            assert persisted.attempt.state == "succeeded"
+            assert persisted.receipt.outcome == "success"
+            assert persisted.receipt.credits_charged == Decimal("2")
+            assert persisted.receipt.dispatch_attempt_id == persisted.attempt.attempt_id
+            assert persisted.receipt.ledger_entry_id == persisted.debit.entry_id
+            assert persisted.debit.amount == Decimal("-2")
+            assert persisted.refunds == []
+            assert persisted.permit.spent_credits == Decimal(
+                "2" if name == "partner.read" else "4"
+            )
+            assert persisted.attempt.public_tool_id == ids[name]
+            assert persisted.attempt.upstream_tool_name == name
+        assert dispatched == list(names)
+
+        read_only_permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=ids["partner.read"],
+            idem_key="multi-read-only-permit",
+        )
+        wrong_permit = await client.post(
+            "/mcp/messages",
+            json=_call_body(
+                tool_name=ids["partner.write"],
+                wallet_id=provisioned["agent_wallet_id"],
+                permit_id=read_only_permit["permit_id"],
+                idempotency_key="multi-denied",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert wrong_permit.json()["error"]["message"] == "permit_tool_not_allowed"
+        assert (
+            wrong_permit.json()["error"]["data"]["receipt"]["reason_code"]
+            == "permit_tool_not_allowed"
+        )
+        assert (
+            wrong_permit.json()["error"]["data"]["receipt"]["ledger_entry_id"] is None
+        )
+        assert dispatched == list(names)
+
+        reused_key = await client.post(
+            "/mcp/messages",
+            json=_call_body(
+                tool_name=ids["partner.write"],
+                wallet_id=provisioned["agent_wallet_id"],
+                permit_id=permit["permit_id"],
+                idempotency_key="multi-call-partner.read",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert reused_key.json()["error"]["message"] == "idempotency_key_reused"
+        assert dispatched == list(names)
+    finally:
+        registry.unregister_execution_backend("upstream_mcp")
 
 
 @pytest.mark.anyio

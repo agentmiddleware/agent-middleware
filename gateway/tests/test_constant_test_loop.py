@@ -655,7 +655,7 @@ def test_off_loopback_runs_require_a_pinned_tool_and_approved_payload():
     assert "b2a_placeholder" not in result.stdout + result.stderr
 
 
-def test_bootstrap_key_only_pipes_without_jq():
+def test_bootstrap_key_only_pipes_without_jq(tmp_path):
     """--key-only and --json both write stdout, so they cannot both apply."""
     result = subprocess.run(
         [
@@ -673,6 +673,23 @@ def test_bootstrap_key_only_pipes_without_jq():
     assert result.returncode != 0
     assert "mutually exclusive" in result.stderr
 
+    # --key-only without --key-file is an argparse error (exit 2): the minted
+    # key is never printed, so a missing destination would discard it.
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP_SCRIPT),
+            "--api-url",
+            "https://api.example.org",
+            "--key-only",
+        ],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "BOOTSTRAP_KEY": "placeholder"},
+    )
+    assert result.returncode == 2
+    assert "requires --key-file" in result.stderr
+
     # --key-only must not have opened a path around the fail-closed check.
     result = subprocess.run(
         [
@@ -681,6 +698,8 @@ def test_bootstrap_key_only_pipes_without_jq():
             "--api-url",
             "https://api.example.org",
             "--key-only",
+            "--key-file",
+            str(tmp_path / "agent.key"),
         ],
         capture_output=True,
         text=True,

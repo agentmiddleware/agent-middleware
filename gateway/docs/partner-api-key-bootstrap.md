@@ -20,6 +20,8 @@ Never commit `VALID_API_KEYS` to git.
 export API_URL="${PUBLIC_URL:-https://api.thisisatest.tech}"
 export BOOTSTRAP_KEY=...   # from secret manager / Railway variables — not a demo string
 
+mkdir -p -m 700 ~/.config/amw
+
 # One-shot provisioner. The minted secret is never printed; it is written
 # to --key-file (created mode 0600, refused if the path already exists).
 # Without --key-file, stdout shows only non-secret identifiers (key id).

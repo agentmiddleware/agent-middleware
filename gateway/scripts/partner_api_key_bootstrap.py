@@ -5,8 +5,8 @@ Uses a bootstrap/admin key (VALID_API_KEYS) only to provision:
   sponsor wallet → agent wallet → DB-scoped agent API key.
 
 The minted agent secret is never printed to stdout or stderr. Pass --key-file
-PATH to write it (created mode 0600, fails if PATH exists); stdout shows
-only non-secret identifiers (key id, wallet ids, key prefix).
+PATH to write it (reserved mode 0600 before minting, fails if PATH exists);
+stdout shows only non-secret identifiers (key id, wallet ids, key prefix).
 Requires network access to --api-url.
 Does not mint keys without a bootstrap secret (fail closed).
 
@@ -31,21 +31,41 @@ def _require(condition: bool, message: str) -> None:
         raise SystemExit(f"error: {message}")
 
 
-def _write_key_file(path: str, api_key: str) -> None:
-    """Write the minted key to PATH created 0600; refuse if it already exists."""
+def _reserve_key_file(path: str) -> int:
+    """Create PATH exclusively (mode 0600) and return its fd; refuse if it exists."""
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     try:
-        fd = os.open(path, flags, 0o600)
+        return os.open(path, flags, 0o600)
     except FileExistsError:
         raise SystemExit(f"error: --key-file {path} already exists")
     except OSError as exc:
         raise SystemExit(f"error: cannot write --key-file {path}: {exc}") from exc
+
+
+def _write_key_fd(fd: int, path: str, api_key: str) -> None:
+    """Write the full key to the reserved fd, fsync, then close.
+
+    On any error the fd is closed and PATH is unlinked before raising,
+    so a partial key file is never left behind.
+    """
+    data = api_key.encode("utf-8")
     try:
-        os.write(fd, api_key.encode("utf-8"))
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        os.fsync(fd)
     except OSError as exc:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
         raise SystemExit(f"error: cannot write --key-file {path}: {exc}") from exc
-    finally:
-        os.close(fd)
+    os.close(fd)
 
 
 def _require_safe_api_url(api_url: str) -> str:
@@ -85,7 +105,7 @@ def _bootstrap_key(cli_value: str | None) -> str:
 def _post(client: httpx.Client, path: str, body: dict[str, Any]) -> dict[str, Any]:
     resp = client.post(path, json=body)
     if resp.status_code >= 400:
-        raise SystemExit(f"error: POST {path} → {resp.status_code}: {resp.text[:500]}")
+        raise SystemExit(f"error: bootstrap request failed (HTTP {resp.status_code})")
     data = resp.json()
     _require(isinstance(data, dict), f"POST {path} returned non-object JSON")
     return data
@@ -256,8 +276,8 @@ def main() -> int:
         "--key-only",
         action="store_true",
         help=(
-            "Print only the --key-file path, or the key_id when --key-file "
-            "is omitted. Never prints the minted secret."
+            "Print only the --key-file path. Requires --key-file. "
+            "Never prints the minted secret."
         ),
     )
     parser.add_argument(
@@ -275,8 +295,8 @@ def main() -> int:
     if args.key_only and args.json:
         raise SystemExit("error: --key-only and --json are mutually exclusive")
 
-    if args.key_file and os.path.exists(args.key_file):
-        raise SystemExit(f"error: --key-file {args.key_file} already exists")
+    if args.key_only and not args.key_file:
+        parser.error("--key-only requires --key-file (the key is never printed)")
 
     if args.agent_wallet_id and not args.sponsor_wallet_id:
         raise SystemExit(
@@ -284,21 +304,39 @@ def main() -> int:
             "(for operator record-keeping)"
         )
 
-    result = provision(
-        api_url=args.api_url,
-        bootstrap_key=_bootstrap_key(args.bootstrap_key),
-        sponsor_name=args.sponsor_name,
-        agent_id=args.agent_id,
-        budget_credits=args.budget_credits,
-        initial_credits=args.initial_credits,
-        key_name=args.key_name,
-        sponsor_wallet_id=args.sponsor_wallet_id,
-        agent_wallet_id=args.agent_wallet_id,
-        daily_limit=args.daily_limit,
-        expires_in_days=args.expires_in_days,
-        max_uses=args.max_uses,
-        json_mode=args.json,
-    )
+    bootstrap_key = _bootstrap_key(args.bootstrap_key)
+
+    # Reserve the key file before minting so a minted key is never discarded
+    # because its destination cannot be created.
+    key_fd = _reserve_key_file(args.key_file) if args.key_file else None
+
+    try:
+        result = provision(
+            api_url=args.api_url,
+            bootstrap_key=bootstrap_key,
+            sponsor_name=args.sponsor_name,
+            agent_id=args.agent_id,
+            budget_credits=args.budget_credits,
+            initial_credits=args.initial_credits,
+            key_name=args.key_name,
+            sponsor_wallet_id=args.sponsor_wallet_id,
+            agent_wallet_id=args.agent_wallet_id,
+            daily_limit=args.daily_limit,
+            expires_in_days=args.expires_in_days,
+            max_uses=args.max_uses,
+            json_mode=args.json,
+        )
+    except BaseException:
+        if key_fd is not None:
+            try:
+                os.close(key_fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(args.key_file)
+            except OSError:
+                pass
+        raise
 
     # Non-secret identifiers for stdout. The minted secret below flows
     # only to --key-file and never to print/log.
@@ -312,10 +350,11 @@ def main() -> int:
     api_key = str(result["api_key"])
     key_file = args.key_file
     if key_file:
-        _write_key_file(key_file, api_key)
+        assert key_fd is not None  # reserved above whenever --key-file is given
+        _write_key_fd(key_fd, key_file, api_key)
 
     if args.key_only:
-        print(key_file if key_file else key_id)
+        print(key_file)
     elif args.json:
         # Machine-readable: JSON to stdout, all status to stderr.
         # Never print bootstrap_key or the minted api_key.

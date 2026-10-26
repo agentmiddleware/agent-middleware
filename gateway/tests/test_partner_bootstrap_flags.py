@@ -8,11 +8,13 @@ CLI modes never print the minted secret; --key-file writes it at mode 0600.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import stat
 import sys
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -148,7 +150,7 @@ def test_bounds_default_to_absent(monkeypatch):
     assert "max_uses" not in posts["/v1/api-keys"]
 
 
-@pytest.mark.parametrize("mode", ["--key-only", "--json", None])
+@pytest.mark.parametrize("mode", ["--json", None])
 def test_cli_output_modes_never_print_full_key(monkeypatch, capsys, mode):
     extra = [mode] if mode else []
     assert _run_main(monkeypatch, extra) == 0
@@ -157,9 +159,7 @@ def test_cli_output_modes_never_print_full_key(monkeypatch, capsys, mode):
     _assert_no_secret_leak(combined)
     assert "[created]" in captured.err
     assert "[created]" not in captured.out
-    if mode == "--key-only":
-        assert captured.out == f"{KEY_ID}\n"
-    elif mode == "--json":
+    if mode == "--json":
         payload = json.loads(captured.out)
         assert "api_key" not in payload
         assert "api_key_masked" not in payload
@@ -210,3 +210,134 @@ def test_key_file_refuses_existing_path(monkeypatch, capsys, tmp_path):
     captured = capsys.readouterr()
     assert MINTED_KEY not in captured.out + captured.err
     assert key_path.read_text(encoding="utf-8") == "preexisting"
+
+
+# Fixed, obviously synthetic values for the reserve/mint/write tests below.
+FIXED_KEY = "fixed-test-key-value-001"
+FIXED_BODY_SENTINEL = "fixed-sentinel-response-body-001"
+
+
+def test_reserve_key_file_uses_exclusive_0600_create(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+    real_open = os.open
+    seen: dict[str, int] = {}
+
+    def _record_open(path, flags, mode=0o777):
+        seen["flags"] = flags
+        seen["mode"] = mode
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(os, "open", _record_open)
+    fd = bootstrap._reserve_key_file(str(key_path))
+    os.close(fd)
+    assert seen["flags"] == (os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    assert seen["mode"] == 0o600
+
+
+def test_existing_key_file_skips_mint(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+    key_path.write_text("fixed-preexisting-content", encoding="utf-8")
+
+    def _no_mint(**kwargs):
+        raise AssertionError("provision must not run when --key-file exists")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", BOOTSTRAP_SECRET)
+    monkeypatch.setattr(bootstrap, "provision", _no_mint)
+    monkeypatch.setattr(sys, "argv", _cli_args("--key-file", str(key_path)))
+    with pytest.raises(SystemExit, match="already exists"):
+        bootstrap.main()
+    assert key_path.read_text(encoding="utf-8") == "fixed-preexisting-content"
+
+
+def test_failed_mint_removes_reserved_key_file(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+
+    def _fail(**kwargs):
+        raise SystemExit("error: fixed-mint-failure")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", BOOTSTRAP_SECRET)
+    monkeypatch.setattr(bootstrap, "provision", _fail)
+    monkeypatch.setattr(sys, "argv", _cli_args("--key-file", str(key_path)))
+    with pytest.raises(SystemExit, match="fixed-mint-failure"):
+        bootstrap.main()
+    assert not key_path.exists()
+
+
+def test_write_key_fd_handles_short_writes_and_fsyncs(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+    fd = bootstrap._reserve_key_file(str(key_path))
+    real_write = os.write
+    real_fsync = os.fsync
+    fsynced: list[int] = []
+
+    def _short_write(target_fd, data):
+        if target_fd != fd:
+            return real_write(target_fd, data)
+        return real_write(target_fd, bytes(data[:1]))
+
+    def _record_fsync(target_fd):
+        fsynced.append(target_fd)
+        return real_fsync(target_fd)
+
+    monkeypatch.setattr(os, "write", _short_write)
+    monkeypatch.setattr(os, "fsync", _record_fsync)
+    bootstrap._write_key_fd(fd, str(key_path), FIXED_KEY)
+    assert key_path.read_text(encoding="utf-8") == FIXED_KEY
+    assert fsynced == [fd]
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+
+
+def test_write_key_fd_failure_removes_file_and_closes_fd(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+    fd = bootstrap._reserve_key_file(str(key_path))
+    real_write = os.write
+
+    def _fail_write(target_fd, data):
+        if target_fd == fd:
+            raise OSError("fixed-write-failure")
+        return real_write(target_fd, data)
+
+    monkeypatch.setattr(os, "write", _fail_write)
+    with pytest.raises(SystemExit, match="fixed-write-failure"):
+        bootstrap._write_key_fd(fd, str(key_path), FIXED_KEY)
+    assert not key_path.exists()
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(fd)
+
+
+def test_post_error_omits_response_body():
+    class _ErrorResponse:
+        status_code = 502
+        text = FIXED_BODY_SENTINEL
+
+    class _ErrorClient:
+        def post(self, path, json):
+            return _ErrorResponse()
+
+    with pytest.raises(SystemExit) as excinfo:
+        bootstrap._post(_ErrorClient(), "/v1/api-keys", {"key_name": "fixed-name"})
+    message = str(excinfo.value)
+    assert "502" in message
+    assert FIXED_BODY_SENTINEL not in message
+
+
+def test_key_only_without_key_file_is_argparse_error(monkeypatch, capsys):
+    def _no_mint(**kwargs):
+        raise AssertionError("provision must not run without --key-file")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", BOOTSTRAP_SECRET)
+    monkeypatch.setattr(bootstrap, "provision", _no_mint)
+    monkeypatch.setattr(sys, "argv", _cli_args("--key-only"))
+    with pytest.raises(SystemExit) as excinfo:
+        bootstrap.main()
+    assert excinfo.value.code == 2
+    assert "requires --key-file" in capsys.readouterr().err
+
+
+def test_bootstrap_doc_creates_config_dir_before_key_file():
+    doc = (
+        Path(__file__).resolve().parents[1] / "docs" / "partner-api-key-bootstrap.md"
+    ).read_text(encoding="utf-8")
+    mkdir_at = doc.index("mkdir -p -m 700 ~/.config/amw")
+    key_file_at = doc.index("--key-file")
+    assert mkdir_at < key_file_at

@@ -62,11 +62,8 @@ class Settings(BaseSettings):
     # 048_tenant_rls), ported from the archived agent-middleware-api Settings
     # with the same name, default and validation. "off" (default): the
     # migration creates the policies but leaves RLS disabled, so nothing
-    # changes for any client. "enable" (opt-in): migrating in this mode runs
-    # ENABLE ROW LEVEL SECURITY but not FORCE, so the table owner, superusers
-    # and BYPASSRLS roles keep full access while every other role is limited
-    # to its app.current_wallet_id. "enforce": migrating in this mode enables
-    # and forces RLS. This gateway does not yet set app.current_wallet_id per
+    # changes for any client. "enforce": migrating in this mode enables and
+    # forces RLS. This gateway does not yet set app.current_wallet_id per
     # transaction, so enforce fails closed for a NOSUPERUSER NOBYPASSRLS
     # runtime role; see docs/schema-048-rollout.md. No effect on SQLite.
     TENANT_RLS_MODE: str = "off"
@@ -334,8 +331,8 @@ class Settings(BaseSettings):
     def _validate_tenant_rls_mode(cls, value: str) -> str:
         """Only the two documented modes; a typo must not silently mean off."""
         normalized = (value or "").strip().lower()
-        if normalized not in {"off", "enable", "enforce"}:
-            raise ValueError("TENANT_RLS_MODE must be 'off', 'enable' or 'enforce'")
+        if normalized not in {"off", "enforce"}:
+            raise ValueError("TENANT_RLS_MODE must be 'off' or 'enforce'")
         return normalized
 
     @field_validator("EXCHANGE_RATE")

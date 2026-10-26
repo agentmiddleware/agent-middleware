@@ -25,7 +25,6 @@ def _load_048():
 def test_tenant_rls_mode_setting_matches_archived_api():
     assert Settings().TENANT_RLS_MODE == "off"
     assert Settings(TENANT_RLS_MODE=" Enforce ").TENANT_RLS_MODE == "enforce"
-    assert Settings(TENANT_RLS_MODE="enable").TENANT_RLS_MODE == "enable"
     with pytest.raises(ValueError, match="TENANT_RLS_MODE must be"):
         Settings(TENANT_RLS_MODE="enforced")
 

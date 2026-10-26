@@ -11,15 +11,10 @@ already exist. On an api-chain database they don't exist yet;
 `053_repair_api_lineage` creates them and applies the identical policy.
 
 `TENANT_RLS_MODE` is ported from the api Settings with the same default (`off`)
-and the same validation, plus one opt-in mode added here (`off`, `enable` or
-`enforce`).
+and the same validation (`off` or `enforce`).
 
 - `off`: the policies exist, but row-level security stays disabled, so nothing
   changes. This matches the original's default.
-- `enable` (opt-in, not in the original): running the migration enables RLS
-  without FORCE. The table owner, superusers and BYPASSRLS roles are
-  unaffected; any other role sees only rows for its `app.current_wallet_id`
-  (none when unset).
 - `enforce`: running the migration enables and forces RLS on every listed table.
 
 `migrations/env.py` sets `app.rls_bypass` to `on` for the migration

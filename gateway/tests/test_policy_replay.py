@@ -47,9 +47,13 @@ SPEC_KEYS = Path(__file__).resolve().parents[2] / "spec" / "test-vectors" / "key
 #: human-approval rule below.
 NO_APPROVAL_SUCCESSES = {
     "success_action_v1.json",
+    "success_enforcement_build.json",
     "success_legacy.json",
     "success_linked.json",
+    "success_permissive.json",
 }
+# The corpus is every golden receipt; counts follow the fixture set.
+GOLDEN_COUNT = len(list(GOLDEN_DIR.glob("*.json")))
 
 
 def _recorded_keys():
@@ -147,7 +151,7 @@ def tripwire(monkeypatch):
 
 def test_replay_forwards_nothing_library(tmp_path, tripwire):
     result = replay_calls(_calls(), load_policy_bundle(_approval_rule(tmp_path)))
-    assert len(result.receipts) == 6
+    assert len(result.receipts) == GOLDEN_COUNT
     assert tripwire.calls == []
     assert tripwire.socket_events == []
 
@@ -169,7 +173,7 @@ def test_replay_forwards_nothing_cli(tmp_path, tripwire, capsys):
     assert tripwire.calls == []
     assert tripwire.socket_events == []
     lines = (tmp_path / "out" / "receipts.jsonl").read_text().splitlines()
-    assert len(lines) == 6
+    assert len(lines) == GOLDEN_COUNT
 
 
 def test_network_is_sealed_during_replay():
@@ -188,7 +192,7 @@ def test_network_is_sealed_during_replay():
 def test_one_signed_receipt_per_call_verifies(tmp_path):
     calls = _calls()
     result = replay_calls(calls, load_policy_bundle(_approval_rule(tmp_path)))
-    assert len(result.receipts) == len(calls) == 6
+    assert len(result.receipts) == len(calls) == GOLDEN_COUNT
     assert sorted(_claims(r)["call_hash"] for r in result.receipts) == sorted(
         c.call_hash for c in calls
     )
@@ -307,8 +311,10 @@ def test_summary_counts_match_receipts(tmp_path):
         json.loads(line) for line in (out / "receipts.jsonl").read_text().splitlines()
     ]
     changes = [_claims(r)["change"] for r in receipts]
-    assert summary["total"] == len(receipts) == 6
-    assert summary["allow_to_deny"] == changes.count("allow_to_deny") == 5
+    assert summary["total"] == len(receipts) == GOLDEN_COUNT
+    assert (
+        summary["allow_to_deny"] == changes.count("allow_to_deny") == GOLDEN_COUNT - 1
+    )
     assert summary["deny_to_allow"] == changes.count("deny_to_allow") == 0
     assert summary["unchanged"] == changes.count("unchanged") == 1
     assert (
@@ -691,7 +697,7 @@ def test_replay_receipt_marks_verified_recordings(tmp_path):
     result = replay_calls(calls, load_policy_bundle(_approval_rule(tmp_path)))
     assert [_claims(r)["recorded_signature_verified"] for r in result.receipts] == [
         True
-    ] * 6
+    ] * GOLDEN_COUNT
 
 
 def test_replay_receipt_marks_unverified_recordings(tmp_path):
@@ -700,7 +706,7 @@ def test_replay_receipt_marks_unverified_recordings(tmp_path):
     result = replay_calls(calls, load_policy_bundle(_approval_rule(tmp_path)))
     assert [_claims(r)["recorded_signature_verified"] for r in result.receipts] == [
         False
-    ] * 6
+    ] * GOLDEN_COUNT
 
 
 def test_recorded_envelope_mismatch_raises(tmp_path):
@@ -752,7 +758,7 @@ def test_replay_daily_spend_limit_without_usage_denies(tmp_path):
     result = replay_calls(
         _calls(), load_policy_bundle(_bundle(tmp_path, {"daily_spend_limit": "100.00"}))
     )
-    assert len(result.receipts) == 6
+    assert len(result.receipts) == GOLDEN_COUNT
     for receipt in result.receipts:
         claims = _claims(receipt)
         if claims["old_decision"] == "deny":
@@ -1027,7 +1033,7 @@ def test_cli_require_verified_rejects_unverified_calls(tmp_path, capsys, monkeyp
     )
     assert code == 2
     captured = capsys.readouterr()
-    assert "6 unverified" in captured.err
+    assert f"{GOLDEN_COUNT} unverified" in captured.err
     assert captured.out == ""
     assert not (out / "summary.json").exists()
     assert not (out / "receipts.jsonl").exists()
@@ -1050,7 +1056,7 @@ def test_cli_require_verified_passes_when_all_verified(tmp_path, capsys):
     )
     assert code == 0, capsys.readouterr().err
     summary = json.loads((out / "summary.json").read_text())
-    assert summary["total"] == 6
+    assert summary["total"] == GOLDEN_COUNT
 
 
 # --- 24. CLI outputs are written atomically -----------------------------------
@@ -1195,9 +1201,9 @@ def test_cli_overwrite_prepopulated_out_writes_new_contents(tmp_path, capsys):
     for name, content in old.items():
         assert (out / name).read_text() != content
     summary = json.loads((out / "summary.json").read_text())
-    assert summary["total"] == 6
+    assert summary["total"] == GOLDEN_COUNT
     receipts = (out / "receipts.jsonl").read_text().splitlines()
-    assert len(receipts) == 6
+    assert len(receipts) == GOLDEN_COUNT
 
 
 def test_cli_backup_link_failure_falls_back_to_copy(tmp_path, capsys, monkeypatch):

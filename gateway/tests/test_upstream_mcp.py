@@ -960,7 +960,7 @@ async def test_multi_tool_discovery_filters_allowlist_and_rejects_missing_name()
 ):
     tools = [
         Tool(name=name, inputSchema={"type": "object"})
-        for name in ("partner.read", "partner.write", "partner.admin")
+        for name in ("partner.read", "partner.write", "partner.admin", "")
     ]
     adapter = UpstreamMcpAdapter(
         _configuration(
@@ -992,7 +992,7 @@ async def test_multi_tool_discovery_filters_allowlist_and_rejects_missing_name()
 async def test_multi_tool_registration_binds_stable_ids_and_routes_each_name(
     monkeypatch,
 ) -> None:
-    names = ("partner.read", "partner.write", "partner/read")
+    names = ("partner.read", "partner.write", "partner-admin")
     session = FakeSession(
         tools=[Tool(name=name, inputSchema={"type": "object"}) for name in names]
     )
@@ -1052,6 +1052,100 @@ def test_multi_tool_configuration_requires_explicit_mode() -> None:
     with pytest.raises(UpstreamMcpConfigurationError) as exc_info:
         _configuration(MCP_UPSTREAM_MULTI_TOOL_ENABLED=True)
     assert "must be empty" in exc_info.value.detail
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error"),
+    [
+        ({"MCP_UPSTREAM_TOOL_ALLOWLIST": "partner.read,partner.read"}, "duplicate"),
+        ({"MCP_UPSTREAM_TOOL_ALLOWLIST": "partner.re\nad"}, "invalid"),
+        ({"MCP_UPSTREAM_TOOL_ALLOWLIST": ","}, "at least one tool"),
+        ({"MCP_UPSTREAM_PUBLIC_TOOL_ID": "p" * 64}, "at most 63"),
+    ],
+)
+def test_multi_tool_configuration_rejects_invalid_values(
+    overrides: dict[str, str], error: str
+) -> None:
+    with pytest.raises(UpstreamMcpConfigurationError) as exc_info:
+        _configuration(
+            MCP_UPSTREAM_MULTI_TOOL_ENABLED=True,
+            MCP_UPSTREAM_TOOL_NAME="",
+            **overrides,
+        )
+    assert error in exc_info.value.detail
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tools", "error"),
+    [
+        ([Tool(name="partner.read", inputSchema={"type": "object"})] * 2, "unique"),
+        ([Tool(name="", inputSchema={"type": "object"})], "safe MCP"),
+        ([Tool(name="partner/read", inputSchema={"type": "object"})], "safe MCP"),
+        ([Tool(name="p" * 129, inputSchema={"type": "object"})], "safe MCP"),
+        (
+            [
+                Tool.model_construct(
+                    name="partner.read",
+                    inputSchema={"type": "object"},
+                    outputSchema="invalid",
+                )
+            ],
+            "invalid output schema",
+        ),
+        ([], "no tools to expose"),
+    ],
+)
+async def test_multi_tool_discovery_rejects_invalid_selected_tools(
+    tools: list[Tool], error: str
+) -> None:
+    adapter = UpstreamMcpAdapter(
+        _configuration(
+            MCP_UPSTREAM_MULTI_TOOL_ENABLED=True,
+            MCP_UPSTREAM_TOOL_NAME="",
+        )
+    )
+    _bind_session(adapter, FakeSession(tools=tools))
+    with pytest.raises(UpstreamMcpConfigurationError) as exc_info:
+        await adapter.discover_tools()
+    assert error in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_multi_tool_registration_rejects_generated_public_id_collision(
+    monkeypatch,
+) -> None:
+    name = "partner.read"
+
+    async def discover(self: UpstreamMcpAdapter) -> list[DiscoveredUpstreamTool]:
+        return [
+            DiscoveredUpstreamTool(
+                name=name,
+                description="Remote tool",
+                input_schema={"type": "object"},
+                output_schema=None,
+            )
+        ]
+
+    monkeypatch.setattr(UpstreamMcpAdapter, "discover_tools", discover)
+    registry = ServiceRegistry()
+    public_id = "partner.notes.write." + hashlib.sha256(name.encode()).hexdigest()
+    registry.register_local(
+        service_id=public_id,
+        name="Existing local tool",
+        description="Existing service",
+        category=ServiceCategory.PLATFORM_FEE,
+        func=lambda: None,
+    )
+    with pytest.raises(UpstreamMcpConfigurationError) as exc_info:
+        await register_configured_upstream_mcp(
+            settings=_settings(
+                MCP_UPSTREAM_MULTI_TOOL_ENABLED=True,
+                MCP_UPSTREAM_TOOL_NAME="",
+            ),
+            registry=registry,
+        )
+    assert "conflicts with an existing service" in exc_info.value.detail
 
 
 @pytest.mark.parametrize(

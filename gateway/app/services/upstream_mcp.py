@@ -866,13 +866,13 @@ class UpstreamMcpAdapter:
                         tool
                         for tool in page.tools
                         if (
-                            self.configuration.multi_tool_enabled
-                            and (
+                            (
                                 not self.configuration.tool_allowlist
                                 or tool.name in self.configuration.tool_allowlist
                             )
+                            if self.configuration.multi_tool_enabled
+                            else tool.name == self.configuration.tool_name
                         )
-                        or tool.name == self.configuration.tool_name
                     )
                     cursor = page.nextCursor
                     if not cursor:
@@ -921,9 +921,9 @@ class UpstreamMcpAdapter:
                 )
         discovered_tools = []
         for selected in matches:
-            if not selected.name or any(ord(char) < 32 for char in selected.name):
+            if not _SAFE_TOOL_ID.fullmatch(selected.name):
                 raise UpstreamMcpConfigurationError(
-                    "upstream tool name is empty or contains control characters"
+                    "upstream tool name must be 1 to 128 safe MCP tool-name characters"
                 )
             if not isinstance(selected.inputSchema, dict):
                 raise UpstreamMcpConfigurationError(

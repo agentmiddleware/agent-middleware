@@ -674,20 +674,29 @@ async def test_configured_multi_tool_calls_keep_per_tool_governance(
     }
     provisioned = await provision_agent_wallet(client)
     try:
-        permits = {}
-        for name in names:
-            permits[name] = await create_tool_permit(
-                client,
-                wallet_id=provisioned["agent_wallet_id"],
-                key_id=provisioned["key_id"],
-                tool_name=ids[name],
-                idem_key=f"multi-permit-{name}",
-            )
+        permit_response = await client.post(
+            "/v1/permits",
+            json={
+                "issuer_wallet_id": provisioned["agent_wallet_id"],
+                "subject_wallet_id": provisioned["agent_wallet_id"],
+                "subject_key_id": provisioned["key_id"],
+                "allowed_tools": list(ids.values()),
+                "scopes": [
+                    *(f"tool:{tool_id}:invoke" for tool_id in ids.values()),
+                    "billing:charge",
+                ],
+                "max_credits": 50,
+                "expires_at": (utc_now() + timedelta(minutes=30)).isoformat(),
+            },
+            headers={**BOOTSTRAP_HEADERS, "Idempotency-Key": "multi-permit"},
+        )
+        assert permit_response.status_code == 201
+        permit = permit_response.json()
         for name in names:
             body = _call_body(
                 tool_name=ids[name],
                 wallet_id=provisioned["agent_wallet_id"],
-                permit_id=permits[name]["permit_id"],
+                permit_id=permit["permit_id"],
                 idempotency_key=f"multi-call-{name}",
             )
             first = await client.post(
@@ -700,7 +709,7 @@ async def test_configured_multi_tool_calls_keep_per_tool_governance(
             assert first.json()["result"] == replay.json()["result"]
             persisted = await _load_persisted_invocation(
                 wallet_id=provisioned["agent_wallet_id"],
-                permit_id=permits[name]["permit_id"],
+                permit_id=permit["permit_id"],
                 idempotency_key=f"multi-call-{name}",
             )
             assert persisted.attempt.state == "succeeded"
@@ -710,17 +719,26 @@ async def test_configured_multi_tool_calls_keep_per_tool_governance(
             assert persisted.receipt.ledger_entry_id == persisted.debit.entry_id
             assert persisted.debit.amount == Decimal("-2")
             assert persisted.refunds == []
-            assert persisted.permit.spent_credits == Decimal("2")
+            assert persisted.permit.spent_credits == Decimal(
+                "2" if name == "partner.read" else "4"
+            )
             assert persisted.attempt.public_tool_id == ids[name]
             assert persisted.attempt.upstream_tool_name == name
         assert dispatched == list(names)
 
+        read_only_permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=ids["partner.read"],
+            idem_key="multi-read-only-permit",
+        )
         wrong_permit = await client.post(
             "/mcp/messages",
             json=_call_body(
                 tool_name=ids["partner.write"],
                 wallet_id=provisioned["agent_wallet_id"],
-                permit_id=permits["partner.read"]["permit_id"],
+                permit_id=read_only_permit["permit_id"],
                 idempotency_key="multi-denied",
             ),
             headers=provisioned["agent_headers"],
@@ -740,7 +758,7 @@ async def test_configured_multi_tool_calls_keep_per_tool_governance(
             json=_call_body(
                 tool_name=ids["partner.write"],
                 wallet_id=provisioned["agent_wallet_id"],
-                permit_id=permits["partner.write"]["permit_id"],
+                permit_id=permit["permit_id"],
                 idempotency_key="multi-call-partner.read",
             ),
             headers=provisioned["agent_headers"],

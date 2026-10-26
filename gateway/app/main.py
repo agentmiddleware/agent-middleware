@@ -475,7 +475,11 @@ async def lifespan(app: FastAPI):
         phase="mcp_upstream_registration_synced",
         enabled=bool(settings.MCP_UPSTREAM_ENABLED),
         public_tool_id=(
-            upstream_services[0].get("service_id") if upstream_services else None
+            settings.MCP_UPSTREAM_PUBLIC_TOOL_ID
+            if settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED and upstream_services
+            else upstream_services[0].get("service_id")
+            if upstream_services
+            else None
         ),
         upstream_tool_count=len(upstream_services),
         upstream_origin=(

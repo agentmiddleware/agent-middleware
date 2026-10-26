@@ -83,6 +83,21 @@ def signed_receipt_tamper_cases(
     }
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A 30x must not carry X-API-Key to another host.
+        return None
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    # An empty ProxyHandler ignores HTTP_PROXY so a key aimed at the
+    # selected origin is not handed to an ambient proxy.
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _NoRedirect(),
+    )
+
+
 def _headers(api_key: str | None, idem: str | None = None) -> dict:
     h = {"Content-Type": "application/json"}
     if api_key is not None:
@@ -110,7 +125,7 @@ def http(
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     t0 = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with _opener().open(req, timeout=30) as resp:
             raw = resp.read().decode()
             status = resp.status
     except urllib.error.HTTPError as e:

@@ -7,7 +7,7 @@ description: Verify the published sample Receipt offline and understand what it 
 
 # Proof and published receipts
 
-Verify the historical sample from the [published proof page](https://www.agentmiddleware.dev/proof/). It is a self-issued `partner.echo` Receipt. It is not customer evidence or a test of the deployment running today.
+Verify the historical sample from the [published proof page](https://www.agentmiddleware.dev/proof/). It is a self issued `partner.echo` Receipt. It is not customer evidence or a test of the deployment running today.
 
 ## Verify the sample
 

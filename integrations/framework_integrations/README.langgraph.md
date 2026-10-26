@@ -2,6 +2,14 @@
 
 Use Agent Middleware API tools directly in LangGraph agents.
 
+## Status: use the governed wrapper first
+
+`framework_integrations.LangGraphGovernedTools` runs every call through the
+**permit -> invoke -> signed receipt** loop and is the path to show buyers.
+`get_langgraph_tools` below is a legacy ungoverned factory: its tools call the
+API with no permit, no idempotency key, and no signed receipt, and it emits a
+`DeprecationWarning`.
+
 ## Installation
 
 No PyPI package is published. The SDK distribution will be published as
@@ -27,7 +35,10 @@ from framework_integrations import B2AClient, get_langgraph_tools
 
 # Initialize client
 client = B2AClient(
-    api_url="http://localhost:8000", api_key="your-api-key", wallet_id="your-wallet-id"
+    api_url="http://localhost:8000",
+    api_key="your-api-key",
+    wallet_id="your-wallet-id",
+    agent_id="your-registered-agent-id",  # Required for send_message
 )
 
 # Get LangGraph-compatible tools

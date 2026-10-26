@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # --- Server ---
-    HOST: str = "0.0.0.0"
+    # Loopback by default, matching uvicorn's own default bind. DEBUG open
+    # mode only serves requests when HOST is an explicit loopback bind, so a
+    # shared-interface default would refuse every local open-mode call.
+    # Deployments that bind a public interface set HOST explicitly.
+    HOST: str = "127.0.0.1"
     PORT: int = 8000
     CORS_ORIGINS: str = ""
 
@@ -58,6 +62,15 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     REDIS_URL: str = ""
     SQLITE_URL: str = ""
+    # PostgreSQL row-level security for wallet-scoped tables (migration
+    # 048_tenant_rls), ported from the archived agent-middleware-api Settings
+    # with the same name, default and validation. "off" (default): the
+    # migration creates the policies but leaves RLS disabled, so nothing
+    # changes for any client. "enforce": migrating in this mode enables and
+    # forces RLS. This gateway does not yet set app.current_wallet_id per
+    # transaction, so enforce fails closed for a NOSUPERUSER NOBYPASSRLS
+    # runtime role; see docs/schema-048-rollout.md. No effect on SQLite.
+    TENANT_RLS_MODE: str = "off"
 
     # --- Database Pool Settings ---
     # Used for SQLModel/SQLAlchemy async sessions
@@ -213,13 +226,15 @@ class Settings(BaseSettings):
     ENABLE_DOGFOOD_SECOND_TOOL: bool = False
 
     # --- Governed upstream MCP partner tool ---
-    # One explicitly configured Streamable HTTP server/tool for the
+    # One explicitly configured Streamable HTTP server, with one or more tools, for the
     # design-partner pilot. The adapter fails closed at startup when enabled
     # with incomplete or unsafe configuration.
     MCP_UPSTREAM_ENABLED: bool = False
     MCP_UPSTREAM_URL: str = ""
     MCP_UPSTREAM_TOOL_NAME: str = ""
     MCP_UPSTREAM_PUBLIC_TOOL_ID: str = ""
+    MCP_UPSTREAM_MULTI_TOOL_ENABLED: bool = False
+    MCP_UPSTREAM_TOOL_ALLOWLIST: str = ""
     MCP_UPSTREAM_BEARER_TOKEN: SecretStr = SecretStr("")
     MCP_UPSTREAM_CREDITS_PER_CALL: Decimal = Decimal("0")
     MCP_UPSTREAM_CONNECT_TIMEOUT_SECONDS: float = 5.0
@@ -316,6 +331,15 @@ class Settings(BaseSettings):
     # re-declare it as a module constant — a second copy silently lets the
     # advertised rate drift from the rate real money converts at.
     EXCHANGE_RATE: Decimal = Decimal("1000.0")
+
+    @field_validator("TENANT_RLS_MODE")
+    @classmethod
+    def _validate_tenant_rls_mode(cls, value: str) -> str:
+        """Only the two documented modes; a typo must not silently mean off."""
+        normalized = (value or "").strip().lower()
+        if normalized not in {"off", "enforce"}:
+            raise ValueError("TENANT_RLS_MODE must be 'off' or 'enforce'")
+        return normalized
 
     @field_validator("EXCHANGE_RATE")
     @classmethod

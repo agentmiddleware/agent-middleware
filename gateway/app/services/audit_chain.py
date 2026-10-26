@@ -121,13 +121,15 @@ def _first_sequence_break(
     """Event id where a run of seq-signed rows stops being contiguous.
 
     Legacy signatures omit ``seq``, so their stored numbers cannot establish
-    contiguity. ``events`` must already be ordered by seq, then created_at.
+    contiguity within a legacy run. A following seq-signed row must continue
+    from the final legacy row's stored sequence. ``events`` must already be
+    ordered by seq, then created_at.
     """
     expected_seq: int | None = 1
     for event in events:
         payload = _payload_matching_stored_hash(event)
         if payload is not None and "seq" not in payload:
-            expected_seq = None
+            expected_seq = event.seq + 1
             continue
         if expected_seq is not None and event.seq != expected_seq:
             return event.event_id
@@ -578,20 +580,11 @@ async def _verify_single_chain(
     else:
         events = all_events
 
-    # A window that excludes the wallet's genesis event starts mid-chain: the
-    # first in-window event legitimately links to an event outside the
-    # window. Seed the expected predecessor from the last stored event before
-    # the window instead of from genesis, otherwise every non-genesis window
-    # reports a valid chain as tampered (audit_previous_hash_mismatch).
     previous_hash: str | None = None
-    if events and created_after:
-        first_seq = events[0].seq
-        below = [event for event in all_events if event.seq < first_seq]
-        if below:
-            previous_hash = below[-1].chain_hash
     first_event_id = events[0].event_id if events else None
     last_event_id = events[-1].event_id if events else None
-    for event in events:
+    window_event_ids = {event.event_id for event in events}
+    for event in all_events:
         payload = _payload_matching_stored_hash(event)
         if payload is None:
             return AuditChainVerification(
@@ -611,35 +604,36 @@ async def _verify_single_chain(
                 "audit_previous_hash_mismatch",
                 event.event_id,
             )
-        if not event.signature or not event.signature_key_id:
-            return AuditChainVerification(
-                False,
-                len(events),
-                first_event_id,
-                last_event_id,
-                "audit_signature_missing",
-                event.event_id,
+        if event.event_id in window_event_ids:
+            if not event.signature or not event.signature_key_id:
+                return AuditChainVerification(
+                    False,
+                    len(events),
+                    first_event_id,
+                    last_event_id,
+                    "audit_signature_missing",
+                    event.event_id,
+                )
+            signed_payload = {
+                **payload,
+                "payload_hash": event.payload_hash,
+                "alg": "Ed25519",
+                "kid": event.signature_key_id,
+            }
+            ok = await get_signing_key_service().verify_payload(
+                signed_payload,
+                signature=event.signature,
+                key_id=event.signature_key_id,
             )
-        signed_payload = {
-            **payload,
-            "payload_hash": event.payload_hash,
-            "alg": "Ed25519",
-            "kid": event.signature_key_id,
-        }
-        ok = await get_signing_key_service().verify_payload(
-            signed_payload,
-            signature=event.signature,
-            key_id=event.signature_key_id,
-        )
-        if not ok:
-            return AuditChainVerification(
-                False,
-                len(events),
-                first_event_id,
-                last_event_id,
-                "audit_signature_invalid",
-                event.event_id,
-            )
+            if not ok:
+                return AuditChainVerification(
+                    False,
+                    len(events),
+                    first_event_id,
+                    last_event_id,
+                    "audit_signature_invalid",
+                    event.event_id,
+                )
         expected_chain_hash = sha256_hex(
             {
                 "previous_hash": event.previous_hash,
@@ -658,10 +652,8 @@ async def _verify_single_chain(
             )
         previous_hash = event.chain_hash
 
-    # The hash walk above covers the requested window only. The head and
-    # the sequence belong to the whole chain. Checking them on the window,
-    # or skipping them when the head row is gone, let a deleted tail or a
-    # renumbered seq verify as a complete chain.
+    # The head and sequence also belong to the whole chain. Skipping them
+    # when the head row is gone lets a deleted tail or renumbered seq verify.
     anchor_first = all_events[0].event_id if all_events else None
     anchor_last = all_events[-1].event_id if all_events else None
     if head is None:

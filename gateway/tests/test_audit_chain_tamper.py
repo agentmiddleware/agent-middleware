@@ -8,6 +8,7 @@ do not call the network.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -58,6 +59,116 @@ async def test_middle_deletion_breaks_the_hash_link(clean_database):
     result = await verify_audit_chain(wallet_id=wallet_id)
     assert result.valid is False
     assert result.reason == "audit_previous_hash_mismatch"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("deleted_seqs", [(4,), (3,), (3, 4), (2,)])
+async def test_windowed_verify_finds_deleted_legacy_and_modern_links(
+    clean_database, deleted_seqs
+):
+    wallet_id = f"wlt-{uuid4()}"
+    base = utc_now()
+    for seq in range(1, 7):
+        await record_audit_event(
+            event="trust.window-link",
+            wallet_id=wallet_id,
+            created_at=base + timedelta(seconds=seq),
+            metadata={"seq": seq},
+        )
+
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ControlPlaneAuditEventModel)
+                    .where(ControlPlaneAuditEventModel.wallet_id == wallet_id)
+                    .order_by(ControlPlaneAuditEventModel.seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [row.seq for row in rows] == list(range(1, 7))
+        previous_hash = None
+        for row in rows[:3]:
+            row.previous_hash = previous_hash
+            payload = _payload_without_seq(row)
+            row.payload_hash = sha256_hex(payload)
+            payload["payload_hash"] = row.payload_hash
+            assert row.signature_key_id is not None
+            row.signature, row.signature_key_id, _ = (
+                get_signing_key_service().sign_payload_with_key_id(
+                    payload, row.signature_key_id
+                )
+            )
+            row.chain_hash = sha256_hex(
+                {
+                    "previous_hash": previous_hash,
+                    "payload_hash": row.payload_hash,
+                    "signature": row.signature,
+                }
+            )
+            previous_hash = row.chain_hash
+        for row in rows[3:]:
+            assert row.signature_key_id is not None
+            _sign_with_previous(row, previous_hash, signing_key_id=row.signature_key_id)
+            previous_hash = row.chain_hash
+        head = await session.get(AuditChainHeadModel, wallet_id)
+        assert head is not None
+        head.last_chain_hash = previous_hash
+        await session.commit()
+
+    window = {"created_after": rows[-1].created_at}
+    intact = await verify_audit_chain(wallet_id=wallet_id, **window)
+    assert intact.valid is True, intact
+    assert intact.checked_events == 1
+    assert intact.first_event_id == intact.last_event_id == rows[-1].event_id
+
+    async with factory() as session:
+        for row in rows:
+            if row.seq in deleted_seqs:
+                stored = await session.get(ControlPlaneAuditEventModel, row.event_id)
+                assert stored is not None
+                await session.delete(stored)
+        await session.commit()
+
+    result = await verify_audit_chain(wallet_id=wallet_id, **window)
+    assert result.valid is False
+    assert result.reason == "audit_previous_hash_mismatch"
+    assert result.broken_event_id == rows[max(deleted_seqs)].event_id
+
+    if deleted_seqs == (3,):
+        # A writer can repair linkage and re-sign the modern suffix. The
+        # first seq-signed row must still reveal the gap after legacy rows.
+        async with factory() as session:
+            survivors = (
+                (
+                    await session.execute(
+                        select(ControlPlaneAuditEventModel)
+                        .where(ControlPlaneAuditEventModel.wallet_id == wallet_id)
+                        .order_by(ControlPlaneAuditEventModel.seq)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            previous_hash = survivors[1].chain_hash
+            for row in survivors[2:]:
+                assert row.signature_key_id is not None
+                _sign_with_previous(
+                    row, previous_hash, signing_key_id=row.signature_key_id
+                )
+                previous_hash = row.chain_hash
+            head = await session.get(AuditChainHeadModel, wallet_id)
+            assert head is not None
+            head.last_chain_hash = previous_hash
+            await session.commit()
+
+        relinked = await verify_audit_chain(wallet_id=wallet_id, **window)
+        assert relinked.valid is False
+        assert relinked.reason == "audit_sequence_gap"
+        assert relinked.broken_event_id == rows[3].event_id
 
 
 @pytest.mark.anyio

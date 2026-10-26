@@ -222,13 +222,15 @@ class Settings(BaseSettings):
     ENABLE_DOGFOOD_SECOND_TOOL: bool = False
 
     # --- Governed upstream MCP partner tool ---
-    # One explicitly configured Streamable HTTP server/tool for the
+    # One explicitly configured Streamable HTTP server, with one or more tools, for the
     # design-partner pilot. The adapter fails closed at startup when enabled
     # with incomplete or unsafe configuration.
     MCP_UPSTREAM_ENABLED: bool = False
     MCP_UPSTREAM_URL: str = ""
     MCP_UPSTREAM_TOOL_NAME: str = ""
     MCP_UPSTREAM_PUBLIC_TOOL_ID: str = ""
+    MCP_UPSTREAM_MULTI_TOOL_ENABLED: bool = False
+    MCP_UPSTREAM_TOOL_ALLOWLIST: str = ""
     MCP_UPSTREAM_BEARER_TOKEN: SecretStr = SecretStr("")
     MCP_UPSTREAM_CREDITS_PER_CALL: Decimal = Decimal("0")
     MCP_UPSTREAM_CONNECT_TIMEOUT_SECONDS: float = 5.0

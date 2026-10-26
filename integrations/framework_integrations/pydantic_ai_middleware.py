@@ -38,7 +38,7 @@ except ImportError as exc:  # pragma: no cover - depends on checkout layout
 # re-exported here so `from framework_integrations.pydantic_ai_middleware
 # import governed_tool` keeps working and cannot drift from the LangGraph
 # module's copy. Wrappers expose `last_receipt` per task via a contextvar.
-from ._governed import GovernedToolWrapper, governed_tool
+from ._governed import GovernedToolWrapper, governed_tool, resolve_tool_name
 
 
 def as_pydantic_ai_tool(
@@ -60,9 +60,8 @@ def as_pydantic_ai_tool(
             "Pydantic AI not installed. Run: pip install pydantic-ai"
         ) from exc
 
-    wrapped = governed_tool(session, tool_name=tool_name, credits_hint=credits_hint)(
-        func
-    )
+    name = resolve_tool_name(func, tool_name)
+    wrapped = governed_tool(session, tool_name=name, credits_hint=credits_hint)(func)
     # Hand the framework the underlying coroutine function: pydantic_ai
     # detects async tools via inspect.iscoroutinefunction, which a callable
     # wrapper object would defeat.
@@ -71,7 +70,7 @@ def as_pydantic_ai_tool(
     )
     return Tool(
         target,
-        name=tool_name or func.__name__,
+        name=name,
         description=inspect.getdoc(func) or "",
     )
 

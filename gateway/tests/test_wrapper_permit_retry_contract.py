@@ -48,9 +48,20 @@ def _load_wrapper(monkeypatch, framework):
             class BaseTool(BaseModel):
                 model_config = ConfigDict(arbitrary_types_allowed=True)
 
-            for name in ("crewai", "crewai.tools"):
+            for name in (
+                "crewai",
+                "crewai.tools",
+                "crewai.tools.structured_tool",
+                "crewai.tools.tool_failure",
+            ):
                 monkeypatch.setitem(sys.modules, name, ModuleType(name))
+            sys.modules["crewai"].__path__ = []
+            sys.modules["crewai.tools"].__path__ = []
             sys.modules["crewai.tools"].BaseTool = BaseTool
+            sys.modules["crewai.tools.structured_tool"].CrewStructuredTool = object
+            failure_module = sys.modules["crewai.tools.tool_failure"]
+            failure_module.ToolFailure = object
+            failure_module.ToolFailurePolicy = SimpleNamespace(RAISE="raise")
         else:
 
             class StructuredTool:

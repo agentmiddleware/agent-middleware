@@ -80,7 +80,8 @@ exact `MCP_UPSTREAM_TOOL_NAME`, and exposes it as
 unreachable or that tool is absent. No database service registration is
 required.
 
-To expose multiple tools from the same upstream server, set
+Multi tool upstream discovery is a Preview feature. To expose multiple tools
+from the same upstream server, set
 `MCP_UPSTREAM_MULTI_TOOL_ENABLED=true`, leave `MCP_UPSTREAM_TOOL_NAME` empty,
 and use `MCP_UPSTREAM_PUBLIC_TOOL_ID` as the public ID prefix. Every discovered
 tool is registered as `<prefix>.<sha256 of upstream tool name>` (lowercase hex).

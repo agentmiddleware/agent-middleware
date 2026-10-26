@@ -373,6 +373,13 @@ async def _check_upstream_mcp() -> dict[str, Any]:
     from ..services.upstream_mcp import get_upstream_mcp_metrics_snapshot
 
     registry = get_service_registry()
+    # Additive field: multi tool discovery is a Preview feature, so health
+    # says so whenever it is on. Existing fields keep their meaning.
+    tool_mode = (
+        "multi_tool_preview"
+        if settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED
+        else "single_tool"
+    )
     if settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED:
         services = [
             service
@@ -394,6 +401,7 @@ async def _check_upstream_mcp() -> dict[str, Any]:
             "status": "down",
             "enabled": True,
             "public_tool_id": settings.MCP_UPSTREAM_PUBLIC_TOOL_ID,
+            "upstream_tool_mode": tool_mode,
             "error": "configured upstream tool is not registered",
         }
     service = services[0]
@@ -414,6 +422,7 @@ async def _check_upstream_mcp() -> dict[str, Any]:
             if settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED
             else service.get("service_id")
         ),
+        "upstream_tool_mode": tool_mode,
         "upstream_tool_count": len(services),
         "upstream_tool_name": (
             None

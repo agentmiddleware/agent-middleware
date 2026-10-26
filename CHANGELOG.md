@@ -12,8 +12,9 @@ This repository starts with a fresh history. Releases are listed here once tagge
   peppered scrypt too. Production-like environments refuse to boot without
   the pepper; local and test use a public dev pepper. See
   docs/api-key-hashing.md.
-- Upstream MCP: optional multi-tool discovery and exact-name allowlist with
+- Upstream MCP (Preview): optional multi-tool discovery and exact-name allowlist with
   stable public IDs, per-tool permit scope, and unchanged per-call credits.
+  Health reports `upstream_tool_mode: multi_tool_preview` while it is on.
 - Initial import of the gateway (Fair Source, FSL-1.1-ALv2), the Python SDK and
   framework integrations (Apache-2.0), and examples (Apache-2.0).
 - New: permit, receipt, and key-set format draft (`spec/`, v0.1) with test vectors.

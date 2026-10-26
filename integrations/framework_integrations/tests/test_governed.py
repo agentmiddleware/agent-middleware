@@ -89,6 +89,15 @@ def test_supplied_key_reused_blank_refused_absent_derived():
     assert derived and derived != "k1"
 
 
+@pytest.mark.parametrize("key", [42, "line\nbreak", "k" * 129])
+def test_invalid_caller_key_refused_before_dispatch(key):
+    session = FakeSession()
+    tool = _tool(session)
+    with pytest.raises(ValueError, match="idempotency_key"):
+        asyncio.run(tool("q", idempotency_key=key))
+    assert session.calls == []
+
+
 def test_reserved_key_is_not_sent_as_a_tool_argument():
     """A stub that declares its own `idempotency_key` parameter must not leak
     the reserved key into the server arguments."""

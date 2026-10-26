@@ -16,7 +16,16 @@ DOC = GATEWAY / "docs" / "denial-details.md"
 #: agent that branches on it; add a new code instead of editing one.
 PINNED = frozenset(
     {
+        "action_argument_const",
+        "action_argument_constraint",
+        "action_argument_enum",
+        "action_argument_required",
+        "action_argument_type_mismatch",
+        "action_argument_unknown_property",
+        "action_arguments_must_be_object",
+        "action_arguments_must_be_strict_json",
         "action_binding_mismatch",
+        "action_payload_mismatch",
         "action_permit_denied",
         "action_permit_required",
         "action_quote_unsupported",
@@ -35,9 +44,29 @@ PINNED = frozenset(
         "human_approval_request_mismatch",
         "human_approval_request_rejected",
         "human_approval_required",
+        "iga_algorithm_not_allowed",
+        "iga_audience_mismatch",
+        "iga_config_invalid",
+        "iga_issuer_not_trusted",
+        "iga_max_uses_exceeded",
+        "iga_no_matching_role",
+        "iga_policy_inactive",
+        "iga_policy_not_found",
+        "iga_signature_invalid",
+        "iga_signing_key_not_found",
+        "iga_token_expired",
+        "iga_token_invalid",
+        "iga_token_malformed",
+        "iga_token_not_yet_valid",
+        "iga_tool_not_allowed",
+        "iga_velocity_exceeded",
         "idempotency_key_required_for_human_approval",
         "idempotency_key_reused",
         "insufficient_funds",
+        "invalid_action_binding",
+        "invalid_action_digest",
+        "invalid_action_permit_scope",
+        "invalid_action_schema",
         "key_tool_not_allowed",
         "max_cost_per_action_exceeded",
         "permit_aggregate_value_cap_exceeded",
@@ -69,6 +98,9 @@ PINNED = frozenset(
         "upstream_pre_dispatch_failed",
         "upstream_prepare_failed",
         "upstream_returned_error",
+        "unsupported_action_constraints",
+        "unsupported_action_contract_version",
+        "unsupported_action_schema",
         "wallet_access_denied",
         "wallet_expired",
         "wallet_frozen",
@@ -90,11 +122,13 @@ def _call_name(node: ast.Call) -> str | None:
 
 
 def _string_literals(node: ast.AST | None) -> list[str]:
-    """String constants in ``node``, including ``x or "fallback"`` forms."""
+    """String constants in ``node``, including fallback and conditional forms."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [node.value]
     if isinstance(node, ast.BoolOp):
         return [s for value in node.values for s in _string_literals(value)]
+    if isinstance(node, ast.IfExp):
+        return _string_literals(node.body) + _string_literals(node.orelse)
     return []
 
 
@@ -123,6 +157,21 @@ def _scan_refusal_literals() -> dict[str, str]:
                 kwargs = {kw.arg: kw.value for kw in node.keywords}
                 if _is_false(kwargs.get("allowed")):
                     reason = kwargs.get("reason")
+            elif name == "IGAError" and node.args:
+                reason = node.args[0]
+            elif name == "IGADecision":
+                kwargs = {kw.arg: kw.value for kw in node.keywords}
+                allowed = node.args[0] if node.args else kwargs.get("allowed")
+                if _is_false(allowed):
+                    reason = (
+                        node.args[1] if len(node.args) >= 2 else kwargs.get("reason")
+                    )
+            elif (
+                name == "ValueError"
+                and path == APP / "services" / "action_permits.py"
+                and node.args
+            ):
+                reason = node.args[0]
             elif name == "_mcp_error" and len(node.args) >= 2:
                 code = node.args[0]
                 if (
@@ -141,7 +190,7 @@ def _documented_codes() -> set[str]:
     text = DOC.read_text(encoding="utf-8")
     codes: set[str] = set()
     for row in re.findall(r"^\| (`[^|]+)\|", text, re.MULTILINE):
-        codes.update(re.findall(r"`([a-z_<>]+)`", row))
+        codes.update(re.findall(r"`([a-z0-9_<>]+)`", row))
     return codes
 
 
@@ -172,6 +221,8 @@ def test_every_documented_code_is_registered() -> None:
 def test_every_refusal_literal_in_app_is_registered() -> None:
     found = _scan_refusal_literals()
     assert "permit_tool_not_allowed" in found  # the scan sees real call sites
+    assert "action_payload_mismatch" in found
+    assert "iga_no_matching_role" in found
     unregistered = {
         literal: where
         for literal, where in found.items()
@@ -180,6 +231,11 @@ def test_every_refusal_literal_in_app_is_registered() -> None:
     assert not unregistered, (
         f"refusal reason literals missing from app/core/reason_codes.py: {unregistered}"
     )
+
+
+def test_conditional_refusal_literals_are_scanned() -> None:
+    reason = ast.parse('"new_code" if flag else "policy_denied"', mode="eval").body
+    assert _string_literals(reason) == ["new_code", "policy_denied"]
 
 
 def test_prefixed_detail_resolves_to_registered_code() -> None:

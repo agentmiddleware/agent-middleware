@@ -2,9 +2,10 @@
 
 Every machine-readable reason a governed call can be refused with is listed
 here. These strings are a public contract: they appear as the JSON-RPC error
-message, in REST ``detail.error``, and as the signed ``reason_code`` on denial
-receipts, so an agent can branch on them. Values must never be renamed; add a
-new code instead and document it in ``docs/denial-details.md``.
+message or in REST ``detail.error``. Terminal permit-bound denials also sign
+the reason as ``reason_code`` on a receipt; earlier API errors have no receipt.
+Values must never be renamed; add a new code instead and document it in
+``docs/denial-details.md``.
 
 ``tests/test_reason_code_registry.py`` pins this set, checks it against the
 documentation, and scans ``app/`` so a refusal literal that is not registered
@@ -41,11 +42,49 @@ PERMIT_REASON_CODES: frozenset[str] = frozenset(
 #: Action-bound tools (permits tied to an upstream action binding).
 ACTION_REASON_CODES: frozenset[str] = frozenset(
     {
+        "action_argument_const",
+        "action_argument_constraint",
+        "action_argument_enum",
+        "action_argument_required",
+        "action_argument_type_mismatch",
+        "action_argument_unknown_property",
+        "action_arguments_must_be_object",
+        "action_arguments_must_be_strict_json",
         "action_binding_mismatch",
+        "action_payload_mismatch",
         "action_permit_denied",
         "action_permit_required",
         "action_quote_unsupported",
         "action_tool_binding_required",
+        "invalid_action_binding",
+        "invalid_action_digest",
+        "invalid_action_permit_scope",
+        "invalid_action_schema",
+        "unsupported_action_constraints",
+        "unsupported_action_contract_version",
+        "unsupported_action_schema",
+    }
+)
+
+#: Enterprise identity and group-policy admission.
+IGA_REASON_CODES: frozenset[str] = frozenset(
+    {
+        "iga_algorithm_not_allowed",
+        "iga_audience_mismatch",
+        "iga_config_invalid",
+        "iga_issuer_not_trusted",
+        "iga_max_uses_exceeded",
+        "iga_no_matching_role",
+        "iga_policy_inactive",
+        "iga_policy_not_found",
+        "iga_signature_invalid",
+        "iga_signing_key_not_found",
+        "iga_token_expired",
+        "iga_token_invalid",
+        "iga_token_malformed",
+        "iga_token_not_yet_valid",
+        "iga_tool_not_allowed",
+        "iga_velocity_exceeded",
     }
 )
 
@@ -112,6 +151,7 @@ REFUSAL_REASON_CODES: frozenset[str] = (
     PERMIT_STATUS_REASON_CODES
     | PERMIT_REASON_CODES
     | ACTION_REASON_CODES
+    | IGA_REASON_CODES
     | ADMISSION_REASON_CODES
     | POLICY_REASON_CODES
     | APPROVAL_REASON_CODES

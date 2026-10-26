@@ -70,8 +70,8 @@ packages = ["app"]
 # mcp <2 is deliberate and must match requirements.txt: 2.x renamed FastMCP to
 # MCPServer and moved McpError. Dependabot major bumps are ignored (#460).
 mcp = ["mcp>=1.29.0,<2", "httpx>=0.28.1,<0.29", "httpcore==1.0.9", "anyio>=4.14.2", "pydantic-settings>=2.14.2"]
-playwright = ["playwright>=1.40.0"]
-browser = ["playwright>=1.40.0"]
+playwright = ["playwright>=1.48.0"]
+browser = ["playwright>=1.48.0"]
 webauthn = ["webauthn>=1.0.0", "cryptography>=50.0.0", "pyasn1>=0.6.4"]
 # Deprecated no-op extras keep existing install commands valid, but intentionally
 # provide no persistent backend while the Dependabot alert reports no patch.

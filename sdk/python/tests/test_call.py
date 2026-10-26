@@ -157,12 +157,15 @@ def test_missing_call_context_fails_before_transport(
     assert requests == []
 
 
-def test_close_inside_running_loop_preserves_later_cleanup() -> None:
+def test_close_inside_running_loop_requires_synchronous_cleanup() -> None:
     client = Client("YOUR_DEMO_KEY", base_url="http://test")
 
     async def close_from_running_loop() -> None:
-        with client:
-            pass
+        with pytest.raises(
+            RuntimeError, match=r"Client\.close\(\) cannot run inside an event loop"
+        ):
+            with client:
+                pass
         assert not client._loop.is_closed()
         assert not client._client._client.is_closed
 
@@ -170,6 +173,11 @@ def test_close_inside_running_loop_preserves_later_cleanup() -> None:
     client.close()
     assert client._loop.is_closed()
     assert client._client._client.is_closed
+
+    async def close_again_from_running_loop() -> None:
+        client.close()
+
+    asyncio.run(close_again_from_running_loop())
 
 
 @pytest.mark.parametrize(

@@ -292,17 +292,20 @@ class Client:
 
     def close(self) -> None:
         """Close the HTTP client and its event loop."""
+        if self._loop.is_closed():
+            return
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             pass
         else:
-            return
-        if not self._loop.is_closed():
-            try:
-                self._loop.run_until_complete(self._client.close())
-            finally:
-                self._loop.close()
+            raise RuntimeError(
+                "Client.close() cannot run inside an event loop; call close() from synchronous code"
+            )
+        try:
+            self._loop.run_until_complete(self._client.close())
+        finally:
+            self._loop.close()
 
     def __enter__(self) -> Client:
         return self

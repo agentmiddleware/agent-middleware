@@ -1,5 +1,7 @@
 """Focused regression coverage for DB-backed API-key digest comparison."""
 
+import secrets
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -10,7 +12,7 @@ from app.services import api_key_service as api_key_service_module
 from app.services.api_key_service import APIKeyService
 
 
-VALID_API_KEY = "b2a_same-prefix-authenticated-secret"
+VALID_API_KEY = "b2a_" + secrets.token_urlsafe(32)  # generated per run
 NEAR_MISS_API_KEY = f"{VALID_API_KEY[:-1]}x"
 
 
@@ -85,12 +87,18 @@ async def test_db_key_digest_comparison_is_constant_time_and_near_miss_is_reject
 # key_prefix is "b2a_" plus only four random characters and is not unique, so
 # two live keys sharing it are a birthday-paradox certainty at a few thousand
 # keys — and a tenant that can mint keys can grind one out on purpose.
-SHARED_PREFIX = "b2a_AAAA"
+SHARED_PREFIX = "b2a_" + secrets.token_urlsafe(9)[:4]  # generated per run
 SAME_PREFIX_KEYS = {
-    "agt-same-prefix-a": ("key-same-prefix-a", f"{SHARED_PREFIX}first-secret"),
-    "agt-same-prefix-b": ("key-same-prefix-b", f"{SHARED_PREFIX}second-secret"),
+    "agt-same-prefix-a": (
+        "key-same-prefix-a",
+        SHARED_PREFIX + secrets.token_urlsafe(32),
+    ),
+    "agt-same-prefix-b": (
+        "key-same-prefix-b",
+        SHARED_PREFIX + secrets.token_urlsafe(32),
+    ),
 }
-UNISSUED_SAME_PREFIX_KEY = f"{SHARED_PREFIX}never-issued-secret"
+UNISSUED_SAME_PREFIX_KEY = SHARED_PREFIX + secrets.token_urlsafe(32)
 
 
 async def _seed_same_prefix_keys() -> None:

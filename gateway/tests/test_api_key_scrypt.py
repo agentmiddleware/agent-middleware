@@ -1,6 +1,7 @@
 """Salted, peppered scrypt API-key hashes with an indexed lookup id."""
 
 import logging
+import secrets
 
 import pytest
 from sqlalchemy import select
@@ -11,9 +12,9 @@ from app.db.models import APIKeyModel, WalletModel
 from app.services import api_key_service as svc
 from app.services.api_key_service import APIKeyService
 
-# Fixed, non-secret TEST constants: not real data, never used outside tests.
-PEPPER = "TEST-ONLY-pepper-not-a-secret"
-KEY = "b2a_TESTONLYfake-key-not-real-0001"
+# Generated per test run; nothing is hardcoded and nothing is real data.
+PEPPER = secrets.token_urlsafe(32)
+KEY = "b2a_" + secrets.token_urlsafe(32)
 
 
 @pytest.fixture

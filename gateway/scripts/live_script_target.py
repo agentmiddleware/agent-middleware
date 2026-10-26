@@ -119,3 +119,31 @@ def resolve_live_target(
             "the canonical production target requires --confirm-production"
         )
     return origin
+
+
+def require_loopback_origin(api_url: str) -> str:
+    """Return a normalized loopback origin for a script that mints a key.
+
+    Remote origins are refused over both HTTP and HTTPS. A credential embedded
+    in the URL is refused by the shared parser and is not echoed back.
+    """
+
+    try:
+        origin = resolve_live_target(api_url, confirm_production=True, environ={})
+    except LiveTargetError as exc:
+        if "loopback" in str(exc):
+            raise LiveTargetError(
+                f"refusing non-loopback target {api_url!r}: this script is loopback-only"
+            ) from exc
+        raise
+
+    host = urlsplit(origin).hostname or ""
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = host == "localhost"
+    if not is_loopback:
+        raise LiveTargetError(
+            f"refusing non-loopback target {api_url!r}: this script is loopback-only"
+        )
+    return origin

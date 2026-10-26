@@ -878,10 +878,9 @@ async def test_unkeyed_retry_straddling_window_boundary_dispatches_once(
     """Codex blocking 1: a retry across a fixed bucket edge must still replay."""
     import time as _time
 
-    from app.core.config import get_settings
     from app.routers import mcp_standard
 
-    window = get_settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS
+    window = mcp_standard._effective_unkeyed_retry_window()
     edge = (int(_time.time() // window) + 1) * window
     provisioned = await provision_agent_wallet(client)
     headers = {**provisioned["agent_headers"], **MCP_HEADERS}
@@ -1215,3 +1214,77 @@ async def test_fenced_begin_writes_nothing_when_fence_row_reissued(
         fence=("/mcp#unkeyed-retry-lock", "ulock-x", lock.record_id),
     )
     assert owned.replay is None
+
+
+def test_unkeyed_retry_window_rejects_negative_and_keeps_zero():
+    """CodeRabbit: negative windows are invalid; 0 stays the opt-out."""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(MCP_UNKEYED_RETRY_WINDOW_SECONDS=-1)
+    assert (
+        Settings(MCP_UNKEYED_RETRY_WINDOW_SECONDS=0).MCP_UNKEYED_RETRY_WINDOW_SECONDS
+        == 0
+    )
+    assert Settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS == 300
+
+
+def test_effective_unkeyed_retry_window_capped_at_permit_ttl(monkeypatch):
+    """Bugbot: a joined slot must never outlive the permit it reuses."""
+    from app.core.config import get_settings
+    from app.routers import mcp_standard
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "STANDARD_MCP_PERMIT_TTL_SECONDS", 120)
+    monkeypatch.setattr(settings, "MCP_UNKEYED_RETRY_WINDOW_SECONDS", 300)
+    assert mcp_standard._effective_unkeyed_retry_window() == 120
+    monkeypatch.setattr(settings, "MCP_UNKEYED_RETRY_WINDOW_SECONDS", 60)
+    assert mcp_standard._effective_unkeyed_retry_window() == 60
+    monkeypatch.setattr(settings, "MCP_UNKEYED_RETRY_WINDOW_SECONDS", 0)
+    assert mcp_standard._effective_unkeyed_retry_window() == 0
+
+
+@pytest.mark.anyio
+async def test_unkeyed_mint_failure_releases_row_for_retry(
+    client, standard_mcp_enabled, clean_database, monkeypatch
+):
+    """CodeRabbit: a non-PermitError mint failure must not strand the mint row."""
+    from app.services import permits as permits_module
+
+    provisioned = await provision_agent_wallet(client)
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    invocations: list[str] = []
+    _register_counting_tool("echo-mint-fail", invocations)
+    service = permits_module.get_permit_service()
+    real_create = service.create_permit
+    calls = {"n": 0}
+
+    async def _flaky_create(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient permit store failure")
+        return await real_create(*args, **kwargs)
+
+    monkeypatch.setattr(service, "create_permit", _flaky_create)
+    try:
+        # The failure surfaces either as a raised error or an error
+        # response depending on the transport; either way nothing dispatched.
+        raised: BaseException | None = None
+        try:
+            first = await _call(client, headers, "echo-mint-fail", 1)
+            assert "result" not in first.json() or first.json()["result"].get(
+                "isError"
+            ), first.text
+        except BaseException as exc:  # noqa: BLE001 - transport-dependent
+            raised = exc
+        if raised is not None:
+            assert "transient permit store failure" in repr(raised)
+        assert invocations == []
+        retry = await _call(client, headers, "echo-mint-fail", 2)
+        assert retry.status_code == 200, retry.text
+        assert "result" in retry.json(), retry.text
+        assert invocations == ["hi"]
+    finally:
+        get_service_registry().unregister_local("echo-mint-fail")

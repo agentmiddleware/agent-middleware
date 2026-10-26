@@ -300,6 +300,20 @@ def _unkeyed_clock() -> float:
     return time.time()
 
 
+def _effective_unkeyed_retry_window() -> int:
+    """Retry window in seconds, capped at the auto permit TTL.
+
+    A joined slot reuses the permit minted for the first attempt, so a window
+    longer than that permit's lifetime would resolve a late retry to an
+    expired permit (a denial instead of a replay or a fresh mint). 0 disables.
+    """
+    settings = get_settings()
+    window = settings.MCP_UNKEYED_RETRY_WINDOW_SECONDS
+    if window <= 0:
+        return 0
+    return min(window, max(settings.STANDARD_MCP_PERMIT_TTL_SECONDS, 0))
+
+
 async def _acquire_unkeyed_retry_lock(wallet_id: str, lock_key: str) -> str:
     """Serialize slot selection for one call identity; return the lock row id.
 
@@ -372,7 +386,7 @@ async def _resolve_unkeyed_retry(
     * the auto permit is minted before the lock is released, so any later
       caller sees the chosen slot.
     """
-    window = get_settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS
+    window = _effective_unkeyed_retry_window()
     wallet_id = auth.wallet_id
     if window <= 0 or not wallet_id or record.get("read_only"):
         return None
@@ -434,12 +448,15 @@ async def _resolve_unkeyed_retry(
         )
         return key, permit_id
     finally:
-        await idem.abandon(
-            wallet_id=wallet_id,
-            endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
-            idempotency_key=lock_key,
-            expected_record_id=lock_record_id,
-        )
+        # Shielded so a cancelled request still releases its lock row
+        # instead of blocking the identity until the stale threshold.
+        with anyio.CancelScope(shield=True):
+            await idem.abandon(
+                wallet_id=wallet_id,
+                endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
+                idempotency_key=lock_key,
+                expected_record_id=lock_record_id,
+            )
 
 
 async def _mint_auto_permit(
@@ -533,7 +550,7 @@ async def _mint_auto_permit(
     if requires_human_approval:
         mint_payload["requires_human_approval"] = True
     try:
-        mint_replay = await idem.begin(
+        mint_begun = await idem.begin_with_record(
             wallet_id=wallet_id,
             endpoint=_AUTO_PERMIT_ENDPOINT,
             idempotency_key=mint_key,
@@ -548,20 +565,26 @@ async def _mint_auto_permit(
         if map_mcp_errors:
             raise _mcp_error(-32005, "idempotency_in_progress") from exc
         raise
+    mint_replay = mint_begun.replay
     if mint_replay and mint_replay.response_json:
         return mint_replay.response_json["permit_id"]
 
+    # Any mint failure (PermitError, PermitWriteContendedError, another
+    # exception, or cancellation) releases only this attempt's row, so a
+    # retry can mint again instead of waiting on an orphaned in-progress row.
     try:
         permit = await get_permit_service().create_permit(
             permit_request, subject_key_id=auth.key_id, auth=auth
         )
-    except PermitError as exc:
-        await idem.abandon(
-            wallet_id=wallet_id,
-            endpoint=_AUTO_PERMIT_ENDPOINT,
-            idempotency_key=mint_key,
-        )
-        if map_mcp_errors:
+    except BaseException as exc:
+        with anyio.CancelScope(shield=True):
+            await idem.abandon(
+                wallet_id=wallet_id,
+                endpoint=_AUTO_PERMIT_ENDPOINT,
+                idempotency_key=mint_key,
+                expected_record_id=mint_begun.record_id,
+            )
+        if isinstance(exc, PermitError) and map_mcp_errors:
             raise _permit_error(exc, tool_name=tool_name, record=record) from exc
         raise
     await idem.complete(

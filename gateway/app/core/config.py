@@ -298,8 +298,19 @@ class Settings(BaseSettings):
     # Read-only tools keep a fresh key per call. Identical deliberate unkeyed
     # calls inside one window collapse to one dispatch; callers needing
     # repeats must send distinct keys. 0 restores the old per-attempt random
-    # key (no retry protection).
+    # key (no retry protection). The effective window is capped at
+    # STANDARD_MCP_PERMIT_TTL_SECONDS: a joined slot reuses its auto permit,
+    # so a longer window would resolve retries to an expired permit.
     MCP_UNKEYED_RETRY_WINDOW_SECONDS: int = 300
+
+    @field_validator("MCP_UNKEYED_RETRY_WINDOW_SECONDS")
+    @classmethod
+    def _validate_unkeyed_retry_window(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(
+                "MCP_UNKEYED_RETRY_WINDOW_SECONDS must be >= 0 (0 disables)"
+            )
+        return value
 
     # --- Public MCP endpoint (POST /mcp/public) ---
     # Unauthenticated, read-only Streamable HTTP surface for MCP clients

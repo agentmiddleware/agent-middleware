@@ -10133,6 +10133,28 @@
             ],
             "title": "Reason Code"
           },
+          "enforcement_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enforcement Mode"
+          },
+          "gateway_build": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gateway Build"
+          },
           "audit_event_id": {
             "anyOf": [
               {

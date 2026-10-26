@@ -309,7 +309,8 @@ async def test_remote_quote_consume_loss_preserves_legacy_denial_without_leaks(
                 headers=provisioned["agent_headers"],
             )
             assert denied.status_code == 403
-            assert denied.json()["detail"] == "quote_already_consumed"
+            assert denied.json()["detail"]["error"] == "quote_already_consumed"
+            assert denied.json()["detail"]["request_id"]
             assert denied.json()["code"] == "quote_already_consumed"
         assert executor.calls == []
 
@@ -1454,7 +1455,9 @@ async def test_prepare_commit_uncertain_preserves_owner_state_and_public_contrac
                 headers=provisioned["agent_headers"],
             )
             assert uncertain.status_code == 409
-            assert uncertain.json()["detail"] == {"error": "idempotency_in_progress"}
+            uncertain_detail = dict(uncertain.json()["detail"])
+            assert uncertain_detail.pop("request_id")
+            assert uncertain_detail == {"error": "idempotency_in_progress"}
         assert committed_attempt_id is not None
         assert executor.calls == []
 

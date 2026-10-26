@@ -99,9 +99,16 @@ async def test_foreign_permit_denial_replays_original_403(
         assert replay_receipt["outcome"] == "denied"
         assert replay_receipt["credits_charged"] == "0"
     assert set(replay.json()["detail"]) == set(detail)
-    assert replay.content == first.content
+    # Each response carries its own request id; everything else must replay
+    # unchanged.
+    first_detail = dict(first.json()["detail"])
+    replay_detail = dict(replay.json()["detail"])
+    assert first_detail.pop("request_id") and replay_detail.pop("request_id")
+    assert replay_detail == first_detail
     assert refused_other_key.status_code == 403
-    assert refused_other_key.json()["detail"] == {"error": "permit_wallet_mismatch"}
+    refused_detail = dict(refused_other_key.json()["detail"])
+    assert refused_detail.pop("request_id")
+    assert refused_detail == {"error": "permit_wallet_mismatch"}
     assert tenant_a["agent_wallet_id"] not in first.text
     assert counted_tool.effects == []
 

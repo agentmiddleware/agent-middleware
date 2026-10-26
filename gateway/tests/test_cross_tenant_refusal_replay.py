@@ -39,6 +39,15 @@ TOOL_CALL_ID = "call_sel475_cross_tenant"
 ENVELOPE_KEYS = {"detail", "code", "message", "fix", "docs_url"}
 
 
+def _without_request_id(payload):
+    """Drop the per-response request_id; the rest must replay unchanged."""
+    if isinstance(payload, dict):
+        return {
+            k: _without_request_id(v) for k, v in payload.items() if k != "request_id"
+        }
+    return payload
+
+
 @pytest.fixture
 async def client():
     transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -130,11 +139,14 @@ async def test_foreign_wallet_refusal_replays_identically(
     )
 
     _assert_refusal_envelope(first, "wallet_access_denied")
-    assert first.json()["detail"] == {"error": "wallet_access_denied"}
+    assert first.json()["detail"]["request_id"]
+    assert _without_request_id(first.json()["detail"]) == {
+        "error": "wallet_access_denied"
+    }
     # Same status, same headers that matter, same bytes.
     assert replay.status_code == first.status_code
     assert replay.headers["content-type"] == first.headers["content-type"]
-    assert replay.content == first.content
+    assert _without_request_id(replay.json()) == _without_request_id(first.json())
 
     # The refusal names no wallet, permit, balance, or receipt of tenant A.
     for response in (first, replay):
@@ -247,5 +259,5 @@ async def test_foreign_permit_refusal_replays_identically_per_docs(
     assert first.status_code == 403, first.text
     assert replay.status_code == first.status_code
     assert set(replay.json()["detail"]) == set(first.json()["detail"])
-    assert replay.content == first.content
+    assert _without_request_id(replay.json()) == _without_request_id(first.json())
     assert counted_tool.effects == []

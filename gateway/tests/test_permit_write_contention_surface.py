@@ -521,7 +521,9 @@ async def test_a_call_that_already_ran_is_never_told_to_retry(
 
     # The caller's real answer survived the contention, and so did the receipt
     # -- the whole reason the release absorbs rather than escalates.
-    assert "tool blew up" in detail["error"], detail
+    # The tool exception text stays in the server log, keyed by request_id.
+    assert "tool blew up" not in str(detail), detail
+    assert detail["request_id"], detail
     assert detail["receipt"]["outcome"] == "failed_refunded", detail
     assert await _count_receipts() == 1
 

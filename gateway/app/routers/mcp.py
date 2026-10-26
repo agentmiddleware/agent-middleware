@@ -21,6 +21,7 @@ import inspect
 import json
 import logging
 import math
+import re
 import uuid
 from dataclasses import asdict
 from decimal import Decimal
@@ -33,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..audit.lightweight import record_audit
 from ..core.config import DuplicateGuardMode, get_settings
+from ..core.reason_codes import REFUSAL_REASON_CODES
 from ..policy.jev_guard import evaluate_jev_guard
 from ..services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
 from ..core.auth import (
@@ -4620,6 +4622,88 @@ async def _handle_tools_call(
     return response
 
 
+# Public error text for the legacy HTTP invoke route (follow-up to #242's
+# JSON-RPC fix). Exception text is logged with a request id and never copied
+# into the response; structured detail fields and status codes are unchanged.
+_INVOKE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_INVOKE_SURFACE = "/mcp/tools/{service_id}/invoke"
+_INVOKE_REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+# Fixed reason strings the pipeline raises on purpose; echoed verbatim.
+_INVOKE_PUBLIC_REASONS: frozenset[str] = frozenset(
+    {
+        "Missing wallet_id",
+        "idempotency_key_required",
+        "idempotency_in_progress",
+        "invalid_idempotency_key",
+        "permit_required",
+        "quote_already_consumed",
+        "human_approval_pending",
+        "human_approval_unavailable",
+        "ledger_write_contended",
+        "audit_chain_head_contention",
+        "receipt_write_contended",
+        "permit_write_contended",
+        "tool_execution_failed",
+    }
+)
+_INVOKE_PUBLIC_MESSAGE_BY_TYPE: tuple[tuple[type[BaseException], str], ...] = (
+    (HumanApprovalPendingSignal, "human_approval_pending"),
+    (IdempotencyInProgressError, "idempotency_in_progress"),
+    (LedgerWriteContendedError, "ledger_write_contended"),
+    (AuditChainContendedError, "audit_chain_head_contention"),
+    (ReceiptWriteContendedError, "receipt_write_contended"),
+    (PermitWriteContendedError, "permit_write_contended"),
+    (ToolPermissionDenied, "Permission denied"),
+    (PermissionError, "Permission denied"),
+    (ToolExecutionError, "tool_execution_failed"),
+    (InvalidIdempotencyKeyError, "invalid_idempotency_key"),
+)
+
+
+def _invoke_request_id(request: Request) -> str:
+    """X-Request-ID when short and charset-limited, else a fresh uuid4 hex."""
+    raw = request.headers.get("x-request-id")
+    if raw is not None and _INVOKE_REQUEST_ID_RE.fullmatch(raw):
+        return raw
+    return uuid.uuid4().hex
+
+
+def _invoke_public_message(exc: BaseException) -> str:
+    """Canned client message for ``exc`` on the invoke route. Never ``str(exc)``."""
+    text = str(exc)
+    if text in REFUSAL_REASON_CODES or text in _INVOKE_PUBLIC_REASONS:
+        return text
+    for prefix in ("Tool not found", "Tool not executable", "refund_failed"):
+        if text.startswith(prefix):
+            return prefix
+    # Gateway-raised refusals carry a snake_case reason code (quote_expired,
+    # jev_risk_review_required, ...). That code is the public contract, not
+    # exception text, so it passes through. Free text from these types and
+    # anything a tool raised falls back to the canned table below.
+    if isinstance(exc, (GovernedToolError, PermissionError)) and (
+        _INVOKE_REASON_CODE_RE.fullmatch(text)
+    ):
+        return text
+    for exc_type, message in _INVOKE_PUBLIC_MESSAGE_BY_TYPE:
+        if isinstance(exc, exc_type):
+            return message
+    if isinstance(exc, GovernedToolError):
+        return "tool_call_refused"
+    return "Invalid request"
+
+
+def _invoke_log_error(exc: BaseException, request_id: str) -> str:
+    """Log the real error under ``request_id``; return the canned message."""
+    logger.error(
+        "mcp_invoke_error surface=%s request_id=%s class=%s error=%s",
+        _INVOKE_SURFACE,
+        request_id,
+        type(exc).__name__,
+        exc,
+    )
+    return _invoke_public_message(exc)
+
+
 @router.post(
     "/tools/{service_id}/invoke",
     name="Invoke MCP Tool",
@@ -4683,9 +4767,14 @@ async def invoke_tool(
             ]
         )
     except InvalidIdempotencyKeyError as exc:
+        rid = _invoke_request_id(http_request)
         raise HTTPException(
             status_code=400,
-            detail={"message": str(exc), **exc.as_error_data()},
+            detail={
+                "message": _invoke_log_error(exc, rid),
+                **exc.as_error_data(),
+                "request_id": rid,
+            },
         ) from exc
 
     mcp_payload = {
@@ -4716,9 +4805,11 @@ async def invoke_tool(
             response["permit_id"] = auto_permit_id
         return ToolCallResponse(**response)
     except HumanApprovalPendingSignal as exc:
-        detail: dict[str, Any] = {"error": str(exc)}
+        rid = _invoke_request_id(http_request)
+        detail: dict[str, Any] = {"error": _invoke_log_error(exc, rid)}
         if exc.data:
             detail["approval"] = exc.data
+        detail["request_id"] = rid
         raise HTTPException(status_code=exc.status_code, detail=detail)
     except (
         IdempotencyInProgressError,
@@ -4751,9 +4842,10 @@ async def invoke_tool(
         # A contention loss whose effects committed does not arrive here at
         # all: the five receipt sites and the audit site re-raise it as
         # TerminalRecordContendedError, which the next branch answers.
+        rid = _invoke_request_id(http_request)
         raise HTTPException(
             status_code=409,
-            detail={"error": str(exc)},
+            detail={"error": _invoke_log_error(exc, rid), "request_id": rid},
         ) from exc
     except TerminalRecordContendedError as exc:
         # Stays 500 -- the server did fail to record the call, and this surface
@@ -4766,25 +4858,37 @@ async def invoke_tool(
             detail=_terminal_record_contended_data(exc.reason),
         ) from exc
     except ToolPermissionDenied as exc:
-        detail = {"error": str(exc)}
+        rid = _invoke_request_id(http_request)
+        detail = {"error": _invoke_log_error(exc, rid)}
         if exc.receipt:
             detail["receipt"] = exc.receipt
         if exc.details:
             detail["details"] = exc.details
+        detail["request_id"] = rid
         raise HTTPException(status_code=403, detail=detail)
     except GovernedToolError as exc:
-        detail = {"error": str(exc)}
+        rid = _invoke_request_id(http_request)
+        detail = {"error": _invoke_log_error(exc, rid)}
         if exc.receipt:
             detail["receipt"] = exc.receipt
         detail.update(exc.extra_data)
+        detail["request_id"] = rid
         raise HTTPException(status_code=exc.status_code, detail=detail)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        rid = _invoke_request_id(http_request)
+        raise HTTPException(
+            status_code=403,
+            detail={"error": _invoke_log_error(exc, rid), "request_id": rid},
+        )
     except ToolExecutionError as exc:
-        # Legacy (unpermitted) tool failure: compensation is complete and the
-        # message is the tool's own error, as on the governed path.
+        # Legacy (unpermitted) tool failure: compensation is complete. The
+        # tool's own error stays in the server log under the request id.
+        rid = _invoke_request_id(http_request)
+        _invoke_log_error(exc, rid)
+        public = "tool_execution_failed"
         return ToolCallResponse(
-            content=[{"type": "text", "text": f"Error: {exc}"}],
+            content=[{"type": "text", "text": f"Error: {public} (request_id={rid})"}],
+            structuredContent={"error": public, "request_id": rid},
             isError=True,
         )
     except ValueError as exc:
@@ -4799,11 +4903,17 @@ async def invoke_tool(
             raise HTTPException(status_code=409, detail=message)
         if message in {"wallet_frozen", "wallet_expired"}:
             raise HTTPException(status_code=403, detail={"error": message})
+        rid = _invoke_request_id(http_request)
+        public = _invoke_log_error(exc, rid)
         if message.startswith("Tool not found"):
-            raise HTTPException(status_code=404, detail=message)
-        if message.startswith("Tool not executable"):
-            raise HTTPException(status_code=501, detail=message)
-        raise HTTPException(status_code=400, detail=message)
+            status = 404
+        elif message.startswith("Tool not executable"):
+            status = 501
+        else:
+            status = 400
+        raise HTTPException(
+            status_code=status, detail={"error": public, "request_id": rid}
+        )
     except Exception as exc:
         return _internal_error_tool_result(
             exc, surface="/mcp/tools/{service_id}/invoke"

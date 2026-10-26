@@ -1,0 +1,79 @@
+"""The sync runner uses the caller's separately configured client."""
+
+import asyncio
+
+import httpx
+
+from crewai_b2a import B2AClient, CrewAIB2ATool
+
+
+def test_sync_run_uses_configured_url_timeout_and_transport():
+    requests: list[httpx.Request] = []
+    clients: list[B2AClient] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(503, json={"detail": "unavailable"})
+
+    def make_client() -> B2AClient:
+        client = B2AClient(
+            api_key="test-key",
+            base_url="https://caller.example.invalid",
+            timeout=2.75,
+            transport=httpx.MockTransport(handler),
+            bearer_token="test-token",
+        )
+        clients.append(client)
+        return client
+
+    borrowed_client = make_client()
+    tool = CrewAIB2ATool(
+        api_key="test-key",
+        wallet_id="wallet",
+        base_url="https://tool.example.invalid",
+        client=borrowed_client,
+        sync_client_factory=make_client,
+    )
+    try:
+        result = tool._run(operation="balance")
+        assert result.startswith("Error:")
+        assert len(clients) == 2
+        assert tool._sync_client is clients[1]
+        assert tool._sync_client is not borrowed_client
+        assert len(requests) == 1
+        request = requests[0]
+        assert request.url.host == "caller.example.invalid"
+        assert request.url.path == "/v1/billing/wallets/wallet"
+        assert request.extensions["timeout"]["connect"] == 2.75
+        assert request.headers["authorization"] == "Bearer test-token"
+    finally:
+        tool.close()
+        asyncio.run(borrowed_client.close())
+
+
+def test_sync_run_refuses_borrowed_client_without_runner_factory():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(503)
+
+    borrowed_client = B2AClient(
+        api_key="test-key",
+        base_url="https://caller.example.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    tool = CrewAIB2ATool(
+        api_key="test-key",
+        wallet_id="wallet",
+        base_url="https://tool.example.invalid",
+        client=borrowed_client,
+    )
+    try:
+        assert tool._run(operation="balance") == (
+            "Error: sync_client_factory is required for sync calls with a borrowed client"
+        )
+        assert requests == []
+    finally:
+        tool.close()
+        asyncio.run(borrowed_client.close())

@@ -29,6 +29,7 @@ FIELDS = (
     "action_public_tool_id",
     "action_upstream_binding_hash",
 )
+RECEIPT_PROVENANCE_FIELDS = ("enforcement_mode", "gateway_build")
 ACTION_REVISION = "042_permit_action_binding"
 SCRUB_REVISION = "041_scrub_content_owner_keys"
 CONTENT_TABLES = ("content_pipelines", "content_campaigns")
@@ -230,7 +231,8 @@ def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
         {"version_num": head_revision}
     ]
     for table, old in before.items():
-        assert sql(f"SELECT * FROM {table}")[0] == {**old, **dict.fromkeys(FIELDS)}
+        new_fields = FIELDS + (RECEIPT_PROVENANCE_FIELDS if table == "receipts" else ())
+        assert sql(f"SELECT * FROM {table}")[0] == {**old, **dict.fromkeys(new_fields)}
     for table in CONTENT_TABLES:
         assert sql(f"SELECT owner_key FROM {table} ORDER BY owner_key") == [
             {"owner_key": ""},
@@ -247,7 +249,8 @@ def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
     result = migrate(url, "head")
     assert result.returncode == 0, result.stderr
     for table, old in before.items():
-        assert sql(f"SELECT * FROM {table}")[0] == {**old, **dict.fromkeys(FIELDS)}
+        new_fields = FIELDS + (RECEIPT_PROVENANCE_FIELDS if table == "receipts" else ())
+        assert sql(f"SELECT * FROM {table}")[0] == {**old, **dict.fromkeys(new_fields)}
         assert sql(
             "SELECT column_name FROM information_schema.columns "
             f"WHERE table_schema='public' AND table_name='{table}' "

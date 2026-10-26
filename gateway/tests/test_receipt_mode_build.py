@@ -15,7 +15,8 @@ from app.services import receipts as receipts_module
 from app.services.receipts import ReceiptService, get_receipt_service
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
 
-BUILD = "0123456789abcdef0123456789abcdef01234567"
+BUILD = "e70595326d57e9ac3f8e2eacff53536212f57c1b"
+OTHER_BUILD = "e3bf41bc6ddbb245b8205b1329be6497a0462074"
 
 
 @pytest.fixture
@@ -98,7 +99,7 @@ async def test_unknown_build_is_omitted_but_mode_signed(
     "fields",
     [
         {"enforcement_mode": "permissive"},
-        {"gateway_build": "f" * 40},
+        {"gateway_build": OTHER_BUILD},
         {"enforcement_mode": None},
         {"gateway_build": None},
     ],

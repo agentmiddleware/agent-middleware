@@ -1,11 +1,11 @@
 ---
-title: 3-minute quickstart
+title: Three minute quickstart
 section: Start
 order: 2
 description: Get a free hosted sandbox key, run the demo Call and retry, and verify its Receipt.
 ---
 
-# 3-minute quickstart
+# Three minute quickstart
 
 Use the hosted AMW sandbox to make one `partner.echo` Call, retry it with the same Request key, and check its Receipt. You need Python 3 and `git`.
 

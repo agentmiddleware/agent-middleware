@@ -72,7 +72,7 @@ async def test_debug_open_mode_refuses_remote_peer(open_mode_settings):
 @pytest.mark.parametrize("path", ["/v1/permits", "/v1/billing/pricing"])
 @pytest.mark.parametrize("peer", [("203.0.113.9", 51234), None])
 async def test_debug_open_mode_http_routes_refuse_remote_or_missing_peer(
-    open_mode_settings, path, peer
+    open_mode_settings, clean_database, path, peer
 ):
     transport = ASGITransport(app=app, client=peer)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -87,7 +87,9 @@ async def test_debug_open_mode_refuses_missing_http_client(open_mode_settings):
     assert exc_info.value.status_code == 403
 
 
-async def test_configured_key_remains_valid_from_remote_http_peer(open_mode_settings):
+async def test_configured_key_remains_valid_from_remote_http_peer(
+    open_mode_settings, clean_database
+):
     open_mode_settings.VALID_API_KEYS = "the-configured-bootstrap-key"
     transport = ASGITransport(app=app, client=("203.0.113.9", 51234))
     async with AsyncClient(transport=transport, base_url="http://test") as client:

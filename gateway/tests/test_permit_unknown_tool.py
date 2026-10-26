@@ -14,16 +14,20 @@ from sqlalchemy import func, select
 
 from app.core.config import get_settings
 from app.db.database import get_session_factory
-from app.db.models import LedgerEntryModel, ReceiptModel
+from app.db.models import LedgerEntryModel, PermitModel, ReceiptModel
 from app.main import app
 from app.routers import mcp as mcp_router
+from app.services.dogfood_tool import (
+    DOGFOOD_SECOND_TOOL_ID,
+    DOGFOOD_TOOL_ID,
+    sync_dogfood_tool_registration,
+)
 from app.services.receipts import get_receipt_service
 from app.services.service_registry import get_service_registry
 from tests.test_mcp_trust_mode import (
     _assert_denial_audited,
     _assert_no_tool_debits,
     _jsonrpc_body,
-    _register_echo_tool,
     strict_trust_mode,  # noqa: F401 - fixture
 )
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
@@ -33,8 +37,26 @@ MCP_HEADERS = {
     "MCP-Protocol-Version": "2025-06-18",
 }
 
-ALLOWED = "permit-scope-allowed-tool"
-UNKNOWN = "permit-scope-unregistered-tool"
+# Real product tool ids from app/services/dogfood_tool.py. The fixture below
+# registers partner.notes.write (ENABLE_DOGFOOD_TOOL) and keeps
+# partner.notes.count unregistered (ENABLE_DOGFOOD_SECOND_TOOL off).
+ALLOWED = DOGFOOD_TOOL_ID
+UNKNOWN = DOGFOOD_SECOND_TOOL_ID
+
+
+@pytest.fixture(autouse=True)
+def real_tools(monkeypatch):
+    monkeypatch.setenv("ENABLE_DOGFOOD_TOOL", "true")
+    monkeypatch.setenv("ENABLE_DOGFOOD_SECOND_TOOL", "false")
+    get_settings.cache_clear()
+    sync_dogfood_tool_registration()
+    registry = get_service_registry()
+    assert registry.get_local(ALLOWED) is not None
+    assert registry.get_local(UNKNOWN) is None
+    yield
+    monkeypatch.setenv("ENABLE_DOGFOOD_TOOL", "false")
+    get_settings.cache_clear()
+    sync_dogfood_tool_registration()
 
 
 @pytest.fixture
@@ -80,23 +102,18 @@ async def _assert_denial_receipt(receipt: dict, *, permit_id: str, wallet_id: st
 async def test_jsonrpc_unregistered_tool_outside_permit_is_permit_denial(
     client, clean_database
 ):
-    registry = get_service_registry()
-    _register_echo_tool(ALLOWED)
-    try:
-        provisioned, permit = await _permit_for_allowed_tool(client)
-        resp = await client.post(
-            "/mcp/messages",
-            json=_jsonrpc_body(
-                tool_name=UNKNOWN,
-                wallet_id=provisioned["agent_wallet_id"],
-                request_id="unknown-tool-permit-call",
-                permit_id=permit["permit_id"],
-                idempotency_key="unknown-tool-permit-idem",
-            ),
-            headers=provisioned["agent_headers"],
-        )
-    finally:
-        registry.unregister_local(ALLOWED)
+    provisioned, permit = await _permit_for_allowed_tool(client)
+    resp = await client.post(
+        "/mcp/messages",
+        json=_jsonrpc_body(
+            tool_name=UNKNOWN,
+            wallet_id=provisioned["agent_wallet_id"],
+            request_id="unknown-tool-permit-call",
+            permit_id=permit["permit_id"],
+            idempotency_key="unknown-tool-permit-idem",
+        ),
+        headers=provisioned["agent_headers"],
+    )
 
     error = resp.json()["error"]
     assert error["code"] == -32003
@@ -312,3 +329,113 @@ async def test_standard_mcp_without_permit_unknown_tool_still_not_found(
         headers={**provisioned["agent_headers"], **MCP_HEADERS},
     )
     assert resp.json()["error"]["code"] == -32001
+
+
+async def _receipt_count(wallet_id: str) -> int:
+    async with get_session_factory()() as session:
+        return await session.scalar(
+            select(func.count())
+            .select_from(ReceiptModel)
+            .where(ReceiptModel.wallet_id == wallet_id)
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_foreign_wallet_permit_does_not_leak_allowlist(client, clean_database):
+    """Another wallet's permit is validated before its allowlist is read.
+
+    The caller gets the same wallet-mismatch denial whether or not the foreign
+    permit names the tool, and never sees that permit's allowed_tools.
+    """
+    victim = await provision_agent_wallet(client)
+    names_unknown = await create_tool_permit(
+        client,
+        wallet_id=victim["agent_wallet_id"],
+        key_id=victim["key_id"],
+        tool_name=UNKNOWN,
+        idem_key="victim-permit-names-unknown",
+    )
+    names_other = await create_tool_permit(
+        client,
+        wallet_id=victim["agent_wallet_id"],
+        key_id=victim["key_id"],
+        tool_name=ALLOWED,
+        idem_key="victim-permit-names-other",
+    )
+    attacker = await provision_agent_wallet(client)
+    errors = []
+    for i, permit in enumerate((names_unknown, names_other)):
+        resp = await client.post(
+            "/mcp/messages",
+            json=_jsonrpc_body(
+                tool_name=UNKNOWN,
+                wallet_id=attacker["agent_wallet_id"],
+                request_id=f"foreign-permit-{i}",
+                permit_id=permit["permit_id"],
+                idempotency_key=f"foreign-permit-idem-{i}",
+            ),
+            headers=attacker["agent_headers"],
+        )
+        errors.append(resp.json()["error"])
+    for error in errors:
+        assert error["code"] == -32003
+        assert error["message"] == "permit_wallet_mismatch"
+        assert "allowed_tools" not in str(error.get("data", {}).get("details"))
+        assert ALLOWED not in str(error)
+    assert errors[0]["message"] == errors[1]["message"]
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_permit_denial_without_idempotency_key_mints_no_receipt(
+    client, clean_database
+):
+    provisioned, permit = await _permit_for_allowed_tool(client)
+    before = await _receipt_count(provisioned["agent_wallet_id"])
+    resp = await client.post(
+        "/mcp/messages",
+        json=_jsonrpc_body(
+            tool_name=UNKNOWN,
+            wallet_id=provisioned["agent_wallet_id"],
+            request_id="no-idem-unknown",
+            permit_id=permit["permit_id"],
+        ),
+        headers=provisioned["agent_headers"],
+    )
+    error = resp.json()["error"]
+    if error["code"] == -32003:
+        assert error["message"] == "permit_tool_not_allowed"
+        assert not error.get("data", {}).get("receipt")
+    assert await _receipt_count(provisioned["agent_wallet_id"]) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_action_permit_unregistered_tool_gets_permit_decision(
+    client, clean_database
+):
+    """Action permits are no longer excluded from the permit-scope check."""
+    provisioned, permit = await _permit_for_allowed_tool(client)
+    async with get_session_factory()() as session:
+        model = await session.get(PermitModel, permit["permit_id"])
+        model.action_contract_version = 1
+        await session.commit()
+    before = await _receipt_count(provisioned["agent_wallet_id"])
+    resp = await client.post(
+        "/mcp/messages",
+        json=_jsonrpc_body(
+            tool_name=UNKNOWN,
+            wallet_id=provisioned["agent_wallet_id"],
+            request_id="action-permit-unknown",
+            permit_id=permit["permit_id"],
+            idempotency_key="action-permit-unknown-idem",
+        ),
+        headers=provisioned["agent_headers"],
+    )
+    error = resp.json()["error"]
+    assert error["code"] == -32003
+    assert error["message"] != "action_tool_binding_required"
+    assert error["message"].startswith("permit_")
+    # No idempotency record exists on the action path, so no receipt.
+    assert await _receipt_count(provisioned["agent_wallet_id"]) == before

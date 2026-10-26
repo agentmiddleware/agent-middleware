@@ -1229,12 +1229,11 @@ async def _deny_unregistered_tool_outside_permit(
         model = await session.get(PermitModel, permit_id)
     if model is None:
         return
-    try:
-        allowed_tools = json.loads(model.allowed_tools_json or "[]")
-    except (TypeError, ValueError):
-        allowed_tools = []
-    if isinstance(allowed_tools, list) and tool_name in allowed_tools:
-        return
+    # Validate the permit (wallet, key, signature, expiry) BEFORE its allowlist
+    # influences the outcome. Reading allowed_tools first let a caller probe a
+    # permit_id belonging to another wallet: "not found" vs. a denial revealed
+    # whether that permit names the tool. A permit that fails validation now
+    # denies with its own narrower reason and no allowlist details.
     validation = await get_permit_service().validate_for_action(
         permit_id=permit_id,
         wallet_id=wallet_id or "",
@@ -1243,9 +1242,11 @@ async def _deny_unregistered_tool_outside_permit(
         key_id=auth.key_id,
         arguments=arguments,
     )
-    if validation.allowed:  # pragma: no cover - allowlist already excludes it
+    if validation.allowed:
+        # The validated permit names this tool; keep "Tool not found".
         return
     reason = validation.reason or "permit_tool_not_allowed"
+    details = validation.details if reason == "permit_tool_not_allowed" else None
     decision = evaluate_tool_invocation(
         auth=auth,
         wallet_id=wallet_id,
@@ -1268,7 +1269,9 @@ async def _deny_unregistered_tool_outside_permit(
         },
     )
     receipt_payload = None
-    if validation.permit is not None and wallet_id:
+    # A signed receipt is minted only for an idempotent call: without a key
+    # there is no record to bind it to and retries would mint one per call.
+    if validation.permit is not None and wallet_id and idempotency_key:
         receipt_payload = await _finalize_governed_denial(
             unaccepted_action_owner_id=None,
             idem=idem,
@@ -1288,7 +1291,7 @@ async def _deny_unregistered_tool_outside_permit(
             reason_code=reason,
             outcome="denied",
             status_code=403,
-            response_extra_data={"details": validation.details},
+            response_extra_data={"details": details},
         )
     else:
         await _complete_governed_denial_idempotency(
@@ -1299,9 +1302,7 @@ async def _deny_unregistered_tool_outside_permit(
             idempotency_key=idempotency_key,
             reason=reason,
         )
-    raise ToolPermissionDenied(
-        reason, receipt=receipt_payload, details=validation.details
-    )
+    raise ToolPermissionDenied(reason, receipt=receipt_payload, details=details)
 
 
 async def _execute_registered_tool_inner(
@@ -1418,6 +1419,28 @@ async def _execute_registered_tool_inner(
     )
     if action_binding is not None or is_action:
         if action_binding is None:
+            if not service and is_action and permit_id:
+                # An action permit naming an unregistered tool gets the same
+                # validated permit-scope decision as a tool permit. No
+                # idempotency record exists yet on this path, so the denial
+                # carries no receipt (see _deny_unregistered_tool_outside_permit).
+                await _deny_unregistered_tool_outside_permit(
+                    idem=idem,
+                    idem_begin=None,
+                    idem_started=False,
+                    permit_id=permit_id,
+                    wallet_id=wallet_id,
+                    auth=auth,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    endpoint=endpoint,
+                    idempotency_endpoint=idempotency_endpoint,
+                    idempotency_key=None,
+                    transport=transport,
+                    request_id=request_id,
+                    effective_request_payload=effective_request_payload,
+                    effective_request_hash=effective_request_hash,
+                )
             raise ToolPermissionDenied("action_tool_binding_required")
         if not is_action or action_model is None:
             raise ToolPermissionDenied("action_permit_required")

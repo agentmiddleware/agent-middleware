@@ -51,11 +51,10 @@ secret-scanning job is `gitleaks` in `.github/workflows/secrets.yml`.
 The cleanup script compares each unprotected branch with the base branch and
 lists branches with zero commits ahead. It never selects the base branch, a
 protected branch, or a branch with a configured keep prefix. It rechecks the
-tip and comparison, then reads the ref and requires the original SHA before
-deletion. REST deletion has no SHA precondition, so a branch can still move
-between that final read and DELETE. The built-in `backup/` prefix is always
-kept; each `--keep-prefix` adds another prefix. Branch compare or stale-tip
-lookup errors are reported by name and cause a nonzero exit after the scan.
+tip and comparison, then deletes the ref only if it still has the original SHA.
+The built-in `backup/` prefix is always kept; each `--keep-prefix` adds another
+prefix. Branch compare or stale-tip lookup errors are reported by name and
+cause a nonzero exit after the scan.
 An unrelated branch should be reviewed manually; do not infer it is safe to
 delete from age alone.
 
@@ -65,8 +64,10 @@ python3 .github/scripts/github_branch_cleanup.py --stale-days 90
 ```
 
 `--apply` deletes branches selected by the script. It is a separate action
-after review of the dry-run list. The script does not delete the archived
-repository's former `master` branch or change workflow triggers by itself.
+after review of the dry-run list. By default, the script targets this
+repository, not the archived `agent-middleware-api` repository. With `--repo`,
+an unprotected merged `master` branch can be selected unless it is the base
+branch or matches a keep prefix. The script does not change workflow triggers.
 
 ## Dependabot and Actions budget
 

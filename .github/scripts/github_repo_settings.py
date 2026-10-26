@@ -143,15 +143,16 @@ def _protection_view(rule: dict[str, Any]) -> dict[str, Any]:
 def _review_passthrough(reviews: dict[str, Any]) -> dict[str, Any]:
     """Convert existing review restrictions to the PUT request's identity lists."""
     result: dict[str, Any] = {}
-    last_push = reviews.get("require_last_push_approval")
-    if not isinstance(last_push, bool):
-        raise GhError(
-            0, "cannot preserve require_last_push_approval from the live rule"
-        )
-    result["require_last_push_approval"] = last_push
+    if "require_last_push_approval" in reviews:
+        last_push = reviews["require_last_push_approval"]
+        if not isinstance(last_push, bool):
+            raise GhError(
+                0, "cannot preserve require_last_push_approval from the live rule"
+            )
+        result["require_last_push_approval"] = last_push
     for field in ("dismissal_restrictions", "bypass_pull_request_allowances"):
         if field not in reviews:
-            raise GhError(0, f"cannot preserve {field}: missing from the live rule")
+            continue
         value = reviews[field]
         if value is None:
             continue
@@ -164,6 +165,8 @@ def _review_passthrough(reviews: dict[str, Any]) -> dict[str, Any]:
             ("apps", "slug"),
         ):
             entries = value.get(group)
+            if entries is None:
+                entries = []
             if not isinstance(entries, list):
                 raise GhError(0, f"cannot preserve {field}.{group}: expected a list")
             names: list[str] = []

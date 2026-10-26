@@ -16,15 +16,15 @@ Runs through the gh CLI as the logged-in account; deleting needs write
 access to the repository. The scan makes one compare request per branch, so a
 repository with 500 branches takes a few minutes.
 
-Before each deletion, the script reads the ref again and requires its SHA to
-match the scanned SHA. REST ref deletion has no SHA precondition, so a branch
-can still move between that final read and DELETE.
+Before each deletion, the script rechecks the ref and deletes it through Git
+only if its SHA still matches the scanned SHA.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -55,6 +55,30 @@ def list_branches(repo: str) -> list[dict[str, Any]]:
         page += 1
 
 
+def delete_branch_with_lease(repo: str, name: str, scanned_sha: str) -> None:
+    ref = f"refs/heads/{name}"
+    proc = subprocess.run(
+        [
+            "git",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "credential.helper=!gh auth git-credential",
+            "push",
+            "--porcelain",
+            f"--force-with-lease={ref}:{scanned_sha}",
+            f"https://github.com/{repo}.git",
+            f":{ref}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--repo", default=DEFAULT_REPO, help="owner/name")
@@ -74,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="delete merged branches after a final ref SHA check; a move before DELETE remains possible",
+        help="delete merged branches only if their ref still has the scanned SHA",
     )
     args = parser.parse_args(argv)
     keep_prefixes = DEFAULT_KEEP_PREFIXES + tuple(args.keep_prefix or ())
@@ -153,9 +177,8 @@ def main(argv: list[str] | None = None) -> int:
             print("\nDry run. Re-run with --apply to delete the merged branches.")
         return 1 if scan_failures else 0
 
-    # The scan above takes minutes on a large repository. A branch that moved
-    # in the meantime is re-checked right before its ref is deleted: same tip
-    # as during the scan, and still zero commits ahead of the base.
+    # The scan above takes minutes on a large repository. Recheck each branch
+    # before deletion, then use an atomic lease against the scanned tip.
     failures = scan_failures
     deleted = 0
     for name, scanned_sha in merged:
@@ -174,15 +197,13 @@ def main(argv: list[str] | None = None) -> int:
             if recheck.get("ahead_by") != 0:
                 print(f"  skipped {name}: now {recheck.get('ahead_by')} ahead")
                 continue
-            ref_sha = gh_api("GET", f"repos/{args.repo}/git/ref/heads/{encoded}")[
-                "object"
-            ]["sha"]
+            ref_sha = gh_api(
+                "GET", f"repos/{args.repo}/git/ref/heads/{quote(name, safe='/')}"
+            )["object"]["sha"]
             if ref_sha != scanned_sha:
                 print(f"  skipped {name}: ref moved since the scan ({ref_sha[:8]})")
                 continue
-            # REST DELETE has no expected-SHA precondition. A move after this
-            # read and before DELETE can still delete the new ref target.
-            gh_api("DELETE", f"repos/{args.repo}/git/refs/heads/{encoded}")
+            delete_branch_with_lease(args.repo, name, scanned_sha)
             deleted += 1
             print(f"  deleted {name}")
         except RuntimeError as exc:

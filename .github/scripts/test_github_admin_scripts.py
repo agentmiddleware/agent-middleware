@@ -38,20 +38,65 @@ def test_keep_prefix_adds_to_defaults_and_ref_must_match(ref_sha, deleted):
             return {"commit": {"sha": "sha"}}
         if "/git/ref/" in path:
             return {"object": {"sha": ref_sha}}
-        if method == "DELETE":
-            return None
         raise AssertionError((method, path))
 
     with (
         patch.object(cleanup, "list_branches", return_value=branches),
         patch.object(cleanup, "gh_api", side_effect=api),
+        patch.object(cleanup, "delete_branch_with_lease") as delete,
         redirect_stdout(StringIO()),
     ):
         result = cleanup.main(["--repo", "repo", "--keep-prefix", "extra/", "--apply"])
 
     assert result == 0
     assert len([path for _, path in calls if "/compare/" in path]) == 2
-    assert any(method == "DELETE" for method, _ in calls) is deleted
+    assert delete.called is deleted
+    if deleted:
+        delete.assert_called_once_with("repo", "branch", "sha")
+    assert all(method != "DELETE" for method, _ in calls)
+
+
+def test_ref_lookup_preserves_branch_slashes_and_encodes_other_chars():
+    branch = {"name": "feature/a+b", "commit": {"sha": "sha"}}
+    calls = []
+
+    def api(method, path):
+        calls.append((method, path))
+        if "/compare/" in path:
+            return {"ahead_by": 0}
+        if "/branches/" in path:
+            return {"commit": {"sha": "sha"}}
+        if "/git/ref/" in path:
+            return {"object": {"sha": "sha"}}
+        raise AssertionError((method, path))
+
+    with (
+        patch.object(cleanup, "list_branches", return_value=[branch]),
+        patch.object(cleanup, "gh_api", side_effect=api),
+        patch.object(cleanup, "delete_branch_with_lease") as delete,
+        redirect_stdout(StringIO()),
+    ):
+        assert cleanup.main(["--repo", "repo", "--apply"]) == 0
+
+    assert ("GET", "repos/repo/git/ref/heads/feature/a%2Bb") in calls
+    delete.assert_called_once_with("repo", "feature/a+b", "sha")
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_delete_branch_uses_scanned_sha_as_atomic_lease(returncode):
+    response = SimpleNamespace(returncode=returncode, stderr="rejected", stdout="")
+    with patch.object(cleanup.subprocess, "run", return_value=response) as run:
+        if returncode:
+            with pytest.raises(RuntimeError, match="rejected"):
+                cleanup.delete_branch_with_lease("owner/repo", "feature/a+b", "sha")
+        else:
+            cleanup.delete_branch_with_lease("owner/repo", "feature/a+b", "sha")
+
+    command = run.call_args.args[0]
+    assert "--force-with-lease=refs/heads/feature/a+b:sha" in command
+    assert "https://github.com/owner/repo.git" in command
+    assert ":refs/heads/feature/a+b" in command
+    assert run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
 
 def test_stale_tip_failure_reports_branch_and_fails_scan():
@@ -118,6 +163,72 @@ def test_protection_put_preserves_review_settings():
     }
 
 
+@pytest.mark.parametrize(
+    "optional,expected",
+    [
+        ({}, {}),
+        (
+            {"dismissal_restrictions": {"users": None, "teams": [{"slug": "team"}]}},
+            {"dismissal_restrictions": {"users": [], "teams": ["team"], "apps": []}},
+        ),
+        (
+            {"require_last_push_approval": False, "bypass_pull_request_allowances": {}},
+            {
+                "require_last_push_approval": False,
+                "bypass_pull_request_allowances": {
+                    "users": [],
+                    "teams": [],
+                    "apps": [],
+                },
+            },
+        ),
+        (
+            {
+                "bypass_pull_request_allowances": {
+                    "users": None,
+                    "teams": None,
+                    "apps": None,
+                }
+            },
+            {
+                "bypass_pull_request_allowances": {
+                    "users": [],
+                    "teams": [],
+                    "apps": [],
+                }
+            },
+        ),
+    ],
+)
+def test_protection_put_accepts_absent_optional_review_settings(optional, expected):
+    rule = {
+        "required_pull_request_reviews": {
+            "dismiss_stale_reviews": False,
+            "require_code_owner_reviews": False,
+            "required_approving_review_count": 0,
+            **optional,
+        }
+    }
+    requests = []
+
+    def api(method, path, body=None):
+        requests.append((method, body))
+        return rule if method == "GET" else None
+
+    with patch.object(settings, "gh_api", side_effect=api), redirect_stdout(StringIO()):
+        assert settings.check_branch_protection("repo", "branch", True, []) == 0
+
+    reviews = requests[-1][1]["required_pull_request_reviews"]
+    for field in (
+        "require_last_push_approval",
+        "dismissal_restrictions",
+        "bypass_pull_request_allowances",
+    ):
+        assert (field in reviews) is (field in expected)
+        if field in expected:
+            assert reviews[field] == expected[field]
+
+
 def test_unrepresentable_review_rule_fails_before_put():
     with pytest.raises(
         settings.GhError, match="cannot preserve dismissal_restrictions"
@@ -129,6 +240,18 @@ def test_unrepresentable_review_rule_fails_before_put():
                 "bypass_pull_request_allowances": None,
             }
         )
+
+
+@pytest.mark.parametrize(
+    "reviews,field",
+    [
+        ({"require_last_push_approval": None}, "require_last_push_approval"),
+        ({"bypass_pull_request_allowances": {"users": "user"}}, "users"),
+    ],
+)
+def test_present_unrepresentable_review_fields_still_fail(reviews, field):
+    with pytest.raises(settings.GhError, match=field):
+        settings._review_passthrough(reviews)
 
 
 def test_gh_api_reads_http_status_from_cli_error():

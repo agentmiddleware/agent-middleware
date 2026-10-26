@@ -554,3 +554,25 @@ async def test_legacy_seq_zero_chain_without_a_head_still_verifies(clean_databas
     result = await verify_audit_chain(wallet_id=wallet_id)
     assert result.valid is True, result
     assert result.checked_events == 2
+
+    # The next append continues the legacy chain instead of refusing it.
+    await record_audit_event(
+        event="trust.legacy", wallet_id=wallet_id, metadata={"n": 2}
+    )
+    async with factory() as session:
+        appended = (
+            await session.execute(
+                select(ControlPlaneAuditEventModel).where(
+                    ControlPlaneAuditEventModel.wallet_id == wallet_id,
+                    ControlPlaneAuditEventModel.seq == 1,
+                )
+            )
+        ).scalar_one()
+        assert appended.previous_hash == previous_hash
+        head = await session.get(AuditChainHeadModel, wallet_id)
+        assert head is not None
+        assert head.last_seq == 1
+        assert head.last_chain_hash == appended.chain_hash
+    result = await verify_audit_chain(wallet_id=wallet_id)
+    assert result.valid is True, result
+    assert result.checked_events == 3

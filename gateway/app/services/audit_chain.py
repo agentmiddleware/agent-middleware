@@ -341,19 +341,44 @@ async def append_chained_audit_event(
                 if row is None:
                     # No head does not mean an empty chain. A genesis signed
                     # over rows that are already stored splits the hash links.
-                    prior = (
+                    terminal = (
                         await session.execute(
-                            select(cast(Any, ControlPlaneAuditEventModel.event_id))
+                            select(
+                                cast(Any, ControlPlaneAuditEventModel.seq),
+                                cast(Any, ControlPlaneAuditEventModel.chain_hash),
+                            )
                             .where(_chain_wallet_filter(model.wallet_id))
+                            .order_by(
+                                desc(
+                                    cast(
+                                        ColumnElement[Any],
+                                        ControlPlaneAuditEventModel.seq,
+                                    )
+                                ),
+                                desc(
+                                    cast(
+                                        ColumnElement[Any],
+                                        ControlPlaneAuditEventModel.created_at,
+                                    )
+                                ),
+                            )
                             .limit(1)
                         )
                     ).first()
-                    if prior is not None:
+                    if terminal is not None:
                         # A first writer may have committed between the head
                         # and event reads. Only that race warrants a retry.
                         if await session.get(AuditChainHeadModel, wallet_key):
                             raise _HeadConflict()
-                        raise AuditChainHeadMissingError("audit_chain_head_missing")
+                        if terminal[0] != 0:
+                            # A seq-signed row exists, so a head was written
+                            # and has since gone. Refuse rather than guess.
+                            raise AuditChainHeadMissingError("audit_chain_head_missing")
+                        # Every stored row predates seq (migration 017 set
+                        # them to 0) and no head was ever written. Continue
+                        # the legacy chain from its terminal link at seq 1,
+                        # which verification accepts after a legacy run.
+                        previous_hash = terminal[1]
                 model.seq = observed_seq + 1
                 _sign_with_previous(model, previous_hash, signing_key_id=key.key_id)
                 now = utc_now()

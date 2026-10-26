@@ -13,6 +13,7 @@ import hashlib
 import pytest
 from httpx import ASGITransport, AsyncClient
 from mcp.types import LATEST_PROTOCOL_VERSION
+from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
 
 from app.core.config import get_settings
 from app.main import app
@@ -743,9 +744,27 @@ async def test_tools_call_explicit_permit_out_of_scope_is_refused_without_charge
         assert error["code"] == -32003
         assert error["message"] == "permit_tool_not_allowed"
         receipt = error["data"]["receipt"]
-        assert receipt["outcome"] == "denied"
-        assert receipt["reason_code"] == "permit_tool_not_allowed"
-        assert receipt["permit_id"] == permit["permit_id"]
+        bundle_resp = await client.get(
+            f"/v1/receipts/{receipt['receipt_id']}/portable",
+            headers=provisioned["agent_headers"],
+        )
+        keys_resp = await client.get("/.well-known/trust-keys.json")
+        assert bundle_resp.status_code == 200, bundle_resp.text
+        assert keys_resp.status_code == 200, keys_resp.text
+        verified = verify_bundle(
+            bundle_resp.json(), key_set_from_document(keys_resp.json())
+        )
+        assert verified.ok, verified.reason
+        assert verified.receipt_id == receipt["receipt_id"]
+        assert verified.claims["outcome"] == receipt["outcome"] == "denied"
+        assert (
+            verified.claims["reason_code"]
+            == receipt["reason_code"]
+            == "permit_tool_not_allowed"
+        )
+        assert (
+            verified.claims["permit_id"] == receipt["permit_id"] == permit["permit_id"]
+        )
         assert receipt["ledger_entry_id"] is None
         assert receipt["dispatch_attempt_id"] is None
 

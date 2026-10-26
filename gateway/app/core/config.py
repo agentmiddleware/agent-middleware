@@ -248,6 +248,10 @@ class Settings(BaseSettings):
     JEV_RISK_GUARD_TIMEOUT_SECONDS: float = 1.5
     JEV_RISK_GUARD_TIERS: str = "medium,high"
     TYPESAFE_API_KEY: SecretStr = SecretStr("")
+    # Server pepper for HMAC-SHA256 API-key digests. Required in
+    # production-like environments (startup refuses to boot without it).
+    # See docs/api-key-hashing.md. Never log it.
+    API_KEY_HASH_PEPPER: SecretStr = SecretStr("")
     TYPESAFE_BASE_URL: str = "https://api.typesafe.ai"
     # Default repeat detection window in seconds. Duplicates outside this window
     # are not detected.

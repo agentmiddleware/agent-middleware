@@ -5,7 +5,9 @@ Handles API key creation, rotation, and revocation for compromised wallets.
 Supports automatic rotation on suspicious activity detection.
 
 Architecture:
-1. Keys are stored hashed (SHA-256) in the database
+1. Keys are stored as HMAC-SHA256 digests keyed by a server pepper
+   (API_KEY_HASH_PEPPER); legacy unkeyed SHA-256 rows still authenticate and
+   are rehashed on their next successful use
 2. Only the key prefix and masked key are ever shown
 3. Rotation creates new key and optionally revokes old ones
 4. Emergency revocation immediately invalidates all keys
@@ -14,6 +16,7 @@ Architecture:
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import logging
 from datetime import datetime, timedelta
@@ -24,7 +27,9 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
+from ..core.config import get_settings
 from ..core.time import to_naive_utc, utc_now
+from ..core.trust_mode import is_production_like_environment
 from ..db.database import get_session_factory
 from ..db.models import (
     APIKeyModel,
@@ -92,6 +97,71 @@ class InvalidRotationRequestError(APIKeyError):
     pass
 
 
+API_KEY_HASH_PEPPER_ENV = "API_KEY_HASH_PEPPER"
+
+
+class APIKeyHashingUnavailable(RuntimeError):
+    """Raised when a production-like environment has no API-key pepper."""
+
+
+def _api_key_hash_pepper() -> bytes | None:
+    """The server pepper: process env first, then Settings (``.env``).
+
+    Settings holds it as a SecretStr so it is masked in any settings dump.
+    It is never logged.
+    """
+    value = os.environ.get(API_KEY_HASH_PEPPER_ENV, "").strip()
+    if not value:
+        value = get_settings().API_KEY_HASH_PEPPER.get_secret_value().strip()
+    return value.encode("utf-8") if value else None
+
+
+def _legacy_api_key_hashing_allowed() -> bool:
+    """Unpeppered hashing of NEW keys is allowed only in local/test envs."""
+    return not is_production_like_environment(get_settings().ENVIRONMENT)
+
+
+def api_key_hashing_configured() -> bool:
+    return _api_key_hash_pepper() is not None or _legacy_api_key_hashing_allowed()
+
+
+def validate_api_key_hashing_config() -> None:
+    """Startup guard: production-like environments refuse to boot unpeppered."""
+    if not api_key_hashing_configured():
+        raise APIKeyHashingUnavailable(
+            f"{API_KEY_HASH_PEPPER_ENV} must be set in production-like "
+            "environments. See docs/api-key-hashing.md."
+        )
+
+
+def _peppered_digest(pepper: bytes, presented_key: str) -> str:
+    return hmac.new(pepper, presented_key.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _legacy_digest(presented_key: str) -> str:
+    # Pre-pepper storage format, kept only so existing rows still match and
+    # can be rehashed. API keys are 256-bit random tokens, not passwords;
+    # nothing new is stored in this format outside local/test environments.
+    return hashlib.sha256(presented_key.encode("utf-8")).hexdigest()
+
+
+def hash_api_key(full_key: str) -> str:
+    """Digest to store for a newly issued key.
+
+    HMAC-SHA256 with the server pepper. Without a pepper, local/test
+    environments fall back to the legacy digest; production-like
+    environments fail closed.
+    """
+    pepper = _api_key_hash_pepper()
+    if pepper is not None:
+        return _peppered_digest(pepper, full_key)
+    if _legacy_api_key_hashing_allowed():
+        return _legacy_digest(full_key)
+    raise APIKeyHashingUnavailable(
+        f"{API_KEY_HASH_PEPPER_ENV} is not set; refusing to issue API keys."
+    )
+
+
 def generate_api_key() -> tuple[str, str, str]:
     """
     Generate a new API key.
@@ -100,7 +170,7 @@ def generate_api_key() -> tuple[str, str, str]:
         tuple: (full_key, key_hash, key_prefix)
     """
     full_key = f"b2a_{secrets.token_urlsafe(API_KEY_LENGTH)}"
-    key_hash = hashlib.sha256(full_key.encode()).hexdigest()
+    key_hash = hash_api_key(full_key)
     key_prefix = full_key[:API_KEY_PREFIX_LENGTH]
     return full_key, key_hash, key_prefix
 
@@ -452,7 +522,17 @@ class APIKeyService:
             return None
 
         key_prefix = api_key[:API_KEY_PREFIX_LENGTH]
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        pepper = _api_key_hash_pepper()
+        if pepper is None and not _legacy_api_key_hashing_allowed():
+            # Fail closed: a production-like process without a pepper
+            # authenticates nothing (startup also refuses to boot).
+            logger.error("API key hashing is not configured; rejecting key")
+            return None
+        peppered_hash = (
+            _peppered_digest(pepper, api_key) if pepper is not None else None
+        )
+        legacy_hash = _legacy_digest(api_key)
+        candidate_hashes = [h for h in (peppered_hash, legacy_hash) if h]
 
         async with self._session_factory()() as session:
             # Look up by the indexed full digest, not the prefix alone: the
@@ -463,7 +543,7 @@ class APIKeyService:
             # failed every request for both keys with a 500.
             result = await session.execute(
                 select(APIKeyModel).where(
-                    col(APIKeyModel.key_hash) == key_hash,
+                    col(APIKeyModel.key_hash).in_(candidate_hashes),
                     col(APIKeyModel.key_prefix) == key_prefix,
                     col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
                 )
@@ -473,7 +553,14 @@ class APIKeyService:
             if not key:
                 return None
 
-            if not hmac.compare_digest(key.key_hash, key_hash):
+            # HMAC first, legacy second; both compared in constant time.
+            matched_peppered = peppered_hash is not None and hmac.compare_digest(
+                key.key_hash, peppered_hash
+            )
+            matched_legacy = not matched_peppered and hmac.compare_digest(
+                key.key_hash, legacy_hash
+            )
+            if not (matched_peppered or matched_legacy):
                 return None
 
             if not consume:
@@ -539,7 +626,47 @@ class APIKeyService:
                 if (cast(Any, used).rowcount or 0) == 0:
                     return None
 
+            if matched_legacy and peppered_hash is not None:
+                await self._rehash_legacy_key(
+                    session, key, legacy_hash=legacy_hash, peppered_hash=peppered_hash
+                )
+
         return key
+
+    @staticmethod
+    async def _rehash_legacy_key(
+        session: AsyncSession,
+        key: APIKeyModel,
+        *,
+        legacy_hash: str,
+        peppered_hash: str,
+    ) -> None:
+        """Upgrade a legacy SHA-256 row to HMAC after a successful auth.
+
+        Guarded on the legacy digest so concurrent requests upgrade once.
+        Best effort: a failure leaves the legacy row, which still works.
+        """
+        try:
+            result = await session.execute(
+                update(APIKeyModel)
+                .where(
+                    col(APIKeyModel.key_id) == key.key_id,
+                    col(APIKeyModel.key_hash) == legacy_hash,
+                )
+                .values(key_hash=peppered_hash)
+                .execution_options(synchronize_session=False)
+            )
+            await session.commit()
+            if (cast(Any, result).rowcount or 0) == 1:
+                key.key_hash = peppered_hash
+                logger.info("Rehashed legacy API key digest key_id=%s", key.key_id)
+        except Exception as exc:  # noqa: BLE001 - must not fail the request
+            await session.rollback()
+            logger.warning(
+                "Legacy API key rehash failed key_id=%s (%s)",
+                key.key_id,
+                type(exc).__name__,
+            )
 
     async def rotate_key(
         self,

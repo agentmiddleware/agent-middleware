@@ -20,8 +20,10 @@ NEAR_MISS_API_KEY = f"{VALID_API_KEY[:-1]}x"
 async def test_db_key_digest_comparison_is_constant_time_and_near_miss_is_rejected(
     clean_database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    valid_hash = hashlib.sha256(VALID_API_KEY.encode()).hexdigest()
-    near_miss_hash = hashlib.sha256(NEAR_MISS_API_KEY.encode()).hexdigest()
+    # Current (peppered HMAC) storage format, so the lookup matches on the
+    # first constant-time comparison.
+    valid_hash = api_key_service_module.hash_api_key(VALID_API_KEY)
+    near_miss_hash = api_key_service_module.hash_api_key(NEAR_MISS_API_KEY)
     assert (
         VALID_API_KEY[: api_key_service_module.API_KEY_PREFIX_LENGTH]
         == NEAR_MISS_API_KEY[: api_key_service_module.API_KEY_PREFIX_LENGTH]

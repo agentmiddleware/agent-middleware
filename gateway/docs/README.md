@@ -18,6 +18,7 @@ consequential MCP tool behind a governed boundary. Start with the
 | Run fourteen injected failures and get a signed evidence bundle | [Failure lab suite](failure-lab-suite.md) |
 | Review security claims and limits | [Security limitations](../SECURITY_LIMITATIONS.md) and [security review kit](security-review-kit.md) |
 | Rotate or revoke API keys | [API key rotation](api-key-rotation.md) |
+| Configure API-key hashing (pepper) | [API key hashing](api-key-hashing.md) |
 | Plan a design-partner evaluation | [Design partner guide](../DESIGN_PARTNER_GUIDE.md) |
 | Tell plain pytest, Postgres, and live runs apart | [Test tiers](TESTING_TIERS.md) |
 | Contribute to the repository | [Contributing guide](../../CONTRIBUTING.md) |

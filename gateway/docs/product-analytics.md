@@ -30,8 +30,8 @@ wallets only carry a synthetic `@dev.local` address).
 `wallets.product_activated_at` with a conditional `... IS NULL` UPDATE, so
 concurrent first uses of one key or of several keys produce exactly one event.
 The claim is recorded even when tracking is off, so turning tracking on later
-doesn't replay old activations. Migration 054 backfills accounts that were
-already active ([schema 054](schema-054-rollout.md)). `first_used_at` is still
+doesn't replay old activations. Migration 055 backfills accounts that were
+already active ([Schema 055](schema-055-rollout.md)). `first_used_at` is still
 set in the same single usage update as before. Derived (JWT) authority recorded through
 `consume_derived_key_use` is not an activation trigger.
 

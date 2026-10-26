@@ -95,6 +95,7 @@ async def test_upstream_health_exposes_payload_free_metrics(clean_database):
         registry.unregister_execution_backend("upstream_mcp")
 
     assert result["status"] == "up"
+    assert result["upstream_tool_mode"] == "single_tool"
     assert "state_counts" in result["dispatch_metrics"]
     assert "reconciliation_backlog" in result["dispatch_metrics"]
     assert "latency_seconds_average" in result["call_metrics"]
@@ -131,6 +132,7 @@ async def test_multi_tool_health_counts_registered_upstream_tools(clean_database
     assert result["status"] == "up"
     assert result["upstream_tool_count"] == 2
     assert result["public_tool_id"] == "partner.multi"
+    assert result["upstream_tool_mode"] == "multi_tool_preview"
 
 
 @pytest.mark.anyio
@@ -146,6 +148,7 @@ async def test_multi_tool_health_down_without_registered_tools(clean_database):
 
     assert result["status"] == "down"
     assert result["error"] == "configured upstream tool is not registered"
+    assert result["upstream_tool_mode"] == "multi_tool_preview"
 
 
 @pytest.mark.anyio

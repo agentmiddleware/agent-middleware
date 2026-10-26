@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # Wallets nest via parent_wallet_id (sponsor -> agent -> child agent); the
 # root walk is capped so a corrupt cycle cannot loop forever.
 # Bound on parent_wallet_id hops when resolving an account root. Shared with
-# migration 054's backfill (054_wallet_product_activation.MAX_WALLET_DEPTH).
+# migration 055's backfill (055_wallet_product_activation.MAX_WALLET_DEPTH).
 _MAX_WALLET_DEPTH = 64
 
 API_KEY_LENGTH = 32

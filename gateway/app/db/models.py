@@ -54,7 +54,7 @@ class WalletModel(SQLModel, table=True):
     daily_spent: Decimal = Field(default=Decimal("0"), decimal_places=8)
     daily_reset_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
     # Account-level product activation claim (root wallets only), set once by
-    # a conditional UPDATE on the first key use; see 054 migration.
+    # a conditional UPDATE on the first key use; see 055 migration.
     product_activated_at: Optional[datetime] = Field(
         sa_type=NaiveUTCDateTime, default=None
     )

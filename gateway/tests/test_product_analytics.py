@@ -396,9 +396,9 @@ def test_backfill_depth_matches_runtime():
 
     path = (
         Path(__file__).resolve().parents[1]
-        / "migrations/versions/054_wallet_product_activation.py"
+        / "migrations/versions/055_wallet_product_activation.py"
     )
-    spec = importlib.util.spec_from_file_location("m054", path)
+    spec = importlib.util.spec_from_file_location("m055", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert mod.MAX_WALLET_DEPTH == svc._MAX_WALLET_DEPTH
@@ -416,9 +416,9 @@ async def test_backfill_marks_root_of_deep_used_descendant(clean_database):
 
     path = (
         Path(__file__).resolve().parents[1]
-        / "migrations/versions/054_wallet_product_activation.py"
+        / "migrations/versions/055_wallet_product_activation.py"
     )
-    spec = importlib.util.spec_from_file_location("m054b", path)
+    spec = importlib.util.spec_from_file_location("m055b", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 

@@ -1,6 +1,6 @@
-# Schema 054: wallet product activation claim
+# Schema 055: wallet product activation claim
 
-Migration `054_wallet_product_activation` revises `053_repair_api_lineage`. It
+Migration `055_wallet_product_activation` revises `054_api_key_scrypt_lookup` (from PR #254, which must merge first). It
 adds nullable `wallets.product_activated_at`, the account-level claim behind the
 once-per-account PostHog `activation` event (see
 [product analytics](product-analytics.md)). The gateway sets the column with a
@@ -40,8 +40,8 @@ column exists to prevent. The write is kept on purpose.
 ## Compatibility release
 
 Production boot requires the database revision to match the packaged head, so
-a 053-packaged image cannot restart after 054 is applied. Qualify a
-054-capable image against a disposable PostgreSQL upgrade from 053 first.
+a 054-packaged image cannot restart after 055 is applied. Qualify a
+055-capable image against a disposable PostgreSQL upgrade from 054 first.
 These release checks have not been run against staging or production.
 
 ## Rollback boundary

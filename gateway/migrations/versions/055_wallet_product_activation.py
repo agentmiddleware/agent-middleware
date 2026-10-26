@@ -1,7 +1,7 @@
 """Account-level product activation claim on wallets.
 
-Revision ID: 054_wallet_product_activation
-Revises: 053_repair_api_lineage
+Revision ID: 055_wallet_product_activation
+Revises: 054_api_key_scrypt_lookup
 
 Adds nullable ``wallets.product_activated_at``. The gateway sets it once per
 root wallet with a conditional UPDATE (``... IS NULL``) on a key's first use,
@@ -10,7 +10,7 @@ first uses race.
 
 Backfill: a root wallet whose own keys, or any descendant's keys (to the same
 ``MAX_WALLET_DEPTH`` the runtime resolver uses), were already used gets the
-earliest such ``first_used_at``, so accounts active before 054 never emit a
+earliest such ``first_used_at``, so accounts active before 055 never emit a
 late activation. One recursive CTE: api_keys is aggregated once per wallet,
 then ancestry is walked via the wallets primary key (no per-root scan). The column is added
 only when missing, and the backfill only touches NULL rows.
@@ -19,8 +19,8 @@ only when missing, and the backfill only touches NULL rows.
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "054_wallet_product_activation"
-down_revision: str = "053_repair_api_lineage"
+revision: str = "055_wallet_product_activation"
+down_revision: str = "054_api_key_scrypt_lookup"
 branch_labels = None
 depends_on = None
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import gc
 import inspect
+import json
 import sys
 import types
 import warnings
@@ -30,12 +31,15 @@ import pytest
 
 from framework_integrations import (
     B2AClient,
+    get_autogen_tools,
     get_crewai_tools,
     get_langgraph_tools,
     get_llamaindex_tools,
 )
 
+
 WALLET_ID = "wallet-legacy-tools"
+AGENT_ID = "agent-legacy-tools"
 API_KEY = "legacy-tools-key"
 
 # tool name -> (tool kwargs, HTTP method, path, text the tool output must hold)
@@ -43,8 +47,8 @@ TOOL_CASES: dict[str, tuple[dict[str, Any], str, str, str]] = {
     "emit_telemetry": (
         {"event": "task_completed", "properties": '{"step": 1}'},
         "POST",
-        "/v1/telemetry/events",
-        "evt-1",
+        "/v1/telemetry/events/single",
+        "batch-1",
     ),
     "get_balance": (
         {},
@@ -79,10 +83,15 @@ TOOL_CASES: dict[str, tuple[dict[str, Any], str, str, str]] = {
 }
 
 _RESPONSES: dict[tuple[str, str], dict[str, Any]] = {
-    ("POST", "/v1/telemetry/events"): {"event_id": "evt-1"},
+    ("POST", "/v1/telemetry/events/single"): {
+        "ingested": 1,
+        "failed": 0,
+        "batch_id": "batch-1",
+        "errors": [],
+    },
     ("GET", f"/v1/billing/wallets/{WALLET_ID}"): {"balance": 42.5},
     ("POST", "/v1/comms/messages"): {"message_id": "msg-1"},
-    ("POST", "/v1/ai/decide"): {"decision": "b"},
+    ("POST", "/v1/ai/decide"): {"action": "b"},
     ("POST", "/v1/ai/heal"): {"action": "restart"},
     ("POST", "/v1/awi/sessions"): {"session_id": "awi-123"},
 }
@@ -100,7 +109,12 @@ async def recording():
             return httpx.Response(404, json={"detail": "unexpected request"})
         return httpx.Response(200, json=body)
 
-    client = B2AClient(api_url="http://b2a.test", api_key=API_KEY, wallet_id=WALLET_ID)
+    client = B2AClient(
+        api_url="http://b2a.test",
+        api_key=API_KEY,
+        wallet_id=WALLET_ID,
+        agent_id=AGENT_ID,
+    )
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     yield client, sent
     await client.close()
@@ -160,6 +174,22 @@ def _assert_one_request(sent: list[httpx.Request], method: str, path: str) -> No
         f"saw {[(r.method, r.url.path) for r in sent]}"
     )
     assert sent[0].headers["X-API-Key"] == API_KEY
+    if path == "/v1/comms/messages":
+        assert sent[0].url.params["from_agent"] == AGENT_ID
+    if path == "/v1/telemetry/events/single":
+        assert json.loads(sent[0].content) == {
+            "event_type": "custom",
+            "source": "framework_integrations",
+            "message": "task_completed",
+            "severity": "info",
+            "metadata": {"step": 1, "event": "task_completed"},
+        }
+    if path == "/v1/ai/decide":
+        assert json.loads(sent[0].content) == {
+            "agent_id": WALLET_ID,
+            "context": {"goal": "ship"},
+            "options": ["a", "b"],
+        }
 
 
 def _assert_text_result(result: Any, expected: str) -> None:
@@ -249,6 +279,39 @@ def test_crewai_factory_refuses_and_points_at_governed_wrappers(recording):
     assert "integrations/crewai-agent-middleware" in message
     assert "LangGraphGovernedTools" in message
     assert sent == []
+
+
+async def _unused_async(*args: Any, **kwargs: Any) -> dict[str, str]:
+    raise AssertionError("legacy factory must warn before touching the client")
+
+
+@pytest.mark.parametrize(
+    "factory_name",
+    ["get_langgraph_tools", "get_llamaindex_tools", "get_autogen_tools"],
+)
+def test_legacy_factories_warn_they_are_ungoverned(monkeypatch, factory_name):
+    """Every ungoverned factory steers buyers to the governed wrappers first."""
+    _stub_module(monkeypatch, "langchain_core.tools", tool=lambda fn: fn)
+    _stub_module(monkeypatch, "llama_index.core.tools", FunctionTool=_StubFunctionTool)
+    client = types.SimpleNamespace(
+        emit_telemetry=_unused_async,
+        get_balance=_unused_async,
+        send_message=_unused_async,
+        decide=_unused_async,
+        heal=_unused_async,
+        create_awi_session=_unused_async,
+    )
+    factory = {
+        "get_langgraph_tools": get_langgraph_tools,
+        "get_llamaindex_tools": get_llamaindex_tools,
+        "get_autogen_tools": get_autogen_tools,
+    }[factory_name]
+
+    with pytest.warns(DeprecationWarning, match="legacy ungoverned") as caught:
+        tools = factory(client)
+
+    assert tools, "legacy factory must still return its tools alongside the warning"
+    assert caught[0].filename == __file__
 
 
 # --- Real frameworks, when installed ----------------------------------------

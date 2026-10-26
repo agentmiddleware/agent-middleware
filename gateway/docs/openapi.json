@@ -806,7 +806,10 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
@@ -1255,7 +1258,10 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
@@ -1573,7 +1579,10 @@
             "in": "header",
             "required": true,
             "schema": {
-              "type": "string",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
               "title": "Idempotency-Key"
             }
           },
@@ -1970,7 +1979,10 @@
             "in": "header",
             "required": true,
             "schema": {
-              "type": "string",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
               "title": "Idempotency-Key"
             }
           },
@@ -5663,6 +5675,104 @@
         }
       }
     },
+    "/v1/admin/api-keys/usage/daily": {
+      "get": {
+        "tags": [
+          "API Key Management"
+        ],
+        "summary": "Admin: daily usage by API key",
+        "description": "Read daily call counts and latency for a bounded UTC window.",
+        "operationId": "admin_api_key_usage_daily_v1_admin_api_keys_usage_daily_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Key Id"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 30,
+              "title": "Days"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIKeyUsageDailyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/demo/keys": {
       "get": {
         "tags": [
@@ -5854,7 +5964,7 @@
           "Discovery"
         ],
         "summary": "Liveness check",
-        "description": "Returns 200 with status `healthy` when the API is running and its Redis (shared rate limiter) answers a PING, or when REDIS_URL is not configured (no PING is sent). Returns 503 with status `degraded` when Redis is configured but does not answer within 1 second; in production-like environments the rate limiter then refuses /v1 requests, so the API is not serving even though the process is up. `checks.redis` is `up`, `down`, or `not_configured`.",
+        "description": "Returns 200 with status `healthy` when the API is running and its Redis (shared rate limiter) answers a PING, or when REDIS_URL is not configured (no PING is sent). Returns 503 with status `degraded` when Redis is configured but does not answer within 1 second; in production-like environments the rate limiter then refuses /v1 requests, so the API is not serving even though the process is up. `checks.redis` is `up`, `down`, or `not_configured`. `tenant_rls_mode` is `off` or `enforce`.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -6076,6 +6186,7 @@
           "use_count": {
             "type": "integer",
             "title": "Use Count",
+            "description": "Bounded-key budget uses, not total calls. See api_key_usage_daily.",
             "default": 0
           }
         },
@@ -6100,6 +6211,78 @@
           "suspended"
         ],
         "title": "APIKeyStatus"
+      },
+      "APIKeyUsageDailyResponse": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/APIKeyUsageDailyRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "APIKeyUsageDailyResponse"
+      },
+      "APIKeyUsageDailyRow": {
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "title": "Key Id"
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "calls": {
+            "type": "integer",
+            "title": "Calls"
+          },
+          "calls_4xx": {
+            "type": "integer",
+            "title": "Calls 4Xx"
+          },
+          "calls_5xx": {
+            "type": "integer",
+            "title": "Calls 5Xx"
+          },
+          "p50_latency_ms": {
+            "type": "number",
+            "title": "P50 Latency Ms"
+          },
+          "p95_latency_ms": {
+            "type": "number",
+            "title": "P95 Latency Ms"
+          },
+          "first_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Call At"
+          },
+          "last_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Call At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key_id",
+          "day",
+          "calls",
+          "calls_4xx",
+          "calls_5xx",
+          "p50_latency_ms",
+          "p95_latency_ms",
+          "first_call_at",
+          "last_call_at"
+        ],
+        "title": "APIKeyUsageDailyRow"
       },
       "APIKeyWithSecret": {
         "properties": {
@@ -9961,6 +10144,28 @@
               }
             ],
             "title": "Reason Code"
+          },
+          "enforcement_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enforcement Mode"
+          },
+          "gateway_build": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gateway Build"
           },
           "audit_event_id": {
             "anyOf": [

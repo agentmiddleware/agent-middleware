@@ -325,6 +325,20 @@ def _context_idempotency_key_sources(
     return [("mcpContext.idempotency_key", value)]
 
 
+def _meta_idempotency_key_sources(params: dict[str, Any]) -> list[tuple[str, object]]:
+    """Read the MCP replay key from params._meta when present."""
+    meta = params.get("_meta")
+    if meta is None:
+        return []
+    if not isinstance(meta, dict):
+        raise GovernedRequestInvalid("Invalid params: params._meta must be an object")
+    key = "io.agentmiddleware/idempotency_key"
+    value = meta.get(key)
+    if value is None:
+        return []
+    return [(f'params._meta["{key}"]', value)]
+
+
 # Far above any legitimate MCP message, far below where Python 3.11's JSON
 # parser starts raising RecursionError instead of returning a parse result.
 # Shared with the standard endpoint so both transports refuse the same depth.
@@ -588,6 +602,7 @@ async def handle_messages(
             client_idempotency_key = resolve_client_idempotency_key(
                 [
                     *_header_idempotency_key_sources(request),
+                    *_meta_idempotency_key_sources(call_params),
                     *_context_idempotency_key_sources(call_params["mcpContext"]),
                 ]
             )
@@ -4087,18 +4102,9 @@ async def _assert_governed_replay_access(
     wallet_id: str,
     tool_name: str,
     key_id: str | None,
-    replay: Any = None,
+    replay: Any,
 ) -> None:
-    """Keep terminal replay bound to the permit's stable caller identity.
-
-    A stored refusal is the exception (SEL-482). Idempotency records are
-    scoped to the caller's own wallet, so a stored 403 is exactly the body
-    this caller was already sent: replaying it verbatim -- original signed
-    receipt and ``details`` included -- discloses nothing new and runs
-    nothing. Re-deriving a bare denial here instead dropped both, so a
-    retry with the same key no longer matched the first response as the
-    idempotency contract (PR #209) requires.
-    """
+    """Bind replay to its caller, preserving a stored SEL-482 refusal."""
     validation = await get_permit_service().validate_replay_access(
         permit_id=permit_id or "",
         wallet_id=wallet_id,
@@ -4106,12 +4112,24 @@ async def _assert_governed_replay_access(
         key_id=key_id,
     )
     if not validation.allowed:
+        response = replay.response_json if replay is not None else None
+        receipt = response.get("receipt") if isinstance(response, dict) else None
         if (
-            replay is not None
+            validation.reason == "permit_wallet_mismatch"
+            and replay is not None
             and replay.status_code == 403
-            and isinstance(replay.response_json, dict)
+            and response is not None
+            and response.get("error") == validation.reason
+            and isinstance(receipt, dict)
+            and receipt.get("wallet_id") == wallet_id
+            and receipt.get("key_id") == key_id
+            and receipt.get("permit_id") == permit_id
+            and receipt.get("tool") == tool_name
+            and receipt.get("outcome") == "denied"
         ):
-            await _raise_replayed_error(replay)
+            # The original denial is evidence for this wallet and key, even
+            # though the foreign permit cannot authorize an execution.
+            return
         raise ToolPermissionDenied(validation.reason or "permit_denied")
 
 

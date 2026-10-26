@@ -5,7 +5,7 @@ All settings are loaded from environment variables for zero-GUI deployment.
 
 from decimal import Decimal
 from enum import Enum
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
@@ -58,11 +58,23 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     REDIS_URL: str = ""
     SQLITE_URL: str = ""
+    # PostgreSQL row-level security for wallet-scoped tables (migration
+    # 048_tenant_rls), ported from the archived agent-middleware-api Settings
+    # with the same name, default and validation. "off" (default): the
+    # migration creates the policies but leaves RLS disabled, so nothing
+    # changes for any client. "enforce": migrating in this mode enables and
+    # forces RLS. This gateway does not yet set app.current_wallet_id per
+    # transaction, so enforce fails closed for a NOSUPERUSER NOBYPASSRLS
+    # runtime role; see docs/schema-048-rollout.md. No effect on SQLite.
+    TENANT_RLS_MODE: str = "off"
 
     # --- Database Pool Settings ---
     # Used for SQLModel/SQLAlchemy async sessions
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
+
+    # Opt-in only; no automatic usage-event cleanup is scheduled.
+    API_KEY_USAGE_RETENTION_DAYS: int | None = Field(default=None, ge=0)
 
     # --- Authentication ---
     API_KEY_HEADER: str = "X-API-Key"
@@ -210,13 +222,15 @@ class Settings(BaseSettings):
     ENABLE_DOGFOOD_SECOND_TOOL: bool = False
 
     # --- Governed upstream MCP partner tool ---
-    # One explicitly configured Streamable HTTP server/tool for the
+    # One explicitly configured Streamable HTTP server, with one or more tools, for the
     # design-partner pilot. The adapter fails closed at startup when enabled
     # with incomplete or unsafe configuration.
     MCP_UPSTREAM_ENABLED: bool = False
     MCP_UPSTREAM_URL: str = ""
     MCP_UPSTREAM_TOOL_NAME: str = ""
     MCP_UPSTREAM_PUBLIC_TOOL_ID: str = ""
+    MCP_UPSTREAM_MULTI_TOOL_ENABLED: bool = False
+    MCP_UPSTREAM_TOOL_ALLOWLIST: str = ""
     MCP_UPSTREAM_BEARER_TOKEN: SecretStr = SecretStr("")
     MCP_UPSTREAM_CREDITS_PER_CALL: Decimal = Decimal("0")
     MCP_UPSTREAM_CONNECT_TIMEOUT_SECONDS: float = 5.0
@@ -313,6 +327,15 @@ class Settings(BaseSettings):
     # re-declare it as a module constant — a second copy silently lets the
     # advertised rate drift from the rate real money converts at.
     EXCHANGE_RATE: Decimal = Decimal("1000.0")
+
+    @field_validator("TENANT_RLS_MODE")
+    @classmethod
+    def _validate_tenant_rls_mode(cls, value: str) -> str:
+        """Only the two documented modes; a typo must not silently mean off."""
+        normalized = (value or "").strip().lower()
+        if normalized not in {"off", "enforce"}:
+            raise ValueError("TENANT_RLS_MODE must be 'off' or 'enforce'")
+        return normalized
 
     @field_validator("EXCHANGE_RATE")
     @classmethod

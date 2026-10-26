@@ -29,6 +29,7 @@ from sqlalchemy import func, select
 from app.db.database import get_session_factory
 from app.db.models import IdempotencyRecordModel, PermitModel, ReceiptModel
 from app.main import app
+from app.services.receipts import get_receipt_service
 from tests.test_mcp_idempotency_key_validation import counted_tool  # noqa: F401
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
 
@@ -36,7 +37,7 @@ pytestmark = pytest.mark.anyio
 
 # Shaped like an LLM tool_call.id, as the request keys guide recommends.
 TOOL_CALL_ID = "call_sel475_cross_tenant"
-ENVELOPE_KEYS = {"detail", "code", "message", "fix", "docs_url"}
+META_KEY = "io.agentmiddleware/idempotency_key"
 
 
 @pytest.fixture
@@ -91,24 +92,65 @@ async def _count(model) -> int:
 
 async def _call_twice(client, tool_name, tenant_b, mcp_context):
     body = {
-        "name": tool_name,
-        "arguments": {"text": "one"},
-        "mcp_context": {**mcp_context, "idempotency_key": TOOL_CALL_ID},
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": {"text": "one"},
+            "mcpContext": mcp_context,
+            "_meta": {META_KEY: TOOL_CALL_ID},
+        },
     }
-    headers = {**tenant_b["agent_headers"], "Idempotency-Key": TOOL_CALL_ID}
-    url = f"/mcp/tools/{tool_name}/invoke"
+    headers = tenant_b["agent_headers"]
+    url = "/mcp/messages"
     first = await client.post(url, json=body, headers=headers)
     replay = await client.post(url, json=body, headers=headers)
     return first, replay
 
 
+@pytest.mark.parametrize("bad_key", ["   ", 7])
+async def test_invalid_meta_key_refuses_before_cross_tenant_call(
+    client,
+    tenants,
+    counted_tool,  # noqa: F811
+    bad_key,
+):
+    _tenant_a, tenant_b, permit_a = tenants
+    records_before = await _count(IdempotencyRecordModel)
+    receipts_before = await _count(ReceiptModel)
+    response = await client.post(
+        "/mcp/messages",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": counted_tool.name,
+                "arguments": {"text": "one"},
+                "mcpContext": {
+                    "wallet_id": tenant_b["agent_wallet_id"],
+                    "permit_id": permit_a["permit_id"],
+                },
+                "_meta": {META_KEY: bad_key},
+            },
+        },
+        headers=tenant_b["agent_headers"],
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["error"]["code"] == -32602
+    assert response.json()["error"]["data"]["error"] == "invalid_idempotency_key"
+    assert counted_tool.effects == []
+    assert await _count(IdempotencyRecordModel) == records_before
+    assert await _count(ReceiptModel) == receipts_before
+
+
 def _assert_refusal_envelope(response, code: str) -> None:
-    assert response.status_code == 403, response.text
+    assert response.status_code == 200, response.text
     payload = response.json()
-    assert set(payload) == ENVELOPE_KEYS, payload
-    assert payload["code"] == code
-    assert payload["detail"]["error"] == code
-    assert payload["docs_url"].endswith(f"#{code}")
+    assert set(payload) == {"jsonrpc", "id", "error"}, payload
+    assert payload["error"]["code"] == -32003
+    assert payload["error"]["message"] == code
 
 
 async def test_foreign_wallet_refusal_replays_identically(
@@ -130,7 +172,7 @@ async def test_foreign_wallet_refusal_replays_identically(
     )
 
     _assert_refusal_envelope(first, "wallet_access_denied")
-    assert first.json()["detail"] == {"error": "wallet_access_denied"}
+    assert "receipt" not in first.json()["error"].get("data", {})
     # Same status, same headers that matter, same bytes.
     assert replay.status_code == first.status_code
     assert replay.headers["content-type"] == first.headers["content-type"]
@@ -140,7 +182,7 @@ async def test_foreign_wallet_refusal_replays_identically(
     for response in (first, replay):
         assert tenant_a["agent_wallet_id"] not in response.text
         assert tenant_a["sponsor_wallet_id"] not in response.text
-        assert "receipt" not in response.json()["detail"]
+        assert "receipt" not in response.json()["error"].get("data", {})
 
     # Refused at the route: nothing ran, nothing was stored or charged.
     assert counted_tool.effects == []
@@ -160,6 +202,7 @@ async def test_foreign_permit_refusal_replay_has_no_side_effects(
     before_a = await _state(client, tenant_a, permit_a["permit_id"])
     before_b = await _state(client, tenant_b, permit_a["permit_id"])
     records_before = await _count(IdempotencyRecordModel)
+    receipts_before = await _count(ReceiptModel)
 
     first, replay = await _call_twice(
         client,
@@ -170,18 +213,40 @@ async def test_foreign_permit_refusal_replay_has_no_side_effects(
 
     _assert_refusal_envelope(first, "permit_wallet_mismatch")
     _assert_refusal_envelope(replay, "permit_wallet_mismatch")
-    for key in ("code", "message", "fix", "docs_url"):
-        assert replay.json()[key] == first.json()[key]
-    assert replay.json()["detail"]["error"] == first.json()["detail"]["error"]
+    assert replay.json()["error"] == first.json()["error"]
 
-    receipt = first.json()["detail"]["receipt"]
+    receipt = first.json()["error"]["data"]["receipt"]
     assert receipt["outcome"] == "denied"
     assert receipt["wallet_id"] == tenant_b["agent_wallet_id"]
     assert receipt["credits_charged"] == "0"
     assert receipt["ledger_entry_id"] is None
 
+    # The denial receipt is durable, belongs to tenant B, names only B's
+    # wallet and key, charges nothing, and still verifies against its
+    # signature.
+    async with get_session_factory()() as session:
+        durable = await session.get(ReceiptModel, receipt["receipt_id"])
+    assert durable is not None
+    assert durable.wallet_id == tenant_b["agent_wallet_id"]
+    assert durable.key_id == tenant_b["key_id"]
+    assert durable.wallet_id != tenant_a["agent_wallet_id"]
+    assert durable.permit_id == permit_a["permit_id"]
+    assert durable.tool == counted_tool.name
+    assert durable.outcome == "denied"
+    assert durable.credits_charged == 0
+    assert durable.ledger_entry_id is None
+    valid, reason, verified = await get_receipt_service().verify_receipt(
+        receipt["receipt_id"]
+    )
+    assert (valid, reason) == (True, None), reason
+    assert verified is not None
+    assert verified.receipt_id == receipt["receipt_id"]
+    assert verified.wallet_id == tenant_b["agent_wallet_id"]
+    assert verified.outcome == "denied"
+
     # The replay was served from the one stored refusal under B's wallet.
     assert await _count(IdempotencyRecordModel) == records_before + 1
+    assert await _count(ReceiptModel) == receipts_before + 1
     async with get_session_factory()() as session:
         stored = (
             (
@@ -219,8 +284,8 @@ async def test_foreign_permit_refusal_replays_identically_per_docs(
         tenant_b,
         {"wallet_id": tenant_b["agent_wallet_id"], "permit_id": permit_a["permit_id"]},
     )
-    assert first.status_code == 403, first.text
+    assert first.status_code == 200, first.text
     assert replay.status_code == first.status_code
-    assert set(replay.json()["detail"]) == set(first.json()["detail"])
+    assert set(replay.json()["error"]["data"]) == set(first.json()["error"]["data"])
     assert replay.content == first.content
     assert counted_tool.effects == []

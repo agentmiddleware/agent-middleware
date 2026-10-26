@@ -28,11 +28,13 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column(
         "permits",
+        # sa.false() renders as 0 on SQLite and false on PostgreSQL. The string
+        # "false" is stored as text on SQLite and reads back as true.
         sa.Column(
             "requires_human_approval",
             sa.Boolean(),
             nullable=False,
-            server_default="false",
+            server_default=sa.false(),
         ),
     )
 
@@ -46,7 +48,7 @@ def upgrade() -> None:
         sa.Column(
             "status", sa.String(length=16), nullable=False, server_default="pending"
         ),
-        sa.Column("simulated", sa.Boolean(), nullable=False, server_default="false"),
+        sa.Column("simulated", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("sentinel_action_id", sa.String(length=64), nullable=True),
         sa.Column("requested_at", sa.DateTime(), nullable=False),
         sa.Column("expires_at", sa.DateTime(), nullable=False),

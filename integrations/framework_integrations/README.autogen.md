@@ -36,7 +36,10 @@ from framework_integrations import B2AClient, get_autogen_tools
 
 # Initialize client
 client = B2AClient(
-    api_url="http://localhost:8000", api_key="your-api-key", wallet_id="your-wallet-id"
+    api_url="http://localhost:8000",
+    api_key="your-api-key",
+    wallet_id="your-wallet-id",
+    agent_id="your-registered-agent-id",  # Required for send_message
 )
 
 # Get AutoGen-compatible function map

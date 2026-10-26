@@ -784,7 +784,7 @@ def test_041_scrubs_legacy_plaintext_owner_keys_from_content_tables(
 
     Rows whose owner_key is a known wallet id (what the factory routers write
     now) keep their owner, and an already-blank row stays blank. The rows are
-    inserted at head and the scrub is exercised by stepping back to 040 and
+    inserted at 044 and the scrub is exercised by stepping back to 040 and
     forward again, which also pins that the downgrade is a no-op (the scrubbed
     values were credentials and are unrecoverable) and the upgrade idempotent.
     """
@@ -796,7 +796,7 @@ def test_041_scrubs_legacy_plaintext_owner_keys_from_content_tables(
 
     monkeypatch.setenv("DATABASE_URL", async_url)
     config = Config("alembic.ini")
-    command.upgrade(config, "head")
+    command.upgrade(config, "044_receipt_resolutions")
     asyncio.set_event_loop(asyncio.new_event_loop())
 
     engine = create_engine(sync_url)
@@ -872,7 +872,7 @@ def test_041_scrubs_legacy_plaintext_owner_keys_from_content_tables(
 
     command.downgrade(config, "040_permit_repeat_window")
     asyncio.set_event_loop(asyncio.new_event_loop())
-    command.upgrade(config, "head")
+    command.upgrade(config, "044_receipt_resolutions")
     asyncio.set_event_loop(asyncio.new_event_loop())
 
     pipelines, campaigns = owners()
@@ -883,6 +883,6 @@ def test_041_scrubs_legacy_plaintext_owner_keys_from_content_tables(
     # Idempotent: a second pass changes nothing.
     command.downgrade(config, "040_permit_repeat_window")
     asyncio.set_event_loop(asyncio.new_event_loop())
-    command.upgrade(config, "head")
+    command.upgrade(config, "044_receipt_resolutions")
     asyncio.set_event_loop(asyncio.new_event_loop())
     assert owners() == (pipelines, campaigns)

@@ -8,6 +8,7 @@ loop returned ``"Error: This event loop is already running"``, and every
 call emitted a deprecation warning about there being no current event loop.
 """
 
+import asyncio
 import json
 import warnings
 from datetime import UTC, datetime
@@ -96,7 +97,7 @@ class _SyncGateway:
 
 @pytest.fixture
 def sync_tool(monkeypatch):
-    """A tool whose per-drive sync clients talk to the counting mock gateway."""
+    """A tool whose sync runner talks to the counting mock gateway."""
     gateway = _SyncGateway()
     seen: dict = {}
 
@@ -106,7 +107,8 @@ def sync_tool(monkeypatch):
 
     monkeypatch.setattr(tool_module, "B2AClient", _factory)
     tool = CrewAIB2ATool(api_key="test-key", wallet_id="wallet-1")
-    return tool, gateway, seen
+    yield tool, gateway, seen
+    tool.close()
 
 
 def _call(tool, invoke_key: str, permit_key: str):
@@ -177,8 +179,13 @@ async def test_sync_and_async_paths_return_same_receipt_shape(sync_tool):
         api_key="test-key",
         transport=httpx.MockTransport(_SyncGateway()),
     )
+    tool.sync_client_factory = lambda: B2AClient(
+        api_key="test-key", transport=httpx.MockTransport(_SyncGateway())
+    )
 
-    sync_result = _call(tool, "shape-sync-key", "shape-sync-permit")
+    sync_result = await asyncio.to_thread(
+        _call, tool, "shape-sync-key", "shape-sync-permit"
+    )
     async_result = await tool._arun(
         operation="call_tool",
         tool_name="partner.search",

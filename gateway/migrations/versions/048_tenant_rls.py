@@ -1,4 +1,4 @@
-"""Wallet row-level security policies; enabled only under TENANT_RLS_MODE=enforce.
+"""Wallet row-level security policies; enabled only under TENANT_RLS_MODE=enable/enforce.
 
 Revision ID: 048_tenant_rls
 Revises: 047_dispatch_reconcile_lease
@@ -11,8 +11,9 @@ into NULL, and a NULL comparison admits nothing, so an unset scope fails
 closed.
 
 Default off: the policies are created but row-level security stays disabled
-on every table, so no client sees any change. ENABLE and FORCE ROW LEVEL
-SECURITY run only when this migration executes with TENANT_RLS_MODE=enforce;
+on every table, so no client sees any change. TENANT_RLS_MODE=enable runs
+ENABLE ROW LEVEL SECURITY only (the owner is not bound); ENABLE and FORCE ROW
+LEVEL SECURITY run only when this migration executes with TENANT_RLS_MODE=enforce;
 enabling later is the per-table ALTER in docs/tenant-rls.md in the api repo. Wallet columns are character varying; the setting is text, compared with
 the built-in text equality, so no cast is needed and the wallet indexes stay
 usable.
@@ -115,10 +116,17 @@ def policy_predicate(columns: tuple[str, ...]) -> str:
     return f"({wallet_match}) OR {_BYPASS}"
 
 
-def _apply_tenant_policy(table: str, columns: tuple[str, ...], enforce: bool):
+def _apply_tenant_policy(table: str, columns: tuple[str, ...], mode: str):
+    """Create the wallet policy; ENABLE under enable/enforce, FORCE under enforce.
+
+    Idempotent: safe to call again (053 reuses it for the late tables).
+    """
+    if mode not in ("off", "enable", "enforce"):
+        raise RuntimeError(f"unknown TENANT_RLS_MODE {mode!r}")
     predicate = policy_predicate(columns)
-    if enforce:
+    if mode in ("enable", "enforce"):
         op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+    if mode == "enforce":
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
     op.execute(f"DROP POLICY IF EXISTS {POLICY_NAME} ON {table}")
     op.execute(
@@ -131,13 +139,13 @@ def upgrade():
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
-    enforce = get_settings().TENANT_RLS_MODE == "enforce"
+    mode = get_settings().TENANT_RLS_MODE
     for table, columns in RLS_TABLES.items():
-        _apply_tenant_policy(table, columns, enforce)
+        _apply_tenant_policy(table, columns, mode)
     existing = set(sa.inspect(bind).get_table_names())
     for table, columns in LATE_RLS_TABLES.items():
         if table in existing:
-            _apply_tenant_policy(table, columns, enforce)
+            _apply_tenant_policy(table, columns, mode)
     for table, predicate in DELEGATED_READ_PREDICATES.items():
         op.execute(f"DROP POLICY IF EXISTS {READ_POLICY_NAME} ON {table}")
         op.execute(

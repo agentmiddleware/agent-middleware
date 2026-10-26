@@ -31,10 +31,12 @@ import pytest
 
 from framework_integrations import (
     B2AClient,
+    get_autogen_tools,
     get_crewai_tools,
     get_langgraph_tools,
     get_llamaindex_tools,
 )
+
 
 WALLET_ID = "wallet-legacy-tools"
 AGENT_ID = "agent-legacy-tools"
@@ -277,6 +279,39 @@ def test_crewai_factory_refuses_and_points_at_governed_wrappers(recording):
     assert "integrations/crewai-agent-middleware" in message
     assert "LangGraphGovernedTools" in message
     assert sent == []
+
+
+async def _unused_async(*args: Any, **kwargs: Any) -> dict[str, str]:
+    raise AssertionError("legacy factory must warn before touching the client")
+
+
+@pytest.mark.parametrize(
+    "factory_name",
+    ["get_langgraph_tools", "get_llamaindex_tools", "get_autogen_tools"],
+)
+def test_legacy_factories_warn_they_are_ungoverned(monkeypatch, factory_name):
+    """Every ungoverned factory steers buyers to the governed wrappers first."""
+    _stub_module(monkeypatch, "langchain_core.tools", tool=lambda fn: fn)
+    _stub_module(monkeypatch, "llama_index.core.tools", FunctionTool=_StubFunctionTool)
+    client = types.SimpleNamespace(
+        emit_telemetry=_unused_async,
+        get_balance=_unused_async,
+        send_message=_unused_async,
+        decide=_unused_async,
+        heal=_unused_async,
+        create_awi_session=_unused_async,
+    )
+    factory = {
+        "get_langgraph_tools": get_langgraph_tools,
+        "get_llamaindex_tools": get_llamaindex_tools,
+        "get_autogen_tools": get_autogen_tools,
+    }[factory_name]
+
+    with pytest.warns(DeprecationWarning, match="legacy ungoverned") as caught:
+        tools = factory(client)
+
+    assert tools, "legacy factory must still return its tools alongside the warning"
+    assert caught[0].filename == __file__
 
 
 # --- Real frameworks, when installed ----------------------------------------

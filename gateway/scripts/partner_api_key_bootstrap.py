@@ -120,7 +120,14 @@ def provision(
         "X-API-Key": bootstrap_key,
         "Content-Type": "application/json",
     }
-    with httpx.Client(base_url=base, headers=headers, timeout=60.0) as client:
+    # Stay on the named origin: an ambient proxy or a redirect can move this key.
+    with httpx.Client(
+        base_url=base,
+        headers=headers,
+        timeout=60.0,
+        trust_env=False,
+        follow_redirects=False,
+    ) as client:
         health = client.get("/health")
         _require(health.status_code == 200, f"/health → {health.status_code}")
 

@@ -4,6 +4,9 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ## [Unreleased]
 
+- Optional PostHog product tracking (`POSTHOG_API_KEY`, `POSTHOG_HOST`; off when
+  unset): identify with email and `signup` on account creation, `activation` once
+  per account on first key use. Fail-safe and non-blocking.
 - Upstream MCP: optional multi-tool discovery and exact-name allowlist with
   stable public IDs, per-tool permit scope, and unchanged per-call credits.
 - Initial import of the gateway (Fair Source, FSL-1.1-ALv2), the Python SDK and

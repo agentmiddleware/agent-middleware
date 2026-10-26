@@ -24,6 +24,7 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
+from ..core import product_analytics
 from ..core.time import to_naive_utc, utc_now
 from ..db.database import get_session_factory
 from ..db.models import (
@@ -484,6 +485,20 @@ class APIKeyService:
             if expires_at and expires_at < now:
                 return None
 
+            # A key read as never-used leaves first_used_at to the guarded
+            # claim below, so exactly one request records the first use (and
+            # fires the activation event) even when first uses race.
+            unused_at_read = key.first_used_at is None
+            first_use_values: dict[str, Any] = (
+                {}
+                if unused_at_read
+                else {
+                    "first_used_at": func.coalesce(
+                        APIKeyModel.first_used_at, to_naive_utc(now)
+                    )
+                }
+            )
+
             if key.max_uses is not None:
                 # Guarded increment: the WHERE clause makes concurrent
                 # requests race for the remaining budget instead of all
@@ -507,9 +522,7 @@ class APIKeyService:
                     .values(
                         use_count=APIKeyModel.use_count + 1,
                         last_used_at=to_naive_utc(now),
-                        first_used_at=func.coalesce(
-                            APIKeyModel.first_used_at, to_naive_utc(now)
-                        ),
+                        **first_use_values,
                     )
                     .execution_options(synchronize_session=False)
                 )
@@ -529,9 +542,7 @@ class APIKeyService:
                     )
                     .values(
                         last_used_at=to_naive_utc(now),
-                        first_used_at=func.coalesce(
-                            APIKeyModel.first_used_at, to_naive_utc(now)
-                        ),
+                        **first_use_values,
                     )
                     .execution_options(synchronize_session=False)
                 )
@@ -539,7 +550,62 @@ class APIKeyService:
                 if (cast(Any, used).rowcount or 0) == 0:
                     return None
 
+            if unused_at_read:
+                claimed = await session.execute(
+                    update(APIKeyModel)
+                    .where(
+                        col(APIKeyModel.key_id) == key.key_id,
+                        col(APIKeyModel.first_used_at).is_(None),
+                    )
+                    .values(first_used_at=to_naive_utc(now))
+                    .execution_options(synchronize_session=False)
+                )
+                await session.commit()
+                if (cast(Any, claimed).rowcount or 0) == 1:
+                    await self._track_first_key_use(session, key)
+
         return key
+
+    async def _track_first_key_use(
+        self, session: AsyncSession, key: APIKeyModel
+    ) -> None:
+        """Fire ``activation`` once per account on its first key use.
+
+        The account is the root (sponsor) wallet. The event fires only when
+        no other key on the root wallet or its direct child wallets has been
+        used. Never raises: tracking must not affect authentication.
+        """
+        if not product_analytics.is_enabled():
+            return
+        try:
+            wallet = await session.get(WalletModel, key.wallet_id)
+            root_id = key.wallet_id
+            if wallet is not None and wallet.parent_wallet_id:
+                root_id = wallet.parent_wallet_id
+            scope = select(col(WalletModel.wallet_id)).where(
+                or_(
+                    col(WalletModel.wallet_id) == root_id,
+                    col(WalletModel.parent_wallet_id) == root_id,
+                )
+            )
+            prior = await session.execute(
+                select(func.count())
+                .select_from(APIKeyModel)
+                .where(
+                    col(APIKeyModel.key_id) != key.key_id,
+                    col(APIKeyModel.first_used_at).is_not(None),
+                    col(APIKeyModel.wallet_id).in_(scope),
+                )
+            )
+            if (prior.scalar_one() or 0) > 0:
+                return
+            product_analytics.track_activation(
+                root_id, key_id=key.key_id, wallet_id=key.wallet_id
+            )
+        except Exception as exc:  # noqa: BLE001 - tracking must never raise
+            logger.debug(
+                "product_analytics_activation_failed error=%s", type(exc).__name__
+            )
 
     async def rotate_key(
         self,

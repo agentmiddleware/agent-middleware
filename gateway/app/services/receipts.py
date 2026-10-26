@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.build_metadata import get_build_commit_sha
 from app.core.config import DuplicateGuardMode, get_settings
 from app.core.resilience import run_with_write_conflict_retry
 from app.core.time import utc_now
@@ -80,6 +81,14 @@ def _action_binding(model: PermitModel | ReceiptModel) -> dict[str, Any]:
     return ActionPermitFields.model_validate(values).model_dump(exclude_none=True)
 
 
+def receipt_enforcement_mode() -> str | None:
+    """The trust posture this process enforces, as signed into receipts."""
+    settings = get_settings()
+    if settings.TRUST_MODE_ENABLED and not settings.ALLOW_LEGACY_UNPERMITTED_MCP:
+        return "enforce"
+    return "permissive"
+
+
 def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
     return ReceiptResponse(
         **_action_binding(model),
@@ -97,6 +106,8 @@ def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
         credits_charged=model.credits_charged,
         outcome=model.outcome,
         reason_code=model.reason_code,
+        enforcement_mode=model.enforcement_mode,
+        gateway_build=model.gateway_build,
         audit_event_id=model.audit_event_id,
         approval_id=model.approval_id,
         constraints_evaluated=_loads_dict(model.constraints_evaluated_json),
@@ -132,6 +143,11 @@ class ReceiptService:
         }
         if model.reason_code is not None:
             payload["reason_code"] = model.reason_code
+        # Signed only when set, so receipts issued before 052 keep verifying.
+        if model.enforcement_mode is not None:
+            payload["enforcement_mode"] = model.enforcement_mode
+        if model.gateway_build is not None:
+            payload["gateway_build"] = model.gateway_build
         if include_linkage and model.idempotency_record_id is not None:
             payload["idempotency_record_id"] = model.idempotency_record_id
         if include_linkage and model.dispatch_attempt_id is not None:
@@ -458,6 +474,12 @@ class ReceiptService:
         }
         if reason_code is not None:
             payload["reason_code"] = reason_code
+        enforcement_mode = receipt_enforcement_mode()
+        gateway_build = get_build_commit_sha()
+        if enforcement_mode is not None:
+            payload["enforcement_mode"] = enforcement_mode
+        if gateway_build is not None:
+            payload["gateway_build"] = gateway_build
         # Keep historical receipt signatures valid: these additive fields are
         # signed only on receipts that actually carry the new linkage.
         if idempotency_record_id is not None:
@@ -512,6 +534,8 @@ class ReceiptService:
                 credits_charged=credits_charged,
                 outcome=outcome,
                 reason_code=reason_code,
+                enforcement_mode=enforcement_mode,
+                gateway_build=gateway_build,
                 audit_event_id=audit_event_id,
                 approval_id=approval_id,
                 constraints_evaluated_json=json.dumps(constraints_evaluated)

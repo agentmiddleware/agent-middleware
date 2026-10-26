@@ -253,7 +253,9 @@ def _record_to_call(source: str, record: Any) -> RecordedCall:
             f"{source}: recorded receipt field reason_code must be a string"
         )
     approval_id = payload.get("approval_id")
-    if approval_id is not None and not (isinstance(approval_id, str) and approval_id):
+    if approval_id is not None and not (
+        isinstance(approval_id, str) and approval_id.strip()
+    ):
         raise ReplayError(
             f"{source}: recorded receipt field approval_id must be a non-empty string"
         )

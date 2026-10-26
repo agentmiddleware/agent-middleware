@@ -427,18 +427,24 @@ async def test_tools_call_dogfood_tool_works_without_prior_tools_list(
 
 
 @pytest.mark.anyio
-async def test_tools_call_auto_mints_bounded_permit_and_charges_once(
+async def test_tools_call_auto_mints_bounded_permit_and_reuses_replay(
     client, standard_mcp_enabled, clean_database
 ):
     provisioned = await provision_agent_wallet(client)
     wallet_id = provisioned["agent_wallet_id"]
     registry = get_service_registry()
+    dispatched = []
+
+    def echo(message="ok"):
+        dispatched.append(message)
+        return {"message": message}
+
     registry.register_local(
         service_id="standard-echo",
         name="Standard Echo",
         description="Standard MCP endpoint test tool",
         category=ServiceCategory.AGENT_COMMS,
-        func=lambda message="ok": {"message": message},
+        func=echo,
         credits_per_unit=2.0,
         unit_name="call",
     )
@@ -475,11 +481,27 @@ async def test_tools_call_auto_mints_bounded_permit_and_charges_once(
         assert permit["allowed_tools"] == ["standard-echo"]
         assert float(permit["max_credits"]) == 2.0
 
-        # Replaying the same idempotency key returns the original receipt
-        # without a second charge.
+        # A retry with the same idempotency key must return the original
+        # receipt instead of dispatching again.
         replay = await client.post("/mcp", json=call, headers=headers)
         assert replay.status_code == 200
-        assert replay.json()["result"]["receipt"]["receipt_id"] == receipt["receipt_id"]
+        assert replay.json()["result"]["receipt"] == receipt
+        assert dispatched == ["hi"]
+
+        next_call = _rpc(
+            "tools/call",
+            params={"name": "standard-echo", "arguments": {"message": "next"}},
+        )
+        conflict = await client.post("/mcp", json=next_call, headers=headers)
+        assert conflict.status_code == 200
+        assert conflict.json()["error"]["message"] == "idempotency_key_reused"
+        assert dispatched == ["hi"]
+
+        next_headers = {**headers, "Idempotency-Key": "standard-mcp-call-2"}
+        next_response = await client.post("/mcp", json=next_call, headers=next_headers)
+        assert next_response.status_code == 200
+        assert next_response.json()["result"]["receipt"]["permit_id"] != permit_id
+        assert dispatched == ["hi", "next"]
 
         ledger = await client.get(
             f"/v1/billing/ledger/{wallet_id}", headers=provisioned["agent_headers"]
@@ -489,7 +511,7 @@ async def test_tools_call_auto_mints_bounded_permit_and_charges_once(
             for entry in ledger.json()["entries"]
             if "standard-echo" in entry["description"]
         ]
-        assert len(debits) == 1
+        assert len(debits) == 2
     finally:
         registry.unregister_local("standard-echo")
 

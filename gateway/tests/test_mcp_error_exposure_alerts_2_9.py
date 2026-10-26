@@ -497,6 +497,7 @@ def _governed_error(reason: str) -> mcp_router.GovernedToolError:
 
 FIXED_DENIAL_REASONS: list[tuple[Callable[[str], BaseException], str]] = [
     (_permission_error, "quote_expired"),
+    (_permission_error, "quote_invalid"),
     (_permission_error, "quote_not_found"),
     (_permission_error, "quote_wallet_mismatch"),
     (_permission_error, "quote_tool_mismatch"),

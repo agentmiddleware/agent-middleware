@@ -439,6 +439,7 @@ _PUBLIC_REASON_MESSAGES: dict[str, str] = {
         "permit_required",
         "quote_already_consumed",
         "quote_expired",
+        "quote_invalid",
         "quote_not_found",
         "quote_tool_mismatch",
         "quote_wallet_mismatch",
@@ -556,7 +557,7 @@ def _public_jsonrpc_error(
     """Log ``str(exc)`` with a request id and return a public JSON-RPC error."""
     request_id = _mcp_request_id(request)
     logger.exception(
-        "mcp_jsonrpc_error surface=/mcp/messages request_id=%s code=%s class=%s error=%s",
+        "mcp_jsonrpc_error surface=/mcp/messages request_id=%s code=%s class=%s error=%r",
         request_id,
         code,
         type(exc).__name__,
@@ -573,7 +574,7 @@ def _log_rest_error(exc: BaseException, *, request: Request, status_code: int) -
     """Log a REST invoke failure with a request id; return the id for the body."""
     request_id = _mcp_request_id(request)
     logger.exception(
-        "mcp_rest_error surface=/mcp/tools/{service_id}/invoke request_id=%s status=%s class=%s error=%s",
+        "mcp_rest_error surface=/mcp/tools/{service_id}/invoke request_id=%s status=%s class=%s error=%r",
         request_id,
         status_code,
         type(exc).__name__,
@@ -831,7 +832,7 @@ async def handle_messages(
             # so the operator can find this log line from the client payload.
             terminal_request_id = _mcp_request_id(request)
             logger.exception(
-                "mcp_jsonrpc_error surface=/mcp/messages request_id=%s code=%s class=%s error=%s",
+                "mcp_jsonrpc_error surface=/mcp/messages request_id=%s code=%s class=%s error=%r",
                 terminal_request_id,
                 e.jsonrpc_code,
                 type(e).__name__,

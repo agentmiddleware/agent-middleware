@@ -466,6 +466,16 @@ _PUBLIC_MESSAGE_BY_EXC_TYPE: dict[type[BaseException], str] = {
     ToolExecutionError: "tool_execution_failed",
 }
 
+# Refusal codes whose ``code: detail`` suffix may reach the wire, and only on
+# the denial path (a ToolPermissionDenied/PermissionError). ``permit_forbidden_field``
+# is the one documented producer-controlled detail: the suffix names the entry
+# of the permit's own forbidden-fields list that the caller's arguments hit
+# (docs/denial-details.md), and the field name already travels in the denial's
+# details payload. Every other refusal code is answered bare. In particular a
+# wrapped tool failure must never smuggle arbitrary tool output onto the wire
+# by mimicking a ``code: detail`` prefix.
+_REFUSAL_DETAIL_ALLOWLIST: frozenset[str] = frozenset({"permit_forbidden_field"})
+
 
 def _mcp_request_id(request: Request) -> str:
     """Return a short correlation id from X-Request-ID, or a fresh uuid4 hex.
@@ -483,12 +493,20 @@ def _public_jsonrpc_message(exc: BaseException, *, code: int) -> str:
     """Client message for ``exc``: stable reason codes pass through, rest is canned.
 
     Governed denial reason codes (``delivery_uncertain``,
-    ``permit_forbidden_field:<field>``, ...) are contract, not exception
-    text: clients match them and receipts sign them, so they reach the wire
-    unchanged, including a ``code: detail`` suffix. Anything else that is not
-    one of the fixed public strings below is replaced by a canned message and
-    the original text stays server-side in the log.
+    ``permit_forbidden_field``, ...) are contract, not exception text:
+    clients match them and receipts sign them. A ``code: detail`` suffix
+    reaches the wire only for a code in ``_REFUSAL_DETAIL_ALLOWLIST`` carried
+    by a denial exception; every other refusal code is answered bare (text
+    before the first colon), so a wrapped tool failure can neither select the
+    denial contract nor smuggle arbitrary tool output through it. Anything
+    else that is not one of the fixed public strings below is replaced by a
+    canned message and the original text stays server-side in the log.
     """
+    if isinstance(exc, ToolExecutionError):
+        # A wrapped tool failure, classified by type before any text matching:
+        # the tool's own text may mimic a refusal code or a denial prefix, and
+        # must never select the message.
+        return "tool_execution_failed"
     text = str(exc)
     canned = _PUBLIC_REASON_MESSAGES.get(text)
     if canned is not None:
@@ -504,7 +522,10 @@ def _public_jsonrpc_message(exc: BaseException, *, code: int) -> str:
     if text.startswith("refund_failed"):
         return "refund_failed"
     if is_refusal_reason_code(text):
-        return text
+        bare_code = text.split(":", 1)[0].strip()
+        if bare_code in _REFUSAL_DETAIL_ALLOWLIST and isinstance(exc, PermissionError):
+            return text
+        return bare_code
     for exc_type, message in _PUBLIC_MESSAGE_BY_EXC_TYPE.items():
         if isinstance(exc, exc_type):
             return message

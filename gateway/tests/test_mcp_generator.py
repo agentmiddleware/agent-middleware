@@ -894,7 +894,10 @@ class TestMcpInvokeRoute:
             assert response.status_code == 200
             payload = response.json()
             assert payload["error"]["code"] == -32603
-            assert "insufficient_funds" in payload["error"]["message"]
+            # The tool's own text mimics a refusal code; the wrapped failure
+            # is classified by type, so the mimic must not select the message.
+            assert payload["error"]["message"] == "tool_execution_failed"
+            assert "insufficient_funds" not in response.text
             assert ledger_resp.status_code == 200
             tool_entries = [
                 entry

@@ -212,6 +212,11 @@ async def test_malformed_request_id_header_is_replaced_with_generated_hex(
 REQUEST_ID_242_A = "req-fixed-242-0001"
 REQUEST_ID_242_B = "req-fixed-242-0002"
 REQUEST_ID_242_C = "req-fixed-242-0003"
+REQUEST_ID_242_D = "req-fixed-242-0004"
+REQUEST_ID_242_E = "req-fixed-242-0005"
+REQUEST_ID_242_F = "req-fixed-242-0006"
+REQUEST_ID_242_G = "req-fixed-242-0007"
+REQUEST_ID_242_H = "req-fixed-242-0008"
 SENTINEL_242 = "REQ242_FIXED_SENTINEL_MUST_NOT_LEAK"
 SENTINEL_242_B = "REQ242_FIXED_SENTINEL_B_MUST_NOT_LEAK"
 TOOL_242 = "exposure-probe-242"
@@ -336,3 +341,200 @@ async def test_messages_governed_tool_error_hides_exception_text_fixed_id(
     ]
     assert matched, caplog.text
     assert matched[0].exc_info is not None
+
+
+# Fixed-value coverage for the refusal-code sanitizer: a wrapped tool failure
+# is classified by type before any text matching, a refusal suffix is stripped
+# to the bare code unless allowlisted on the denial path, and the fixed
+# quote/refund denial reasons pass through unchanged.
+
+
+@pytest.mark.anyio
+async def test_messages_tool_execution_error_mimicking_refusal_is_classified(
+    client, clean_database, monkeypatch, caplog
+):
+    provisioned = await provision_agent_wallet(client)
+    _patch_handle(
+        monkeypatch,
+        mcp_router.ToolExecutionError(f"wallet_frozen: {SENTINEL_242}"),
+    )
+
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        resp = await client.post(
+            "/mcp/messages",
+            json=MCP_CALL,
+            headers={
+                **provisioned["agent_headers"],
+                "X-Request-ID": REQUEST_ID_242_D,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert SENTINEL_242 not in resp.text
+    error = resp.json()["error"]
+    assert error["message"] == "tool_execution_failed"
+    assert error["data"]["request_id"] == REQUEST_ID_242_D
+    matched = [
+        r
+        for r in caplog.records
+        if r.name == LOGGER
+        and REQUEST_ID_242_D in r.getMessage()
+        and SENTINEL_242 in r.getMessage()
+    ]
+    assert matched, caplog.text
+    assert matched[0].exc_info is not None
+
+
+@pytest.mark.anyio
+async def test_messages_refusal_suffix_is_stripped_to_bare_code(
+    client, clean_database, monkeypatch, caplog
+):
+    provisioned = await provision_agent_wallet(client)
+    _patch_handle(
+        monkeypatch,
+        mcp_router.ToolPermissionDenied(f"wallet_frozen: {SENTINEL_242}"),
+    )
+
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        resp = await client.post(
+            "/mcp/messages",
+            json=MCP_CALL,
+            headers={
+                **provisioned["agent_headers"],
+                "X-Request-ID": REQUEST_ID_242_E,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert SENTINEL_242 not in resp.text
+    error = resp.json()["error"]
+    assert error["message"] == "wallet_frozen"
+    assert error["data"]["request_id"] == REQUEST_ID_242_E
+    matched = [
+        r
+        for r in caplog.records
+        if r.name == LOGGER
+        and REQUEST_ID_242_E in r.getMessage()
+        and SENTINEL_242 in r.getMessage()
+    ]
+    assert matched, caplog.text
+
+
+@pytest.mark.anyio
+async def test_messages_allowlisted_forbidden_field_detail_passes_through(
+    client, clean_database, monkeypatch, caplog
+):
+    provisioned = await provision_agent_wallet(client)
+    _patch_handle(
+        monkeypatch,
+        mcp_router.ToolPermissionDenied("permit_forbidden_field:secret_token"),
+    )
+
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        resp = await client.post(
+            "/mcp/messages",
+            json=MCP_CALL,
+            headers={
+                **provisioned["agent_headers"],
+                "X-Request-ID": REQUEST_ID_242_F,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    error = resp.json()["error"]
+    assert error["message"] == "permit_forbidden_field:secret_token"
+    assert error["data"]["request_id"] == REQUEST_ID_242_F
+    matched = [
+        r
+        for r in caplog.records
+        if r.name == LOGGER and REQUEST_ID_242_F in r.getMessage()
+    ]
+    assert matched, caplog.text
+
+
+@pytest.mark.anyio
+async def test_messages_wrapped_tool_mimic_of_allowlisted_code_is_bare(
+    client, clean_database, monkeypatch, caplog
+):
+    provisioned = await provision_agent_wallet(client)
+    _patch_handle(
+        monkeypatch,
+        mcp_router.GovernedToolError(f"permit_forbidden_field:{SENTINEL_242}"),
+    )
+
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        resp = await client.post(
+            "/mcp/messages",
+            json=MCP_CALL,
+            headers={
+                **provisioned["agent_headers"],
+                "X-Request-ID": REQUEST_ID_242_G,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert SENTINEL_242 not in resp.text
+    error = resp.json()["error"]
+    assert error["message"] == "permit_forbidden_field"
+    assert error["data"]["request_id"] == REQUEST_ID_242_G
+    matched = [
+        r
+        for r in caplog.records
+        if r.name == LOGGER
+        and REQUEST_ID_242_G in r.getMessage()
+        and SENTINEL_242 in r.getMessage()
+    ]
+    assert matched, caplog.text
+
+
+def _permission_error(reason: str) -> PermissionError:
+    return PermissionError(reason)
+
+
+def _governed_error(reason: str) -> mcp_router.GovernedToolError:
+    return mcp_router.GovernedToolError(reason)
+
+
+FIXED_DENIAL_REASONS: list[tuple[Callable[[str], BaseException], str]] = [
+    (_permission_error, "quote_expired"),
+    (_permission_error, "quote_not_found"),
+    (_permission_error, "quote_wallet_mismatch"),
+    (_permission_error, "quote_tool_mismatch"),
+    (_governed_error, "refund_reconciliation_resolution_invalid"),
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("make_exc", "reason"),
+    FIXED_DENIAL_REASONS,
+    ids=[row[1] for row in FIXED_DENIAL_REASONS],
+)
+async def test_messages_fixed_denial_reasons_are_preserved(
+    client, clean_database, monkeypatch, caplog, make_exc, reason
+):
+    provisioned = await provision_agent_wallet(client)
+    _patch_handle(monkeypatch, make_exc(reason))
+
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        resp = await client.post(
+            "/mcp/messages",
+            json=MCP_CALL,
+            headers={
+                **provisioned["agent_headers"],
+                "X-Request-ID": REQUEST_ID_242_H,
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    error = resp.json()["error"]
+    assert error["message"] == reason
+    assert error["data"]["request_id"] == REQUEST_ID_242_H
+    matched = [
+        r
+        for r in caplog.records
+        if r.name == LOGGER
+        and REQUEST_ID_242_H in r.getMessage()
+        and reason in r.getMessage()
+    ]
+    assert matched, caplog.text

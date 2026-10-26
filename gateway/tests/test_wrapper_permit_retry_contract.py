@@ -197,6 +197,30 @@ async def _prepare(monkeypatch, framework, client):
     return prepared[:2]
 
 
+@pytest.mark.asyncio
+async def test_one_caller_client_is_reused_across_calls_and_wrappers(monkeypatch):
+    gateway = Gateway(lose_first=False)
+    async with AgentMiddlewareClient(
+        "synthetic",
+        base_url="http://local.invalid",
+        transport=httpx.MockTransport(gateway),
+    ) as client:
+        for framework in ("autogen", "crewai", "langchain"):
+            tool, call = await _prepare(monkeypatch, framework, client)
+            try:
+                assert "receipt-original" in str(await call(**CALL))
+                assert "receipt-original" in str(await call(**CALL))
+                if framework != "langchain":
+                    assert tool.client is client
+            finally:
+                if framework == "crewai":
+                    tool.close()
+
+    assert len(gateway.permit_bodies) == 3
+    assert gateway.invoke_keys == ["logical-action"] * 6
+    assert len(gateway.charges) == 1
+
+
 CALL = dict(
     tool_name="partner.search",
     idempotency_key="logical-action",
@@ -296,19 +320,24 @@ async def test_mutated_wallet_or_budget_does_not_reuse_cached_authority(
 def test_crewai_sync_entry_point_reuses_body_after_lost_ack(monkeypatch):
     module = _load_wrapper(monkeypatch, "crewai")
     gateway = Gateway()
+    transport = httpx.MockTransport(gateway)
     loop = asyncio.new_event_loop()
     monkeypatch.setattr(asyncio, "get_event_loop", lambda: loop)
     client = AgentMiddlewareClient(
         "synthetic",
         base_url="http://local.invalid",
-        transport=httpx.MockTransport(gateway),
+        transport=transport,
     )
     tool = module.CrewAIB2ATool(api_key="synthetic", wallet_id="wallet-local")
     tool.client = client
+    tool._sync_client = AgentMiddlewareClient(
+        "synthetic", base_url="http://local.invalid", transport=transport
+    )
     try:
         assert tool._run("call_tool", **CALL).startswith("Error:")
         assert "receipt-original" in tool._run("call_tool", **CALL)
         assert gateway.permit_bodies[0] == gateway.permit_bodies[1]
     finally:
+        tool.close()
         loop.run_until_complete(client.close())
         loop.close()

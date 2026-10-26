@@ -382,7 +382,7 @@ class CrewAIB2ATool(BaseTool):
                 return self._run(**kwargs)
             except _TERMINAL_ERRORS as exc:
                 return ToolFailure(
-                    message=str(exc) or type(exc).__name__,
+                    message=_error_text(exc),
                     code=type(exc).__name__,
                     retryable=False,
                 )

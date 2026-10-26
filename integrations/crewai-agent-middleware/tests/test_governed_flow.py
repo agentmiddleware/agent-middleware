@@ -556,20 +556,30 @@ def test_crewai_dispatch_stops_on_terminal_gateway_error(reason, outcome, error_
         asyncio.run(client.close())
     assert calls == 1
     assert exc_info.value.record.failure.code == error_type.__name__
+    assert f"receipt_id=receipt-{outcome}" in exc_info.value.record.failure.message
     assert not exc_info.value.record.failure.retryable
 
 
+@pytest.mark.parametrize(
+    ("reason", "outcome", "error_type"),
+    [
+        ("insufficient_funds", "insufficient_funds", InsufficientFundsError),
+        ("permit_tool_not_allowed", "denied", PermitDeniedError),
+        ("delivery_uncertain", "delivery_uncertain", DeliveryUncertainError),
+        ("idempotency_key_reused", "denied", IdempotencyConflictError),
+    ],
+)
 @pytest.mark.asyncio
-async def test_crewai_async_dispatch_stops_on_delivery_uncertain():
+async def test_crewai_async_dispatch_stops_on_terminal_gateway_error(
+    reason, outcome, error_type
+):
     calls = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
         if request.url.path == "/mcp/messages":
             calls += 1
-        return await _mcp_error_handler("delivery_uncertain", "delivery_uncertain")(
-            request
-        )
+        return await _mcp_error_handler(reason, outcome)(request)
 
     tool, client = _governed_tool(handler)
     call_json = json.dumps(_BILLING_CALL)
@@ -586,7 +596,9 @@ async def test_crewai_async_dispatch_stops_on_delivery_uncertain():
         tool.close()
         await client.close()
     assert calls == 1
-    assert exc_info.value.record.failure.code == "DeliveryUncertainError"
+    assert exc_info.value.record.failure.code == error_type.__name__
+    assert f"receipt_id=receipt-{outcome}" in exc_info.value.record.failure.message
+    assert not exc_info.value.record.failure.retryable
 
 
 @pytest.mark.parametrize(

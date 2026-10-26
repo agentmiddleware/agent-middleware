@@ -7,6 +7,8 @@ description: Run the public PayPal checkout example with mock services first.
 
 # PayPal sandbox demo
 
+Preview. Not yet run against the PayPal sandbox.
+
 Run the [public PayPal agent example](https://github.com/agentmiddleware/amw-paypal-agent-demo) with mock services first. It includes its own `mini_gateway/` reference implementation and vendored AMW client code. It does not connect to a production AMW gateway.
 
 ```bash

@@ -27,6 +27,22 @@ settings = get_settings()
 # authenticates through the static-dev path.
 STATIC_DEV_KEY_PREFIX = "amw_dev_"
 
+_FORWARDING_HEADERS = frozenset(
+    {
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-forwarded-port",
+        "x-forwarded-server",
+        "x-real-ip",
+        "x-client-ip",
+        "true-client-ip",
+        "cf-connecting-ip",
+        "x-original-forwarded-for",
+    }
+)
+
 api_key_header = APIKeyHeader(
     name=settings.API_KEY_HEADER,
     auto_error=False,
@@ -238,8 +254,24 @@ def _is_loopback_client(host: str | None) -> bool:
     return address.is_loopback
 
 
+def _is_loopback_bind(host: str | None) -> bool:
+    """Accept only an explicit loopback bind address or localhost."""
+    if not host:
+        return False
+    host = host.strip().casefold()
+    if host == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
+
+
 def _require_debug_open_loopback(request: Request | None) -> None:
-    """Refuse DEBUG open-mode bootstrap auth to non-loopback HTTP peers.
+    """Refuse DEBUG open-mode bootstrap auth outside direct loopback HTTP.
 
     DEBUG open mode (DEBUG=true with no keys configured) exists so a local
     checkout boots to a usable shell with zero setup. Without this check any
@@ -249,8 +281,15 @@ def _require_debug_open_loopback(request: Request | None) -> None:
     still authenticates from anywhere, and production-like environments
     already refuse DEBUG at boot.
     """
-    if request is None or (
-        request.client is not None and _is_loopback_client(request.client.host)
+    if request is None:
+        return
+    if (
+        request.client is not None
+        and _is_loopback_client(request.client.host)
+        and _is_loopback_bind(get_settings().HOST)
+        and not any(
+            name.casefold() in _FORWARDING_HEADERS for name in request.headers.keys()
+        )
     ):
         return
     raise HTTPException(
@@ -432,9 +471,9 @@ async def _resolve_auth_context(
         )
 
     # Last resort: DEBUG open mode (DEBUG=true, no keys configured) on a
-    # local-compatible environment. Bound to loopback HTTP peers so a demo
-    # bound to a shared interface does not hand bootstrap admin to the
-    # network. Direct in-process callers (no request) keep local behavior.
+    # local-compatible environment. Require a loopback peer and configured
+    # bind with no forwarding headers. Direct in-process callers (no request)
+    # keep local behavior.
     _require_debug_open_loopback(request)
 
     return AuthContext(

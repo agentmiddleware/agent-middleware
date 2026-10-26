@@ -9,6 +9,7 @@ request) keep the previous local behavior.
 
 import pytest
 from fastapi import HTTPException
+from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 
 from app.core.auth import (
@@ -17,6 +18,7 @@ from app.core.auth import (
     get_auth_context,
 )
 from app.core.config import get_settings
+from app.main import app
 
 UNKNOWN_KEY = "some-unknown-caller-key"
 
@@ -67,6 +69,35 @@ async def test_debug_open_mode_refuses_remote_peer(open_mode_settings):
     assert exc_info.value.detail["error"] == "invalid_api_key"
 
 
+@pytest.mark.parametrize("path", ["/v1/permits", "/v1/billing/pricing"])
+@pytest.mark.parametrize("peer", [("203.0.113.9", 51234), None])
+async def test_debug_open_mode_http_routes_refuse_remote_or_missing_peer(
+    open_mode_settings, path, peer
+):
+    transport = ASGITransport(app=app, client=peer)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(path, headers={"X-API-Key": UNKNOWN_KEY})
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "invalid_api_key"
+
+
+async def test_debug_open_mode_refuses_missing_http_client(open_mode_settings):
+    with pytest.raises(HTTPException) as exc_info:
+        await get_auth_context(api_key=UNKNOWN_KEY, request=_request_from(None))
+    assert exc_info.value.status_code == 403
+
+
+async def test_configured_key_remains_valid_from_remote_http_peer(open_mode_settings):
+    open_mode_settings.VALID_API_KEYS = "the-configured-bootstrap-key"
+    transport = ASGITransport(app=app, client=("203.0.113.9", 51234))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/v1/billing/pricing",
+            headers={"X-API-Key": "the-configured-bootstrap-key"},
+        )
+    assert response.status_code == 200
+
+
 async def test_debug_open_mode_refuses_private_network_peer(open_mode_settings):
     with pytest.raises(HTTPException) as exc_info:
         await get_auth_context(api_key=UNKNOWN_KEY, request=_request_from("10.0.0.9"))
@@ -107,6 +138,9 @@ def test_is_loopback_client(host, expected):
 
 def test_debug_open_auth_armed_matrix(open_mode_settings):
     assert debug_open_auth_armed(open_mode_settings) is True
+    open_mode_settings.VALID_API_KEYS = ", ,"
+    assert debug_open_auth_armed(open_mode_settings) is True
+    open_mode_settings.VALID_API_KEYS = ""
     open_mode_settings.DEBUG = False
     assert debug_open_auth_armed(open_mode_settings) is False
     open_mode_settings.DEBUG = True

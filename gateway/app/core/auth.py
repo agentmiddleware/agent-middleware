@@ -215,11 +215,11 @@ async def get_auth_context(
 
 
 def _is_loopback_client(host: str | None) -> bool:
-    """Whether an HTTP peer address is loopback (or unknown).
+    """Whether a peer address is loopback (or unknown).
 
-    Unknown (``None``) and non-IP test hosts (Starlette's ``testclient``)
-    are treated as loopback: direct in-process callers pass no request at
-    all, and the test client never represents a remote network peer. An
+    Unknown (``None``) retains direct-helper compatibility. An HTTP request
+    with no client is rejected by ``_require_debug_open_loopback``. Non-IP
+    test hosts (Starlette's ``testclient``) are treated as loopback. An
     unparseable non-empty host fails closed to non-loopback.
     """
     if not host:
@@ -249,8 +249,9 @@ def _require_debug_open_loopback(request: Request | None) -> None:
     still authenticates from anywhere, and production-like environments
     already refuse DEBUG at boot.
     """
-    peer = request.client.host if request is not None and request.client else None
-    if _is_loopback_client(peer):
+    if request is None or (
+        request.client is not None and _is_loopback_client(request.client.host)
+    ):
         return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -473,7 +474,7 @@ def debug_open_auth_armed(settings: Any) -> bool:
     """
     return bool(
         settings.DEBUG
-        and not settings.VALID_API_KEYS.strip()
+        and not any(key.strip() for key in settings.VALID_API_KEYS.split(","))
         and not settings.STATIC_DEV_API_KEYS.strip()
         and not is_production_like_environment(settings.ENVIRONMENT)
     )
@@ -625,12 +626,13 @@ async def _auth_from_jwt(token: str) -> AuthContext:
 
 async def verify_api_key(
     api_key: str | None = Security(api_key_header),
+    request: Request = None,  # type: ignore[assignment]
 ) -> str:
     """
     Validate the provided API key.
     Returns the raw key on success for backwards-compatible dependencies.
     """
-    context = await get_auth_context(api_key)
+    context = await get_auth_context(api_key, request=request)
     return context.raw_key
 
 

@@ -29,8 +29,10 @@ def _insert_attempt(conn, **overrides):
         name = col["name"]
         if name in overrides:
             values[name] = overrides[name]
-        elif not col["nullable"] and col.get("default") is None and not col.get(
-            "autoincrement"
+        elif (
+            not col["nullable"]
+            and col.get("default") is None
+            and not col.get("autoincrement")
         ):
             kind = str(col["type"]).upper()
             if "INT" in kind or "NUMERIC" in kind or "FLOAT" in kind:
@@ -43,7 +45,9 @@ def _insert_attempt(conn, **overrides):
                 values[name] = f"{name}-1"
     names = ", ".join(values)
     params = ", ".join(f":{n}" for n in values)
-    conn.execute(text(f"INSERT INTO mcp_dispatch_attempts ({names}) VALUES ({params})"), values)
+    conn.execute(
+        text(f"INSERT INTO mcp_dispatch_attempts ({names}) VALUES ({params})"), values
+    )
 
 
 def test_047_downgrade_refuses_when_reconcile_status_is_set(tmp_path, monkeypatch):
@@ -72,7 +76,9 @@ def test_047_upgrade_fills_in_partially_existing_columns_and_indexes(
     engine = create_engine(sync_url)
     with engine.begin() as conn:
         conn.execute(
-            text("ALTER TABLE mcp_dispatch_attempts ADD COLUMN reconcile_status VARCHAR(32)")
+            text(
+                "ALTER TABLE mcp_dispatch_attempts ADD COLUMN reconcile_status VARCHAR(32)"
+            )
         )
         conn.execute(
             text(
@@ -114,9 +120,9 @@ def test_postgres_default_off_creates_policies_but_leaves_rls_disabled(monkeypat
 
         return asyncio.run(run())
 
-    assert fetch("SELECT count(*) FROM pg_tables WHERE schemaname='public'") == [(0,)], (
-        "refuse reused migration DB"
-    )
+    assert fetch("SELECT count(*) FROM pg_tables WHERE schemaname='public'") == [
+        (0,)
+    ], "refuse reused migration DB"
     monkeypatch.setenv("DATABASE_URL", url)
     monkeypatch.setattr(get_settings(), "TENANT_RLS_MODE", "off")
     _run(command.upgrade, Config("alembic.ini"), "head")

@@ -14,7 +14,7 @@ python3 -m pip install -e ./sdk/python
 python3 -m pip install -e ./integrations/crewai-agent-middleware
 ```
 
-Create a CrewAI tool for a wallet-scoped caller. The direct call below uses the local quickstart tool:
+Create a CrewAI tool for a wallet scoped caller. The direct call below uses the local quickstart tool:
 
 ```python
 from crewai_b2a import CrewAIB2ATool

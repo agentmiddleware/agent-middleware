@@ -143,14 +143,6 @@
         <h2 id="honest-title">Signed, offline-verifiable receipts are no longer rare in this field.</h2>
         <div class="thesis-copy">
           <p>
-            Per-call cryptographic evidence for MCP tool calls used to be
-            unusual. It is not now: policy gateways emit signed receipts,
-            and at least one verifies offline without calling its issuer.
-            Audit layers publish hash-chained receipts; whether
-            those carry an issuer signature you can check without the
-            vendor, we have not confirmed.
-          </p>
-          <p>
             The receipt is not the argument. The argument is what the
             receipt is bound to: a ledger debit that cannot happen twice
             under the same accepted idempotency key.
@@ -393,13 +385,12 @@
           <dd>
             Yes. Get a free sandbox demo key at <a href="/demo-key/">/demo-key/</a>
             with no account needed. It runs the demo tool with synthetic credits.
-            Production keys are issued to design partners. Paid pilots are scoped
-            and priced after fit.
+            Production keys are issued during the Preview pilot. The paid pilot
+            is a Preview offer, scoped and priced after fit.
           </dd>
           <dt>Is this production-ready?</dt>
           <dd>
-            Production beta, not production complete. The supported beta is
-            vendor-managed and dedicated per customer: separate API,
+            Preview. Each pilot runs on its own dedicated gateway: separate API,
             PostgreSQL, Redis, signing material, and administrator
             resources. It is not a shared multi-tenant SaaS, and optional
             proof-surface routers are outside the supported production posture.
@@ -454,13 +445,14 @@
                 href="https://api.thisisatest.tech/DESIGN_PARTNER_GUIDE.md"
                 target="_blank"
                 rel="noopener noreferrer"
-                >Design partner guide</a
+                >Design partner guide (Preview)</a
               >
             </p>
           </div>
           <div class="closing-cta">
             <h2>Still think it fits?</h2>
             <p>
+              The paid pilot is a Preview offer.
               The pilot is paid, bounded to one tool, and priced after fit is
               established. Email the action, retry failure, evidence,
               cost of one duplicate, budget owner, and decision date. You get a

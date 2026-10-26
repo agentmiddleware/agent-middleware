@@ -303,7 +303,13 @@ async def test_signed_receipt_returned():
 
 def _governed_tool(handler) -> tuple[CrewAIB2ATool, B2AClient]:
     client = B2AClient(api_key="test-key", transport=httpx.MockTransport(handler))
-    tool = CrewAIB2ATool(api_key="test-key", wallet_id="wallet-1")
+    tool = CrewAIB2ATool(
+        api_key="test-key",
+        wallet_id="wallet-1",
+        sync_client_factory=lambda: B2AClient(
+            api_key="test-key", transport=httpx.MockTransport(handler)
+        ),
+    )
     tool.client = client
     return tool, client
 
@@ -385,17 +391,12 @@ async def test_arun_raises_terminal_billing_errors(reason, outcome, error_type):
 
 
 def _run_on_fresh_loop(tool: CrewAIB2ATool, client: B2AClient, **kwargs):
-    """Call the sync wrapper on its own loop, then close the client."""
-    loop = asyncio.new_event_loop()
+    """Call the sync wrapper on its private loop, then close both clients."""
     try:
-        asyncio.set_event_loop(loop)
-        try:
-            return tool._run(**kwargs)
-        finally:
-            loop.run_until_complete(client.close())
+        return tool._run(**kwargs)
     finally:
-        asyncio.set_event_loop(None)
-        loop.close()
+        tool.close()
+        asyncio.run(client.close())
 
 
 @pytest.mark.parametrize(

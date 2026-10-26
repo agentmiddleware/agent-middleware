@@ -144,7 +144,12 @@ def test_sync_run_calls_the_api_twice_without_a_running_loop():
             return httpx.Response(200, json=_invoke_response())
         return httpx.Response(404, json={"detail": "missing"})
 
-    tool, client = _tool(httpx.MockTransport(handler))
+    transport = httpx.MockTransport(handler)
+    tool, client = _tool(transport)
+    # Borrowed clients stay on their owner's loop; the sync path owns its client.
+    tool._sync_client = B2AClient(
+        api_key="test-key", base_url="https://middleware.test", transport=transport
+    )
     call = {
         "operation": "call_tool",
         "tool_name": "partner.search",

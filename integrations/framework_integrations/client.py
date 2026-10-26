@@ -7,21 +7,26 @@ HTTP client for Agent Middleware API.
 # Public client validation uses ValueError for malformed responses and inputs.
 # ruff: noqa: TRY004
 
+import math
 import re
 from dataclasses import dataclass
-from math import isfinite
 from typing import Any
 
 import httpx
 
+_TELEMETRY_EVENT_TYPES = {
+    "error",
+    "warning",
+    "session",
+    "api_call",
+    "llm_trace",
+    "performance",
+    "custom",
+}
+_TELEMETRY_SEVERITIES = {"critical", "high", "medium", "low", "info"}
+_MESSAGE_PRIORITIES = {"critical", "high", "normal", "low"}
 _ILLEGAL_HEADER_CHARS = ("\r", "\n", "\x00")
-# Wallet ids are a single URL path segment (agt-/spn-/chd- plus the ids the
-# legacy tests use). Anything else can change which route the request hits.
 _WALLET_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
-_TELEMETRY_EVENT_TYPES = frozenset(
-    {"error", "warning", "session", "api_call", "llm_trace", "performance", "custom"}
-)
-_MESSAGE_PRIORITIES = frozenset({"critical", "high", "normal", "low"})
 
 
 def _base_url(url: object) -> str:
@@ -31,7 +36,6 @@ def _base_url(url: object) -> str:
 
 
 def _header_text(value: object, field: str) -> str:
-    """Return a header value, or refuse characters that would split the header."""
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a string")
     if any(char in value for char in _ILLEGAL_HEADER_CHARS):
@@ -49,35 +53,9 @@ def _idempotency_header(value: object, *, blank_message: str) -> str:
     return value
 
 
-def _permit_header(value: object) -> str:
-    if isinstance(value, str) and any(char in value for char in _ILLEGAL_HEADER_CHARS):
-        raise ValueError("permit_id contains an illegal header character")
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("permit_id must not be blank")
-    return value
-
-
 def _path_wallet_id(value: object) -> str:
     if not isinstance(value, str) or _WALLET_ID.fullmatch(value) is None:
-        raise ValueError(
-            "wallet_id must be a single token of letters, digits, "
-            "underscores, or hyphens"
-        )
-    return value
-
-
-def _balance_value(data: object) -> float:
-    if not isinstance(data, dict) or "balance" not in data:
-        raise ValueError("wallet response did not include balance")
-    raw = data["balance"]
-    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
-        raise ValueError("wallet balance is not a number")
-    try:
-        value = float(raw)
-    except (ValueError, OverflowError) as exc:
-        raise ValueError("wallet balance is not a number") from exc
-    if not isfinite(value):
-        raise ValueError("wallet balance is not a finite number")
+        raise ValueError("wallet_id must be a single URL path segment")
     return value
 
 
@@ -89,7 +67,7 @@ class B2AConfig:
     api_key: str = ""
     wallet_id: str = ""
     timeout: int = 30
-    sender_agent_id: str | None = None
+    agent_id: str = ""
 
 
 class B2AClient:
@@ -129,42 +107,54 @@ class B2AClient:
             headers=self._headers(),
         )
         response.raise_for_status()
-        return _balance_value(response.json())
+        data = response.json()
+        if not isinstance(data, dict) or "balance" not in data:
+            raise ValueError("wallet response is missing balance")
+        balance = data["balance"]
+        # bool is an int subclass, so reject it before the number check.
+        if isinstance(balance, bool) or not isinstance(balance, (int, float)):
+            raise ValueError("wallet balance must be a finite number")
+        try:
+            numeric_balance = float(balance)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError("wallet balance is not a number") from exc
+        if not math.isfinite(numeric_balance):
+            raise ValueError("wallet balance must be a finite number")
+        return numeric_balance
 
     async def emit_telemetry(
         self,
         event: str,
         properties: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Emit one telemetry event as a batch the ingest route accepts.
-
-        ``POST /v1/telemetry/events`` reads ``events[]`` with ``event_type``,
-        ``source``, and ``message``. A free-form name such as
-        ``task_completed`` is stored as event type ``custom``. Names that
-        already match the server's event types are sent as that type.
-        """
-        if not isinstance(event, str) or not event.strip():
-            raise ValueError("event must not be blank")
-        if properties is None:
-            properties = {}
-        if not isinstance(properties, dict):
+        """Emit one telemetry event using the gateway single-event contract."""
+        if properties is not None and not isinstance(properties, dict):
             raise ValueError("properties must be a dict")
-        event_name = event.strip()
-        event_type = event_name if event_name in _TELEMETRY_EVENT_TYPES else "custom"
-        metadata = dict(properties)
-        metadata.setdefault("event", event_name)
+        props = dict(properties or {})
+        event_type = event if event in _TELEMETRY_EVENT_TYPES else "custom"
+        message = props.pop("message", None)
+        if not isinstance(message, str) or not message.strip():
+            message = event
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("telemetry message must be a non-blank string")
+        source = props.pop("source", None)
+        if not isinstance(source, str) or not source.strip():
+            source = "framework_integrations"
+        severity = props.pop("severity", None)
+        if not isinstance(severity, str) or severity not in _TELEMETRY_SEVERITIES:
+            severity = "info"
+        # Keep the caller's name when it is not already a gateway event type.
+        if event not in _TELEMETRY_EVENT_TYPES and "event" not in props:
+            props["event"] = event
         payload = {
-            "events": [
-                {
-                    "event_type": event_type,
-                    "source": "framework_integrations",
-                    "message": event_name,
-                    "metadata": metadata,
-                }
-            ]
+            "event_type": event_type,
+            "source": source,
+            "message": message,
+            "severity": severity,
+            "metadata": props,
         }
         response = await self._client.post(
-            f"{self._base_url}/v1/telemetry/events",
+            f"{self._base_url}/v1/telemetry/events/single",
             headers=self._headers(),
             json=payload,
         )
@@ -182,43 +172,39 @@ class B2AClient:
         to_agent_id: str,
         content: dict[str, Any],
         priority: str = "normal",
-        *,
-        subject: str = "agent message",
     ) -> dict[str, Any]:
-        """Send a message to another agent.
-
-        ``POST /v1/comms/messages`` takes the sender as the ``from_agent``
-        query parameter and requires ``to_agent``, ``subject``, and ``body``.
-        ``sender_agent_id`` identifies the registered sender. If omitted,
-        the wallet id is used for legacy configurations where the IDs match.
-        """
-        sender = self.config.sender_agent_id
-        if sender is None:
-            sender = _path_wallet_id(self.config.wallet_id)
-        elif not isinstance(sender, str) or _WALLET_ID.fullmatch(sender) is None:
-            raise ValueError("sender_agent_id must be a single agent ID token")
+        """Send a message to another agent."""
+        if (
+            not isinstance(self.config.agent_id, str)
+            or not self.config.agent_id.strip()
+        ):
+            raise ValueError("agent_id is required to send messages")
+        if _WALLET_ID.fullmatch(self.config.agent_id) is None:
+            raise ValueError("agent_id must be a single agent ID token")
         if not isinstance(to_agent_id, str) or not to_agent_id.strip():
             raise ValueError("to_agent_id must not be blank")
         if not isinstance(content, dict):
             raise ValueError("content must be a dict")
-        if not isinstance(subject, str) or not subject.strip():
-            raise ValueError("subject must not be blank")
         if not isinstance(priority, str):
             raise ValueError("priority must be one of: critical, high, normal, low")
         priority_value = priority.strip().lower()
         if priority_value not in _MESSAGE_PRIORITIES:
             raise ValueError("priority must be one of: critical, high, normal, low")
+        subject = "message"
+        raw_subject = content.get("subject") if isinstance(content, dict) else None
+        if isinstance(raw_subject, str) and raw_subject.strip():
+            subject = raw_subject
         payload = {
             "to_agent": to_agent_id,
             "message_type": "request",
             "priority": priority_value,
-            "subject": subject.strip(),
+            "subject": subject,
             "body": content,
         }
         response = await self._client.post(
             f"{self._base_url}/v1/comms/messages",
             headers=self._headers(),
-            params={"from_agent": sender},
+            params={"from_agent": self.config.agent_id.strip()},
             json=payload,
         )
         response.raise_for_status()
@@ -229,13 +215,7 @@ class B2AClient:
         context: dict[str, Any],
         options: list[str],
     ) -> str:
-        """Make an AI-powered decision.
-
-        The route returns the chosen action in ``action``. A missing action
-        is an error: the client does not substitute ``options[0]``.
-        """
-        if not isinstance(context, dict):
-            raise ValueError("context must be a dict")
+        """Make an AI-powered decision."""
         if (
             not isinstance(options, list)
             or not options
@@ -256,13 +236,11 @@ class B2AClient:
         data = response.json()
         action = data.get("action") if isinstance(data, dict) else None
         if not isinstance(action, str) or not action.strip():
-            raise ValueError("decision response did not include an action")
+            raise ValueError("decide response is missing a non-blank action")
         return action
 
     async def heal(self, issue: str, context: dict[str, Any]) -> dict[str, Any]:
         """AI-powered self-healing diagnostics."""
-        if not isinstance(context, dict):
-            raise ValueError("context must be a dict")
         payload = {
             "issue": issue,
             "context": context,
@@ -280,25 +258,22 @@ class B2AClient:
         target_url: str,
         max_steps: int = 100,
     ) -> dict[str, Any]:
-        """Create an AWI session for web automation.
-
-        A configured wallet id is sent on the request. Without it, the route
-        allows only a bootstrap admin key.
-        """
-        if not isinstance(target_url, str) or not target_url.strip():
-            raise ValueError("target_url must not be blank")
+        """Create an AWI session for web automation."""
+        # bool is an int, and the gateway accepts only 1..1000.
         if (
             isinstance(max_steps, bool)
             or not isinstance(max_steps, int)
-            or not 1 <= max_steps <= 1000
+            or max_steps < 1
+            or max_steps > 1000
         ):
             raise ValueError("max_steps must be an integer from 1 to 1000")
-        payload: dict[str, Any] = {
+        if not isinstance(target_url, str) or not target_url.strip():
+            raise ValueError("target_url must not be blank")
+        payload = {
             "target_url": target_url,
+            "wallet_id": self.config.wallet_id,
             "max_steps": max_steps,
         }
-        if self.config.wallet_id:
-            payload["wallet_id"] = self.config.wallet_id
         response = await self._client.post(
             f"{self._base_url}/v1/awi/sessions",
             headers=self._headers(),
@@ -321,10 +296,14 @@ class B2AClient:
         Reuse the caller-owned idempotency key verbatim for one logical action.
         The server remains responsible for authorization and accounting.
         """
-        permit = _permit_header(permit_id)
+        if isinstance(permit_id, str) and any(
+            char in permit_id for char in _ILLEGAL_HEADER_CHARS
+        ):
+            raise ValueError("permit_id contains an illegal header character")
+        if not isinstance(permit_id, str) or not permit_id.strip():
+            raise ValueError("permit_id must not be blank")
         key = _idempotency_header(
-            idempotency_key,
-            blank_message="idempotency_key must not be blank",
+            idempotency_key, blank_message="idempotency_key must not be blank"
         )
         payload = {
             "session_id": session_id,
@@ -335,7 +314,7 @@ class B2AClient:
             f"{self._base_url}/v1/awi/execute",
             headers={
                 **self._headers(),
-                "X-Permit-Id": permit,
+                "X-Permit-Id": permit_id,
                 "Idempotency-Key": key,
             },
             json=payload,
@@ -388,7 +367,9 @@ class B2AClient:
         )
         # The server prices the units; a negative or non-finite quantity must
         # never reach it as a charge.
-        if not isfinite(units) or units < 0:
+        if isinstance(units, bool) or not isinstance(units, (int, float)):
+            raise ValueError("units must be a finite number and must not be negative")
+        if not math.isfinite(units) or units < 0:
             raise ValueError("units must be a finite number and must not be negative")
         params: dict[str, str | float] = {
             "wallet_id": self.config.wallet_id,

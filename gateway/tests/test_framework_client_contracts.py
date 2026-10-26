@@ -20,6 +20,7 @@ def _client(handler, **kwargs) -> B2AClient:
         api_url=kwargs.pop("api_url", "http://b2a.test"),
         api_key=kwargs.pop("api_key", "k"),
         wallet_id=kwargs.pop("wallet_id", "wal-1"),
+        agent_id=kwargs.pop("agent_id", "agent-1"),
         **kwargs,
     )
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -74,7 +75,7 @@ async def test_decide_refuses_a_response_with_no_action():
 
 
 @pytest.mark.anyio
-async def test_emit_telemetry_posts_a_batch_the_route_accepts():
+async def test_emit_telemetry_posts_a_single_event_the_route_accepts():
     sent: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -92,22 +93,19 @@ async def test_emit_telemetry_posts_a_batch_the_route_accepts():
     assert typed["batch_id"] == "b1"
     first, second = (json.loads(request.content) for request in sent)
     assert first == {
-        "events": [
-            {
-                "event_type": "custom",
-                "source": "framework_integrations",
-                "message": "task_completed",
-                "metadata": {"step": 1, "event": "task_completed"},
-            }
-        ]
+        "event_type": "custom",
+        "source": "framework_integrations",
+        "message": "task_completed",
+        "severity": "info",
+        "metadata": {"step": 1, "event": "task_completed"},
     }
-    assert second["events"][0]["event_type"] == "error"
-    assert second["events"][0]["message"] == "error"
-    assert all(request.url.path == "/v1/telemetry/events" for request in sent)
+    assert second["event_type"] == "error"
+    assert second["message"] == "error"
+    assert all(request.url.path == "/v1/telemetry/events/single" for request in sent)
 
 
 @pytest.mark.anyio
-async def test_emit_telemetry_surfaces_batch_ingestion_failure():
+async def test_emit_telemetry_surfaces_single_event_ingestion_failure():
     sent: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -125,7 +123,7 @@ async def test_emit_telemetry_surfaces_batch_ingestion_failure():
         await client.close()
 
     assert len(sent) == 1
-    assert sent[0].url.path == "/v1/telemetry/events"
+    assert sent[0].url.path == "/v1/telemetry/events/single"
 
 
 @pytest.mark.anyio
@@ -157,12 +155,12 @@ async def test_send_message_uses_the_comms_query_and_body():
 
     request = sent[0]
     assert request.url.path == "/v1/comms/messages"
-    assert request.url.params["from_agent"] == "wal-1"
+    assert request.url.params["from_agent"] == "agent-1"
     assert json.loads(request.content) == {
         "to_agent": "agent-2",
         "message_type": "request",
         "priority": "high",
-        "subject": "agent message",
+        "subject": "message",
         "body": {"hello": "world"},
     }
 
@@ -177,29 +175,29 @@ async def test_send_message_uses_registered_sender_id_when_wallet_differs():
             return httpx.Response(200, json={"balance": 1})
         return httpx.Response(202, json={"message_id": "msg-1"})
 
-    client = _client(handler, sender_agent_id="agent-1")
+    client = _client(handler, agent_id="agent-2")
     try:
-        await client.send_message("agent-2", {"hello": "world"})
+        await client.send_message("agent-3", {"hello": "world"})
         await client.get_balance()
     finally:
         await client.close()
 
-    assert sent[0].url.params["from_agent"] == "agent-1"
+    assert sent[0].url.params["from_agent"] == "agent-2"
     assert sent[1].url.path == "/v1/billing/wallets/wal-1"
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("sender_agent_id", ["", "agent\r\nbad", 123])
-async def test_send_message_rejects_invalid_sender_id_before_send(sender_agent_id):
+@pytest.mark.parametrize("agent_id", ["", "agent\r\nbad", 123])
+async def test_send_message_rejects_invalid_sender_id_before_send(agent_id):
     sent: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         sent.append(request)
         return httpx.Response(202, json={"message_id": "msg-1"})
 
-    client = _client(handler, sender_agent_id=sender_agent_id)
+    client = _client(handler, agent_id=agent_id)
     try:
-        with pytest.raises(ValueError, match="sender_agent_id"):
+        with pytest.raises(ValueError, match="agent_id"):
             await client.send_message("agent-2", {"hello": "world"})
     finally:
         await client.close()

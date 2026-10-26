@@ -9,7 +9,7 @@ from framework_integrations.client import B2AClient, B2AConfig
 
 
 def _client(handler):
-    client = B2AClient(B2AConfig(api_key="k", wallet_id="w1"))
+    client = B2AClient(B2AConfig(api_key="k", wallet_id="w1", agent_id="agent-1"))
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return client
 
@@ -29,7 +29,7 @@ def test_charge_validation_happens_before_any_request():
     try:
         with pytest.raises(ValueError, match="must not be blank"):
             asyncio.run(client.charge("svc", idempotency_key="  "))
-        for bad in (-1.0, float("nan"), float("inf")):
+        for bad in (True, False, "1", None, -1.0, float("nan"), float("inf")):
             with pytest.raises(ValueError, match="units"):
                 asyncio.run(client.charge("svc", units=bad, idempotency_key="k"))
         assert seen == []
@@ -41,6 +41,7 @@ def test_charge_sends_wallet_service_units_and_key():
     captured = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
         captured["params"] = dict(request.url.params)
         captured["headers"] = dict(request.headers)
         captured["body"] = request.content
@@ -64,6 +65,7 @@ def test_charge_sends_wallet_service_units_and_key():
         assert captured["params"]["description"] == "d"
         assert captured["headers"]["idempotency-key"] == "key-1"
         assert captured["headers"]["x-api-key"] == "k"
+        assert captured["path"] == "/v1/billing/charge"
     finally:
         asyncio.run(_close(client))
 
@@ -85,7 +87,7 @@ def test_decide_refuses_empty_options_before_any_request():
         asyncio.run(_close(client))
 
 
-def test_decide_refuses_missing_action():
+def test_decide_refuses_a_response_without_an_action():
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={})
 
@@ -101,6 +103,7 @@ def test_awi_execute_validation_and_headers():
     captured = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
         captured["headers"] = dict(request.headers)
         return httpx.Response(200, json={"ok": True})
 
@@ -132,6 +135,7 @@ def test_awi_execute_validation_and_headers():
         )
         assert captured["headers"]["x-permit-id"] == "p"
         assert captured["headers"]["idempotency-key"] == "k"
+        assert captured["path"] == "/v1/awi/execute"
     finally:
         asyncio.run(_close(client))
 
@@ -144,12 +148,13 @@ def test_thin_wrappers_shape_and_auth():
     async def handler(request: httpx.Request) -> httpx.Response:
         captured[request.url.path] = {
             "headers": dict(request.headers),
+            "params": dict(request.url.params),
             "body": json.loads(request.content) if request.content else None,
         }
         if request.url.path.endswith("wallets/w1"):
-            return httpx.Response(200, json={"balance": "7.5"})
-        if request.url.path == "/v1/telemetry/events":
-            return httpx.Response(200, json={"failed": 0})
+            return httpx.Response(200, json={"balance": 7.5})
+        if request.url.path == "/v1/telemetry/events/single":
+            return httpx.Response(202, json={"ingested": 1, "failed": 0})
         if request.url.path == "/mcp/tools.json":
             return httpx.Response(200, json={"tools": []})
         return httpx.Response(200, json={"ok": True})
@@ -165,15 +170,9 @@ def test_thin_wrappers_shape_and_auth():
         asyncio.run(client.get_mcp_tools())
         for path, data in captured.items():
             assert data["headers"]["x-api-key"] == "k", path
-        assert (
-            captured["/v1/telemetry/events"]["body"]["events"][0]["event_type"]
-            == "custom"
-        )
-        assert captured["/v1/telemetry/events"]["body"]["events"][0]["metadata"] == {
-            "a": 1,
-            "event": "ev",
-        }
-        assert captured["/v1/comms/messages"]["body"]["to_agent"] == "agent-2"
-        assert captured["/v1/awi/sessions"]["body"]["wallet_id"] == "w1"
+        telemetry = captured["/v1/telemetry/events/single"]["body"]
+        assert telemetry["message"] == "ev"
+        assert telemetry["metadata"] == {"a": 1, "event": "ev"}
+        assert captured["/v1/comms/messages"]["params"]["from_agent"] == "agent-1"
     finally:
         asyncio.run(_close(client))

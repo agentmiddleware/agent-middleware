@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from importlib import import_module
 from pathlib import Path
@@ -154,6 +155,29 @@ def test_missing_call_context_fails_before_transport(
             )
 
     assert requests == []
+
+
+def test_close_inside_running_loop_requires_synchronous_cleanup() -> None:
+    client = Client("YOUR_DEMO_KEY", base_url="http://test")
+
+    async def close_from_running_loop() -> None:
+        with pytest.raises(
+            RuntimeError, match=r"Client\.close\(\) cannot run inside an event loop"
+        ):
+            with client:
+                pass
+        assert not client._loop.is_closed()
+        assert not client._client._client.is_closed
+
+    asyncio.run(close_from_running_loop())
+    client.close()
+    assert client._loop.is_closed()
+    assert client._client._client.is_closed
+
+    async def close_again_from_running_loop() -> None:
+        client.close()
+
+    asyncio.run(close_again_from_running_loop())
 
 
 @pytest.mark.parametrize(

@@ -38,9 +38,14 @@ async def client():
 
 
 def test_cors_default_is_empty():
-    """A fresh Settings object must not grant any origin CORS headers."""
-    assert Settings().CORS_ORIGINS == ""
-    origins = [o.strip() for o in Settings().CORS_ORIGINS.split(",") if o.strip()]
+    """The field default must not grant any origin CORS headers.
+
+    Reads the declared default, not ``Settings()``: an ambient
+    ``CORS_ORIGINS`` in the environment or ``.env`` must not decide this test.
+    """
+    default = Settings.model_fields["CORS_ORIGINS"].default
+    assert default == ""
+    origins = [o.strip() for o in default.split(",") if o.strip()]
     assert origins == []
 
 

@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     REDIS_URL: str = ""
     SQLITE_URL: str = ""
+    # PostgreSQL row-level security for wallet-scoped tables (migration
+    # 048_tenant_rls), ported from the archived agent-middleware-api Settings
+    # with the same name, default and validation. "off" (default): the
+    # migration creates the policies but leaves RLS disabled, so nothing
+    # changes for any client. "enforce": migrating in this mode enables and
+    # forces RLS. This gateway does not yet set app.current_wallet_id per
+    # transaction, so enforce fails closed for a NOSUPERUSER NOBYPASSRLS
+    # runtime role; see docs/schema-048-rollout.md. No effect on SQLite.
+    TENANT_RLS_MODE: str = "off"
 
     # --- Database Pool Settings ---
     # Used for SQLModel/SQLAlchemy async sessions
@@ -340,6 +349,15 @@ class Settings(BaseSettings):
     # re-declare it as a module constant — a second copy silently lets the
     # advertised rate drift from the rate real money converts at.
     EXCHANGE_RATE: Decimal = Decimal("1000.0")
+
+    @field_validator("TENANT_RLS_MODE")
+    @classmethod
+    def _validate_tenant_rls_mode(cls, value: str) -> str:
+        """Only the two documented modes; a typo must not silently mean off."""
+        normalized = (value or "").strip().lower()
+        if normalized not in {"off", "enforce"}:
+            raise ValueError("TENANT_RLS_MODE must be 'off' or 'enforce'")
+        return normalized
 
     @field_validator("EXCHANGE_RATE")
     @classmethod

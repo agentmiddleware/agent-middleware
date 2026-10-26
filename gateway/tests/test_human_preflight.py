@@ -166,3 +166,67 @@ def test_unreadable_production_posture_fails(stand_in, production_like):
 
     assert result.returncode == 1
     assert "does not report production_like as true or false" in result.stdout
+
+
+def test_preflight_ignores_ambient_proxy(stand_in):
+    """Checklist curls and the alignment check must hit API_URL, not HTTP_PROXY."""
+    api_url, origin_requests = stand_in(production_like=False, catalog_status=200)
+    proxy_hits: list[str] = []
+
+    class Proxy(BaseHTTPRequestHandler):
+        def _take(self) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            proxy_hits.append(self.path)
+            body = b'{"status":"proxy"}'
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            self._take()
+
+        def do_POST(self) -> None:
+            self._take()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    try:
+        proxy_url = f"http://127.0.0.1:{proxy.server_address[1]}"
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key.lower() not in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+        }
+        for name in (
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            env[name] = proxy_url
+        env["API_URL"] = api_url
+        result = subprocess.run(
+            ["bash", str(SCRIPT)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert proxy_hits == []
+    assert any(path == "/health/dependencies" for path, _key in origin_requests)
+    assert "agree on agent_first" in result.stdout

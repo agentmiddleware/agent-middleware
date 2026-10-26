@@ -34,13 +34,20 @@ stay limited to the caller's own wallet.
 The table list is a frozen copy of app.db.tenant_rls.RLS_TABLES in the api repo.
 
 Ported from the archived agent-middleware-api chain with the same revision
-id. This service has no ``TENANT_RLS_MODE`` setting, so it is read with an
-``off`` default: policies are created and row-level security is enabled or
-forced only when an operator sets TENANT_RLS_MODE=enforce, as in the
-original. migrations/env.py sets the app.rls_bypass setting exactly as the
-archived env.py did, so data migrations still see every row under FORCE.
+id. ``Settings.TENANT_RLS_MODE`` is ported with the same name, default
+(``off``) and validation, so this migration behaves as the original did.
+migrations/env.py sets the app.rls_bypass setting exactly as the archived
+env.py did, so data migrations still see every row under FORCE.
+
+This repository's chain also has the wallet-scoped receipt_resolutions and
+resolution_chain_heads (044), which the api chain never had. They get the
+same tenant policy here when they exist (a fresh chain, where 044 ran
+first). On a database that reached 050 through the api chain they do not
+exist yet; 053_repair_api_lineage creates them and applies the identical
+policy, so both lineages end with the same policy set.
 """
 
+import sqlalchemy as sa
 from alembic import op
 
 from app.core.config import get_settings
@@ -68,6 +75,13 @@ RLS_TABLES: dict[str, tuple[str, ...]] = {
     "quotes": ("wallet_id",),
     "receipts": ("wallet_id",),
     "refresh_tokens": ("wallet_id",),
+}
+
+# Tables from this repo's 044 that are absent on an api-chain database when
+# 048 runs there; 053_repair_api_lineage applies the same policy to them.
+LATE_RLS_TABLES: dict[str, tuple[str, ...]] = {
+    "receipt_resolutions": ("wallet_id",),
+    "resolution_chain_heads": ("wallet_id",),
 }
 
 _CURRENT_WALLET = "NULLIF(current_setting('app.current_wallet_id', true), '')"
@@ -101,20 +115,29 @@ def policy_predicate(columns: tuple[str, ...]) -> str:
     return f"({wallet_match}) OR {_BYPASS}"
 
 
+def _apply_tenant_policy(table: str, columns: tuple[str, ...], enforce: bool):
+    predicate = policy_predicate(columns)
+    if enforce:
+        op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+        op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+    op.execute(f"DROP POLICY IF EXISTS {POLICY_NAME} ON {table}")
+    op.execute(
+        f"CREATE POLICY {POLICY_NAME} ON {table} AS PERMISSIVE FOR ALL "
+        f"USING ({predicate}) WITH CHECK ({predicate})"
+    )
+
+
 def upgrade():
-    if op.get_bind().dialect.name != "postgresql":
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
         return
-    enforce = getattr(get_settings(), "TENANT_RLS_MODE", "off") == "enforce"
+    enforce = get_settings().TENANT_RLS_MODE == "enforce"
     for table, columns in RLS_TABLES.items():
-        predicate = policy_predicate(columns)
-        if enforce:
-            op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
-            op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
-        op.execute(f"DROP POLICY IF EXISTS {POLICY_NAME} ON {table}")
-        op.execute(
-            f"CREATE POLICY {POLICY_NAME} ON {table} AS PERMISSIVE FOR ALL "
-            f"USING ({predicate}) WITH CHECK ({predicate})"
-        )
+        _apply_tenant_policy(table, columns, enforce)
+    existing = set(sa.inspect(bind).get_table_names())
+    for table, columns in LATE_RLS_TABLES.items():
+        if table in existing:
+            _apply_tenant_policy(table, columns, enforce)
     for table, predicate in DELEGATED_READ_PREDICATES.items():
         op.execute(f"DROP POLICY IF EXISTS {READ_POLICY_NAME} ON {table}")
         op.execute(
@@ -128,7 +151,9 @@ def downgrade():
         return
     for table in DELEGATED_READ_PREDICATES:
         op.execute(f"DROP POLICY IF EXISTS {READ_POLICY_NAME} ON {table}")
-    for table in RLS_TABLES:
+    existing = set(sa.inspect(op.get_bind()).get_table_names())
+    late = [table for table in LATE_RLS_TABLES if table in existing]
+    for table in [*RLS_TABLES, *late]:
         op.execute(f"DROP POLICY IF EXISTS {POLICY_NAME} ON {table}")
         op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")

@@ -77,6 +77,7 @@ DORMANT_SURFACE_TEST_MODULES = frozenset(
         "test_billing",
         "test_discovery_drift",
         "test_golden_path",
+        "test_idempotency_billing_permit_breaks",
         "test_kyc",
         "test_mcp_trust_mode",
         "test_mcp_upstream_governed",

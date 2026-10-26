@@ -140,6 +140,57 @@ class GovernedToolWrapper:
         return self._receipt_var.get()
 
 
+def resolve_tool_name(func: Callable[..., Any], tool_name: str | None) -> str:
+    """Name sent to the server and published to the framework.
+
+    A blank override is refused. Falling through to the function name keeps
+    the model-facing name and the governed call on the same tool.
+    """
+    if tool_name is None:
+        resolved = getattr(func, "__name__", "") or ""
+    elif isinstance(tool_name, str):
+        resolved = tool_name.strip()
+    else:
+        resolved = ""
+    if not resolved or any(char in resolved for char in "\r\n\x00"):
+        raise ValueError("tool_name must be a non-blank string")
+    return resolved
+
+
+def _estimated_credits(credits_hint: Decimal | None) -> Decimal | None:
+    """Coerce a credit hint to Decimal before it touches the permit check.
+
+    A float hint compared with the validator's Decimal budget raises
+    TypeError inside the check. Reject non-finite and negative hints here.
+    """
+    if credits_hint is None:
+        return None
+    try:
+        credits = Decimal(str(credits_hint))
+    except (ArithmeticError, ValueError) as exc:
+        raise ValueError("credits_hint must be a finite non-negative decimal") from exc
+    if not credits.is_finite() or credits < 0:
+        raise ValueError("credits_hint must be a finite non-negative decimal")
+    return credits
+
+
+def _caller_idempotency_key(supplied: object) -> str:
+    """Validate a caller-owned key before it reaches the governed loop."""
+    if not isinstance(supplied, str):
+        raise ValueError(  # noqa: TRY004 - validation keeps the public ValueError contract
+            "idempotency_key must be a string; omit it to derive a stable key"
+        )
+    if any(char in supplied for char in "\r\n\x00"):
+        raise ValueError("idempotency_key contains an illegal header character")
+    if not supplied.strip():
+        raise ValueError(
+            "idempotency_key must not be blank; omit it to derive a stable key"
+        )
+    if len(supplied) > 128:
+        raise ValueError("idempotency_key must be at most 128 characters")
+    return supplied
+
+
 def governed_tool(
     session: GovernedEdgeSession,
     *,
@@ -158,7 +209,8 @@ def governed_tool(
        non-blank ``idempotency_key`` is used as-is: retries that must
        replay (same receipt, no double charge) pass the same caller-owned
        key. A supplied blank key raises ``ValueError`` rather than being
-       silently replaced. When the keyword is absent or ``None`` the key
+       silently replaced. Non-string, overlong, or header-unsafe keys are
+       also refused. When the keyword is absent or ``None`` the key
        is derived deterministically via
        :func:`derive_governed_idempotency_key` from the session's permit
        id, the tool name, the canonical bound arguments, and ``action_id``
@@ -185,9 +237,8 @@ def governed_tool(
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        if tool_name is not None and not tool_name.strip():
-            raise ValueError("tool_name must not be blank")
-        name = tool_name or func.__name__
+        name = resolve_tool_name(func, tool_name)
+        estimated = _estimated_credits(credits_hint)
         signature = inspect.signature(func)
         receipt_var: contextvars.ContextVar[Receipt | None] = contextvars.ContextVar(
             f"governed_tool_last_receipt_{name}", default=None
@@ -234,15 +285,13 @@ def governed_tool(
                     value = positional
                 consumed[reserved_name] = None
                 if value is not missing and value is not None:
+                    if reserved_name == "idempotency_key":
+                        consumed[reserved_name] = _caller_idempotency_key(value)
+                        continue
                     text = str(value)
                     if not text.strip():
-                        hint = (
-                            "derive a stable key"
-                            if reserved_name == "idempotency_key"
-                            else "derive without one"
-                        )
                         raise ValueError(
-                            f"{reserved_name} must not be blank; omit it to {hint}"
+                            "action_id must not be blank; omit it to derive without one"
                         )
                     consumed[reserved_name] = text
             idempotency_key = consumed["idempotency_key"]
@@ -264,7 +313,7 @@ def governed_tool(
                 name,
                 arguments,
                 idempotency_key=idempotency_key,
-                estimated_credits=credits_hint,
+                estimated_credits=estimated,
             )
             receipt_var.set(result.receipt)
             if result.structured_content is not None:
@@ -285,4 +334,9 @@ def governed_tool(
     return decorator
 
 
-__all__ = ["GovernedToolWrapper", "derive_governed_idempotency_key", "governed_tool"]
+__all__ = [
+    "GovernedToolWrapper",
+    "derive_governed_idempotency_key",
+    "governed_tool",
+    "resolve_tool_name",
+]

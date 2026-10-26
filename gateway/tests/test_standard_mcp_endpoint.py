@@ -15,6 +15,7 @@ import hashlib
 import pytest
 from httpx import ASGITransport, AsyncClient
 from mcp.types import LATEST_PROTOCOL_VERSION
+from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
 
 from app.core.config import get_settings
 from app.main import app
@@ -26,7 +27,11 @@ from app.services.idempotency import (
 )
 from app.services.mcp_generator import MCP_SERVER_VERSION, McpGenerator
 from app.services.service_registry import get_service_registry
-from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
+from tests.test_trust_helpers import (
+    BOOTSTRAP_HEADERS,
+    create_tool_permit,
+    provision_agent_wallet,
+)
 
 # The SDK's streamable HTTP transport requires an explicit Accept header.
 MCP_HEADERS = {
@@ -1311,3 +1316,93 @@ def test_effective_unkeyed_retry_window_capped_at_demo_permit_ttl(monkeypatch):
     ) == mcp_standard._auto_permit_ttl_seconds(
         tenant="demo", requires_human_approval=False
     )
+
+
+@pytest.mark.anyio
+async def test_tools_call_explicit_permit_out_of_scope_is_refused_without_charge(
+    client, standard_mcp_enabled, clean_database
+):
+    """An explicit permit that does not name the tool is a permit refusal.
+
+    The caller gets -32003 with the stable reason code as the message and a
+    signed denial receipt; the tool never runs and nothing is charged.
+    """
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    calls: list[str] = []
+    registry = get_service_registry()
+    registry.register_local(
+        service_id="standard-oos-target",
+        name="Standard OOS Target",
+        description="Standard MCP out-of-scope permit test tool",
+        category=ServiceCategory.AGENT_COMMS,
+        func=lambda message="ok": calls.append(message) or {"message": message},
+        credits_per_unit=2.0,
+        unit_name="call",
+    )
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=wallet_id,
+            key_id=provisioned["key_id"],
+            tool_name="standard-oos-other",
+            idem_key="standard-oos-permit-1",
+        )
+        ledger_before = (
+            await client.get(
+                f"/v1/billing/ledger/{wallet_id}", headers=provisioned["agent_headers"]
+            )
+        ).json()["entries"]
+        call = _rpc(
+            "tools/call",
+            params={
+                "name": "standard-oos-target",
+                "arguments": {"message": "hi"},
+                "_meta": {"io.agentmiddleware/permit_id": permit["permit_id"]},
+            },
+        )
+        headers = {
+            **provisioned["agent_headers"],
+            **MCP_HEADERS,
+            "Idempotency-Key": "standard-oos-call-1",
+        }
+        resp = await client.post("/mcp", json=call, headers=headers)
+        assert resp.status_code == 200
+        error = resp.json()["error"]
+        assert error["code"] == -32003
+        assert error["message"] == "permit_tool_not_allowed"
+        receipt = error["data"]["receipt"]
+        bundle_resp = await client.get(
+            f"/v1/receipts/{receipt['receipt_id']}/portable",
+            headers=provisioned["agent_headers"],
+        )
+        keys_resp = await client.get("/.well-known/trust-keys.json")
+        assert bundle_resp.status_code == 200, bundle_resp.text
+        assert keys_resp.status_code == 200, keys_resp.text
+        verified = verify_bundle(
+            bundle_resp.json(), key_set_from_document(keys_resp.json())
+        )
+        assert verified.ok, verified.reason
+        assert verified.receipt_id == receipt["receipt_id"]
+        assert verified.claims["outcome"] == receipt["outcome"] == "denied"
+        assert (
+            verified.claims["reason_code"]
+            == receipt["reason_code"]
+            == "permit_tool_not_allowed"
+        )
+        assert (
+            verified.claims["permit_id"] == receipt["permit_id"] == permit["permit_id"]
+        )
+        assert receipt["ledger_entry_id"] is None
+        assert receipt["dispatch_attempt_id"] is None
+
+        assert calls == []
+        ledger_after = (
+            await client.get(
+                f"/v1/billing/ledger/{wallet_id}", headers=provisioned["agent_headers"]
+            )
+        ).json()["entries"]
+        # No debit, hold, or any other ledger movement for the refused call.
+        assert ledger_after == ledger_before
+    finally:
+        registry.unregister_local("standard-oos-target")

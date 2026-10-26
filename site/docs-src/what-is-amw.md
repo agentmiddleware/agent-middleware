@@ -7,7 +7,7 @@ description: How Agent Middleware governs a consequential MCP tool Call.
 
 # What is AMW
 
-Agent Middleware (AMW) puts an authorization and transaction boundary in front of an MCP tool. A wallet-scoped API key authenticates the caller. A Permit limits the tool, scope, Credits, and time available to that caller. A Call presents the Permit and a Request key. A Receipt records a finalized outcome.
+Agent Middleware (AMW) puts an authorization and transaction boundary in front of an MCP tool. A wallet scoped API key authenticates the caller. A Permit limits the tool, scope, Credits, and time available to that caller. A Call presents the Permit and a Request key. A Receipt records a finalized outcome.
 
 For the configured upstream MCP tool, AMW allows at most one gateway dispatch and one ledger debit for an accepted Request key. Use the same key and payload for a retry. For a finalized Call, a retry with the same key returns the original receipt instead of dispatching again. A changed payload under that key is rejected.
 

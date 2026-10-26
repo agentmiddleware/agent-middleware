@@ -2,18 +2,59 @@
 
 import asyncio
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Self
 
+from b2a_sdk.errors import (
+    AuthenticationError,
+    AuthorizationError,
+    DeliveryUncertainError,
+    IdempotencyConflictError,
+    InsufficientFundsError,
+    PermitDeniedError,
+)
 from b2a_sdk.models import PermitRequest
 from crewai.tools import BaseTool
+from crewai.tools.structured_tool import CrewStructuredTool
+from crewai.tools.tool_failure import ToolFailure, ToolFailurePolicy
 from pydantic import BaseModel, Field, PrivateAttr
 
 from .client import B2AClient
 
 _MAX_KEY_LENGTH = 128
+_TERMINAL_ERRORS = (
+    AuthenticationError,
+    AuthorizationError,
+    PermitDeniedError,
+    InsufficientFundsError,
+    DeliveryUncertainError,
+    IdempotencyConflictError,
+)
+
+
+def run_blocking(coro_factory: Callable[[], Awaitable[Any]]) -> Any:
+    """Run a fresh async operation from sync code, including inside a running loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_factory())
+
+    outcome: dict[str, Any] = {}
+
+    def _target() -> None:
+        try:
+            outcome["result"] = asyncio.run(coro_factory())
+        except BaseException as exc:  # noqa: BLE001
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_target, daemon=True)
+    worker.start()
+    worker.join()
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("result")
 
 
 def _required_text(value: object, name: str) -> str:
@@ -355,6 +396,24 @@ class CrewAIB2ATool(BaseTool):
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
         self.close()
 
+    def to_structured_tool(self) -> CrewStructuredTool:
+        """Let CrewAI record terminal gateway errors without retrying them."""
+        structured_tool = super().to_structured_tool()
+
+        def dispatch(**kwargs: Any) -> str | ToolFailure:
+            try:
+                return self._run(**kwargs)
+            except _TERMINAL_ERRORS as exc:
+                return ToolFailure(
+                    message=_error_text(exc),
+                    code=type(exc).__name__,
+                    retryable=False,
+                )
+
+        structured_tool.func = dispatch
+        structured_tool.tool_failure_policy = ToolFailurePolicy.RAISE
+        return structured_tool
+
     async def _execute(
         self, operation: str, *, replay_permit: bool = False, **kwargs: Any
     ) -> str:
@@ -415,8 +474,10 @@ class CrewAIB2ATool(BaseTool):
                 return f"Balance: {balance} credits"
 
             return f"Unknown operation: {operation}"
+        except _TERMINAL_ERRORS:
+            raise
         except Exception as exc:  # noqa: BLE001
-            # CrewAI agents read a string. Any failure here becomes that string.
+            # Keep nonterminal failures readable to CrewAI agents.
             return _error_text(exc)
 
     def _run(
@@ -429,12 +490,12 @@ class CrewAIB2ATool(BaseTool):
         **kwargs: Any,
     ) -> str:
         """Synchronous operation (for CrewAI compatibility)."""
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-        else:
-            return "Error: sync CrewAI call inside a running event loop; use _arun"
+        if (
+            self.client is not None
+            and not self._owns_client
+            and self.sync_client_factory is None
+        ):
+            return "Error: sync_client_factory is required for sync calls with a borrowed client"
         replay_permit = self._begin_permit_call(operation, permit_idempotency_key)
         coro = self._execute(
             operation,
@@ -447,6 +508,8 @@ class CrewAIB2ATool(BaseTool):
         )
         try:
             return self._sync_await(coro)
+        except _TERMINAL_ERRORS:
+            raise
         except Exception as exc:  # noqa: BLE001
             # The coroutine was not scheduled, or it already finished.
             try:
@@ -489,5 +552,7 @@ class CrewAIB2ATool(BaseTool):
                 return await asyncio.wrap_future(future)
             finally:
                 self._finish_permit_call(operation, permit_idempotency_key)
+        except _TERMINAL_ERRORS:
+            raise
         except Exception as exc:  # noqa: BLE001
             return _error_text(exc)

@@ -138,11 +138,13 @@ def build_server_env(state_dir: Path, seed: str) -> dict[str, str]:
 def wait_for_health(port: int, process: subprocess.Popen) -> bool:
     deadline = time.monotonic() + HEALTH_DEADLINE_SECONDS
     url = f"http://127.0.0.1:{port}/health"
+    # Ignore ambient proxy settings so a proxy cannot answer for this process.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     while time.monotonic() < deadline:
         if process.poll() is not None:
             return False
         try:
-            with urllib.request.urlopen(url, timeout=2) as response:
+            with opener.open(url, timeout=2) as response:
                 if response.status == 200:
                     return True
         except (urllib.error.URLError, OSError):

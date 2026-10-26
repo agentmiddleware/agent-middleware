@@ -4,6 +4,9 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ## [Unreleased]
 
+- Upstream MCP (Preview): optional multi-tool discovery and exact-name allowlist with
+  stable public IDs, per-tool permit scope, and unchanged per-call credits.
+  Health reports `upstream_tool_mode: multi_tool_preview` while it is on.
 - Initial import of the gateway (Fair Source, FSL-1.1-ALv2), the Python SDK and
   framework integrations (Apache-2.0), and examples (Apache-2.0).
 - New: permit, receipt, and key-set format draft (`spec/`, v0.1) with test vectors.

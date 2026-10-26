@@ -29,7 +29,7 @@ def test_charge_validation_happens_before_any_request():
     try:
         with pytest.raises(ValueError, match="must not be blank"):
             asyncio.run(client.charge("svc", idempotency_key="  "))
-        for bad in (-1.0, float("nan"), float("inf")):
+        for bad in (True, False, "1", None, -1.0, float("nan"), float("inf")):
             with pytest.raises(ValueError, match="units"):
                 asyncio.run(client.charge("svc", units=bad, idempotency_key="k"))
         assert seen == []
@@ -41,6 +41,7 @@ def test_charge_sends_wallet_service_units_and_key():
     captured = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
         captured["params"] = dict(request.url.params)
         captured["headers"] = dict(request.headers)
         captured["body"] = request.content
@@ -64,6 +65,7 @@ def test_charge_sends_wallet_service_units_and_key():
         assert captured["params"]["description"] == "d"
         assert captured["headers"]["idempotency-key"] == "key-1"
         assert captured["headers"]["x-api-key"] == "k"
+        assert captured["path"] == "/v1/billing/charge"
     finally:
         asyncio.run(_close(client))
 
@@ -101,6 +103,7 @@ def test_awi_execute_validation_and_headers():
     captured = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
         captured["headers"] = dict(request.headers)
         return httpx.Response(200, json={"ok": True})
 
@@ -132,6 +135,7 @@ def test_awi_execute_validation_and_headers():
         )
         assert captured["headers"]["x-permit-id"] == "p"
         assert captured["headers"]["idempotency-key"] == "k"
+        assert captured["path"] == "/v1/awi/execute"
     finally:
         asyncio.run(_close(client))
 
@@ -149,6 +153,10 @@ def test_thin_wrappers_shape_and_auth():
         }
         if request.url.path.endswith("wallets/w1"):
             return httpx.Response(200, json={"balance": 7.5})
+        if request.url.path == "/v1/telemetry/events/single":
+            return httpx.Response(202, json={"ingested": 1, "failed": 0})
+        if request.url.path == "/mcp/tools.json":
+            return httpx.Response(200, json={"tools": []})
         return httpx.Response(200, json={"ok": True})
 
     client = _client(handler)

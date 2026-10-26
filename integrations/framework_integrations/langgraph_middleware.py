@@ -24,8 +24,10 @@ through permits and receipts.
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
 try:
     from b2a_sdk.edge_client import GovernedEdgeSession
@@ -40,7 +42,7 @@ except ImportError as exc:  # pragma: no cover - depends on checkout layout
 # re-exported here so `from framework_integrations.langgraph_middleware
 # import governed_tool` keeps working and cannot drift from the Pydantic AI
 # module's copy. Wrappers expose `last_receipt` per task via a contextvar.
-from ._governed import GovernedToolWrapper, governed_tool
+from ._governed import GovernedToolWrapper, governed_tool, resolve_tool_name
 
 
 def as_langgraph_tool(
@@ -65,16 +67,42 @@ def as_langgraph_tool(
             "LangGraph not installed. Run: pip install langgraph"
         ) from exc
 
-    wrapped = governed_tool(session, tool_name=tool_name, credits_hint=credits_hint)(
-        func
-    )
+    # The name the model sees has to be the name the governed call uses.
+    # langchain's tool() otherwise publishes func.__name__.
+    name = resolve_tool_name(func, tool_name)
+    wrapped = governed_tool(session, tool_name=name, credits_hint=credits_hint)(func)
     # Hand the framework the underlying coroutine function: langchain-core
     # detects async tools via inspect.iscoroutinefunction, which a callable
     # wrapper object would defeat.
     target = (
         wrapped.governed_call if isinstance(wrapped, GovernedToolWrapper) else wrapped
     )
-    return tool(target)
+    # LangChain derives the public input schema from this signature. Include
+    # the caller-owned key so ainvoke does not discard it before dispatch.
+    signature = inspect.signature(target)
+    if "idempotency_key" not in signature.parameters:
+        parameters = list(signature.parameters.values())
+        key = inspect.Parameter(
+            "idempotency_key",
+            kind=inspect.Parameter.KEYWORD_ONLY,
+            default=None,
+            annotation=str | None,
+        )
+        insert_at = next(
+            (
+                i
+                for i, parameter in enumerate(parameters)
+                if parameter.kind == inspect.Parameter.VAR_KEYWORD
+            ),
+            len(parameters),
+        )
+        parameters.insert(insert_at, key)
+        target.__signature__ = signature.replace(parameters=parameters)
+        target.__annotations__ = {
+            **target.__annotations__,
+            "idempotency_key": str | None,
+        }
+    return tool(name)(target)
 
 
 class LangGraphGovernedTools:

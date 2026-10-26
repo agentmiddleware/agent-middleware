@@ -11,6 +11,14 @@ api_key_usage_daily view. This revision creates each one only when it is
 absent, with exactly the columns, indexes and constraints of 044-046. It
 writes no rows. On a database built from this chain it changes nothing.
 
+PostgreSQL only: receipt_resolutions and resolution_chain_heads are
+wallet-scoped, and on this chain 048_tenant_rls gives them the
+amw_tenant_isolation policy. An api-chain database ran 048 before they
+existed, so this revision creates that identical policy (same name and
+predicate, frozen copy) on each table that lacks it. It enables and forces
+RLS when TENANT_RLS_MODE is enforce or when api_keys already has forced RLS,
+so the repaired tables match the posture the rest of the database already has.
+
 Downgrade is a deliberate no-op: once applied, nothing in the schema records
 whether 053 or 044-046 created an object, so dropping any of them could
 destroy tables a fresh chain owns. Rolling back 044-046 remains their job.
@@ -182,14 +190,55 @@ TABLES = (
 )
 
 
+# Frozen copy of 048_tenant_rls's policy for its LATE_RLS_TABLES.
+POLICY_NAME = "amw_tenant_isolation"
+_CURRENT_WALLET = "NULLIF(current_setting('app.current_wallet_id', true), '')"
+_BYPASS = "current_setting('app.rls_bypass', true) = 'on'"
+RLS_TABLES = ("receipt_resolutions", "resolution_chain_heads")
+
+
+def _apply_tenant_policy(bind) -> None:
+    from app.core.config import get_settings
+
+    forced_already = bind.execute(
+        sa.text(
+            "SELECT relforcerowsecurity FROM pg_class "
+            "WHERE relname = 'api_keys' AND relkind = 'r' "
+            "AND relnamespace = current_schema()::regnamespace"
+        )
+    ).scalar()
+    enforce = get_settings().TENANT_RLS_MODE == "enforce" or bool(forced_already)
+    predicate = f"(wallet_id = {_CURRENT_WALLET}) OR {_BYPASS}"
+    for table in RLS_TABLES:
+        has_policy = bind.execute(
+            sa.text(
+                "SELECT 1 FROM pg_policy WHERE polname = :name "
+                "AND polrelid = to_regclass(:table)"
+            ),
+            {"name": POLICY_NAME, "table": table},
+        ).scalar()
+        if has_policy:
+            continue
+        if enforce:
+            op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+            op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+        op.execute(
+            f"CREATE POLICY {POLICY_NAME} ON {table} AS PERMISSIVE FOR ALL "
+            f"USING ({predicate}) WITH CHECK ({predicate})"
+        )
+
+
 def upgrade() -> None:
-    inspector = sa.inspect(op.get_bind())
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
     tables = set(inspector.get_table_names())
     for name, create in TABLES:
         if name not in tables:
             create()
     if "api_key_usage_daily" not in set(inspector.get_view_names()):
         op.execute(CREATE_API_KEY_USAGE_DAILY_VIEW_SQL)
+    if bind.dialect.name == "postgresql":
+        _apply_tenant_policy(bind)
 
 
 def downgrade() -> None:

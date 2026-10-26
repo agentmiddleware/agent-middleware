@@ -19,6 +19,7 @@ from app.schemas.trust import (
     PermitVerifyResponse,
     ReceiptListResponse,
 )
+from app.routers.http_idempotency import resolve_idempotency_key_lines
 from app.services.ownership import CallerIdentity
 from app.services.demo_tenant_boundary import (
     DemoPermitDenied,
@@ -108,7 +109,7 @@ async def list_permits(
 @router.post("", response_model=PermitResponse, status_code=status.HTTP_201_CREATED)
 async def create_permit(
     request: PermitCreateRequest,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] = Header(..., alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ) -> PermitResponse:
@@ -143,6 +144,9 @@ async def create_permit(
                 ),
             },
         )
+    idempotency_key = resolve_idempotency_key_lines(
+        idempotency_key_lines, required=True
+    )
     idem = get_idempotency_service()
     # Nullable action fields must not change historical envelope issuance hashes.
     request_payload = request.model_dump(
@@ -322,7 +326,7 @@ async def verify_permit(
 @action_router.post("", response_model=PermitResponse, status_code=201)
 async def issue_action_permit(
     request: ActionPermitCreateRequest,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] = Header(..., alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitResponse:
     from app.services.action_permits import (
@@ -331,6 +335,9 @@ async def issue_action_permit(
     )
 
     await authorize_action_issuer(request, auth)
+    idempotency_key = resolve_idempotency_key_lines(
+        idempotency_key_lines, required=True
+    )
     idem = get_idempotency_service()
     identity: dict[str, Any] = dict(
         wallet_id=request.issuer_wallet_id,

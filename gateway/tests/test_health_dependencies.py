@@ -55,6 +55,7 @@ def _restore_env():
         "SENTINEL_API_KEY",
         "MCP_UPSTREAM_ENABLED",
         "MCP_UPSTREAM_PUBLIC_TOOL_ID",
+        "MCP_UPSTREAM_MULTI_TOOL_ENABLED",
         "MCP_UPSTREAM_BEARER_TOKEN",
         "TRUST_MODE_ENABLED",
         "TRUST_SIGNING_PRIVATE_KEY_B64",
@@ -100,6 +101,93 @@ async def test_upstream_health_exposes_payload_free_metrics(clean_database):
     rendered = json.dumps(result)
     assert "never-report-this-token" not in rendered
     assert "result_json" not in rendered
+
+
+@pytest.mark.anyio
+async def test_multi_tool_health_counts_registered_upstream_tools(clean_database):
+    settings = get_settings()
+    settings.MCP_UPSTREAM_ENABLED = True
+    settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED = True
+    settings.MCP_UPSTREAM_PUBLIC_TOOL_ID = "partner.multi"
+    registry = get_service_registry()
+    registry.unregister_execution_backend("upstream_mcp")
+    for name in ("partner.read", "partner.write"):
+        registry.register_upstream(
+            service_id=f"partner.multi.{name}",
+            name=name,
+            description="Gateway-owned partner tool",
+            category=ServiceCategory.PLATFORM_FEE,
+            executor=object(),
+            input_schema={"type": "object"},
+            output_schema=None,
+            credits_per_unit=1.0,
+            upstream_tool_name=name,
+            upstream_origin="https://partner.example",
+        )
+    try:
+        result = await _check_upstream_mcp()
+    finally:
+        registry.unregister_execution_backend("upstream_mcp")
+    assert result["status"] == "up"
+    assert result["upstream_tool_count"] == 2
+    assert result["public_tool_id"] == "partner.multi"
+
+
+@pytest.mark.anyio
+async def test_multi_tool_health_down_without_registered_tools(clean_database):
+    settings = get_settings()
+    settings.MCP_UPSTREAM_ENABLED = True
+    settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED = True
+    settings.MCP_UPSTREAM_PUBLIC_TOOL_ID = "partner.multi"
+    registry = get_service_registry()
+    registry.unregister_execution_backend("upstream_mcp")
+
+    result = await _check_upstream_mcp()
+
+    assert result["status"] == "down"
+    assert result["error"] == "configured upstream tool is not registered"
+
+
+@pytest.mark.anyio
+async def test_multi_tool_health_down_when_one_tool_lacks_executor(
+    clean_database, monkeypatch
+):
+    settings = get_settings()
+    settings.MCP_UPSTREAM_ENABLED = True
+    settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED = True
+    settings.MCP_UPSTREAM_PUBLIC_TOOL_ID = "partner.multi"
+    registry = get_service_registry()
+    registry.unregister_execution_backend("upstream_mcp")
+    for name in ("partner.read", "partner.write"):
+        registry.register_upstream(
+            service_id=f"partner.multi.{name}",
+            name=name,
+            description="Gateway-owned partner tool",
+            category=ServiceCategory.PLATFORM_FEE,
+            executor=object(),
+            input_schema={"type": "object"},
+            output_schema=None,
+            credits_per_unit=1.0,
+            upstream_tool_name=name,
+            upstream_origin="https://partner.example",
+        )
+    get_executor = registry.get_executor
+    monkeypatch.setattr(
+        registry,
+        "get_executor",
+        lambda service_id: (
+            None
+            if service_id == "partner.multi.partner.write"
+            else get_executor(service_id)
+        ),
+    )
+    try:
+        result = await _check_upstream_mcp()
+    finally:
+        registry.unregister_execution_backend("upstream_mcp")
+
+    assert result["status"] == "down"
+    assert result["error"] == "configured upstream tool is not registered"
 
 
 # ---------------------------------------------------------------------------

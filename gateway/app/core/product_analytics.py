@@ -1,6 +1,7 @@
 """Fail-safe, non-blocking PostHog product tracking.
 
-Tracking is off unless ``POSTHOG_API_KEY`` is set in the environment. When it
+Tracking is off unless ``POSTHOG_API_KEY`` is set (process env or ``.env`` via
+Settings). When it
 is unset every function here is a no-op: no client, no network, no task.
 
 Events go to PostHog's public ``/capture/`` endpoint over httpx (already a
@@ -30,15 +31,37 @@ SEND_TIMEOUT_SECONDS = 2.0
 EVENT_SIGNUP = "signup"
 EVENT_ACTIVATION = "activation"
 
+# In-flight sends are capped; beyond this, new events are dropped so a slow or
+# down PostHog can never pile up unbounded tasks.
+MAX_PENDING = 256
+
 _pending: set[asyncio.Task[None]] = set()
+_client: httpx.AsyncClient | None = None
 
 
 def _config() -> tuple[str, str] | None:
+    """(api_key, host) from process env first, then Settings (``.env``)."""
+    from app.core.config import get_settings
+
+    settings = get_settings()
     api_key = os.environ.get("POSTHOG_API_KEY", "").strip()
     if not api_key:
+        api_key = settings.POSTHOG_API_KEY.get_secret_value().strip()
+    if not api_key:
         return None
-    host = os.environ.get("POSTHOG_HOST", "").strip() or DEFAULT_HOST
+    host = (
+        os.environ.get("POSTHOG_HOST", "").strip()
+        or settings.POSTHOG_HOST.strip()
+        or DEFAULT_HOST
+    )
     return api_key, host.rstrip("/")
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(timeout=SEND_TIMEOUT_SECONDS)
+    return _client
 
 
 def is_enabled() -> bool:
@@ -46,9 +69,8 @@ def is_enabled() -> bool:
 
 
 async def _post(host: str, payload: dict[str, Any]) -> None:
-    async with httpx.AsyncClient(timeout=SEND_TIMEOUT_SECONDS) as client:
-        response = await client.post(f"{host}/capture/", json=payload)
-        response.raise_for_status()
+    response = await _get_client().post(f"{host}/capture/", json=payload)
+    response.raise_for_status()
 
 
 async def _send(host: str, payload: dict[str, Any]) -> None:
@@ -66,6 +88,9 @@ def _enqueue(event: str, distinct_id: str, properties: dict[str, Any]) -> None:
     try:
         config = _config()
         if config is None or not distinct_id:
+            return
+        if len(_pending) >= MAX_PENDING:
+            logger.debug("product_analytics_dropped event=%s reason=backlog", event)
             return
         api_key, host = config
         payload = {
@@ -115,3 +140,18 @@ async def drain_pending() -> None:
     """Await in-flight sends (tests and graceful shutdown)."""
     if _pending:
         await asyncio.gather(*list(_pending), return_exceptions=True)
+
+
+async def shutdown() -> None:
+    """Drain in-flight sends and close the shared client (app shutdown)."""
+    global _client
+    try:
+        await asyncio.wait_for(drain_pending(), timeout=SEND_TIMEOUT_SECONDS + 1)
+    except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+        logger.debug("product_analytics_drain_failed error=%s", type(exc).__name__)
+    client, _client = _client, None
+    if client is not None:
+        try:
+            await client.aclose()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("product_analytics_close_failed error=%s", type(exc).__name__)

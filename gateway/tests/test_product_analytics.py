@@ -209,3 +209,133 @@ async def test_first_use_recorded_when_tracking_disabled(
     key = await service.validate_key(body["api_key"], consume=False)
     assert key.first_used_at is not None
     assert sent == []
+
+
+async def test_concurrent_first_uses_of_two_keys_fire_one_activation(
+    client, enabled, sent, self_provision
+):
+    body = (await client.post("/v1/dev-keys/self-provision", json={})).json()
+    service = get_api_key_service()
+    second = await service.create_key(wallet_id=body["wallet_id"], key_name="2nd")
+    results = await asyncio.gather(
+        service.validate_key(body["api_key"]),
+        service.validate_key(second["api_key"]),
+        service.validate_key(body["api_key"]),
+        service.validate_key(second["api_key"]),
+    )
+    assert all(results)
+    await product_analytics.drain_pending()
+    activations = [p for _, p in sent if p["event"] == "activation"]
+    assert len(activations) == 1
+    assert activations[0]["distinct_id"] == body["sponsor_wallet_id"]
+
+
+async def test_activation_claim_recorded_on_root_even_when_tracking_off(
+    client, monkeypatch, sent, self_provision
+):
+    from app.db.database import get_session_factory
+    from app.db.models import WalletModel
+
+    monkeypatch.delenv("POSTHOG_API_KEY", raising=False)
+    body = (await client.post("/v1/dev-keys/self-provision", json={})).json()
+    assert await get_api_key_service().validate_key(body["api_key"])
+    async with get_session_factory()() as session:
+        root = await session.get(WalletModel, body["sponsor_wallet_id"])
+        assert root.product_activated_at is not None
+    assert sent == []
+
+
+async def test_activation_claim_failure_does_not_fail_auth(
+    client, enabled, sent, self_provision, monkeypatch
+):
+    from app.services.api_key_service import APIKeyService
+
+    async def boom(session, wallet_id):
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr(APIKeyService, "_root_wallet_id", staticmethod(boom))
+    body = (await client.post("/v1/dev-keys/self-provision", json={})).json()
+    service = get_api_key_service()
+    assert await service.validate_key(body["api_key"]) is not None
+    reread = await service.validate_key(body["api_key"], consume=False)
+    assert reread.first_used_at is not None
+    await product_analytics.drain_pending()
+    assert "activation" not in _events(sent)
+
+
+async def test_root_wallet_walk_handles_nesting_and_cycles(clean_database):
+    from app.db.database import get_session_factory
+    from app.db.models import WalletModel
+    from app.services.api_key_service import APIKeyService
+
+    async with get_session_factory()() as session:
+        session.add(WalletModel(wallet_id="w-root", wallet_type="sponsor"))
+        await session.commit()
+        session.add(
+            WalletModel(
+                wallet_id="w-mid", wallet_type="agent", parent_wallet_id="w-root"
+            )
+        )
+        await session.commit()
+        session.add(
+            WalletModel(
+                wallet_id="w-leaf", wallet_type="agent", parent_wallet_id="w-mid"
+            )
+        )
+        await session.commit()
+        assert await APIKeyService._root_wallet_id(session, "w-leaf") == "w-root"
+        assert await APIKeyService._root_wallet_id(session, "w-root") == "w-root"
+        assert await APIKeyService._root_wallet_id(session, "missing") == "missing"
+
+
+def test_posthog_settings_load_from_dotenv_fields(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.delenv("POSTHOG_API_KEY", raising=False)
+    monkeypatch.delenv("POSTHOG_HOST", raising=False)
+    s = Settings(
+        _env_file=None,
+        POSTHOG_API_KEY=FAKE_KEY,
+        POSTHOG_HOST="https://eu.i.posthog.com",
+    )
+    assert s.POSTHOG_API_KEY.get_secret_value() == FAKE_KEY
+    assert FAKE_KEY not in repr(s)
+    monkeypatch.setattr(get_settings(), "POSTHOG_API_KEY", s.POSTHOG_API_KEY)
+    monkeypatch.setattr(get_settings(), "POSTHOG_HOST", s.POSTHOG_HOST)
+    assert product_analytics._config() == (FAKE_KEY, "https://eu.i.posthog.com")
+
+
+def test_settings_accepts_posthog_entries_in_env_file(tmp_path, monkeypatch):
+    from app.core.config import Settings
+
+    env = tmp_path / ".env"
+    env.write_text(
+        f"POSTHOG_API_KEY={FAKE_KEY}\nPOSTHOG_HOST=https://eu.i.posthog.com\n"
+    )
+    monkeypatch.delenv("POSTHOG_API_KEY", raising=False)
+    monkeypatch.delenv("POSTHOG_HOST", raising=False)
+    s = Settings(_env_file=str(env))
+    assert s.POSTHOG_HOST == "https://eu.i.posthog.com"
+
+
+async def test_pending_sends_are_capped(enabled, monkeypatch):
+    gate = asyncio.Event()
+
+    async def slow(host, payload):
+        await gate.wait()
+
+    monkeypatch.setattr(product_analytics, "_post", slow)
+    monkeypatch.setattr(product_analytics, "MAX_PENDING", 3)
+    for _ in range(10):
+        product_analytics.capture("signup", "w1")
+    assert len(product_analytics._pending) == 3
+    gate.set()
+    await product_analytics.drain_pending()
+
+
+async def test_shutdown_drains_and_closes_shared_client(enabled, monkeypatch):
+    client = product_analytics._get_client()
+    assert product_analytics._get_client() is client  # reused
+    await product_analytics.shutdown()
+    assert client.is_closed
+    assert product_analytics._client is None

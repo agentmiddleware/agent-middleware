@@ -496,6 +496,10 @@ async def lifespan(app: FastAPI):
     logger.info("app_shutdown", phase="starting")
     shutdown_start = time.monotonic()
 
+    from .core import product_analytics
+
+    await product_analytics.shutdown()
+
     if cleanup_task:
         cleanup_task.cancel()
         try:

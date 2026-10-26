@@ -8,8 +8,9 @@ The gateway can send three product events to PostHog. It is off unless
 | `POSTHOG_API_KEY` | empty (off) | PostHog project API key. Blank or unset: every tracking call is a no-op. |
 | `POSTHOG_HOST` | `https://us.i.posthog.com` | PostHog ingestion host, e.g. `https://eu.i.posthog.com` or a self-hosted URL. |
 
-Both are read from the process environment at send time (not from `Settings`,
-so they never appear in a settings dump). Never commit a real key.
+Each is read from the process environment first, then from `Settings`, so
+`.env` entries work. The key is a `SecretStr` and is masked in settings dumps.
+Never commit a real key.
 
 ## Events
 
@@ -24,16 +25,22 @@ The distinct id is the account's root (sponsor) wallet id.
 Demo and dev self-provision signups are anonymous: no email is sent (dev
 wallets only carry a synthetic `@dev.local` address).
 
-`activation` fires once per account. The key's first use is claimed with a
-guarded `first_used_at IS NULL` update, so concurrent first uses produce one
-event, and it is skipped when another key on the root wallet or its direct
-child wallets was already used. Derived (JWT) authority recorded through
+`activation` fires once per account. On a key's first use, the gateway walks
+`parent_wallet_id` to the root wallet and claims
+`wallets.product_activated_at` with a conditional `... IS NULL` UPDATE, so
+concurrent first uses of one key or of several keys produce exactly one event.
+The claim is recorded even when tracking is off, so turning tracking on later
+doesn't replay old activations. Migration 054 backfills accounts that were
+already active ([schema 054](schema-054-rollout.md)). `first_used_at` is still
+set in the same single usage update as before. Derived (JWT) authority recorded through
 `consume_derived_key_use` is not an activation trigger.
 
 ## Failure behaviour
 
 Sends go to `<POSTHOG_HOST>/capture/` over httpx as background tasks with a
-2 s timeout. Every error is caught and logged at debug level with the
+2 s timeout. They reuse one shared httpx client and are capped at 256 in-flight
+tasks: beyond that, events are dropped. App shutdown drains them and closes the
+client. Every error is caught and logged at debug level with the
 exception type only (never the key), so tracking cannot fail or slow a
 request. Code lives in `app/core/product_analytics.py`; tests in
 `tests/test_product_analytics.py` mock the HTTP send.

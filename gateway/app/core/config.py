@@ -248,6 +248,10 @@ class Settings(BaseSettings):
     JEV_RISK_GUARD_TIMEOUT_SECONDS: float = 1.5
     JEV_RISK_GUARD_TIERS: str = "medium,high"
     TYPESAFE_API_KEY: SecretStr = SecretStr("")
+    # Optional PostHog product tracking (docs/product-analytics.md). Blank
+    # key = tracking off. Declared here so .env entries load.
+    POSTHOG_API_KEY: SecretStr = SecretStr("")
+    POSTHOG_HOST: str = ""
     TYPESAFE_BASE_URL: str = "https://api.typesafe.ai"
     # Default repeat detection window in seconds. Duplicates outside this window
     # are not detected.

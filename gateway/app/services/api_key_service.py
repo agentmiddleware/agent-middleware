@@ -40,6 +40,10 @@ from ..schemas.billing import (
 
 logger = logging.getLogger(__name__)
 
+# Wallets nest via parent_wallet_id (sponsor -> agent -> child agent); the
+# root walk is capped so a corrupt cycle cannot loop forever.
+_MAX_WALLET_DEPTH = 16
+
 API_KEY_LENGTH = 32
 API_KEY_PREFIX_LENGTH = 8
 
@@ -485,19 +489,14 @@ class APIKeyService:
             if expires_at and expires_at < now:
                 return None
 
-            # A key read as never-used leaves first_used_at to the guarded
-            # claim below, so exactly one request records the first use (and
-            # fires the activation event) even when first uses race.
+            # Detect a first use from the pre-read; first_used_at itself is
+            # still set by the single guarded update below (one commit).
             unused_at_read = key.first_used_at is None
-            first_use_values: dict[str, Any] = (
-                {}
-                if unused_at_read
-                else {
-                    "first_used_at": func.coalesce(
-                        APIKeyModel.first_used_at, to_naive_utc(now)
-                    )
-                }
-            )
+            first_use_values: dict[str, Any] = {
+                "first_used_at": func.coalesce(
+                    APIKeyModel.first_used_at, to_naive_utc(now)
+                )
+            }
 
             if key.max_uses is not None:
                 # Guarded increment: the WHERE clause makes concurrent
@@ -551,61 +550,60 @@ class APIKeyService:
                     return None
 
             if unused_at_read:
-                claimed = await session.execute(
-                    update(APIKeyModel)
-                    .where(
-                        col(APIKeyModel.key_id) == key.key_id,
-                        col(APIKeyModel.first_used_at).is_(None),
-                    )
-                    .values(first_used_at=to_naive_utc(now))
-                    .execution_options(synchronize_session=False)
-                )
-                await session.commit()
-                if (cast(Any, claimed).rowcount or 0) == 1:
-                    await self._track_first_key_use(session, key)
+                await self._claim_account_activation(session, key)
 
         return key
 
-    async def _track_first_key_use(
+    async def _claim_account_activation(
         self, session: AsyncSession, key: APIKeyModel
     ) -> None:
-        """Fire ``activation`` once per account on its first key use.
+        """Claim the account's activation once and fire ``activation``.
 
-        The account is the root (sponsor) wallet. The event fires only when
-        no other key on the root wallet or its direct child wallets has been
-        used. Never raises: tracking must not affect authentication.
+        The account is the root wallet, found by walking ``parent_wallet_id``.
+        The claim is a conditional UPDATE on
+        ``wallets.product_activated_at IS NULL``, so concurrent first uses of
+        the same key or of different keys on one account win it exactly once.
+        This runs only on a key's first use. Never raises: activation must not
+        affect authentication.
         """
-        if not product_analytics.is_enabled():
-            return
         try:
-            wallet = await session.get(WalletModel, key.wallet_id)
-            root_id = key.wallet_id
-            if wallet is not None and wallet.parent_wallet_id:
-                root_id = wallet.parent_wallet_id
-            scope = select(col(WalletModel.wallet_id)).where(
-                or_(
-                    col(WalletModel.wallet_id) == root_id,
-                    col(WalletModel.parent_wallet_id) == root_id,
-                )
-            )
-            prior = await session.execute(
-                select(func.count())
-                .select_from(APIKeyModel)
+            root_id = await self._root_wallet_id(session, key.wallet_id)
+            claimed = await session.execute(
+                update(WalletModel)
                 .where(
-                    col(APIKeyModel.key_id) != key.key_id,
-                    col(APIKeyModel.first_used_at).is_not(None),
-                    col(APIKeyModel.wallet_id).in_(scope),
+                    col(WalletModel.wallet_id) == root_id,
+                    col(WalletModel.product_activated_at).is_(None),
                 )
+                .values(product_activated_at=to_naive_utc(utc_now()))
+                .execution_options(synchronize_session=False)
             )
-            if (prior.scalar_one() or 0) > 0:
-                return
-            product_analytics.track_activation(
-                root_id, key_id=key.key_id, wallet_id=key.wallet_id
-            )
-        except Exception as exc:  # noqa: BLE001 - tracking must never raise
-            logger.debug(
-                "product_analytics_activation_failed error=%s", type(exc).__name__
-            )
+            await session.commit()
+            if (cast(Any, claimed).rowcount or 0) == 1:
+                product_analytics.track_activation(
+                    root_id, key_id=key.key_id, wallet_id=key.wallet_id
+                )
+        except Exception as exc:  # noqa: BLE001 - must never fail auth
+            await session.rollback()
+            logger.debug("product_activation_claim_failed error=%s", type(exc).__name__)
+
+    @staticmethod
+    async def _root_wallet_id(session: AsyncSession, wallet_id: str) -> str:
+        """Walk parent_wallet_id up to the root (bounded, cycle-safe)."""
+        current = wallet_id
+        seen = {current}
+        for _ in range(_MAX_WALLET_DEPTH):
+            parent = (
+                await session.execute(
+                    select(col(WalletModel.parent_wallet_id)).where(
+                        col(WalletModel.wallet_id) == current
+                    )
+                )
+            ).scalar_one_or_none()
+            if not parent or parent in seen:
+                break
+            seen.add(parent)
+            current = parent
+        return current
 
     async def rotate_key(
         self,

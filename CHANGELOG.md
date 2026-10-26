@@ -15,6 +15,13 @@ This repository starts with a fresh history. Releases are listed here once tagge
 - Receipts: new optional signed fields `enforcement_mode` ("enforce" or
   "permissive") and `gateway_build` (build commit). Each is signed only when set,
   so older receipts still verify. Migration 052 adds the columns.
+- Ops: the startup `runtime_posture` log line and `GET /health` now report
+  `tenant_rls_mode` (`off` or `enforce`). The default stays `off`.
+- Boot: the schema check now requires `receipts.enforcement_mode` and
+  `receipts.gateway_build` (migration 052), so a database missing them fails at
+  startup instead of on the first receipt write.
+- CI: the Postgres proofs job sets `TENANT_RLS_OFF_MIGRATION_DATABASE_URL`, so the
+  048 default-off migration proof runs instead of skipping.
 - Migrations: 053 recreates `receipt_resolutions`, `resolution_chain_heads`,
   `approval_gate_approvals`, `api_key_usage_events` and the `api_key_usage_daily`
   view on databases built by the archived api chain, only when missing.

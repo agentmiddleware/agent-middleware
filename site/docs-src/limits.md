@@ -7,7 +7,7 @@ description: The supported pilot boundary and limits of gateway and Receipt evid
 
 # Limits
 
-AMW currently governs MCP tool invocation. The supported remote pilot uses one operator configured HTTPS Streamable HTTP MCP origin and one exact tool in a vendor-managed, single tenant deployment. The repository contains other proof surfaces that are outside this supported boundary.
+AMW currently governs MCP tool invocation. The supported remote pilot uses one operator configured HTTPS Streamable HTTP MCP origin and one exact tool in a vendor managed, single tenant deployment. The repository contains other proof surfaces that are outside this supported boundary.
 
 - A gateway dispatch record does not prove that the upstream tool executed. The upstream tool must honor the forwarded Request key for duplicate downstream effects to be prevented.
 - A timeout after the dispatch checkpoint can produce a charged `delivery_uncertain` Receipt. It needs upstream or operator reconciliation.

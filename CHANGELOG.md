@@ -15,3 +15,7 @@ This repository starts with a fresh history. Releases are listed here once tagge
 - Receipts: new optional signed fields `enforcement_mode` ("enforce" or
   "permissive") and `gateway_build` (build commit). Each is signed only when set,
   so older receipts still verify. Migration 052 adds the columns.
+- Replay: whitespace-only recorded `approval_id` now raises `ReplayError` like the
+  empty string, and `amw-replay` writes `receipts.jsonl`, `summary.json`, and
+  `keys.json` atomically (temp file in the output dir, then rename), leaving no
+  partial outputs or temp files when a write fails.

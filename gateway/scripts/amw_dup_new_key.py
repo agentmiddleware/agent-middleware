@@ -190,10 +190,11 @@ def normalize_postgres_url_to_asyncpg(url: str) -> str:
 
     Accepts ``postgres://``, ``postgresql://``, and any
     ``postgresql+<driver>://`` spelling (including ``+psycopg``,
-    ``+psycopg2``, and the already-correct ``+asyncpg``). Only the scheme
-    is changed; user, password, host, port, database, and query survive
-    untouched. The gateway only ships asyncpg, so the PostgreSQL path
-    must always connect through this spelling.
+    ``+psycopg2``, and the already-correct ``+asyncpg``). The gateway only
+    ships asyncpg, so the PostgreSQL path must always use this driver.
+    ``sslmode`` is mapped to asyncpg's ``ssl`` query argument. A custom
+    root certificate is rejected because SQLAlchemy does not pass it as
+    an asyncpg DSN option.
     """
     trimmed = url.strip()
     marker = "://"
@@ -204,7 +205,13 @@ def normalize_postgres_url_to_asyncpg(url: str) -> str:
     rest = trimmed[index + len(marker) :]
     if scheme.split("+")[0] not in ("postgres", "postgresql"):
         raise ValueError("unsupported database")
-    return "postgresql+asyncpg://" + rest
+    parsed = make_url("postgresql+asyncpg://" + rest)
+    query = dict(parsed.query)
+    if "sslrootcert" in query:
+        raise ValueError("unsupported PostgreSQL SSL option")
+    if "sslmode" in query:
+        query.setdefault("ssl", query.pop("sslmode"))
+    return parsed.set(query=query).render_as_string(hide_password=False)
 
 
 def postgres_statement_timeout_sql(statement_timeout_seconds: float) -> str:
@@ -852,8 +859,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="PostgreSQL SET LOCAL statement_timeout for the measurement.",
     )
     args = parser.parse_args(argv)
-    if args.window_seconds < 0:
-        parser.error("--window-seconds must be >= 0")
+    if not math.isfinite(args.window_seconds) or args.window_seconds < 0:
+        parser.error("--window-seconds must be a finite number >= 0")
     timeout = float(args.statement_timeout_seconds)
     if not math.isfinite(timeout) or timeout < 0:
         parser.error("--statement-timeout-seconds must be >= 0")

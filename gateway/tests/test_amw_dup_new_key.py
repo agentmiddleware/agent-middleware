@@ -705,8 +705,18 @@ def test_postgres_url_normalisation_uses_asyncpg() -> None:
         amw.normalize_postgres_url_to_asyncpg(
             f"postgresql+psycopg2://{userinfo}?sslmode=require"
         )
-        == f"postgresql+asyncpg://{userinfo}?sslmode=require"
+        == f"postgresql+asyncpg://{userinfo}?ssl=require"
     )
+    assert (
+        amw.normalize_postgres_url_to_asyncpg(
+            f"postgresql://{userinfo}?sslmode=require&ssl=verify-full"
+        )
+        == f"postgresql+asyncpg://{userinfo}?ssl=verify-full"
+    )
+    with pytest.raises(ValueError, match="unsupported PostgreSQL SSL option"):
+        amw.normalize_postgres_url_to_asyncpg(
+            f"postgresql://{userinfo}?sslrootcert=/private/ca.pem"
+        )
     already = f"postgresql+asyncpg://{userinfo}"
     assert amw.normalize_postgres_url_to_asyncpg(already) == already
     engine = amw.create_postgres_async_engine(f"postgresql://{userinfo}")
@@ -763,6 +773,32 @@ def test_postgres_main_normalises_and_never_leaks_password(
     assert PG_SYNTH_HOST not in summary
     assert "REPEATABLE READ" in summary
     assert "snapshot:" in summary
+
+
+def test_postgres_query_failure_does_not_leak_dsn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def _fail(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError(f"{PG_SYNTH_HOST} {PG_SYNTH_PASSWORD}")
+
+    monkeypatch.setattr(amw, "_postgres_single_transaction", _fail)
+    monkeypatch.setenv(
+        amw.ENV_VAR,
+        f"postgres://analyst:{PG_SYNTH_PASSWORD}@{PG_SYNTH_HOST}/db",
+    )
+    out_dir = tmp_path / "out"
+    assert amw.main(["--out-dir", str(out_dir)]) == 0
+    captured_out = capsys.readouterr().out
+    assert "not measured: query failed" in captured_out
+    for output in (
+        captured_out,
+        (out_dir / "summary.md").read_text(encoding="utf-8"),
+        (out_dir / "dup_pairs.csv").read_text(encoding="utf-8"),
+    ):
+        assert PG_SYNTH_PASSWORD not in output
+        assert PG_SYNTH_HOST not in output
 
 
 def test_postgres_aggregates_share_single_connection() -> None:
@@ -830,6 +866,34 @@ def test_statement_timeout_is_configurable() -> None:
         ["--out-dir", "/tmp/out-test", "--statement-timeout-seconds", "12.5"]
     )
     assert args.statement_timeout_seconds == 12.5
+
+
+@pytest.mark.parametrize("value", ["-1", "nan", "inf", "-inf"])
+def test_window_rejects_negative_and_nonfinite(value: str, tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        amw.parse_args(["--out-dir", str(tmp_path), "--window-seconds", value])
+
+
+@pytest.mark.parametrize("value", ["-1", "nan", "inf", "-inf"])
+def test_statement_timeout_rejects_negative_and_nonfinite(
+    value: str, tmp_path: Path
+) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        amw.parse_args(
+            ["--out-dir", str(tmp_path), "--statement-timeout-seconds", value]
+        )
+
+
+@pytest.mark.parametrize("option", ["--since", "--until"])
+def test_date_filters_reject_invalid_time(option: str, tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        amw.parse_args(["--out-dir", str(tmp_path), option, "not-a-date"])
+
+
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf")])
+def test_statement_timeout_sql_rejects_invalid_value(value: float) -> None:
+    with pytest.raises(ValueError, match="invalid statement timeout"):
+        amw.postgres_statement_timeout_sql(value)
 
 
 def test_summary_states_snapshot(

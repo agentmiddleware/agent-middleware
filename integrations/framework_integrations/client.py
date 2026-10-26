@@ -4,9 +4,23 @@ B2A Client — Framework Integration Core
 HTTP client for Agent Middleware API.
 """
 
+import math
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
+
 import httpx
+
+_TELEMETRY_EVENT_TYPES = {
+    "error",
+    "warning",
+    "session",
+    "api_call",
+    "llm_trace",
+    "performance",
+    "custom",
+}
+_TELEMETRY_SEVERITIES = {"critical", "high", "medium", "low", "info"}
+_MESSAGE_PRIORITIES = {"critical", "high", "normal", "low"}
 
 
 @dataclass
@@ -17,6 +31,7 @@ class B2AConfig:
     api_key: str = ""
     wallet_id: str = ""
     timeout: int = 30
+    agent_id: str = ""
 
 
 class B2AClient:
@@ -32,7 +47,7 @@ class B2AClient:
     - AWI session management
     """
 
-    def __init__(self, config: Optional[B2AConfig] = None, **kwargs):
+    def __init__(self, config: B2AConfig | None = None, **kwargs):
         if config is None:
             config = B2AConfig(**kwargs)
         self.config = config
@@ -55,21 +70,47 @@ class B2AClient:
         )
         response.raise_for_status()
         data = response.json()
-        return float(data.get("balance", 0))
+        if not isinstance(data, dict) or "balance" not in data:
+            raise ValueError("wallet response is missing balance")
+        balance = data["balance"]
+        # bool is an int subclass, so reject it before the number check.
+        if isinstance(balance, bool) or not isinstance(balance, (int, float)):
+            raise ValueError("wallet balance must be a finite number")  # noqa: TRY004
+        if not math.isfinite(balance):
+            raise ValueError("wallet balance must be a finite number")
+        return float(balance)
 
     async def emit_telemetry(
         self,
         event: str,
-        properties: Optional[dict[str, Any]] = None,
+        properties: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Emit a telemetry event."""
+        """Emit one telemetry event using the gateway single-event contract."""
+        props = dict(properties or {})
+        event_type = event if event in _TELEMETRY_EVENT_TYPES else "custom"
+        message = props.pop("message", None)
+        if not isinstance(message, str) or not message.strip():
+            message = event
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("telemetry message must be a non-blank string")
+        source = props.pop("source", None)
+        if not isinstance(source, str) or not source.strip():
+            source = "framework_integrations"
+        severity = props.pop("severity", None)
+        if not isinstance(severity, str) or severity not in _TELEMETRY_SEVERITIES:
+            severity = "info"
+        # Keep the caller's name when it is not already a gateway event type.
+        if event not in _TELEMETRY_EVENT_TYPES and "event" not in props:
+            props["event"] = event
         payload = {
-            "event": event,
-            "agent_id": self.config.wallet_id,
-            "properties": properties or {},
+            "event_type": event_type,
+            "source": source,
+            "message": message,
+            "severity": severity,
+            "metadata": props,
         }
         response = await self._client.post(
-            f"{self.config.api_url}/v1/telemetry/events",
+            f"{self.config.api_url}/v1/telemetry/events/single",
             headers=self._headers(),
             json=payload,
         )
@@ -83,15 +124,28 @@ class B2AClient:
         priority: str = "normal",
     ) -> dict[str, Any]:
         """Send a message to another agent."""
+        if (
+            not isinstance(self.config.agent_id, str)
+            or not self.config.agent_id.strip()
+        ):
+            raise ValueError("agent_id is required to send messages")
+        if priority not in _MESSAGE_PRIORITIES:
+            raise ValueError("priority must be one of: critical, high, normal, low")
+        subject = "message"
+        raw_subject = content.get("subject") if isinstance(content, dict) else None
+        if isinstance(raw_subject, str) and raw_subject.strip():
+            subject = raw_subject
         payload = {
-            "from_agent_id": self.config.wallet_id,
-            "to_agent_id": to_agent_id,
-            "content": content,
+            "to_agent": to_agent_id,
+            "message_type": "request",
             "priority": priority,
+            "subject": subject,
+            "body": content,
         }
         response = await self._client.post(
             f"{self.config.api_url}/v1/comms/messages",
             headers=self._headers(),
+            params={"from_agent": self.config.agent_id.strip()},
             json=payload,
         )
         response.raise_for_status()
@@ -103,6 +157,8 @@ class B2AClient:
         options: list[str],
     ) -> str:
         """Make an AI-powered decision."""
+        if not options:
+            raise ValueError("options must not be empty")
         payload = {
             "agent_id": self.config.wallet_id,
             "context": context,
@@ -115,7 +171,10 @@ class B2AClient:
         )
         response.raise_for_status()
         data = response.json()
-        return data.get("decision", options[0])
+        action = data.get("action") if isinstance(data, dict) else None
+        if not isinstance(action, str) or not action.strip():
+            raise ValueError("decide response is missing a non-blank action")
+        return action
 
     async def heal(self, issue: str, context: dict[str, Any]) -> dict[str, Any]:
         """AI-powered self-healing diagnostics."""
@@ -137,8 +196,17 @@ class B2AClient:
         max_steps: int = 100,
     ) -> dict[str, Any]:
         """Create an AWI session for web automation."""
+        # bool is an int, and the gateway accepts only 1..1000.
+        if (
+            isinstance(max_steps, bool)
+            or not isinstance(max_steps, int)
+            or max_steps < 1
+            or max_steps > 1000
+        ):
+            raise ValueError("max_steps must be an integer from 1 to 1000")
         payload = {
             "target_url": target_url,
+            "wallet_id": self.config.wallet_id,
             "max_steps": max_steps,
         }
         response = await self._client.post(
@@ -212,7 +280,7 @@ class B2AClient:
         description: str = "",
         *,
         idempotency_key: str,
-        request_path: Optional[str] = None,
+        request_path: str | None = None,
     ) -> dict[str, Any]:
         """Charge the configured wallet for metered usage.
 
@@ -224,8 +292,14 @@ class B2AClient:
         """
         # The server treats an empty Idempotency-Key as "no key", which would
         # silently drop the double-charge protection, so refuse it here.
-        if not idempotency_key or not idempotency_key.strip():
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             raise ValueError("idempotency_key is required and must not be blank")
+        if len(idempotency_key) > 128:
+            raise ValueError("idempotency_key must be at most 128 characters")
+        # The server prices the units; a negative or non-finite quantity must
+        # never reach it as a charge.
+        if not math.isfinite(units) or units < 0:
+            raise ValueError("units must be a finite number and must not be negative")
         params: dict[str, str | float] = {
             "wallet_id": self.config.wallet_id,
             "service": service_category,

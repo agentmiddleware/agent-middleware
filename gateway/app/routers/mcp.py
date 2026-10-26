@@ -469,9 +469,12 @@ async def get_tools_json(
     Return the MCP tools.json manifest.
 
     This is an HTTP mirror of tool metadata exposed by this project's
-    governed JSON-RPC subset. Clients can obtain the same list by
-    sending ``tools/list`` to ``/mcp/messages``; that endpoint does not
-    implement the complete MCP initialization lifecycle.
+    governed tool surfaces. New integrations should invoke tools through
+    the standard Streamable HTTP endpoint at POST /mcp and can obtain the
+    same list via its ``tools/list`` method. Clients can also obtain the
+    list by sending ``tools/list`` to the legacy ``/mcp/messages``
+    endpoint; that endpoint does not implement the complete MCP
+    initialization lifecycle.
 
     On production-like boots the catalog requires the same credentials as
     invoke. Local-compatible environments keep it anonymous for quickstart.
@@ -1361,6 +1364,7 @@ async def _execute_registered_tool_inner(
                         wallet_id=wallet_id,
                         tool_name=tool_name,
                         key_id=auth.key_id,
+                        replay=replay,
                     )
                 await _raise_replayed_error(replay)
                 return replay.response_json
@@ -1632,6 +1636,7 @@ async def _execute_registered_tool_inner(
                 wallet_id=wallet_id,
                 tool_name=tool_name,
                 key_id=auth.key_id,
+                replay=replay,
             )
             await _raise_replayed_error(replay)
             return replay.response_json
@@ -1685,6 +1690,7 @@ async def _execute_registered_tool_inner(
                     reason_code=reason,
                     outcome="denied",
                     status_code=403,
+                    response_extra_data={"details": permit_validation.details},
                 )
             elif permit_validation.reason:
                 await _complete_governed_denial_idempotency(
@@ -4061,8 +4067,9 @@ async def _assert_governed_replay_access(
     wallet_id: str,
     tool_name: str,
     key_id: str | None,
+    replay: Any,
 ) -> None:
-    """Keep terminal replay bound to the permit's stable caller identity."""
+    """Keep terminal replay bound to its original caller and permit."""
     validation = await get_permit_service().validate_replay_access(
         permit_id=permit_id or "",
         wallet_id=wallet_id,
@@ -4070,6 +4077,24 @@ async def _assert_governed_replay_access(
         key_id=key_id,
     )
     if not validation.allowed:
+        response = replay.response_json if replay is not None else None
+        receipt = response.get("receipt") if isinstance(response, dict) else None
+        if (
+            validation.reason == "permit_wallet_mismatch"
+            and replay is not None
+            and replay.status_code == 403
+            and response is not None
+            and response.get("error") == validation.reason
+            and isinstance(receipt, dict)
+            and receipt.get("wallet_id") == wallet_id
+            and receipt.get("key_id") == key_id
+            and receipt.get("permit_id") == permit_id
+            and receipt.get("tool") == tool_name
+            and receipt.get("outcome") == "denied"
+        ):
+            # The original denial is evidence for this wallet and key, even
+            # though the foreign permit cannot authorize an execution.
+            return
         raise ToolPermissionDenied(validation.reason or "permit_denied")
 
 
@@ -4255,7 +4280,12 @@ async def _raise_replayed_error(replay: Any) -> None:
     if isinstance(dispatch, dict):
         extra_data["dispatch"] = dispatch
     if replay.status_code == 403:
-        raise ToolPermissionDenied(reason, receipt=receipt)
+        details = replay.response_json.get("details")
+        raise ToolPermissionDenied(
+            reason,
+            receipt=receipt,
+            details=details if isinstance(details, dict) else None,
+        )
     raise GovernedToolError(
         reason,
         receipt=receipt,

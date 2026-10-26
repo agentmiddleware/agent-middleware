@@ -26,6 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .core.auth import AuthContext, get_auth_context
+from .core.api_key_usage import APIKeyUsageMiddleware
 from .core.build_metadata import get_build_commit_sha, get_build_provenance
 from .core.config import get_settings
 from .core.durable_state import (
@@ -190,6 +191,7 @@ async def lifespan(app: FastAPI):
         enable_dogfood_second_tool=bool(settings.ENABLE_DOGFOOD_SECOND_TOOL),
         simulation_modes=get_simulation_modes(),
         cors_origins=settings.CORS_ORIGINS,
+        tenant_rls_mode=settings.TENANT_RLS_MODE,
     )
     # A public deployment whose manifest tells agents the operator has no
     # contact is a discovery-honesty defect, not a neutral default. Partial
@@ -493,11 +495,8 @@ async def lifespan(app: FastAPI):
     await close_db()
     await close_durable_state()
 
-    # Fixed 2s pause before process exit. This coordinates with nothing and
-    # drains nothing: graceful connection draining belongs to the server
-    # (uvicorn --timeout-graceful-shutdown), not to this sleep. Kept only as
-    # a brief settling window for background log and metric flushes.
-    await asyncio.sleep(2)
+    # Uvicorn handles graceful connection draining before lifespan shutdown;
+    # no fixed post-close sleep coordinates that work.
     logger.info(
         "app_shutdown",
         phase="complete",
@@ -572,14 +571,22 @@ app = FastAPI(
     # Omit contact metadata until an accountable, monitored identity is set.
     # This avoids presenting placeholder support details as a real escalation path.
     contact=public_contact or None,
+    # gateway/ is FSL-1.1-ALv2 (gateway/LICENSE.md), not the root Apache-2.0
+    # LICENSE. Keep this in step with LICENSING.md.
     license_info={
-        "name": "Business Source License 1.1",
-        "url": "https://github.com/PetrefiedThunder/agent-middleware/blob/main/LICENSE",
+        "name": (
+            "Functional Source License 1.1, Apache-2.0 future license (FSL-1.1-ALv2)"
+        ),
+        "url": "https://github.com/agentmiddleware/agent-middleware/blob/main/gateway/LICENSE.md",
     },
     servers=build_openapi_servers(settings.PUBLIC_URL, settings.ENVIRONMENT),
 )
 
 # --- Middleware Stack ---
+
+# Run inside the rate limiter so its accepted-credential holder is shared
+# with auth; this records at most one event after the routed call completes.
+app.add_middleware(APIKeyUsageMiddleware)
 
 # Rate limiting (enforces documented 120 req/min per API key)
 app.add_middleware(RateLimitMiddleware)
@@ -799,6 +806,7 @@ for router_module in CORE_TRUST_ROUTERS:
             else True
         ),
     )
+app.include_router(api_keys.admin_router)
 
 # Self-serve dev keys: the handler is triple-gated at runtime (its own
 # ENABLE_DEV_KEY_SELF_PROVISION flag answers 404, production-like environments
@@ -1046,12 +1054,23 @@ async def root(request: Request):
                 "description": (
                     "Model Context Protocol (MCP) gateway for governed tool "
                     "discovery and execution (permit → meter → dispatch → "
-                    "receipt)."
+                    "receipt). "
+                    + (
+                        "New integrations should invoke tools through the "
+                        "standard Streamable HTTP endpoint at POST /mcp; "
+                        if get_settings().ENABLE_STANDARD_MCP_ENDPOINT
+                        else "New integrations should invoke tools through "
+                        "POST /mcp/tools/{service_id}/invoke; "
+                    )
+                    + "POST /mcp/messages and "
+                    "POST /mcp/tools/{service_id}/invoke are legacy and kept "
+                    "for existing clients. Transports are stateless JSON "
+                    "only: no SSE, no server-initiated streams."
                 ),
                 "endpoints": [
                     "GET /mcp/tools.json",
                     "GET /.well-known/mcp/tools.json",
-                    "POST /mcp/messages",
+                    "POST /mcp/messages (legacy)",
                     *(
                         ["POST /mcp"]
                         if get_settings().ENABLE_STANDARD_MCP_ENDPOINT
@@ -1059,7 +1078,7 @@ async def root(request: Request):
                     ),
                     "GET /mcp/tools",
                     "GET /mcp/tools/{service_id}",
-                    "POST /mcp/tools/{service_id}/invoke",
+                    "POST /mcp/tools/{service_id}/invoke (legacy)",
                 ],
             },
             "red_team_security": {
@@ -1225,7 +1244,8 @@ async def root(request: Request):
         "Redis is configured but does not answer within 1 second; in "
         "production-like environments the rate limiter then refuses /v1 "
         "requests, so the API is not serving even though the process is up. "
-        "`checks.redis` is `up`, `down`, or `not_configured`."
+        "`checks.redis` is `up`, `down`, or `not_configured`. "
+        "`tenant_rls_mode` is `off` or `enforce`."
     ),
 )
 async def health():
@@ -1242,6 +1262,9 @@ async def health():
             # path. A bare SHA cannot be told apart from a stale stamp; a SHA
             # plus "stamped" can only mean the deployment is behind main.
             "build_provenance": get_build_provenance(),
+            # "off" or "enforce": whether migrations enable wallet RLS. A
+            # validated enum, never a credential.
+            "tenant_rls_mode": get_settings().TENANT_RLS_MODE,
             "checks": {"redis": redis_status},
         },
     )

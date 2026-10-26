@@ -290,9 +290,9 @@ class APIKeyModel(SQLModel, table=True):
     )
     expires_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
 
-    # Bounded-use keys: None = unlimited. use_count only advances through the
-    # guarded UPDATE in APIKeyService.validate_key so the cap cannot be
-    # overshot by concurrent requests.
+    # Bounded-use keys: None = unlimited. use_count tracks capped-key budget
+    # consumption, not total calls. api_key_usage_events is the call source
+    # of truth; it also includes unbounded keys and response outcomes.
     max_uses: Optional[int] = Field(default=None)
     use_count: int = Field(default=0)
 
@@ -312,6 +312,26 @@ class APIKeyModel(SQLModel, table=True):
     metadata_json: Optional[str] = Field(default=None)
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+class APIKeyUsageEventModel(SQLModel, table=True):
+    """One metadata-only HTTP outcome for a resolved database API key."""
+
+    __tablename__ = "api_key_usage_events"
+    __table_args__ = (
+        Index("ix_api_key_usage_events_key_created", "key_id", "created_at"),
+        Index("ix_api_key_usage_events_created", "created_at"),
+    )
+
+    id: str = Field(primary_key=True, max_length=36)
+    # Historical events survive key revocation or deletion.
+    key_id: str = Field(max_length=50)
+    tenant: Optional[str] = Field(default=None, max_length=32)
+    method: str = Field(max_length=16)
+    endpoint: str = Field(max_length=512)
+    status_code: int
+    latency_ms: int
+    created_at: datetime = Field(sa_type=NaiveUTCDateTime, default_factory=utc_now)
 
 
 class TelemetryEventModel(SQLModel, table=True):
@@ -877,6 +897,10 @@ class ReceiptModel(SQLModel, table=True):
     # Signed only when present so receipts created before migration 032 keep
     # verifying byte-for-byte.
     reason_code: Optional[str] = Field(default=None, max_length=128)
+    # Provenance signed into receipts issued from 052 onward. NULL on legacy
+    # receipts, whose signatures do not cover these fields.
+    enforcement_mode: Optional[str] = Field(default=None, max_length=16)
+    gateway_build: Optional[str] = Field(default=None, max_length=64)
     audit_event_id: Optional[str] = Field(
         default=None,
         max_length=50,
@@ -1233,6 +1257,21 @@ class McpDispatchAttemptModel(SQLModel, table=True):
     completed_at: Optional[datetime] = Field(
         sa_type=NaiveUTCDateTime, default=None, index=True
     )
+    # Provider-status reconciliation (047_dispatch_reconcile_lease, ported from
+    # the agent-middleware-api chain). Nothing in this service writes them yet;
+    # they are mapped so the model matches databases migrated by either chain.
+    reconcile_status: Optional[str] = Field(default=None, max_length=32, index=True)
+    reconcile_lease_owner: Optional[str] = Field(default=None, max_length=64)
+    reconcile_lease_expires_at: Optional[datetime] = Field(
+        sa_type=NaiveUTCDateTime, default=None, index=True
+    )
+    reconcile_next_probe_at: Optional[datetime] = Field(
+        sa_type=NaiveUTCDateTime, default=None, index=True
+    )
+    reconcile_probe_count: int = Field(
+        default=0, sa_column_kwargs={"server_default": "0"}
+    )
+    reconciled_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
 
     model_config = {"arbitrary_types_allowed": True}
 

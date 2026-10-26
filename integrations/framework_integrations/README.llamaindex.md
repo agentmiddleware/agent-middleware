@@ -9,7 +9,7 @@ No PyPI package is published. The SDK distribution will be published as
 repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -r gateway/requirements.txt -e ./sdk/python
 export PYTHONPATH="$PWD/integrations"
@@ -27,7 +27,10 @@ from framework_integrations import B2AClient, get_llamaindex_tools
 
 # Initialize client
 client = B2AClient(
-    api_url="http://localhost:8000", api_key="your-api-key", wallet_id="your-wallet-id"
+    api_url="http://localhost:8000",
+    api_key="your-api-key",
+    wallet_id="your-wallet-id",
+    agent_id="your-registered-agent-id",  # Required for send_message
 )
 
 # Get LlamaIndex-compatible tools

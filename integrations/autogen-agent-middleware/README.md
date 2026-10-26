@@ -14,7 +14,7 @@ This package is not published to PyPI. Install it from a checkout of
 this repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -e ./sdk/python
 python -m pip install -e integrations/autogen-agent-middleware
@@ -122,6 +122,8 @@ asyncio.run(main())
 ## Idempotency and Replay Protection
 
 Both `idempotency_key` and `permit_idempotency_key` are **required** and must be supplied by the caller. Do not auto-generate keys.
+
+The wrapper strips surrounding whitespace before it caches a permit or sends a key, because that is the text the SDK puts on the wire. A padded key and the same key without padding are one key. A key longer than 128 characters, or a key that contains control characters, is rejected before a permit is created. A blank tool name, a blank wallet, a non-positive budget or lifetime, and arguments that are not an object are rejected the same way, so a call the trust plane will refuse does not consume the permit key.
 
 An identical replay with the same invocation key returns the original receipt
 without recharging. `idempotency_key` identifies one governed invocation, and

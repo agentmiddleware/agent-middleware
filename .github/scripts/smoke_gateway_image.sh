@@ -145,6 +145,17 @@ docker build --target build-metadata -f gateway/Dockerfile \
   --build-arg "RELEASE_COMMIT_SHA=${stamp^^}" -t amw-gateway:ci-metadata .
 check_metadata_stamp amw-gateway:ci-metadata
 
+# CI and Railway build args supply the commit without a stamp file.
+docker build --target build-metadata -f gateway/Dockerfile \
+  --build-arg "GIT_COMMIT_SHA=$stamp" -t amw-gateway:ci-metadata .
+check_metadata_stamp amw-gateway:ci-metadata
+docker build --target build-metadata -f gateway/Dockerfile \
+  --build-arg "RAILWAY_GIT_COMMIT_SHA=$stamp" -t amw-gateway:ci-metadata .
+check_metadata_stamp amw-gateway:ci-metadata
+# A stale pinned override fails instead of stamping the wrong commit.
+expect_metadata_failure --build-arg "RELEASE_COMMIT_SHA=$other" \
+  --build-arg "RAILWAY_GIT_COMMIT_SHA=$stamp"
+
 rm gateway/.build_commit_sha
 expect_metadata_failure  # neither root stamp nor argument exists
 COMMIT_SHA="$stamp" BUILD_COMMIT_SHA="$stamp" expect_metadata_failure

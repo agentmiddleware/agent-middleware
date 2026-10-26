@@ -1,5 +1,11 @@
 """The simulated business tool: a refund API with a durable ledger.
 
+SIMULATION NOTICE: no real money moves here. ``refund.create`` records a
+simulated effect in the lab ledger only; there is no payment rail or wallet
+settlement behind it. A paid pilot must configure an actual upstream tool
+through ``register_configured_upstream_mcp``. This lab configures only its
+simulated refund tool, so its results transfer as method, not money movement.
+
 One consequential operation, modelled two ways:
 
 * **naive** -- every request executes. This is what an integration looks like

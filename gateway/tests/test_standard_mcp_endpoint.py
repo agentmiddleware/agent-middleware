@@ -12,6 +12,8 @@ import json
 
 import hashlib
 
+from decimal import Decimal
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from mcp.types import LATEST_PROTOCOL_VERSION
@@ -939,6 +941,12 @@ async def test_unkeyed_read_only_tool_is_refused_without_dispatch(
             assert resp.status_code == 200
             assert "result" in resp.json(), resp.text
         assert invocations == ["hi", "hi"]
+        # Lead's exemption test (#233): read-only calls ARE metered. Each keyed
+        # read debits the wallet at the tool's per-call price, so an unkeyed
+        # read could bill twice on retry and must stay refused.
+        debits = await _ledger_debits(client, provisioned, "echo-read-only")
+        assert len(debits) == 2
+        assert all(Decimal(str(e["amount"])) != 0 for e in debits)
     finally:
         get_service_registry().unregister_local("echo-read-only")
 

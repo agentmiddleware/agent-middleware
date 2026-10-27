@@ -269,9 +269,10 @@ class ServiceRegistry:
         requires a signed permit + idempotency key — even if legacy
         unpermitted MCP is otherwise allowed.
 
-        ``read_only`` declares the tool free of side effects. Unkeyed
-        standard ``/mcp`` calls to it keep a fresh key per call instead of the
-        deterministic retry key (a replay would serve a stale read). The
+        ``read_only`` declares the tool free of side effects. It gets no
+        deterministic retry key (a replay would serve a stale read), and it is
+        still metered, so an unkeyed standard ``/mcp`` call to it is refused
+        with ``idempotency_key_required`` (SEL-498). The
         default is False: an undeclared tool is treated as mutating, which
         fails safe (deduped, never double-dispatched).
         """

@@ -508,7 +508,8 @@ async def _governed_tools_call(
     auto_minted = permit_id is None
     idempotency_key = client_idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
     if not permit_id:
-        assert record is not None  # Checked before any auto-mint.
+        if record is None:  # Checked before any auto-mint.
+            raise RuntimeError("auto-permit mint requires a resolved tool record")
         permit_id = await _mint_auto_permit(
             auth=auth,
             tool_name=tool_name,

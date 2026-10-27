@@ -35,7 +35,11 @@ from tests.test_mcp_trust_mode import (
     _jsonrpc_body,
     strict_trust_mode,  # noqa: F401 - fixture
 )
-from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
+from tests.test_trust_helpers import (
+    create_tool_permit,
+    provision_agent_wallet,
+    resign_permit_model,
+)
 
 MCP_HEADERS = {
     "Accept": "application/json, text/event-stream",
@@ -560,7 +564,15 @@ async def test_action_permit_unregistered_tool_gets_permit_decision(
     provisioned, permit = await _permit_for_allowed_tool(client)
     async with get_session_factory()() as session:
         model = await session.get(PermitModel, permit["permit_id"])
+        # A complete, validly signed action binding for ALLOWED, so the call
+        # reaches the permit-scope check instead of a signature/binding error.
         model.action_contract_version = 1
+        model.action_payload_hash = "a" * 64
+        model.action_schema_id = f"{ALLOWED}.args"
+        model.action_schema_version = "1"
+        model.action_public_tool_id = ALLOWED
+        model.action_upstream_binding_hash = "b" * 64
+        await resign_permit_model(model)
         await session.commit()
     before = await _receipt_count(provisioned["agent_wallet_id"])
     resp = await client.post(
@@ -576,10 +588,16 @@ async def test_action_permit_unregistered_tool_gets_permit_decision(
     )
     error = resp.json()["error"]
     assert error["code"] == -32003
-    assert error["message"] != "action_tool_binding_required"
-    assert error["message"].startswith("permit_")
-    # No idempotency record exists on the action path, so no receipt.
-    assert await _receipt_count(provisioned["agent_wallet_id"]) == before
+    # The re-signed action permit reaches the permit-scope check.
+    assert error["message"] == "permit_tool_not_allowed", error
+    # A valid action permit's scope denial mints one signed denial receipt.
+    assert await _receipt_count(provisioned["agent_wallet_id"]) == before + 1
+    receipt = error["data"]["receipt"]
+    await _assert_denial_receipt(
+        receipt,
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+    )
 
 
 async def _forge_signature(permit_id: str) -> None:
@@ -778,3 +796,62 @@ async def test_item3_same_gate_fires_first_for_registry_state(
         assert audit_error == first_gate
         assert not error.get("data", {}).get("receipt")
     assert results[True][2] == results[False][2]
+
+
+async def _call_with_key(client, provisioned, permit_id, tool, key):
+    body = _jsonrpc_body(
+        tool_name=tool,
+        wallet_id=provisioned["agent_wallet_id"],
+        request_id=f"retry-{uuid4()}",
+        permit_id=permit_id,
+        idempotency_key=key,
+    )
+    # Real dogfood signatures: write takes ``text``, count takes nothing.
+    body["params"]["arguments"] = {"text": "hello"} if tool == ALLOWED else {}
+    return await client.post(
+        "/mcp/messages", json=body, headers=provisioned["agent_headers"]
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+@pytest.mark.parametrize("state", ["not_executable", "not_registered"])
+async def test_unresolved_tool_failure_is_not_replayed_after_fix(
+    client, clean_database, monkeypatch, state
+):
+    """DeepSeek 5662392959 #1: a registry-state failure is not the key's
+    final answer; a same-key retry runs once the tool works."""
+    provisioned = await provision_agent_wallet(client)
+    tool = ALLOWED if state == "not_executable" else UNKNOWN
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool,
+    )
+    registry = get_service_registry()
+    if state == "not_executable":
+        real = registry.get_local_func
+        monkeypatch.setattr(
+            registry,
+            "get_local_func",
+            lambda name: None if name == ALLOWED else real(name),
+        )
+    key = f"retry-idem-{uuid4()}"
+    first = (
+        await _call_with_key(client, provisioned, permit["permit_id"], tool, key)
+    ).json()
+    expected = "not executable" if state == "not_executable" else "not found"
+    assert expected in first["error"]["message"], first
+
+    if state == "not_executable":
+        monkeypatch.setattr(registry, "get_local_func", real)
+    else:
+        monkeypatch.setenv("ENABLE_DOGFOOD_SECOND_TOOL", "true")
+        get_settings.cache_clear()
+        sync_dogfood_tool_registration()
+    retry = (
+        await _call_with_key(client, provisioned, permit["permit_id"], tool, key)
+    ).json()
+    assert "error" not in retry, retry
+    assert "result" in retry

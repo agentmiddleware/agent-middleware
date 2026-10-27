@@ -45,11 +45,12 @@ only reachable in local/dev/test, and it logs a loud startup warning.
 | # | Gate | Source | On failure |
 |---|------|--------|------------|
 | 1 | **Wallet ownership — unpriced** (before the idempotency store is touched) | `evaluate_tool_invocation` | `wallet_access_denied` |
-| 2 | **Tool resolution + executability** | service registry | `Tool not found` / `Tool not executable` |
-| 3 | **Wallet ownership — priced** (re-run with real cost, for the audit record) | `evaluate_tool_invocation` | `wallet_access_denied` |
-| 4 | **Governed preconditions** | router | `permit_required` / `idempotency_key_required` |
-| 5 | **Idempotency begin** (completed prior call replays its stored signed receipt) | `get_idempotency_service()` | replay short-circuit |
-| 6 | **Permit validation** (Layer B) | `PermitService.validate_for_action` | `permit_*` |
+| 2 | **Governed preconditions** (independent of tool registration) | router | `idempotency_key_required` |
+| 3 | **Quote validation**, when a `quote_id` is supplied | quote service | `quote_*` |
+| 4 | **Idempotency begin** (completed prior call replays its stored signed receipt) | `get_idempotency_service()` | replay short-circuit |
+| 5 | **Permit validation** (Layer B), including `allowed_tools`, decided with no registered price. A denial is identical for registered and unregistered tools and, with an idempotency key, mints a signed denial receipt with `credits_authorized = 0` | `PermitService.validate_for_action` | `permit_*` |
+| 6 | **Tool resolution + executability**. The idempotency claim from step 4 is released, so a same-key retry runs normally once the tool is registered or executable | service registry | `Tool not found` / `Tool not executable` |
+| 6a | **Wallet ownership — priced** (re-run with real cost, for the audit record); calls without a permit get `permit_required` here on a resolved tool | `evaluate_tool_invocation` / router | `wallet_access_denied` / `permit_required` |
 | 7 | **Wallet policy bundles** (Layer C) | `evaluate_wallet_policy` | policy reason |
 | 8 | **Human-approval gate** (Layer D) | `_require_human_approval` | blocks / `human_approval_unavailable` |
 | 9 | **Recipient-domain binding** (Layer E) | router | `permit_recipient_domain_mismatch` |
@@ -82,6 +83,7 @@ capability bound to a wallet (and optionally an API key).
 
 | Check | Reason code |
 |-------|-------------|
+| Ed25519 signature over the permit verifies — checked **first**, right after the credits-amount check and before any other permit field is read | `permit_signature_invalid` |
 | Status must be `active` | `permit_{status}` (e.g. `permit_revoked`) |
 | Not past `expires_at` | `permit_expired` |
 | Permit's wallet == caller wallet | `permit_wallet_mismatch` |
@@ -92,7 +94,6 @@ capability bound to a wallet (and optionally an API key).
 | Per-tool call cap `max_calls_per_tool` (v2) — atomically reserved on local governed tools and remote (`upstream_mcp`) tools via a durable `call_slot_reserved` marker linked to the prepared dispatch attempt; cross-key retries are denied `permit_max_calls_exceeded` once the cap is reached; same-key retries replay the stored receipt | `permit_max_calls_exceeded` |
 | Cumulative `aggregate_value_cap` (v2) — enforced on the local MCP and AWI HTTP paths as a predicate of the atomic reservation against `spent_credits` floored to receipt history, so in-flight reservations and already-receipted charges both count; configured upstream calls fail closed | `permit_aggregate_value_cap_exceeded` locally; `permit_constraint_unsupported_for_upstream` remotely |
 | `forbidden_fields` (v2): deep scan of tool arguments for banned keys | `permit_forbidden_field:{field}` |
-| Ed25519 signature over the permit verifies — checked **last** | `permit_signature_invalid` |
 
 The local per-tool call limit is enforced with a persisted reservation counter,
 including an optimistic compare-and-swap when the database does not honor the

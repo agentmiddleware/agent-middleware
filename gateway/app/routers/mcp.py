@@ -1578,14 +1578,12 @@ async def _execute_registered_tool_inner(
 
     if not service:
         reason = f"Tool not found: {tool_name}"
-        await _complete_governed_denial_idempotency(
+        await _release_unresolved_tool_idempotency(
             idem=idem,
-            idem_started=idem_started,
+            idem_begin=idem_begin if idem_started else None,
             wallet_id=wallet_id,
             endpoint=idempotency_endpoint,
             idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
         )
         raise ValueError(reason)
 
@@ -1594,38 +1592,32 @@ async def _execute_registered_tool_inner(
     upstream_executor = registry.get_executor(tool_name)
     if execution_backend == "local" and func is None:
         reason = f"Tool not executable: {tool_name}"
-        await _complete_governed_denial_idempotency(
+        await _release_unresolved_tool_idempotency(
             idem=idem,
-            idem_started=idem_started,
+            idem_begin=idem_begin if idem_started else None,
             wallet_id=wallet_id,
             endpoint=idempotency_endpoint,
             idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
         )
         raise ValueError(reason)
     if execution_backend == "upstream_mcp" and upstream_executor is None:
         reason = f"Tool not executable: {tool_name}"
-        await _complete_governed_denial_idempotency(
+        await _release_unresolved_tool_idempotency(
             idem=idem,
-            idem_started=idem_started,
+            idem_begin=idem_begin if idem_started else None,
             wallet_id=wallet_id,
             endpoint=idempotency_endpoint,
             idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
         )
         raise ValueError(reason)
     if execution_backend not in {"local", "upstream_mcp"}:
         reason = f"Tool not executable: {tool_name}"
-        await _complete_governed_denial_idempotency(
+        await _release_unresolved_tool_idempotency(
             idem=idem,
-            idem_started=idem_started,
+            idem_begin=idem_begin if idem_started else None,
             wallet_id=wallet_id,
             endpoint=idempotency_endpoint,
             idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
         )
         raise ValueError(reason)
 
@@ -3840,6 +3832,32 @@ def _governed_error_payload(
     }
     payload.update(extra_data or {})
     return payload
+
+
+async def _release_unresolved_tool_idempotency(
+    *,
+    idem: Any,
+    idem_begin: IdempotencyBegin | None,
+    wallet_id: str,
+    endpoint: str,
+    idempotency_key: str | None,
+) -> None:
+    """Release a governed claim when the tool cannot run yet.
+
+    "Tool not found" / "Tool not executable" depend on the current registry,
+    not on the request, so they must not be stored as the key's final answer:
+    a same-key retry after the tool is registered or made executable has to
+    execute instead of replaying the old failure. Nothing has run and nothing
+    was charged, so the pinned record is simply deleted.
+    """
+    if idem_begin is None or not idempotency_key:
+        return
+    await idem.abandon(
+        wallet_id=wallet_id,
+        endpoint=endpoint,
+        idempotency_key=idempotency_key,
+        expected_record_id=idem_begin.record_id,
+    )
 
 
 async def _complete_governed_denial_idempotency(

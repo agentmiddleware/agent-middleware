@@ -55,17 +55,26 @@ classified as already sent; they are never claimable again.
 | `failed_unrefunded` | A refund was owed and the refund **itself** failed | Charged; a durable operator work item is created atomically with the receipt | Depends on the underlying failure | 500 / `-32603` | `test_governed_refund_failure_keeps_permit_budget_reserved`, `test_refund_reconciliation_retries_exactly_once_and_preserves_agent_replay` |
 
 Requests rejected before a valid permit and an executable tool are established
-produce no receipt — there is no authority to bill against. The README states
-this limit. What they leave behind differs by reason:
+produce no billing receipt — there is no authority to bill against. The README
+states this limit. What they leave behind differs by reason:
 
-- An unknown tool (`Tool not found`) or `permit_not_found` on a governed call
-  that carries an idempotency key completes a terminal *idempotency record*;
-  a same-key replay returns the original error envelope.
-- `permit_required` on a resolved tool, and a resolved tool that is not
-  executable, record nothing: the governed idempotency record is only begun
-  after the permit check, so the completion call in `app/routers/mcp.py` is a
-  no-op. A same-key retry returns the same error while nothing has changed,
-  and after minting a permit it executes normally
+- A governed call with a valid permit that names a tool outside the permit's
+  `allowed_tools` gets 403 / `-32003` `permit_tool_not_allowed`, whether or not
+  the tool is registered. With an idempotency key it mints a signed denial
+  receipt (`credits_authorized = 0`, `credits_charged = 0`) and completes a
+  terminal idempotency record, so a same-key replay returns the same envelope
+  (`test_denials_do_not_reveal_registration`).
+- `permit_not_found` on a governed call that carries an idempotency key
+  completes a terminal *idempotency record*; a same-key replay returns the
+  original error envelope.
+- `Tool not found` and `Tool not executable` record nothing: they depend on the
+  current registry, not on the request, so the governed idempotency claim is
+  released (`_release_unresolved_tool_idempotency` in `app/routers/mcp.py`).
+  A same-key retry executes normally once the tool is registered or executable
+  (`test_unresolved_tool_failure_is_not_replayed_after_fix`).
+- `permit_required` on a resolved tool records nothing. A same-key retry returns
+  the same error while nothing has changed, and after minting a permit it
+  executes normally
   (`test_strict_mode_missing_permit_denial_leaves_no_idempotency_record`).
   Whether that stays the contract is the open D2 decision in
   [authority-required-flow.md](authority-required-flow.md).

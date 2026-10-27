@@ -55,7 +55,7 @@ authentication or permit checks.
 
 Protected routes use the X-API-Key header. Free sandbox demo keys are available
 at https://www.agentmiddleware.dev/ with no account needed. Production keys
-are issued to design partners.
+are issued to design partners (Preview).
 
 ## Three-minute hosted demo
 
@@ -93,7 +93,7 @@ Keyless live calls: curl -sS https://api.thisisatest.tech/health and
 https://api.thisisatest.tech/.well-known/trust-keys.json. Public API contract:
 https://api.thisisatest.tech/openapi.json and https://api.thisisatest.tech/docs.
 The free sandbox demo key can run the demo tool. Production tool calls need a
-design partner key.
+design partner key (Preview).
 
 ## Try the complete loop locally (public source)
 

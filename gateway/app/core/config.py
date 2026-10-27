@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # --- Server ---
-    HOST: str = "0.0.0.0"
+    # Loopback by default, matching uvicorn's own default bind. DEBUG open
+    # mode only serves requests when HOST is an explicit loopback bind, so a
+    # shared-interface default would refuse every local open-mode call.
+    # Deployments that bind a public interface set HOST explicitly.
+    HOST: str = "127.0.0.1"
     PORT: int = 8000
     CORS_ORIGINS: str = ""
 
@@ -248,6 +252,10 @@ class Settings(BaseSettings):
     JEV_RISK_GUARD_TIMEOUT_SECONDS: float = 1.5
     JEV_RISK_GUARD_TIERS: str = "medium,high"
     TYPESAFE_API_KEY: SecretStr = SecretStr("")
+    # Server pepper for HMAC-SHA256 API-key digests. Required in
+    # production-like environments (startup refuses to boot without it).
+    # See docs/api-key-hashing.md. Never log it.
+    API_KEY_HASH_PEPPER: SecretStr = SecretStr("")
     TYPESAFE_BASE_URL: str = "https://api.typesafe.ai"
     # Default repeat detection window in seconds. Duplicates outside this window
     # are not detected.

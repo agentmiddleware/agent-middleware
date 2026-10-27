@@ -659,3 +659,119 @@ async def test_bad_signature_rejected_before_any_permit_field(client, clean_data
     assert error["code"] == -32003
     assert error["message"] == "permit_signature_invalid"
     assert "allowed_tools" not in str(error)
+
+
+# DeepSeek review 5653058263: one test per leak path. Each sends the same
+# permitted-but-denied call twice, once with UNKNOWN registered (registered
+# but not allowed by the permit) and once unregistered, and compares a single
+# caller-visible surface so each item fails on its own on the old code.
+_VOLATILE_RECEIPT_FIELDS = {
+    "receipt_id",
+    "audit_event_id",
+    "idempotency_record_id",
+    "signature",
+    "created_at",
+    "issued_at",
+}
+
+
+async def _denial_for_each_registry_state(
+    client, monkeypatch, *, idempotency=True, quote_id=None
+):
+    provisioned, permit = await _permit_for_allowed_tool(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    results = {}
+    for registered in (True, False):
+        monkeypatch.setenv("ENABLE_DOGFOOD_SECOND_TOOL", str(registered).lower())
+        get_settings.cache_clear()
+        sync_dogfood_tool_registration()
+        assert (get_service_registry().get_local(UNKNOWN) is not None) == registered
+        request_id = f"parity-{uuid4()}"
+        body = _jsonrpc_body(
+            tool_name=UNKNOWN,
+            wallet_id=wallet_id,
+            request_id=request_id,
+            permit_id=permit["permit_id"],
+            idempotency_key=f"parity-idem-{uuid4()}" if idempotency else None,
+        )
+        if quote_id is not None:
+            body["params"]["mcpContext"]["quote_id"] = quote_id
+        resp = await client.post(
+            "/mcp/messages", json=body, headers=provisioned["agent_headers"]
+        )
+        error = resp.json()["error"]
+        events = await list_audit_events(
+            event="mcp.invoke",
+            wallet_id=wallet_id,
+            tool=UNKNOWN,
+            request_id=request_id,
+            ok=False,
+            limit=1,
+        )
+        assert len(events) == 1
+        metadata = dict(events[0].metadata)
+        metadata.pop("idempotency_key", None)
+        metadata.pop("request_hash", None)
+        metadata.pop("request_id", None)
+        results[registered] = (error, events[0].error, metadata)
+    return results
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_item1_audit_metadata_identical_for_registry_state(
+    client, clean_database, monkeypatch
+):
+    results = await _denial_for_each_registry_state(client, monkeypatch)
+    (_, reg_err, reg_meta), (_, unreg_err, unreg_meta) = results[True], results[False]
+    assert reg_err == unreg_err == "permit_tool_not_allowed"
+    assert "tool_registered" not in reg_meta and "tool_registered" not in unreg_meta
+    assert reg_meta == unreg_meta
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_item2_denial_receipt_identical_for_registry_state(
+    client, clean_database, monkeypatch
+):
+    results = await _denial_for_each_registry_state(client, monkeypatch)
+    receipts = []
+    for registered in (True, False):
+        error = results[registered][0]
+        assert error["code"] == -32003
+        assert error["message"] == "permit_tool_not_allowed"
+        receipt = error["data"]["receipt"]
+        assert Decimal(str(receipt["credits_authorized"])) == 0
+        receipts.append(
+            {
+                k: v
+                for k, v in receipt.items()
+                if k not in _VOLATILE_RECEIPT_FIELDS | {"request_hash"}
+            }
+        )
+    assert receipts[0] == receipts[1]
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+@pytest.mark.parametrize(
+    ("idempotency", "quote_id", "first_gate"),
+    [
+        (False, None, "idempotency_key_required"),
+        (True, "quote-does-not-exist", "quote_not_found"),
+    ],
+    ids=["no-idempotency-key", "bogus-quote"],
+)
+async def test_item3_same_gate_fires_first_for_registry_state(
+    client, clean_database, monkeypatch, idempotency, quote_id, first_gate
+):
+    results = await _denial_for_each_registry_state(
+        client, monkeypatch, idempotency=idempotency, quote_id=quote_id
+    )
+    for registered in (True, False):
+        error, audit_error, _ = results[registered]
+        assert error["code"] == -32003
+        assert error["message"] == first_gate, registered
+        assert audit_error == first_gate
+        assert not error.get("data", {}).get("receipt")
+    assert results[True][2] == results[False][2]

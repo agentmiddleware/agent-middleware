@@ -9,12 +9,19 @@ from datetime import date, datetime, time, timedelta
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from ..core.dependencies import get_agent_money
 
 from ..core.auth import AuthContext, get_auth_context
 from ..db.database import get_session_factory
-from ..db.api_key_usage_view import bounded_daily_usage_sql
+from ..db.api_key_usage_view import (
+    DEFAULT_REPORT_DAYS,
+    STATEMENT_TIMEOUT_SQL,
+    UNFILTERED_MAX_DAYS,
+    bounded_daily_usage_sql,
+    is_statement_timeout,
+)
 from ..core.time import utc_now
 from ..core.wallet_resolution import resolve_wallet_id
 from ..services.api_key_service import (
@@ -75,11 +82,21 @@ class APIKeyUsageDailyResponse(BaseModel):
 )
 async def admin_api_key_usage_daily(
     key_id: str | None = None,
-    days: int = Query(30, ge=1, le=90),
+    days: int = Query(DEFAULT_REPORT_DAYS, ge=1, le=90),
     limit: int = Query(100, ge=1, le=200),
     auth: AuthContext = Depends(get_auth_context),
 ) -> APIKeyUsageDailyResponse:
     auth.require_bootstrap_admin()
+    if not key_id and days > UNFILTERED_MAX_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "key_id_required_for_long_window",
+                "message": (
+                    f"Windows longer than {UNFILTERED_MAX_DAYS} days require key_id."
+                ),
+            },
+        )
     today = utc_now().date()
     parameters = {
         "start_at": datetime.combine(today - timedelta(days=days - 1), time.min),
@@ -89,9 +106,28 @@ async def admin_api_key_usage_daily(
     if key_id is not None:
         parameters["key_id"] = key_id
     async with get_session_factory()() as session:
-        result = await session.execute(
-            text(bounded_daily_usage_sql(filter_key=key_id is not None)), parameters
-        )
+        try:
+            if session.get_bind().dialect.name == "postgresql":
+                await session.execute(text(STATEMENT_TIMEOUT_SQL))
+            result = await session.execute(
+                text(bounded_daily_usage_sql(filter_key=key_id is not None)),
+                parameters,
+            )
+        except DBAPIError as error:
+            if not is_statement_timeout(error):
+                raise
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "usage_report_timeout",
+                    "message": (
+                        "Usage report timed out. Narrow the window."
+                        if key_id
+                        else "Usage report timed out. Narrow the window or set key_id."
+                    ),
+                },
+            ) from None
         return APIKeyUsageDailyResponse(
             rows=[
                 APIKeyUsageDailyRow.model_validate(dict(row))

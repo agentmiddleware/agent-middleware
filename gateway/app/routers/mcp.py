@@ -4690,7 +4690,16 @@ _INVOKE_PUBLIC_REASONS: frozenset[str] = frozenset(
 )
 # extra_data keys a GovernedToolError may expose on this route. upstream_result
 # is the raw upstream payload and stays server-side.
-_INVOKE_PUBLIC_EXTRA_KEYS: tuple[str, ...] = ("dispatch", "refund_reconciliation")
+_INVOKE_PUBLIC_EXTRA_KEYS: tuple[str, ...] = (
+    "dispatch",
+    "refund_reconciliation",
+    "reason_code",
+    "remediation",
+    "requested",
+)
+# extra_data["error"] replaces the canned message only when it is one of these
+# server-built codes (the demo auto-mint budget refusal sets it).
+_INVOKE_PUBLIC_EXTRA_ERRORS: frozenset[str] = frozenset({"authority_required"})
 _INVOKE_PUBLIC_MESSAGE_BY_TYPE: tuple[tuple[type[BaseException], str], ...] = (
     (HumanApprovalPendingSignal, "human_approval_pending"),
     (IdempotencyInProgressError, "idempotency_in_progress"),
@@ -4732,17 +4741,25 @@ def _invoke_public_message(exc: BaseException) -> str:
 
 
 def _invoke_public_extra_data(exc: GovernedToolError) -> dict[str, Any]:
-    return {k: exc.extra_data[k] for k in _INVOKE_PUBLIC_EXTRA_KEYS if k in exc.extra_data}
+    public = {
+        k: exc.extra_data[k] for k in _INVOKE_PUBLIC_EXTRA_KEYS if k in exc.extra_data
+    }
+    if exc.extra_data.get("error") in _INVOKE_PUBLIC_EXTRA_ERRORS:
+        public["error"] = exc.extra_data["error"]
+    return public
 
 
 def _invoke_log_error(exc: BaseException, request_id: str) -> str:
-    """Log the real error under ``request_id``; return the canned message."""
+    """Log the error class under ``request_id``; return the canned message.
+
+    The exception text is not logged: it can carry upstream payloads or key
+    material.
+    """
     logger.error(
-        "mcp_invoke_error surface=%s request_id=%s class=%s error=%s",
+        "mcp_invoke_error surface=%s request_id=%s class=%s",
         _INVOKE_SURFACE,
         request_id,
         type(exc).__name__,
-        exc,
     )
     return _invoke_public_message(exc)
 
@@ -4850,7 +4867,9 @@ async def invoke_tool(
         detail: dict[str, Any] = {"error": _invoke_log_error(exc, rid)}
         if exc.data:
             detail["approval"] = exc.data
-        raise HTTPException(status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid})
+        raise HTTPException(
+            status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid}
+        )
     except (
         IdempotencyInProgressError,
         LedgerWriteContendedError,
@@ -4905,18 +4924,24 @@ async def invoke_tool(
             detail["receipt"] = exc.receipt
         if exc.details:
             detail["details"] = exc.details
-        raise HTTPException(status_code=403, detail=detail, headers={"X-Request-ID": rid})
+        raise HTTPException(
+            status_code=403, detail=detail, headers={"X-Request-ID": rid}
+        )
     except GovernedToolError as exc:
         rid = _invoke_request_id(http_request)
         detail = {"error": _invoke_log_error(exc, rid)}
         if exc.receipt:
             detail["receipt"] = exc.receipt
         detail.update(_invoke_public_extra_data(exc))
-        raise HTTPException(status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid})
+        raise HTTPException(
+            status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid}
+        )
     except PermissionError as exc:
         rid = _invoke_request_id(http_request)
         raise HTTPException(
-            status_code=403, detail=_invoke_log_error(exc, rid), headers={"X-Request-ID": rid}
+            status_code=403,
+            detail=_invoke_log_error(exc, rid),
+            headers={"X-Request-ID": rid},
         )
     except ToolExecutionError as exc:
         # Legacy (unpermitted) tool failure: compensation is complete. The
@@ -4950,7 +4975,9 @@ async def invoke_tool(
             status = 501
         else:
             status = 400
-        raise HTTPException(status_code=status, detail=public, headers={"X-Request-ID": rid})
+        raise HTTPException(
+            status_code=status, detail=public, headers={"X-Request-ID": rid}
+        )
     except Exception as exc:
         return _internal_error_tool_result(
             exc, surface="/mcp/tools/{service_id}/invoke"

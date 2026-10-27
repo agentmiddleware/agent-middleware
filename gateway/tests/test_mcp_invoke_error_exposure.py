@@ -40,15 +40,18 @@ def _request_id() -> str:
     return f"req-{secrets.token_hex(8)}"
 
 
-def _assert_logged(caplog, marker: str, request_id: str) -> None:
+def _assert_logged(caplog, exc: BaseException, marker: str, request_id: str) -> None:
     lines = [
         r.getMessage()
         for r in caplog.records
         if r.name == "app.routers.mcp" and "mcp_invoke_error" in r.getMessage()
     ]
     assert any(
-        marker in line and f"request_id={request_id}" in line for line in lines
+        f"request_id={request_id}" in line and f"class={type(exc).__name__}" in line
+        for line in lines
     ), lines
+    # The exception text can carry upstream payloads; only its class is logged.
+    assert not any(marker in line for line in lines), lines
 
 
 async def _invoke(client: AsyncClient, wallet_id: str, headers: dict[str, str]):
@@ -87,7 +90,9 @@ def registered_tool():
 
 
 @pytest.mark.anyio
-async def test_tool_failure_text_stays_in_log(clean_database, registered_tool, caplog):
+async def test_tool_failure_text_stays_out_of_response_and_log(
+    clean_database, registered_tool, caplog
+):
     marker = _marker()
     request_id = _request_id()
     registered_tool["exc"] = RuntimeError(marker)
@@ -106,7 +111,7 @@ async def test_tool_failure_text_stays_in_log(clean_database, registered_tool, c
     payload = response.json()
     assert payload["isError"] is True
     assert payload["structuredContent"] == {"error": "tool_execution_failed"}
-    _assert_logged(caplog, marker, request_id)
+    _assert_logged(caplog, mcp_router.ToolExecutionError(), marker, request_id)
 
 
 @pytest.mark.anyio
@@ -146,7 +151,7 @@ async def test_http_error_branches_return_fixed_messages(
     assert request_id != "bad id\nx"
     uuid.UUID(hex=request_id)
     assert request_id not in response.text
-    _assert_logged(caplog, marker, request_id)
+    _assert_logged(caplog, exc, marker, request_id)
 
 
 @pytest.mark.anyio

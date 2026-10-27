@@ -137,13 +137,6 @@
       ]
     },
     {
-      "source": "/proof/transcript.json",
-      "headers": [
-        { "key": "Content-Type", "value": "application/json; charset=utf-8" },
-        { "key": "Cache-Control", "value": "public, max-age=300" }
-      ]
-    },
-    {
       "source": "/proof/verify_receipt.py",
       "headers": [
         { "key": "Content-Type", "value": "text/plain; charset=utf-8" },

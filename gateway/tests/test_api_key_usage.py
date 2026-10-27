@@ -10,7 +10,11 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import text
 
+from sqlalchemy.exc import OperationalError
+
 from app.core import api_key_usage
+from app.db import api_key_usage_view
+from app.routers import api_keys as api_keys_router
 from app.core.time import utc_now
 from app.db.database import get_session_factory
 from tests.test_demo_keys import (
@@ -323,3 +327,169 @@ async def test_slow_usage_insert_is_cancelled_without_failing_request(
     assert response.status_code == 200, response.text
     assert cancelled.is_set()
     assert await _events_for(wallet["key_id"]) == []
+
+
+@pytest.mark.anyio
+async def test_daily_usage_long_window_requires_key_id(
+    client: AsyncClient, clean_database: None
+) -> None:
+    wallet = await provision_agent_wallet(client)
+    assert (
+        await client.get("/v1/me/authority", headers=wallet["agent_headers"])
+    ).status_code == 200
+    assert api_key_usage_view.UNFILTERED_MAX_DAYS == 7
+    limit = 7
+
+    for params in (
+        {"days": 8},
+        {"days": 30},
+        {"days": 90},
+        {"days": 8, "key_id": ""},
+        {"days": 8, "key_id": "   "},
+    ):
+        days = params
+        response = await client.get(DAILY, params=params, headers=BOOTSTRAP_HEADERS)
+        assert response.status_code == 422, (days, response.text)
+        assert response.json()["detail"]["error"] == "key_id_required_for_long_window"
+
+    response = await client.get(
+        DAILY,
+        params={"days": 90, "key_id": wallet["key_id"]},
+        headers=BOOTSTRAP_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert sum(row["calls"] for row in response.json()["rows"]) == 1
+
+    for params in ({}, {"days": limit}, {"days": 1}):
+        response = await client.get(DAILY, params=params, headers=BOOTSTRAP_HEADERS)
+        assert response.status_code == 200, (params, response.text)
+        rows = [r for r in response.json()["rows"] if r["key_id"] == wallet["key_id"]]
+        assert sum(row["calls"] for row in rows) == 1
+
+
+class _QueryCanceled(Exception):
+    sqlstate = "57014"
+
+
+class _FakeSession:
+    def __init__(self, dialect: str, error: Exception | None) -> None:
+        self.dialect = dialect
+        self.error = error
+        self.statements: list[str] = []
+        self.rolled_back = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc) -> None:
+        return None
+
+    def get_bind(self):
+        return SimpleNamespace(dialect=SimpleNamespace(name=self.dialect))
+
+    async def execute(self, statement, *_args, **_kwargs):
+        self.statements.append(str(statement))
+        if self.error is not None and "SET LOCAL" not in str(statement):
+            raise self.error
+        return SimpleNamespace(mappings=lambda: [])
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
+
+
+def _use_fake_session(monkeypatch: pytest.MonkeyPatch, session: _FakeSession) -> None:
+    monkeypatch.setattr(api_keys_router, "get_session_factory", lambda: lambda: session)
+
+
+@pytest.mark.anyio
+async def test_daily_usage_sets_local_statement_timeout_on_postgres(
+    client: AsyncClient, clean_database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = _FakeSession("postgresql", None)
+    _use_fake_session(monkeypatch, session)
+    response = await client.get(DAILY, headers=BOOTSTRAP_HEADERS)
+    assert response.status_code == 200, response.text
+    assert session.statements[0] == api_key_usage_view.STATEMENT_TIMEOUT_SQL
+    assert session.statements[0].startswith("SET LOCAL statement_timeout")
+    assert len(session.statements) == 2
+
+
+@pytest.mark.anyio
+async def test_daily_usage_statement_timeout_returns_clear_503(
+    client: AsyncClient, clean_database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = OperationalError(
+        "SELECT", {}, _QueryCanceled("canceling statement due to statement timeout")
+    )
+    session = _FakeSession("postgresql", error)
+    _use_fake_session(monkeypatch, session)
+    response = await client.get(DAILY, headers=BOOTSTRAP_HEADERS)
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"]["error"] == "usage_report_timeout"
+    assert "Traceback" not in response.text
+    assert session.rolled_back
+
+
+@pytest.mark.anyio
+async def test_daily_usage_other_db_errors_are_not_reported_as_timeouts() -> None:
+    other = OperationalError("SELECT", {}, Exception("disk full"))
+    assert not api_key_usage_view.is_statement_timeout(other)
+    timeout = OperationalError(
+        "SELECT", {}, _QueryCanceled("canceling statement due to statement timeout")
+    )
+    assert api_key_usage_view.is_statement_timeout(timeout)
+    manual = OperationalError(
+        "SELECT", {}, _QueryCanceled("canceling statement due to user request")
+    )
+    assert not api_key_usage_view.is_statement_timeout(manual)
+
+
+@pytest.mark.anyio
+async def test_daily_usage_default_window_is_seven_days(
+    client: AsyncClient, clean_database: None
+) -> None:
+    wallet = await provision_agent_wallet(client)
+    for _ in range(2):
+        response = await client.get("/v1/me/authority", headers=wallet["agent_headers"])
+        assert response.status_code == 200
+    today = utc_now().date()
+    await _set_event_times(
+        wallet["key_id"],
+        [
+            datetime.combine(today - timedelta(days=6), time.min),
+            datetime.combine(today - timedelta(days=7), time.min),
+        ],
+    )
+    response = await client.get(DAILY, headers=BOOTSTRAP_HEADERS)
+    assert response.status_code == 200, response.text
+    days = [
+        r["day"] for r in response.json()["rows"] if r["key_id"] == wallet["key_id"]
+    ]
+    assert days == [(today - timedelta(days=6)).isoformat()]
+
+
+@pytest.mark.anyio
+async def test_daily_usage_whitespace_key_id_counts_as_missing(
+    client: AsyncClient, clean_database: None
+) -> None:
+    wallet = await provision_agent_wallet(client)
+    assert (
+        await client.get("/v1/me/authority", headers=wallet["agent_headers"])
+    ).status_code == 200
+    response = await client.get(
+        DAILY, params={"days": 30, "key_id": "   "}, headers=BOOTSTRAP_HEADERS
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["error"] == "key_id_required_for_long_window"
+    response = await client.get(
+        DAILY, params={"days": 7, "key_id": "   "}, headers=BOOTSTRAP_HEADERS
+    )
+    assert response.status_code == 200, response.text
+    assert any(r["key_id"] == wallet["key_id"] for r in response.json()["rows"])
+    response = await client.get(
+        DAILY,
+        params={"days": 30, "key_id": f"  {wallet['key_id']}  "},
+        headers=BOOTSTRAP_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert {r["key_id"] for r in response.json()["rows"]} == {wallet["key_id"]}

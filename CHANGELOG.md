@@ -4,6 +4,14 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ## [Unreleased]
 
+- API keys (breaking): keys are stored as salted, peppered scrypt hashes
+  (`API_KEY_HASH_PEPPER`) and found by a non-secret indexed lookup id
+  (migration 054). A bounded 60 s cache of recent verifications keeps repeat
+  requests cheap. The plain SHA-256 lookup is removed, so all existing keys
+  stop working at deploy and must be reissued. Agent-comms owner digests use
+  peppered scrypt too. Production-like environments refuse to boot without
+  the pepper; local and test use a public dev pepper. See
+  docs/api-key-hashing.md.
 - Upstream MCP (Preview): optional multi-tool discovery and exact-name allowlist with
   stable public IDs, per-tool permit scope, and unchanged per-call credits.
   Health reports `upstream_tool_mode: multi_tool_preview` while it is on.

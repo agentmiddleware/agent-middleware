@@ -171,13 +171,15 @@ Connection security for these client tools (standard libpq behavior, see
 <https://www.postgresql.org/docs/current/libpq-pgpass.html>):
 
 - Require TLS for any database reached over a network. Add
-  `sslmode=verify-full` (with the server CA in `sslrootcert`) to the URL, or
+  `sslmode=verify-full` to the URL, with the server CA supplied by
+  `sslrootcert` in the URL or by `PGSSLROOTCERT`, or
   at minimum `sslmode=require`, which encrypts but does not verify the server.
 - Keep the password out of the URL and the command line, where process
   listings and shell history can expose it. Put it in a password file named
-  by `PGPASSFILE` (mode 0600), or in `PGPASSWORD` set only in the shell that
-  runs the command. `PGDUMP_URL` then carries host, port, database, user and
-  `sslmode` only.
+  by `PGPASSFILE` (mode 0600). Do not use `PGPASSWORD`: child processes
+  inherit it and local process observers may read it, and the libpq docs
+  advise against it. `PGDUMP_URL` then carries host, port, database, user
+  and `sslmode` only.
 
 ```bash
 # Generic dump (custom format). Substitute a libpq URL. This command is not
@@ -383,8 +385,10 @@ the generic `pg_dump` template above:
    secret store or deploy environment to the restored database, in its
    `postgresql+asyncpg://` form (`gateway/app/core/db_urls.py`). Before any
    start, confirm with `alembic current`, run from `gateway/` with that
-   `DATABASE_URL`, that it reports the restored stamp. If it does not, the
-   service is still pointed at the old database.
+   `DATABASE_URL`, that it reports the restored stamp. A legacy database with
+   no `alembic_version` table reports no stamp even when the URL is correct.
+   If the expected stamp is absent or different, stop and verify database
+   identity and legacy schema state before any start.
 4. If the restored stamp is behind the packaged head of the image you will
    run, apply `alembic upgrade head` with that image's migrations
    (`gateway/app/db/database.py` stale-revision error).

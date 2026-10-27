@@ -105,8 +105,6 @@ Open `http://127.0.0.1:8765/`.
   until it can run.
 - `/proof/` — portable receipt, matching key snapshot, and offline command
 - `/pilot/` — paid pilot scope, intake questions, and economic fit calculator
-- `/proof/transcript.json` — the recorded governed-loop transcript the
-  homepage renders (see "The governed loop as evidence" below)
 - `/compare/` — named competitor comparison, build-vs-buy, and fit/compliance FAQ
 - `/demo-key/` — one-time demo credential display and terminal steps for the
   permit → `partner.echo` → portable receipt loop with synthetic credits;
@@ -130,55 +128,6 @@ Open `http://127.0.0.1:8765/`.
 `@@SECURITY_TXT_EXPIRES@@` becomes one year past the build, so a deployed
 `security.txt` never serves a lapsed `Expires`. Plain-text targets take the raw
 contact value; HTML and XML targets take the entity-escaped one.
-
-## The governed loop as evidence
-
-The homepage shows the governed loop as a terminal: real requests, real
-responses, and the offline verifier's real stdout. Nothing in those panels is
-typed into the HTML. `build_site.py` expands three tokens from
-`proof/transcript.json`:
-
-- `@@HERO_CONSOLE@@` — the loop's spine (permit → invoke → replay → verify)
-  beside the headline
-- `@@LOOP_TRANSCRIPT@@` — every recorded step with its loop label, title and
-  annotation, in the "Governed path" section
-- `@@LIVE_VERIFICATION@@` — `b2a-verify-receipt` run against the published
-  `receipt.json` and `trust-keys.json`, in the proof section
-
-`transcript.json` is a committed recording. This repository currently has no
-transcript recorder or `site-transcript` Makefile targets. The build checks
-that its published receipt and key hashes match the recorded verification.
-
-The steps are kept in **loop order, not run order**. The demo denies the
-out-of-scope call before it verifies the audit chain; the page walks the
-eight-stage loop, so it shows the offline receipt check (06), then the audit
-chain (07), then the denial (08). Every line is a real exchange either way,
-and a test pins the rendered numbering so it cannot drift back into counting
-backwards.
-
-The transcript also carries a `latency` block — `samples`, `p50_ms`, `p95_ms`,
-`min_ms`, `max_ms`, `mean_ms`, plus the `path`, `tool` and `transport` they
-describe. The demo times a hundred fresh governed calls (each a real
-reservation, dispatch, debit and receipt, under their own key and permit so
-they neither share a rate-limit bucket nor touch the budget the transcript
-narrates) and the build renders it under the loop as `.console-latency`. That
-run is deliberately *not* recorded exchange by exchange: the demo times raw
-requests with no helper in between, so only the summary is published. The
-figure is measured in-process against local SQLite with a stand-in echo tool,
-so the copy calls it a reference point rather than a production number — a
-gateway that sits in the execution path should say what it costs in time, and
-should say just as plainly what it has not measured. The build refuses a
-transcript without the block rather than rendering a blank panel, and the
-timing values are exempt from the staleness comparison because they
-legitimately differ on every run.
-
-The build refuses a transcript whose live verification names a
-different receipt than the one published, so republishing the receipt requires
-a matching verified transcript. The panels say in
-their own footer that the loop was recorded from a local gateway run, not the
-live API; the published sample receipt's verdict is the only line on the page
-that comes from production, and the page dates that receipt as the historical
-sample it is.
 
 ## Structured data
 

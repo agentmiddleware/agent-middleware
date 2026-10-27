@@ -557,16 +557,29 @@ class IdempotencyService:
                 # takes the PostgreSQL row lock and the SQLite write lock in
                 # this transaction, so a stale-lock takeover (DELETE) cannot
                 # land before this insert commits. rowcount 0 => lost.
-                claimed = await session.execute(
-                    update(IdempotencyRecordModel)
-                    .where(
-                        *_idempotency_predicates(wallet_id, fence_endpoint, fence_key),
-                        col(IdempotencyRecordModel.record_id) == fence_record_id,
-                        col(IdempotencyRecordModel.response_json).is_(None),
+                try:
+                    claimed = await session.execute(
+                        update(IdempotencyRecordModel)
+                        .where(
+                            *_idempotency_predicates(
+                                wallet_id, fence_endpoint, fence_key
+                            ),
+                            col(IdempotencyRecordModel.record_id) == fence_record_id,
+                            col(IdempotencyRecordModel.response_json).is_(None),
+                        )
+                        .values(request_hash=IdempotencyRecordModel.request_hash)
+                        .execution_options(synchronize_session=False)
                     )
-                    .values(request_hash=IdempotencyRecordModel.request_hash)
-                    .execution_options(synchronize_session=False)
-                )
+                except OperationalError as exc:
+                    # SQLite lock timeout while another writer (e.g. a
+                    # takeover) holds the database: the current holder owns
+                    # the work, so this is retryable in-progress, not a 500.
+                    if "database is locked" not in str(exc):
+                        raise
+                    await session.rollback()
+                    raise IdempotencyInProgressError(
+                        "idempotency_in_progress"
+                    ) from None
                 if cast(Any, claimed).rowcount != 1:
                     await session.rollback()
                     raise IdempotencyFenceLostError("idempotency_in_progress")

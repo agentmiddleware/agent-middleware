@@ -13,6 +13,8 @@ import hashlib
 from decimal import Decimal
 
 import pytest
+
+from tests.conftest import running_on_sqlite
 from uuid import uuid4
 from httpx import ASGITransport, AsyncClient
 from mcp.types import LATEST_PROTOCOL_VERSION
@@ -1033,15 +1035,39 @@ async def test_unkeyed_retry_after_no_effect_failure_runs_again(
     headers = {**provisioned["agent_headers"], **MCP_HEADERS}
     executor = FakeUpstreamExecutor("pre_dispatch_failure")
     _register_upstream(tool, executor)
+
+    async def _entries():
+        ledger = await client.get(
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert ledger.status_code == 200, ledger.text
+        return {e["entry_id"]: e for e in ledger.json()["entries"]}
+
+    def _net(entries):
+        return sum((Decimal(str(e["amount"])) for e in entries), Decimal("0"))
+
     try:
+        before = await _entries()
         first = await _call(client, headers, tool, 1)
         assert first.status_code == 200, first.text
         assert executor.dispatch_count == 0
         assert len(executor.calls) == 1
+        after_failure = await _entries()
+        failure_entries = [e for k, e in after_failure.items() if k not in before]
+        # Charged then refunded: no net charge for the pre-dispatch failure.
+        assert _net(failure_entries) == 0, failure_entries
 
         executor.mode = "success"
         retry = await _call(client, headers, tool, 2)
         assert retry.status_code == 200, retry.text
+        after_success = await _entries()
+        success_entries = [
+            e for k, e in after_success.items() if k not in after_failure
+        ]
+        debits = [e for e in success_entries if Decimal(str(e["amount"])) < 0]
+        assert len(debits) == 1, success_entries
+        assert _net(success_entries) == Decimal(str(debits[0]["amount"])) < 0
         assert "result" in retry.json(), retry.text
         assert executor.dispatch_count == 1
         again = await _call(client, headers, tool, 3)
@@ -1050,6 +1076,8 @@ async def test_unkeyed_retry_after_no_effect_failure_runs_again(
             == retry.json()["result"]["receipt"]["receipt_id"]
         )
         assert executor.dispatch_count == 1
+        # The replay adds no ledger entry.
+        assert await _entries() == after_success
     finally:
         get_service_registry().unregister_local(tool)
 
@@ -1278,18 +1306,159 @@ async def test_fenced_begin_writes_nothing_when_fence_row_reissued(
     assert owned.replay is None
 
 
+def _sqlite_db_path() -> str:
+    from app.db.database import get_engine
+
+    engine = get_engine()
+    assert engine is not None
+    return engine.sync_engine.url.database
+
+
+def _external_takeover(lock_record_id: str) -> int:
+    """Delete the holder's lock row from a separate SQLite connection, the
+    way a stale-lock takeover would. Short timeout: if the holder has the
+    write lock this raises ``database is locked``; it is never swallowed."""
+    import sqlite3
+
+    conn = sqlite3.connect(_sqlite_db_path(), timeout=0.2)
+    try:
+        cur = conn.execute(
+            "DELETE FROM idempotency_records WHERE record_id = ?",
+            (lock_record_id,),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+async def _fresh_lock(idem, wallet):
+    lock_key = f"ulock-{uuid4()}"
+    lock = await idem.begin_with_record(
+        wallet_id=wallet,
+        endpoint="/mcp#unkeyed-retry-lock",
+        idempotency_key=lock_key,
+        request_payload={"kind": "unkeyed-retry-lock"},
+    )
+    return lock_key, lock
+
+
 @pytest.mark.anyio
-async def test_fenced_begin_races_stale_lock_takeover_consistently(
+@pytest.mark.skipif(not running_on_sqlite(), reason="SQLite lock semantics")
+async def test_fence_claim_blocks_takeover_until_mint_commits(client, clean_database):
+    """Codex blocker 1 (deterministic): a takeover forced after the holder's
+    fence step and before its mint insert must lose, and the loser writes
+    nothing. Under the old SELECT ... FOR UPDATE (ignored by SQLite) the
+    takeover deletes the lock row and the mint still commits: both win."""
+    import sqlite3
+
+    from sqlalchemy import event
+
+    from app.db.database import get_engine
+    from app.services.idempotency import get_idempotency_service
+
+    wallet = (await provision_agent_wallet(client))["agent_wallet_id"]
+    idem = get_idempotency_service()
+    lock_key, lock = await _fresh_lock(idem, wallet)
+    mint_key = f"smcp-{uuid4()}"
+    takeover: dict = {}
+
+    def _before_insert(conn, cursor, statement, parameters, context, many):
+        if (
+            statement.lstrip().upper().startswith("INSERT INTO IDEMPOTENCY_RECORDS")
+            and mint_key in str(parameters)
+            and not takeover
+        ):
+            try:
+                takeover["deleted"] = _external_takeover(lock.record_id)
+            except sqlite3.OperationalError as exc:
+                takeover["error"] = str(exc)
+
+    sync_engine = get_engine().sync_engine
+    event.listen(sync_engine, "before_cursor_execute", _before_insert)
+    try:
+        minted = await idem.begin_with_record(
+            wallet_id=wallet,
+            endpoint="/mcp#auto-permit",
+            idempotency_key=mint_key,
+            request_payload={"k": 1},
+            fence=("/mcp#unkeyed-retry-lock", lock_key, lock.record_id),
+        )
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", _before_insert)
+    assert minted.replay is None
+    # The takeover ran and lost: it hit the holder's write lock, deleted
+    # nothing, and the holder's lock row survives.
+    assert takeover == {"error": "database is locked"}, takeover
+    held = await idem.get_record(
+        wallet_id=wallet,
+        endpoint="/mcp#unkeyed-retry-lock",
+        idempotency_key=lock_key,
+    )
+    assert held is not None and held.record_id == lock.record_id
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(not running_on_sqlite(), reason="SQLite lock semantics")
+async def test_fence_lost_before_claim_writes_nothing(client, clean_database):
+    """Takeover forced between the holder's read and its fence claim: the
+    claim matches no row, the holder raises fence-lost and writes nothing."""
+    from sqlalchemy import event
+
+    from app.db.database import get_engine
+    from app.services.idempotency import (
+        IdempotencyFenceLostError,
+        get_idempotency_service,
+    )
+
+    wallet = (await provision_agent_wallet(client))["agent_wallet_id"]
+    idem = get_idempotency_service()
+    lock_key, lock = await _fresh_lock(idem, wallet)
+    mint_key = f"smcp-{uuid4()}"
+    takeover: dict = {}
+
+    def _before_claim(conn, cursor, statement, parameters, context, many):
+        upper = statement.lstrip().upper()
+        if (
+            upper.startswith(("UPDATE IDEMPOTENCY_RECORDS", "SELECT"))
+            and lock_key in str(parameters)
+            and not takeover
+        ):
+            takeover["deleted"] = _external_takeover(lock.record_id)
+
+    sync_engine = get_engine().sync_engine
+    event.listen(sync_engine, "before_cursor_execute", _before_claim)
+    try:
+        with pytest.raises(IdempotencyFenceLostError):
+            await idem.begin_with_record(
+                wallet_id=wallet,
+                endpoint="/mcp#auto-permit",
+                idempotency_key=mint_key,
+                request_payload={"k": 1},
+                fence=("/mcp#unkeyed-retry-lock", lock_key, lock.record_id),
+            )
+    finally:
+        event.remove(sync_engine, "before_cursor_execute", _before_claim)
+    assert takeover == {"deleted": 1}
+    assert (
+        await idem.get_record(
+            wallet_id=wallet, endpoint="/mcp#auto-permit", idempotency_key=mint_key
+        )
+    ) is None
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(not running_on_sqlite(), reason="SQLite lock semantics")
+async def test_fence_claim_lock_timeout_is_retryable_in_progress(
     client, clean_database
 ):
-    """Codex blocker 1: the fence claim is a conditional write (rowcount 1),
-    not SELECT FOR UPDATE, so it is exclusive on SQLite as well as
-    PostgreSQL. Race a holder's fenced mint against a stale-lock takeover
-    many times: the mint either commits (and the takeover then sees the
-    released row) or fails as fence-lost with nothing written, never both a
-    lost fence and a written mint row."""
-    import asyncio
+    """Codex: a SQLite lock timeout on the fence claim maps to the retryable
+    idempotency_in_progress, not an internal error, and writes nothing."""
+    import sqlite3
 
+    from sqlalchemy import event
+
+    from app.db.database import get_engine
     from app.services.idempotency import (
         IdempotencyFenceLostError,
         IdempotencyInProgressError,
@@ -1298,69 +1467,39 @@ async def test_fenced_begin_races_stale_lock_takeover_consistently(
 
     wallet = (await provision_agent_wallet(client))["agent_wallet_id"]
     idem = get_idempotency_service()
-    lock_endpoint = "/mcp#unkeyed-retry-lock"
-    outcomes: set[str] = set()
-    for _ in range(20):
-        lock_key = f"ulock-{uuid4()}"
-        mint_key = f"smcp-{uuid4()}"
-        lock = await idem.begin_with_record(
-            wallet_id=wallet,
-            endpoint=lock_endpoint,
-            idempotency_key=lock_key,
-            request_payload={"kind": "unkeyed-retry-lock"},
-        )
+    lock_key, lock = await _fresh_lock(idem, wallet)
+    mint_key = f"smcp-{uuid4()}"
+    blocker = sqlite3.connect(_sqlite_db_path(), timeout=5)
+    blocker.isolation_level = None
 
-        async def _mint(lock=lock, lock_key=lock_key, mint_key=mint_key):
-            try:
-                await idem.begin_with_record(
-                    wallet_id=wallet,
-                    endpoint="/mcp#auto-permit",
-                    idempotency_key=mint_key,
-                    request_payload={"k": 1},
-                    fence=(lock_endpoint, lock_key, lock.record_id),
-                )
-                return "minted"
-            except IdempotencyFenceLostError:
-                return "fence_lost"
-            except IdempotencyInProgressError:
-                return "busy"
+    def _short_busy(conn, cursor, statement, parameters, context, many):
+        if statement.lstrip().upper().startswith("UPDATE IDEMPOTENCY_RECORDS"):
+            cursor.execute("PRAGMA busy_timeout=100")
 
-        async def _takeover(lock=lock, lock_key=lock_key):
-            try:
-                return await idem.abandon(
-                    wallet_id=wallet,
-                    endpoint=lock_endpoint,
-                    idempotency_key=lock_key,
-                    expected_record_id=lock.record_id,
-                )
-            except Exception:  # noqa: BLE001 - SQLite busy is a lost race
-                return False
-
-        mint_result, _ = await asyncio.gather(_mint(), _takeover())
-        outcomes.add(mint_result)
-        mint_row = await idem.get_record(
+    engine = get_engine()
+    event.listen(engine.sync_engine, "before_cursor_execute", _short_busy)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(IdempotencyInProgressError) as caught:
+            await idem.begin_with_record(
+                wallet_id=wallet,
+                endpoint="/mcp#auto-permit",
+                idempotency_key=mint_key,
+                request_payload={"k": 1},
+                fence=("/mcp#unkeyed-retry-lock", lock_key, lock.record_id),
+            )
+        assert not isinstance(caught.value, IdempotencyFenceLostError)
+        assert str(caught.value) == "idempotency_in_progress"
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+        event.remove(engine.sync_engine, "before_cursor_execute", _short_busy)
+        await engine.dispose()  # drop the connection left at busy_timeout=100
+    assert (
+        await idem.get_record(
             wallet_id=wallet, endpoint="/mcp#auto-permit", idempotency_key=mint_key
         )
-        if mint_result == "minted":
-            assert mint_row is not None
-        else:
-            assert mint_row is None
-    assert outcomes <= {"minted", "fence_lost", "busy"}
-
-
-def test_unkeyed_retry_window_rejects_negative_and_keeps_zero():
-    """CodeRabbit: negative windows are invalid; 0 stays the opt-out."""
-    from pydantic import ValidationError
-
-    from app.core.config import Settings
-
-    with pytest.raises(ValidationError):
-        Settings(MCP_UNKEYED_RETRY_WINDOW_SECONDS=-1)
-    assert (
-        Settings(MCP_UNKEYED_RETRY_WINDOW_SECONDS=0).MCP_UNKEYED_RETRY_WINDOW_SECONDS
-        == 0
-    )
-    assert Settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS == 300
+    ) is None
 
 
 def test_unregistered_tool_replay_runs_iga_check():

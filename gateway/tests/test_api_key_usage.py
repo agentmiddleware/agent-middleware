@@ -340,7 +340,13 @@ async def test_daily_usage_long_window_requires_key_id(
     assert api_key_usage_view.UNFILTERED_MAX_DAYS == 7
     limit = 7
 
-    for params in ({"days": 8}, {"days": 30}, {"days": 90}, {"days": 8, "key_id": ""}):
+    for params in (
+        {"days": 8},
+        {"days": 30},
+        {"days": 90},
+        {"days": 8, "key_id": ""},
+        {"days": 8, "key_id": "   "},
+    ):
         days = params
         response = await client.get(DAILY, params=params, headers=BOOTSTRAP_HEADERS)
         assert response.status_code == 422, (days, response.text)
@@ -460,3 +466,30 @@ async def test_daily_usage_default_window_is_seven_days(
         r["day"] for r in response.json()["rows"] if r["key_id"] == wallet["key_id"]
     ]
     assert days == [(today - timedelta(days=6)).isoformat()]
+
+
+@pytest.mark.anyio
+async def test_daily_usage_whitespace_key_id_counts_as_missing(
+    client: AsyncClient, clean_database: None
+) -> None:
+    wallet = await provision_agent_wallet(client)
+    assert (
+        await client.get("/v1/me/authority", headers=wallet["agent_headers"])
+    ).status_code == 200
+    response = await client.get(
+        DAILY, params={"days": 30, "key_id": "   "}, headers=BOOTSTRAP_HEADERS
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["error"] == "key_id_required_for_long_window"
+    response = await client.get(
+        DAILY, params={"days": 7, "key_id": "   "}, headers=BOOTSTRAP_HEADERS
+    )
+    assert response.status_code == 200, response.text
+    assert any(r["key_id"] == wallet["key_id"] for r in response.json()["rows"])
+    response = await client.get(
+        DAILY,
+        params={"days": 30, "key_id": f"  {wallet['key_id']}  "},
+        headers=BOOTSTRAP_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    assert {r["key_id"] for r in response.json()["rows"]} == {wallet["key_id"]}

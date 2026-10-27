@@ -87,7 +87,9 @@ async def admin_api_key_usage_daily(
     auth: AuthContext = Depends(get_auth_context),
 ) -> APIKeyUsageDailyResponse:
     auth.require_bootstrap_admin()
-    if not key_id and days > UNFILTERED_MAX_DAYS:
+    # Blank or whitespace-only key_id counts as missing.
+    key_id = (key_id or "").strip() or None
+    if key_id is None and days > UNFILTERED_MAX_DAYS:
         raise HTTPException(
             status_code=422,
             detail={

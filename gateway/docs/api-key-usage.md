@@ -19,8 +19,11 @@ The read-only `api_key_usage_daily` SQL view groups by key ID and UTC day. It
 reports calls, 4xx, 5xx, continuous p50/p95 latency, and first/last call.
 `GET /v1/admin/api-keys/usage/daily` computes the same aggregates from events
 within the requested UTC day window. `days` defaults to 7 and is capped at
-90; `limit` defaults to 100 rows and is capped at 200. Optional `key_id`
-filters one key. Only bootstrap admins can access the report.
+90; `limit` defaults to 100 rows and is capped at 200. `key_id` filters one
+key and is optional only for windows of 7 days or less; over 7 days, a missing
+or empty `key_id` returns 422 `key_id_required_for_long_window`. A report that
+hits the 5s statement timeout returns 503 `usage_report_timeout`. Only
+bootstrap admins can access the report.
 
 `API_KEY_USAGE_RETENTION_DAYS` defaults to disabled (`None` or `0`).
 `prune_api_key_usage_events()` deletes at most one batch of 1,000 rows per

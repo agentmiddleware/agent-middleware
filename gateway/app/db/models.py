@@ -278,7 +278,10 @@ class APIKeyModel(SQLModel, table=True):
     key_id: str = Field(primary_key=True, max_length=50)
     wallet_id: str = Field(max_length=50, foreign_key="wallets.wallet_id", index=True)
 
-    key_hash: str = Field(max_length=64, index=True)
+    # Salted, peppered scrypt hash (see docs/api-key-hashing.md).
+    key_hash: str = Field(max_length=255, index=True)
+    # Non-secret lookup id (first 16 chars of the key), indexed for lookup.
+    key_lookup: str | None = Field(default=None, max_length=16, index=True)
     key_prefix: str = Field(max_length=8)
 
     status: str = Field(default="active", max_length=20)

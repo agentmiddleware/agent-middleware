@@ -4,6 +4,14 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ## [Unreleased]
 
+- API keys (breaking): keys are stored as salted, peppered scrypt hashes
+  (`API_KEY_HASH_PEPPER`) and found by a non-secret indexed lookup id
+  (migration 054). A bounded 60 s cache of recent verifications keeps repeat
+  requests cheap. The plain SHA-256 lookup is removed, so all existing keys
+  stop working at deploy and must be reissued. Agent-comms owner digests use
+  peppered scrypt too. Production-like environments refuse to boot without
+  the pepper; local and test use a public dev pepper. See
+  docs/api-key-hashing.md.
 - Optional PostHog product tracking (`POSTHOG_API_KEY`, `POSTHOG_HOST`; off when
   unset): identify with email and `signup` on account creation, `activation` once
   per account on first key use. Fail-safe and non-blocking.

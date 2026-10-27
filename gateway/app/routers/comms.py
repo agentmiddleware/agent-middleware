@@ -9,6 +9,8 @@ messages, and hand off tasks to specialists.
 This is the nervous system of swarm intelligence.
 """
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -20,6 +22,7 @@ from ..services.agent_comms import (
     MessageType,
     MessagePriority,
     caller_owns_agent,
+    owner_candidates,
     owner_identity,
 )
 
@@ -174,7 +177,7 @@ async def require_agent_owner(
                 "message": f"Agent '{agent_id}' is not registered.",
             },
         )
-    if caller_owns_agent(agent, auth):
+    if await asyncio.to_thread(caller_owns_agent, agent, auth):
         return
     if not agent.owner_key and auth.is_bootstrap_admin:
         return
@@ -218,7 +221,7 @@ async def register_agent(
         name=request.name,
         capabilities=request.capabilities,
         webhook_url=request.webhook_url,
-        owner_key=owner_identity(auth),
+        owner_key=await asyncio.to_thread(owner_identity, auth),
     )
     return AgentRegistrationResponse(
         agent_id=agent.agent_id,
@@ -254,7 +257,8 @@ async def list_agents(
     if not auth.is_bootstrap_admin:
         # Tenants never enumerate each other's agents. Capability handoff
         # routing reads the registry server-side and is unaffected.
-        agents = [a for a in agents if caller_owns_agent(a, auth)]
+        candidates = await asyncio.to_thread(owner_candidates, auth)
+        agents = [a for a in agents if caller_owns_agent(a, auth, candidates)]
 
     return {
         "agents": [

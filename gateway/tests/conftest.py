@@ -4,6 +4,7 @@ Sets up pytest-asyncio, database, and common fixtures.
 """
 
 import os
+import secrets
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -185,6 +186,10 @@ require_disposable_test_database()
 # aiosqlite connection whose worker thread is not a daemon, and an unclosed one
 # blocks interpreter shutdown. See the teardown in setup_database.
 os.environ.setdefault("STATE_BACKEND", "memory")
+# A per-session test pepper so tests that switch to a production-like
+# ENVIRONMENT still hash API keys (production fails closed without one).
+# Generated once per test session with secrets.token_urlsafe; never hardcoded.
+os.environ.setdefault("API_KEY_HASH_PEPPER", secrets.token_urlsafe(32))
 # Ephemeral SQLite create_all even when a job sets ENVIRONMENT=production
 # (production_trust CI). Never applies to Postgres — see allows_metadata_create_all.
 os.environ.setdefault("ALLOW_METADATA_CREATE_ALL", "true")
@@ -530,3 +535,13 @@ def enforce_naive_utc_datetime_columns():
     finally:
         event.remove(Session, "before_flush", assert_naive_datetime_values)
         event.remove(Engine, "before_execute", assert_naive_statement_parameters)
+
+
+@pytest.fixture(autouse=True)
+def _clear_verified_api_key_cache():
+    """Keep the in-process verified-key cache from leaking across tests."""
+    from app.services.api_key_service import clear_verified_key_cache
+
+    clear_verified_key_cache()
+    yield
+    clear_verified_key_cache()

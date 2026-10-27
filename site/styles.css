@@ -2772,20 +2772,6 @@ body.home-light .hero-v2-curl-row {
 }
 body.home-light .hero-v2-curl-row pre { padding: 14px 64px 0 0; line-height: 1.375rem; }
 body.home-light .hero-v2-curl-row button { top: 6px; right: -8px; }
-body.home-light .hero-v2-output {
-  margin: 16px 23px 0;
-  border-top: 1px solid var(--home-line);
-}
-body.home-light .hero-v2-output p {
-  margin: 12px 0 0;
-  color: var(--home-muted);
-  font-size: 0.75rem;
-}
-body.home-light .hero-v2-command-row.hero-v2-output pre {
-  padding: 8px 0 0;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
 body.home-light .hero-v2-code-note {
   margin: 16px 23px 0;
   max-width: none;

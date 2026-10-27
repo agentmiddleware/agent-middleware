@@ -196,6 +196,7 @@
         <div class="hero-v2-inner">
           <div class="hero-v2-intro">
             <h1>Let agents retry safely.</h1>
+            <p class="hero-v2-audience">For developers whose AI agents call real tools and APIs, and who need every call permitted, logged and safe to retry.</p>
             <p>Each action runs once and leaves a receipt.</p>
             <p class="hero-v2-boundary">One accepted request key permits at most one gateway dispatch to the configured upstream tool and at most one debit. Each finalized or reconciled path has a receipt.</p>
             <div class="hero-v2-actions">
@@ -223,11 +224,6 @@ python examples/permit_echo_retry.py</code></pre>
             <div class="hero-v2-command-row hero-v2-curl-row">
               <pre id="home-hero-curl" tabindex="0"><code>curl -s -X POST https://api.thisisatest.tech/v1/demo/keys</code></pre>
               <button id="home-hero-curl-copy" type="button" aria-label="Copy curl command">Copy</button>
-            </div>
-            <div class="hero-v2-command-row hero-v2-output" aria-label="Recorded local run (proof transcript)">
-              <p>Recorded local run (proof transcript)</p>
-              <pre tabindex="0"><code>call   receipt_id: rcpt-641b10a5d96547bb
-retry  receipt_id: rcpt-641b10a5d96547bb (1 ledger debit)</code></pre>
             </div>
             <p class="hero-v2-code-note">The button above fills these Python commands with a demo key. With curl, replace both export placeholders using <code>api_key</code> and <code>wallet_id</code> from the response.</p>
             <p class="hero-v2-copy-status" id="home-hero-copy-status" role="status" aria-live="polite"></p>

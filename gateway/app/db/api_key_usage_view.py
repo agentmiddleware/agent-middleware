@@ -63,6 +63,33 @@ CREATE_API_KEY_USAGE_DAILY_VIEW_SQL = (
 )
 
 
+# The report ranks every event in the window before LIMIT applies, so cost grows
+# with the window's event count, not the output size. Windows longer than one
+# week must name a key; the unfiltered default stays within that week.
+UNFILTERED_MAX_DAYS = 7
+DEFAULT_REPORT_DAYS = 7
+# Postgres-only ceiling for the report query, applied with SET LOCAL so it
+# ends with the transaction and never leaks to pooled connections.
+REPORT_STATEMENT_TIMEOUT_MS = 5_000
+STATEMENT_TIMEOUT_SQL = f"SET LOCAL statement_timeout = {REPORT_STATEMENT_TIMEOUT_MS}"
+QUERY_CANCELED_SQLSTATE = "57014"
+
+
+def is_statement_timeout(error: BaseException) -> bool:
+    """True when Postgres cancelled the statement for statement_timeout."""
+    orig = getattr(error, "orig", None)
+    for candidate in (orig, getattr(orig, "__cause__", None)):
+        if candidate is None:
+            continue
+        code = getattr(candidate, "sqlstate", None) or getattr(
+            candidate, "pgcode", None
+        )
+        # 57014 also covers manual pg_cancel_backend; only the timeout counts.
+        if code == QUERY_CANCELED_SQLSTATE and "statement timeout" in str(candidate):
+            return True
+    return False
+
+
 def bounded_daily_usage_sql(*, filter_key: bool) -> str:
     """Aggregate only events in the requested UTC window, then cap result rows."""
     event_filter = "\n    WHERE created_at >= :start_at AND created_at < :end_at"

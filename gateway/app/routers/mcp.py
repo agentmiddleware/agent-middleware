@@ -1398,40 +1398,66 @@ async def _execute_registered_tool_inner(
     if permit_id:
         async with get_session_factory()() as session:
             action_model = await session.get(PermitModel, permit_id)
-    is_action = action_model is not None and any(
-        getattr(action_model, field) is not None
-        for field in (
-            "action_contract_version",
-            "action_payload_hash",
-            "action_schema_id",
-            "action_schema_version",
-            "action_public_tool_id",
-            "action_upstream_binding_hash",
-        )
+    action_fields = (
+        [getattr(action_model, field) for field in _ACTION_PERMIT_FIELDS]
+        if action_model is not None
+        else []
     )
-    if action_binding is not None or is_action:
+    is_action = any(value is not None for value in action_fields)
+    # An action permit that does not name this tool is a permit-scope denial,
+    # decided before any registry-dependent action branch (binding lookup,
+    # validate_action_request). It takes the same governed path as a tool
+    # permit below: idempotency-key and quote gates, idempotency begin, then
+    # _deny_tool_outside_permit, which validates the permit (signature first)
+    # and, with an idempotency key, mints one signed denial receipt that a
+    # same-key retry replays. Registered and unregistered tools are
+    # indistinguishable.
+    action_out_of_scope = (
+        is_action
+        # A partially populated action row (some action_* fields set, others
+        # NULL) is malformed storage and stays on the action branch below.
+        and all(value is not None for value in action_fields)
+        and permit_id is not None
+        and tool_name not in _permit_allowed_tools(action_model)
+    )
+    if (action_binding is not None or is_action) and not action_out_of_scope:
+        if (
+            is_action
+            and permit_id
+            and not all(value is not None for value in action_fields)
+        ):
+            # A partial action row is validated (signature first) before any
+            # binding decision, whatever the registry holds; a complete
+            # in-scope one is validated by validate_action_request below. No
+            # idempotency record has been begun here and none is passed, so
+            # _deny_tool_outside_permit itself mints nothing and completes
+            # nothing. The ToolPermissionDenied it raises reaches the caller
+            # through _execute_registered_tool, which attaches an unbound
+            # receipt (idempotency_record_id = None, one per call, never
+            # replayed) via _action_request_denial_receipt when the row still
+            # verifies; a row that fails signature verification (e.g.
+            # permit_signature_invalid) gets no receipt at all.
+            await _deny_tool_outside_permit(
+                idem=idem,
+                idem_started=False,
+                permit_id=permit_id,
+                wallet_id=wallet_id,
+                auth=auth,
+                tool_name=tool_name,
+                arguments=arguments,
+                endpoint=endpoint,
+                idempotency_endpoint=idempotency_endpoint,
+                idempotency_key=None,
+                transport=transport,
+                request_id=request_id,
+                effective_request_payload=effective_request_payload,
+                effective_request_hash=effective_request_hash,
+            )
         if action_binding is None:
-            if not service and is_action and permit_id:
-                # An action permit naming an unregistered tool gets the same
-                # validated permit-scope decision as a tool permit. No
-                # idempotency record exists yet on this path, so the denial
-                # carries no receipt (see _deny_tool_outside_permit).
-                await _deny_tool_outside_permit(
-                    idem=idem,
-                    idem_started=False,
-                    permit_id=permit_id,
-                    wallet_id=wallet_id,
-                    auth=auth,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    endpoint=endpoint,
-                    idempotency_endpoint=idempotency_endpoint,
-                    idempotency_key=None,
-                    transport=transport,
-                    request_id=request_id,
-                    effective_request_payload=effective_request_payload,
-                    effective_request_hash=effective_request_hash,
-                )
+            # An in-scope action permit for a tool with no action binding
+            # (registered without one, or unregistered). Nothing has been
+            # begun or recorded; _execute_registered_tool attaches an unbound
+            # denial receipt when the permit row verifies.
             raise ToolPermissionDenied("action_tool_binding_required")
         if not is_action or action_model is None:
             raise ToolPermissionDenied("action_permit_required")
@@ -3845,6 +3871,25 @@ def _governed_error_payload(
     }
     payload.update(extra_data or {})
     return payload
+
+
+_ACTION_PERMIT_FIELDS = (
+    "action_contract_version",
+    "action_payload_hash",
+    "action_schema_id",
+    "action_schema_version",
+    "action_public_tool_id",
+    "action_upstream_binding_hash",
+)
+
+
+def _permit_allowed_tools(model: Any) -> list[str]:
+    """The permit row's allowed_tools; malformed storage reads as empty."""
+    try:
+        value = json.loads(model.allowed_tools_json or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else []
 
 
 async def _release_unresolved_tool_idempotency(

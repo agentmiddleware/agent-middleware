@@ -32,6 +32,7 @@ from app.services.service_registry import get_service_registry
 from tests.test_mcp_trust_mode import (
     _assert_denial_audited,
     _assert_no_tool_debits,
+    _governed_idempotency_record_count,
     _jsonrpc_body,
     strict_trust_mode,  # noqa: F401 - fixture
 )
@@ -855,3 +856,143 @@ async def test_unresolved_tool_failure_is_not_replayed_after_fix(
     ).json()
     assert "error" not in retry, retry
     assert "result" in retry
+
+
+async def _action_permit_for_allowed_tool(client, tool_name: str = ALLOWED):
+    """A validly signed action permit whose allowlist names only tool_name."""
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+    )
+    async with get_session_factory()() as session:
+        model = await session.get(PermitModel, permit["permit_id"])
+        model.action_contract_version = 1
+        model.action_payload_hash = "a" * 64
+        model.action_schema_id = f"{tool_name}.args"
+        model.action_schema_version = "1"
+        model.action_public_tool_id = tool_name
+        model.action_upstream_binding_hash = "b" * 64
+        await resign_permit_model(model)
+        await session.commit()
+    return provisioned, permit
+
+
+async def _action_call(client, provisioned, permit_id, key, request_id=None):
+    resp = await client.post(
+        "/mcp/messages",
+        json=_jsonrpc_body(
+            tool_name=UNKNOWN,
+            wallet_id=provisioned["agent_wallet_id"],
+            request_id=request_id or f"action-{uuid4()}",
+            permit_id=permit_id,
+            idempotency_key=key,
+        ),
+        headers=provisioned["agent_headers"],
+    )
+    return resp.json()["error"]
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_action_permit_denial_identical_for_registry_state(
+    client, clean_database, monkeypatch
+):
+    """DeepSeek 5662554086 #1: an action permit must not reveal registration."""
+    provisioned, permit = await _action_permit_for_allowed_tool(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    seen = {}
+    for registered in (True, False):
+        monkeypatch.setenv("ENABLE_DOGFOOD_SECOND_TOOL", str(registered).lower())
+        get_settings.cache_clear()
+        sync_dogfood_tool_registration()
+        assert (get_service_registry().get_local(UNKNOWN) is not None) == registered
+        request_id = f"action-parity-{uuid4()}"
+        error = await _action_call(
+            client,
+            provisioned,
+            permit["permit_id"],
+            f"action-parity-idem-{uuid4()}",
+            request_id,
+        )
+        assert error["code"] == -32003, (registered, error)
+        assert error["message"] == "permit_tool_not_allowed", (registered, error)
+        receipt = error["data"]["receipt"]
+        await _assert_denial_receipt(
+            receipt, permit_id=permit["permit_id"], wallet_id=wallet_id
+        )
+        events = await list_audit_events(
+            event="mcp.invoke",
+            wallet_id=wallet_id,
+            tool=UNKNOWN,
+            request_id=request_id,
+            ok=False,
+            limit=1,
+        )
+        assert len(events) == 1
+        metadata = dict(events[0].metadata)
+        for volatile in ("idempotency_key", "request_hash", "request_id"):
+            metadata.pop(volatile, None)
+        seen[registered] = (
+            events[0].error,
+            metadata,
+            {
+                k: v
+                for k, v in receipt.items()
+                if k not in _VOLATILE_RECEIPT_FIELDS | {"request_hash"}
+            },
+        )
+    assert seen[True] == seen[False]
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_action_permit_denial_replays_same_receipt_for_same_key(
+    client, clean_database
+):
+    """DeepSeek 5662554086 #2: same key, same signed denial receipt."""
+    provisioned, permit = await _action_permit_for_allowed_tool(client)
+    key = f"action-replay-idem-{uuid4()}"
+    first = await _action_call(client, provisioned, permit["permit_id"], key)
+    before = await _receipt_count(provisioned["agent_wallet_id"])
+    second = await _action_call(client, provisioned, permit["permit_id"], key)
+    assert first["message"] == second["message"] == "permit_tool_not_allowed"
+    assert first["data"]["receipt"]["idempotency_record_id"] is not None
+    assert second["data"]["receipt"] == first["data"]["receipt"]
+    assert await _receipt_count(provisioned["agent_wallet_id"]) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_in_scope_action_permit_without_binding_is_binding_denial(
+    client, clean_database, monkeypatch
+):
+    """docs/failure-semantics.md: an in-scope action permit for a tool with
+    no action binding is action_tool_binding_required, not Tool not found,
+    for either registry state, with no idempotency record begun."""
+    provisioned, permit = await _action_permit_for_allowed_tool(client, UNKNOWN)
+    wallet_id = provisioned["agent_wallet_id"]
+    for registered in (True, False):
+        monkeypatch.setenv("ENABLE_DOGFOOD_SECOND_TOOL", str(registered).lower())
+        get_settings.cache_clear()
+        sync_dogfood_tool_registration()
+        service = get_service_registry().get_local(UNKNOWN)
+        assert (service is not None) == registered
+        if registered:
+            assert get_service_registry().get_action_binding(service) is None
+        key = f"action-binding-idem-{uuid4()}"
+        error = await _action_call(client, provisioned, permit["permit_id"], key)
+        assert error["code"] == -32003, (registered, error)
+        assert error["message"] == "action_tool_binding_required", (registered, error)
+        receipt = error["data"]["receipt"]
+        assert receipt["outcome"] == "denied"
+        assert receipt["permit_id"] == permit["permit_id"]
+        assert receipt["idempotency_record_id"] is None
+        assert (
+            await _governed_idempotency_record_count(
+                wallet_id=wallet_id, idempotency_key=key
+            )
+            == 0
+        )

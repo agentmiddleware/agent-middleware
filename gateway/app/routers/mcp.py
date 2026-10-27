@@ -1578,13 +1578,26 @@ async def _execute_registered_tool_inner(
 
     if not service:
         reason = f"Tool not found: {tool_name}"
-        await _release_unresolved_tool_idempotency(
-            idem=idem,
-            idem_begin=idem_begin if idem_started else None,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-        )
+        if permit_id:
+            # A permitted call: registry state is not the key's final answer.
+            await _release_unresolved_tool_idempotency(
+                idem=idem,
+                idem_begin=idem_begin if idem_started else None,
+                wallet_id=wallet_id,
+                endpoint=idempotency_endpoint,
+                idempotency_key=idempotency_key,
+            )
+        else:
+            # No permit: unchanged contract, a terminal replayable record.
+            await _complete_governed_denial_idempotency(
+                idem=idem,
+                idem_started=idem_started,
+                wallet_id=wallet_id,
+                endpoint=idempotency_endpoint,
+                idempotency_key=idempotency_key,
+                reason=reason,
+                status_code=400,
+            )
         raise ValueError(reason)
 
     execution_backend = str(service.get("execution_backend") or "metadata_only")

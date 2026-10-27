@@ -49,7 +49,7 @@ only reachable in local/dev/test, and it logs a loud startup warning.
 | 3 | **Quote validation**, when a `quote_id` is supplied | quote service | `quote_*` |
 | 4 | **Idempotency begin** (completed prior call replays its stored signed receipt) | `get_idempotency_service()` | replay short-circuit |
 | 5 | **Permit validation** (Layer B), including `allowed_tools`, decided with no registered price. A denial is identical for registered and unregistered tools and, with an idempotency key, mints a signed denial receipt with `credits_authorized = 0` | `PermitService.validate_for_action` | `permit_*` |
-| 6 | **Tool resolution + executability**. The idempotency claim from step 4 is released, so a same-key retry runs normally once the tool is registered or executable | service registry | `Tool not found` / `Tool not executable` |
+| 6 | **Tool resolution + executability**. On a permit-bearing call the idempotency claim from step 4 is released, so a same-key retry runs normally once the tool is registered or executable | service registry | `Tool not found` / `Tool not executable` |
 | 6a | **Wallet ownership — priced** (re-run with real cost, for the audit record); calls without a permit get `permit_required` here on a resolved tool | `evaluate_tool_invocation` / router | `wallet_access_denied` / `permit_required` |
 | 7 | **Wallet policy bundles** (Layer C) | `evaluate_wallet_policy` | policy reason |
 | 8 | **Human-approval gate** (Layer D) | `_require_human_approval` | blocks / `human_approval_unavailable` |

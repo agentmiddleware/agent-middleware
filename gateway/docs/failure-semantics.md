@@ -64,12 +64,13 @@ states this limit. What they leave behind differs by reason:
   receipt (`credits_authorized = 0`, `credits_charged = 0`) and completes a
   terminal idempotency record, so a same-key replay returns the same envelope
   (`test_denials_do_not_reveal_registration`).
-- `permit_not_found` on a governed call that carries an idempotency key
-  completes a terminal *idempotency record*; a same-key replay returns the
-  original error envelope.
-- `Tool not found` and `Tool not executable` record nothing: they depend on the
-  current registry, not on the request, so the governed idempotency claim is
-  released (`_release_unresolved_tool_idempotency` in `app/routers/mcp.py`).
+- An unknown tool (`Tool not found`) on a governed call *without* a permit, or
+  `permit_not_found`, on a call that carries an idempotency key completes a
+  terminal *idempotency record*; a same-key replay returns the original error
+  envelope.
+- On a call that carries a valid permit naming the tool, `Tool not found` and
+  `Tool not executable` record nothing: they depend on the current registry,
+  not on the request, so the governed idempotency claim is released (`_release_unresolved_tool_idempotency` in `app/routers/mcp.py`).
   A same-key retry executes normally once the tool is registered or executable
   (`test_unresolved_tool_failure_is_not_replayed_after_fix`).
 - `permit_required` on a resolved tool records nothing. A same-key retry returns

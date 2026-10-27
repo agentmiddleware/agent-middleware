@@ -159,7 +159,6 @@ REQUIRED_PUBLIC_ASSETS = (
     "try/try.js",
     "proof/receipt.json",
     "proof/trust-keys.json",
-    "proof/transcript.json",
     # The standalone offline verifier ships with the page that documents it.
     # COPY_ASSETS already copies the whole proof/ directory; listing the file
     # here fails the build if it ever goes missing instead of publishing a

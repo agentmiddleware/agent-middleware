@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -505,10 +505,11 @@ class IdempotencyService:
 
         ``fence`` makes creating a NEW record conditional on the caller still
         owning a lock row: inside the same transaction as the insert, the
-        fence row is read ``FOR UPDATE`` (PostgreSQL holds the row lock until
-        commit, so a concurrent stale-lock takeover cannot delete it in
-        between; SQLite serializes writers and a snapshot conflict surfaces
-        as "database is locked", which fails closed below). A missing or
+        fence row is claimed with a conditional no-op ``UPDATE`` that matches
+        only our open lock row (rowcount 1). The write takes the PostgreSQL
+        row lock and the SQLite database write lock until commit, so a
+        concurrent stale-lock takeover cannot delete it in between on either
+        backend; SQLite ignores ``FOR UPDATE``, so it is not relied on. A missing or
         re-issued fence row raises :class:`IdempotencyFenceLostError` and
         nothing is written. Replaying an existing record is not fenced.
         """
@@ -550,18 +551,23 @@ class IdempotencyService:
 
             if fence is not None:
                 fence_endpoint, fence_key, fence_record_id = fence
-                held = (
-                    await session.execute(
-                        select(IdempotencyRecordModel)
-                        .where(
-                            *_idempotency_predicates(
-                                wallet_id, fence_endpoint, fence_key
-                            )
-                        )
-                        .with_for_update()
+                # Claim the fence with a conditional write, not SELECT ...
+                # FOR UPDATE (SQLite ignores FOR UPDATE). The no-op UPDATE
+                # matches only while our lock row is still ours and open; it
+                # takes the PostgreSQL row lock and the SQLite write lock in
+                # this transaction, so a stale-lock takeover (DELETE) cannot
+                # land before this insert commits. rowcount 0 => lost.
+                claimed = await session.execute(
+                    update(IdempotencyRecordModel)
+                    .where(
+                        *_idempotency_predicates(wallet_id, fence_endpoint, fence_key),
+                        col(IdempotencyRecordModel.record_id) == fence_record_id,
+                        col(IdempotencyRecordModel.response_json).is_(None),
                     )
-                ).scalar_one_or_none()
-                if held is None or held.record_id != fence_record_id:
+                    .values(request_hash=IdempotencyRecordModel.request_hash)
+                    .execution_options(synchronize_session=False)
+                )
+                if cast(Any, claimed).rowcount != 1:
                     await session.rollback()
                     raise IdempotencyFenceLostError("idempotency_in_progress")
 

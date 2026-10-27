@@ -1387,6 +1387,9 @@ async def _execute_registered_tool_inner(
                         key_id=auth.key_id,
                         replay=replay,
                     )
+                # Same IGA gate as the registered-tool replay path: a revoked
+                # principal must not read stored results via a removed tool.
+                await _assert_replay_iga_access(auth=auth, tool_name=tool_name)
                 await _raise_replayed_error(replay)
                 return replay.response_json
         reason = f"Tool not found: {tool_name}"

@@ -314,12 +314,15 @@ class Settings(BaseSettings):
     # crosses a bucket edge still joins it), so a lost-response retry within
     # this many seconds replays the original receipt instead of dispatching
     # again; a refunded pre-dispatch failure is retried, not replayed.
-    # Read-only tools keep a fresh key per call. Identical deliberate unkeyed
-    # calls inside one window collapse to one dispatch; callers needing
-    # repeats must send distinct keys. 0 restores the old per-attempt random
-    # key (no retry protection). The effective window is capped at
-    # STANDARD_MCP_PERMIT_TTL_SECONDS: a joined slot reuses its auto permit,
-    # so a longer window would resolve retries to an expired permit.
+    # Read-only tools get no derived key, so unkeyed read-only calls are
+    # refused with idempotency_key_required (SEL-498); there is never a
+    # random per-call key. Identical deliberate unkeyed calls inside one
+    # window collapse to one dispatch; callers needing repeats must send
+    # distinct keys. 0 disables derived keys, so every unkeyed call is
+    # refused. The effective window is capped at the auto-permit TTL
+    # (STANDARD_MCP_PERMIT_TTL_SECONDS, default 120; lower for demo): a
+    # joined slot reuses its auto permit. With defaults the window is 120 s,
+    # and a later identical retry runs and bills again.
     MCP_UNKEYED_RETRY_WINDOW_SECONDS: int = 300
 
     @field_validator("MCP_UNKEYED_RETRY_WINDOW_SECONDS")

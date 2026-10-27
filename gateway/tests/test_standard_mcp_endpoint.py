@@ -8,13 +8,12 @@ validation, server-minted permits, exactly-once replay, and signed receipts.
 
 from __future__ import annotations
 
-import json
-
 import hashlib
 
 from decimal import Decimal
 
 import pytest
+from uuid import uuid4
 from httpx import ASGITransport, AsyncClient
 from mcp.types import LATEST_PROTOCOL_VERSION
 from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
@@ -1018,58 +1017,41 @@ def test_dogfood_notes_count_is_declared_read_only(monkeypatch):
 async def test_unkeyed_retry_after_no_effect_failure_runs_again(
     client, standard_mcp_enabled, clean_database
 ):
-    """Codex non-blocking 1: a refunded pre-dispatch failure is retried."""
-    from sqlalchemy import select
+    """Codex: a real refunded pre-dispatch failure is retried, not replayed.
 
-    from app.db.models import IdempotencyRecordModel
-    from app.db.database import get_session_factory
-    from app.services.idempotency import GOVERNED_MCP_IDEMPOTENCY_ENDPOINT
+    The upstream executor genuinely fails before dispatch (nothing reaches
+    the tool, the charge is refunded); the identical unkeyed retry then runs
+    once and a further retry replays that success.
+    """
+    from tests.test_mcp_upstream_governed import (
+        FakeUpstreamExecutor,
+        _register_upstream,
+    )
 
+    tool = f"echo-no-effect-{uuid4().hex[:8]}"
     provisioned = await provision_agent_wallet(client)
-    wallet_id = provisioned["agent_wallet_id"]
     headers = {**provisioned["agent_headers"], **MCP_HEADERS}
-    invocations: list[str] = []
-    _register_counting_tool("echo-no-effect", invocations)
+    executor = FakeUpstreamExecutor("pre_dispatch_failure")
+    _register_upstream(tool, executor)
     try:
-        first = await _call(client, headers, "echo-no-effect", 1)
-        assert first.status_code == 200
-        # Rewrite the stored result into the shape the pre-dispatch failure
-        # path persists (nothing reached the tool, charge refunded).
-        async with get_session_factory()() as session:
-            row = (
-                await session.execute(
-                    select(IdempotencyRecordModel).where(
-                        IdempotencyRecordModel.wallet_id == wallet_id,
-                        IdempotencyRecordModel.endpoint
-                        == GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
-                        IdempotencyRecordModel.idempotency_key.like("mcp-retry-%"),
-                    )
-                )
-            ).scalar_one()
-            row.response_json = json.dumps(
-                {
-                    "error": "upstream_unreachable",
-                    "upstream_result": {
-                        "error": "failed_refunded",
-                        "error_code": "upstream_unreachable",
-                    },
-                    "receipt": {"outcome": "failed_refunded"},
-                }
-            )
-            await session.commit()
+        first = await _call(client, headers, tool, 1)
+        assert first.status_code == 200, first.text
+        assert executor.dispatch_count == 0
+        assert len(executor.calls) == 1
 
-        retry = await _call(client, headers, "echo-no-effect", 2)
-        assert retry.status_code == 200
+        executor.mode = "success"
+        retry = await _call(client, headers, tool, 2)
+        assert retry.status_code == 200, retry.text
         assert "result" in retry.json(), retry.text
-        assert invocations == ["hi", "hi"]
-        again = await _call(client, headers, "echo-no-effect", 3)
+        assert executor.dispatch_count == 1
+        again = await _call(client, headers, tool, 3)
         assert (
             again.json()["result"]["receipt"]["receipt_id"]
             == retry.json()["result"]["receipt"]["receipt_id"]
         )
-        assert invocations == ["hi", "hi"]
+        assert executor.dispatch_count == 1
     finally:
-        get_service_registry().unregister_local("echo-no-effect")
+        get_service_registry().unregister_local(tool)
 
 
 @pytest.mark.anyio
@@ -1296,6 +1278,76 @@ async def test_fenced_begin_writes_nothing_when_fence_row_reissued(
     assert owned.replay is None
 
 
+@pytest.mark.anyio
+async def test_fenced_begin_races_stale_lock_takeover_consistently(
+    client, clean_database
+):
+    """Codex blocker 1: the fence claim is a conditional write (rowcount 1),
+    not SELECT FOR UPDATE, so it is exclusive on SQLite as well as
+    PostgreSQL. Race a holder's fenced mint against a stale-lock takeover
+    many times: the mint either commits (and the takeover then sees the
+    released row) or fails as fence-lost with nothing written, never both a
+    lost fence and a written mint row."""
+    import asyncio
+
+    from app.services.idempotency import (
+        IdempotencyFenceLostError,
+        IdempotencyInProgressError,
+        get_idempotency_service,
+    )
+
+    wallet = (await provision_agent_wallet(client))["agent_wallet_id"]
+    idem = get_idempotency_service()
+    lock_endpoint = "/mcp#unkeyed-retry-lock"
+    outcomes: set[str] = set()
+    for _ in range(20):
+        lock_key = f"ulock-{uuid4()}"
+        mint_key = f"smcp-{uuid4()}"
+        lock = await idem.begin_with_record(
+            wallet_id=wallet,
+            endpoint=lock_endpoint,
+            idempotency_key=lock_key,
+            request_payload={"kind": "unkeyed-retry-lock"},
+        )
+
+        async def _mint(lock=lock, lock_key=lock_key, mint_key=mint_key):
+            try:
+                await idem.begin_with_record(
+                    wallet_id=wallet,
+                    endpoint="/mcp#auto-permit",
+                    idempotency_key=mint_key,
+                    request_payload={"k": 1},
+                    fence=(lock_endpoint, lock_key, lock.record_id),
+                )
+                return "minted"
+            except IdempotencyFenceLostError:
+                return "fence_lost"
+            except IdempotencyInProgressError:
+                return "busy"
+
+        async def _takeover(lock=lock, lock_key=lock_key):
+            try:
+                return await idem.abandon(
+                    wallet_id=wallet,
+                    endpoint=lock_endpoint,
+                    idempotency_key=lock_key,
+                    expected_record_id=lock.record_id,
+                )
+            except Exception:  # noqa: BLE001 - SQLite busy is a lost race
+                return False
+
+        mint_result, _ = await asyncio.gather(_mint(), _takeover())
+        outcomes.add(mint_result)
+        mint_row = await idem.get_record(
+            wallet_id=wallet, endpoint="/mcp#auto-permit", idempotency_key=mint_key
+        )
+        if mint_result == "minted":
+            assert mint_row is not None
+        else:
+            assert mint_row is None
+    assert outcomes <= {"minted", "fence_lost", "busy"}
+
+
 def test_unkeyed_retry_window_rejects_negative_and_keeps_zero():
     """CodeRabbit: negative windows are invalid; 0 stays the opt-out."""
     from pydantic import ValidationError
@@ -1309,6 +1361,46 @@ def test_unkeyed_retry_window_rejects_negative_and_keeps_zero():
         == 0
     )
     assert Settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS == 300
+
+
+def test_unregistered_tool_replay_runs_iga_check():
+    """Codex should-fix: the replay served after a tool is removed must run
+    the same IGA gate as the registered-tool replay path."""
+    import inspect
+
+    from app.routers import mcp
+
+    src = inspect.getsource(mcp)
+    end = src.index('reason = f"Tool not found')
+    branch = src[src.rindex("if not service:", 0, end) : end]
+    assert "_assert_replay_iga_access(auth=auth, tool_name=tool_name)" in branch
+    assert branch.index("_assert_replay_iga_access") < branch.index(
+        "_raise_replayed_error"
+    )
+
+
+def test_default_unkeyed_retry_window_is_permit_ttl_and_documented():
+    """Codex blocker 2: with defaults the window is the 120 s permit TTL,
+    not the 300 s setting, and the docs say so (a later retry bills again)."""
+    from pathlib import Path
+
+    from app.core.config import Settings, get_settings
+    from app.routers import mcp_standard
+
+    defaults = Settings()
+    settings = get_settings()
+    assert defaults.MCP_UNKEYED_RETRY_WINDOW_SECONDS == 300
+    assert defaults.STANDARD_MCP_PERMIT_TTL_SECONDS == 120
+    assert settings.MCP_UNKEYED_RETRY_WINDOW_SECONDS == 300
+    assert mcp_standard._effective_unkeyed_retry_window() == min(
+        300, settings.STANDARD_MCP_PERMIT_TTL_SECONDS
+    )
+    docs = Path(__file__).resolve().parents[1] / "docs"
+    for name in ("concepts/request-keys.md", "failure-semantics.md"):
+        text = " ".join((docs / name).read_text().split())
+        assert "STANDARD_MCP_PERMIT_TTL_SECONDS" in text or "auto-permit TTL" in text
+        assert "120" in text
+        assert "bills again" in text
 
 
 def test_effective_unkeyed_retry_window_capped_at_permit_ttl(monkeypatch):

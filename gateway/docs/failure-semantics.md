@@ -253,7 +253,10 @@ JSON-RPC id is not part of it, because retries carry fresh ids.
 
 - **Sliding window.** Slot selection and the auto-permit mint run under a
   per-identity lock row. A slot first minted less than
-  `MCP_UNKEYED_RETRY_WINDOW_SECONDS` (default 300) ago is joined even if the
+  the effective window ago is joined (the smaller of
+  `MCP_UNKEYED_RETRY_WINDOW_SECONDS`, default 300, and the auto-permit TTL,
+  default 120 and lower for demo tenants; so 120 s by default, after which an
+  identical unkeyed retry runs and bills again) even if the
   clock bucket has rolled over, so a retry or concurrent twin straddling the
   edge resolves to one dispatch. A concurrent duplicate either replays the
   same receipt or gets the retryable `idempotency_in_progress`. A lock older

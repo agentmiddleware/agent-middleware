@@ -31,8 +31,13 @@ permit creation uses HTTP 409 with string `detail`.
 When the caller supplies no key to a mutating tool, standard `/mcp` and the
 legacy `/mcp/messages` demo auto-permit path derive an `mcp-retry-` key from
 wallet, API key, verified enterprise principal, tool, and canonical arguments.
-An identical retry within `MCP_UNKEYED_RETRY_WINDOW_SECONDS` (default 300) of
-the first call replays its receipt; the window slides from that first call,
+An identical retry within the effective retry window of the first call
+replays its receipt. The effective window is the smaller of
+`MCP_UNKEYED_RETRY_WINDOW_SECONDS` (default 300) and the auto-permit TTL
+(`STANDARD_MCP_PERMIT_TTL_SECONDS`, default 120; demo tenants are capped
+lower by `DEMO_AUTO_PERMIT_TTL_SECONDS`), so with default settings it is
+120 seconds. A retry after the effective window is a new call: it runs and
+bills again. Send your own key if retries can arrive later than that; the window slides from that first call,
 so a retry across a clock bucket edge still replays. If the stored result is
 a refunded pre-dispatch failure (nothing reached the tool), the retry runs
 again instead. Tools registered `read_only` get no derived key.

@@ -1,6 +1,7 @@
 """Data-free unit tests for deterministic unkeyed MCP retry keys (SEL-484)."""
 
 import json
+from uuid import uuid4
 
 from app.services.mcp_retry_key import (
     DERIVED_KEY_PREFIX,
@@ -11,7 +12,12 @@ from app.services.mcp_retry_key import (
     slot_key,
 )
 
-BASE = dict(wallet_id="w1", key_id="k1", principal="", tool_name="t")
+BASE = dict(
+    wallet_id=f"wallet-{uuid4()}",
+    key_id=f"key-{uuid4()}",
+    principal="",
+    tool_name=f"tool-{uuid4()}",
+)
 
 
 def _identity(**overrides):

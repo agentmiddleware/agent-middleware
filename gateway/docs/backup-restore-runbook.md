@@ -2,7 +2,12 @@
 
 This runbook covers the Agent Middleware gateway database: what to copy before
 an Alembic change, how this repository applies and reverses schema, how to
-restore, and how to verify. Every statement is taken from files in this tree.
+restore, and how to verify. Statements about this gateway are taken from
+files in this tree. The `pg_dump`, `pg_restore` and `psql` templates rely on
+standard PostgreSQL client behavior, documented at
+<https://www.postgresql.org/docs/current/app-pgdump.html>,
+<https://www.postgresql.org/docs/current/app-pgrestore.html> and
+<https://www.postgresql.org/docs/current/app-psql.html>.
 This repository does not define a backup schedule, RPO, RTO, credential owner,
 or Railway backup product.
 
@@ -160,6 +165,19 @@ templates below are the standard PostgreSQL client tools, not in-repo
 scripts. Use a libpq URL (`postgresql://` or `postgres://`). Do not pass
 `postgresql+asyncpg://` to `pg_dump`; that driver suffix is for SQLAlchemy
 (`gateway/app/core/db_urls.py`). Do not print the URL.
+
+Connection security for these client tools (standard libpq behavior, see
+<https://www.postgresql.org/docs/current/libpq-connect.html> and
+<https://www.postgresql.org/docs/current/libpq-pgpass.html>):
+
+- Require TLS for any database reached over a network. Add
+  `sslmode=verify-full` (with the server CA in `sslrootcert`) to the URL, or
+  at minimum `sslmode=require`, which encrypts but does not verify the server.
+- Keep the password out of the URL and the command line, where process
+  listings and shell history can expose it. Put it in a password file named
+  by `PGPASSFILE` (mode 0600), or in `PGPASSWORD` set only in the shell that
+  runs the command. `PGDUMP_URL` then carries host, port, database, user and
+  `sslmode` only.
 
 ```bash
 # Generic dump (custom format). Substitute a libpq URL. This command is not
@@ -359,14 +377,22 @@ the generic `pg_dump` template above:
    idempotency records to stop a repeated dispatch).
 2. Restore with the generic `pg_restore` (or `psql`) template into an empty,
    newly created database. Stop if the restore reports any error.
-3. If the restored stamp is behind the packaged head of the image you will
+3. Point the gateway at the restored database. The gateway and Alembic read
+   `DATABASE_URL`, not `PGDUMP_URL` (`gateway/app/core/config.py`;
+   `gateway/migrations/env.py` `get_url`). Update `DATABASE_URL` in the
+   secret store or deploy environment to the restored database, in its
+   `postgresql+asyncpg://` form (`gateway/app/core/db_urls.py`). Before any
+   start, confirm with `alembic current`, run from `gateway/` with that
+   `DATABASE_URL`, that it reports the restored stamp. If it does not, the
+   service is still pointed at the old database.
+4. If the restored stamp is behind the packaged head of the image you will
    run, apply `alembic upgrade head` with that image's migrations
    (`gateway/app/db/database.py` stale-revision error).
-4. Start only an image whose packaged Alembic head matches the database
+5. Start only an image whose packaged Alembic head matches the database
    stamp. An older packaged head cannot restart
    (`gateway/docs/schema-041-rollout.md` both fail-closed checks;
    `gateway/app/db/database.py` `verify_required_schema`).
-5. Preserve signing keys and `API_KEY_HASH_PEPPER` from the secret store.
+6. Preserve signing keys and `API_KEY_HASH_PEPPER` from the secret store.
    Schema 054 rows issued after the scrypt change do not authenticate on old
    code (`gateway/docs/schema-054-rollout.md` Rollback). Pre-054 rows stop
    authenticating once 054 code is deployed (`gateway/docs/api-key-hashing.md`).
@@ -408,8 +434,13 @@ After backup, upgrade, restore, or rollback:
    `gateway/docs/partner-first-tool-runbook.md`). Expect a single head.
 2. Process start: production-like boots call `verify_required_schema`
    (`gateway/app/db/database.py` `init_db`). Missing trust tables, missing
-   required columns, missing `api_key_usage_daily`, or a stamp behind packaged
-   head raise `SchemaInitError` and refuse start.
+   required columns, missing `api_key_usage_daily`, or a stamped revision
+   mismatch raise `SchemaInitError` and refuse start. A stamped revision
+   mismatch is any stamped revision that differs from the packaged head,
+   behind or ahead (`_stale_alembic_message`, `current != heads`). An empty
+   `alembic_version` table also refuses. A legacy database with no
+   `alembic_version` table skips the revision comparison and is checked only
+   for the required tables, columns and view.
 3. Required trust tables (`gateway/app/db/database.py` `REQUIRED_TRUST_TABLES`):
    `permits`, `receipts`, `idempotency_records`, `mcp_dispatch_attempts`,
    `control_plane_audit_events`, `audit_chain_heads`, `signing_keys`,

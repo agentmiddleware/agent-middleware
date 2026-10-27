@@ -1056,6 +1056,7 @@ async def test_unkeyed_retry_after_no_effect_failure_runs_again(
         after_failure = await _entries()
         failure_entries = [e for k, e in after_failure.items() if k not in before]
         # Charged then refunded: no net charge for the pre-dispatch failure.
+        assert failure_entries, "expected charge+refund ledger rows"
         assert _net(failure_entries) == 0, failure_entries
 
         executor.mode = "success"
@@ -1500,6 +1501,21 @@ async def test_fence_claim_lock_timeout_is_retryable_in_progress(
             wallet_id=wallet, endpoint="/mcp#auto-permit", idempotency_key=mint_key
         )
     ) is None
+
+
+def test_unkeyed_retry_window_rejects_negative_and_keeps_zero():
+    """CodeRabbit: negative windows are invalid; 0 stays the opt-out."""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(MCP_UNKEYED_RETRY_WINDOW_SECONDS=-1)
+    assert (
+        Settings(MCP_UNKEYED_RETRY_WINDOW_SECONDS=0).MCP_UNKEYED_RETRY_WINDOW_SECONDS
+        == 0
+    )
+    assert Settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS == 300
 
 
 def test_unregistered_tool_replay_runs_iga_check():

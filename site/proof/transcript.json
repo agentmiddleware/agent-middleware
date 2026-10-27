@@ -23,7 +23,7 @@
   "schema_version": "1.1",
   "source": {
     "gateway": "throwaway local SQLite gateway, real FastAPI routers",
-    "label": "Recorded from a local gateway run, not the live API. Every line is a real request or a real response.",
+    "label": "Local demo recording. Captured from a throwaway gateway on one machine, not the live API. Every line is a real request or a real response.",
     "proof": "make prove-trust-plane (scripts/demo_trust_plane.py)",
     "signing_key_id": "demo-ed25519"
   },

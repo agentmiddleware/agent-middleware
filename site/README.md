@@ -105,8 +105,7 @@ Open `http://127.0.0.1:8765/`.
   until it can run.
 - `/proof/` — portable receipt, matching key snapshot, and offline command
 - `/pilot/` — paid pilot scope, intake questions, and economic fit calculator
-- `/proof/transcript.json` — the recorded governed-loop transcript the
-  homepage renders (see "The governed loop as evidence" below)
+- `/proof/transcript.json` — a local demo recording of the governed loop
 - `/compare/` — named competitor comparison, build-vs-buy, and fit/compliance FAQ
 - `/demo-key/` — one-time demo credential display and terminal steps for the
   permit → `partner.echo` → portable receipt loop with synthetic credits;

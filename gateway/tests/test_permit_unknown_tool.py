@@ -8,6 +8,7 @@ without a permit, and tools the permit does name, keep "Tool not found".
 
 from __future__ import annotations
 
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -24,6 +25,8 @@ from app.services.dogfood_tool import (
     DOGFOOD_TOOL_ID,
     sync_dogfood_tool_registration,
 )
+from app.services.audit_log import list_audit_events
+from app.services.quotes import get_quote_service
 from app.services.receipts import get_receipt_service
 from app.services.service_registry import get_service_registry
 from tests.test_mcp_trust_mode import (
@@ -244,7 +247,7 @@ async def test_unregistered_tool_named_by_permit_is_still_not_found(
         "mcp_context": {
             "wallet_id": provisioned["agent_wallet_id"],
             "permit_id": permit["permit_id"],
-            "idempotency_key": "named-unknown-rest-idem",
+            "idempotency_key": f"named-unknown-rest-idem-{uuid4()}",
         },
     }
     rest = await client.post(
@@ -344,6 +347,142 @@ async def _receipt_count(wallet_id: str) -> int:
 
 @pytest.mark.anyio
 @pytest.mark.usefixtures("strict_trust_mode")
+@pytest.mark.parametrize("transport", ["jsonrpc", "rest"])
+@pytest.mark.parametrize(
+    ("case", "expected_reason"),
+    [
+        ("missing_key", "idempotency_key_required"),
+        ("missing_quote", "permit_tool_not_allowed"),
+        ("invalid_quote", "quote_not_found"),
+        ("denied_permit", "permit_tool_not_allowed"),
+    ],
+)
+async def test_denials_do_not_reveal_registration(
+    client, clean_database, monkeypatch, transport, case, expected_reason
+):
+    provisioned, permit = await _permit_for_allowed_tool(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    quote_id = None
+    if case == "denied_permit":
+        quote = await get_quote_service().create_quote(
+            wallet_id=wallet_id,
+            tool=UNKNOWN,
+            quoted_credits=Decimal("1"),
+            category="agent_comms",
+        )
+        quote_id = quote.quote_id
+    elif case == "invalid_quote":
+        quote_id = "quote-does-not-exist"
+
+    errors = []
+    audits = []
+    for registered in (True, False):
+        monkeypatch.setenv("ENABLE_DOGFOOD_SECOND_TOOL", str(registered).lower())
+        get_settings.cache_clear()
+        sync_dogfood_tool_registration()
+        assert (get_service_registry().get_local(UNKNOWN) is not None) == registered
+
+        request_id = f"registration-{case}-{registered}"
+        idempotency_key = None if case == "missing_key" else request_id
+        if transport == "jsonrpc":
+            body = _jsonrpc_body(
+                tool_name=UNKNOWN,
+                wallet_id=wallet_id,
+                request_id=request_id,
+                permit_id=permit["permit_id"],
+                idempotency_key=idempotency_key,
+            )
+            if quote_id is not None:
+                body["params"]["mcpContext"]["quote_id"] = quote_id
+            resp = await client.post(
+                "/mcp/messages", json=body, headers=provisioned["agent_headers"]
+            )
+            assert resp.status_code == 200
+            error = resp.json()["error"]
+            assert error["message"] == expected_reason
+            assert error["code"] == -32003
+        else:
+            context = {"wallet_id": wallet_id, "permit_id": permit["permit_id"]}
+            if idempotency_key is not None:
+                context["idempotency_key"] = idempotency_key
+            if quote_id is not None:
+                context["quote_id"] = quote_id
+            resp = await client.post(
+                f"/mcp/tools/{UNKNOWN}/invoke",
+                json={
+                    "name": UNKNOWN,
+                    "arguments": {"message": "hello"},
+                    "mcp_context": context,
+                },
+                headers=provisioned["agent_headers"],
+            )
+            assert resp.status_code == (400 if case == "missing_key" else 403)
+            error = resp.json()["detail"]
+            assert (error.get("error") if isinstance(error, dict) else error) == (
+                expected_reason
+            )
+        errors.append(error)
+        events = await list_audit_events(
+            event="mcp.invoke",
+            wallet_id=wallet_id,
+            tool=UNKNOWN,
+            request_id=request_id if transport == "jsonrpc" else None,
+            ok=False,
+            limit=1,
+        )
+        assert len(events) == 1
+        assert events[0].error == expected_reason
+        metadata = dict(events[0].metadata)
+        assert "tool_registered" not in metadata
+        assert "estimated_cost" not in metadata
+        metadata.pop("idempotency_key", None)
+        audits.append(metadata)
+
+    assert audits[0] == audits[1]
+    for error in errors:
+        if transport == "jsonrpc":
+            receipt = error.get("data", {}).get("receipt")
+        else:
+            receipt = error.get("receipt") if isinstance(error, dict) else None
+        if case in {"missing_key", "invalid_quote"}:
+            assert receipt is None
+        else:
+            assert receipt is not None
+            assert (await get_receipt_service().verify_receipt(receipt["receipt_id"]))[
+                0
+            ]
+
+    def comparable(error):
+        if not isinstance(error, dict):
+            return error
+        normalized = dict(error)
+        container = (
+            dict(error.get("data", {})) if transport == "jsonrpc" else normalized
+        )
+        receipt = container.get("receipt")
+        if receipt is not None:
+            container["receipt"] = {
+                key: value
+                for key, value in receipt.items()
+                if key
+                not in {
+                    "receipt_id",
+                    "audit_event_id",
+                    "idempotency_record_id",
+                    "signature",
+                    "created_at",
+                    "issued_at",
+                }
+            }
+        if transport == "jsonrpc":
+            normalized["data"] = container
+        return normalized
+
+    assert comparable(errors[0]) == comparable(errors[1])
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
 async def test_foreign_wallet_permit_does_not_leak_allowlist(client, clean_database):
     """Another wallet's permit is validated before its allowlist is read.
 
@@ -407,7 +546,7 @@ async def test_permit_denial_without_idempotency_key_mints_no_receipt(
     )
     error = resp.json()["error"]
     assert error["code"] == -32003
-    assert error["message"] == "permit_tool_not_allowed"
+    assert error["message"] == "idempotency_key_required"
     assert not error.get("data", {}).get("receipt")
     assert await _receipt_count(provisioned["agent_wallet_id"]) == before
 

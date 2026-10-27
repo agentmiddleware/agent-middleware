@@ -2698,24 +2698,72 @@ async def test_reservation_charge_expr_counts_orphan_receipts_in_postgres(
     above spent_credits, and lets the max_credits predicate see the orphan.
     """
     permit_id = seeded_permit.permit_id
+    other_permit_id = f"permit-pg-other-{uuid.uuid4().hex[:16]}"
     factory = get_session_factory()
     async with factory() as session:
         async with session.begin():
+            base = await session.get(PermitModel, permit_id)
+            assert base is not None
+            # A second permit with its own charged receipt. If the subquery
+            # were not correlated to the updated row, these 10 credits would
+            # leak into this permit's orphan total and change every result.
             session.add(
-                ReceiptModel(
-                    receipt_id=f"rcpt-orphan-{uuid.uuid4().hex[:16]}",
-                    permit_id=permit_id,
-                    wallet_id=seeded_permit.wallet_id,
-                    tool=seeded_permit.tool_name,
-                    request_hash=sha256_hex({"orphan": permit_id}),
-                    credits_authorized=Decimal("3"),
-                    credits_charged=Decimal("3"),
-                    outcome="success",
-                    signature="test-signature",
-                    signature_key_id=seeded_permit.signing_key_id,
+                PermitModel(
+                    permit_id=other_permit_id,
+                    issuer_wallet_id=base.issuer_wallet_id,
+                    subject_wallet_id=base.subject_wallet_id,
+                    subject_key_id=None,
+                    scopes_json=base.scopes_json,
+                    allowed_tools_json=base.allowed_tools_json,
+                    max_credits=Decimal("100"),
+                    spent_credits=Decimal("0"),
+                    expires_at=base.expires_at,
+                    nonce=uuid.uuid4().hex,
+                    status="active",
+                    signature=base.signature,
+                    key_id=base.key_id,
+                    issued_at=base.issued_at,
                 )
             )
+            await session.flush()
+            for receipt_permit_id, charged in (
+                (permit_id, Decimal("3")),
+                (other_permit_id, Decimal("10")),
+            ):
+                session.add(
+                    ReceiptModel(
+                        receipt_id=f"rcpt-orphan-{uuid.uuid4().hex[:16]}",
+                        permit_id=receipt_permit_id,
+                        wallet_id=seeded_permit.wallet_id,
+                        tool=seeded_permit.tool_name,
+                        request_hash=sha256_hex({"orphan": receipt_permit_id}),
+                        credits_authorized=charged,
+                        credits_charged=charged,
+                        outcome="success",
+                        signature="test-signature",
+                        signature_key_id=seeded_permit.signing_key_id,
+                    )
+                )
 
+    try:
+        await _assert_orphan_reservations(permit_id)
+        # The other permit's receipt was never counted against this one,
+        # and the other permit itself was never touched.
+        assert await _permit_spent(other_permit_id) == Decimal("0")
+    finally:
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(ReceiptModel).where(
+                        ReceiptModel.permit_id == other_permit_id
+                    )
+                )
+                await session.execute(
+                    delete(PermitModel).where(PermitModel.permit_id == other_permit_id)
+                )
+
+
+async def _assert_orphan_reservations(permit_id: str) -> None:
     # Orphan (3) + amount (5) = 8 > max_credits (7): the WHERE must reject,
     # which only happens if the subquery is evaluated against this row.
     assert (

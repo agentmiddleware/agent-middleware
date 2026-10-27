@@ -54,6 +54,10 @@ def _config() -> tuple[str, str] | None:
         or settings.POSTHOG_HOST.strip()
         or DEFAULT_HOST
     )
+    if not host.lower().startswith("https://"):
+        # The identify payload carries the sponsor email; never send it in
+        # cleartext. A non-HTTPS host leaves tracking off.
+        return None
     return api_key, host.rstrip("/")
 
 

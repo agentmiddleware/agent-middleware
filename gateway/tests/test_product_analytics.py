@@ -498,3 +498,14 @@ async def test_shutdown_drains_and_closes_shared_client(enabled, monkeypatch):
     await product_analytics.shutdown()
     assert client.is_closed
     assert product_analytics._client is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("host", ["http://posthog.internal", "ftp://x", "posthog.com"])
+async def test_non_https_host_disables_tracking(monkeypatch, sent, host):
+    monkeypatch.setenv("POSTHOG_API_KEY", FAKE_KEY)
+    monkeypatch.setenv("POSTHOG_HOST", host)
+    assert product_analytics.is_enabled() is False
+    product_analytics.capture("signup", "w1")
+    await product_analytics.drain_pending()
+    assert sent == []

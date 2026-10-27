@@ -265,15 +265,19 @@ JSON-RPC id is not part of it, because retries carry fresh ids.
   check (without spending a use) first, and the principal is part of the key,
   so one human never receives another's stored result.
 - **Mutating tools only.** Tools registered `read_only` (for example
-  `partner.notes.count`) keep a fresh key per call. Undeclared tools are
-  treated as mutating.
+  `partner.notes.count`) get no derived key, so an unkeyed call to one is
+  refused (below). Undeclared tools are treated as mutating.
 - **No-effect failures retry.** If the stored result is a refunded
   pre-dispatch failure, the retry moves to the next attempt slot and runs
   again (up to three attempts per window) instead of replaying the failure.
 
 Two deliberately identical un-keyed calls inside one window still collapse
-into one; clients that need repeats must send their own key. Setting the
-window to `0` restores a random key per call. A
+into one; clients that need repeats must send their own key. The gateway never mints a
+random per-call key: an unkeyed call with no derived key (a `read_only` tool,
+the window set to `0`, or an enterprise bearer that fails verification) is
+refused with JSON-RPC `-32003` `idempotency_key_required` (HTTP 400 on
+`/mcp/tools/{service_id}/invoke`) before any permit, dispatch, or charge, so
+a retry cannot run or bill twice. A
 governed `/mcp/messages` call without a key is still refused with
 `idempotency_key_required`, and a wallet that requires human approval still
 needs an explicit key.

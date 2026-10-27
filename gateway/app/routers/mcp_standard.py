@@ -62,7 +62,6 @@ import hashlib
 import json
 import logging
 import time
-import uuid
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -157,6 +156,20 @@ _SERVER_INSTRUCTIONS = (
     " The serverInfo.name is a stable legacy compatibility identifier; the "
     "instructions describe the current product category."
 )
+
+
+_IDEMPOTENCY_KEY_REQUIRED_DATA: dict[str, Any] = {
+    "error": "idempotency_key_required",
+    "reason_code": "idempotency_key_required",
+    "remediation": {
+        "type": "retry_with_idempotency_key",
+        "detail": (
+            "Send an Idempotency-Key header (or params._meta"
+            '["io.agentmiddleware/idempotency_key"]) and reuse the same key '
+            "when retrying the same call."
+        ),
+    },
+}
 
 
 def _mcp_error(code: int, message: str, data: dict[str, Any] | None = None) -> McpError:
@@ -397,8 +410,8 @@ async def _resolve_unkeyed_retry(
 ) -> tuple[str, str] | None:
     """Pick the retry slot for an unkeyed mutating call and mint its permit.
 
-    Returns ``(idempotency_key, permit_id)``, or None when the call keeps the
-    legacy per-attempt random key: read-only tools (a replay would serve a
+    Returns ``(idempotency_key, permit_id)``, or None when no slot applies and
+    the caller must refuse the unkeyed call (SEL-498): read-only tools (a replay would serve a
     stale read), the window disabled, or an enterprise bearer that fails
     verification (the governed pipeline denies that call regardless).
 
@@ -732,7 +745,16 @@ async def _governed_tools_call(
     if resolved is not None:
         idempotency_key, permit_id = resolved
     else:
-        idempotency_key = client_idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
+        if not client_idempotency_key:
+            # No client key and no deterministic retry slot (read-only tool,
+            # window 0, or an unverifiable enterprise bearer). A random
+            # per-attempt key would let a lost-response retry dispatch and
+            # bill twice, so refuse before any permit, dispatch, or charge
+            # (SEL-498 / #208).
+            raise _mcp_error(
+                -32003, "idempotency_key_required", _IDEMPOTENCY_KEY_REQUIRED_DATA
+            )
+        idempotency_key = client_idempotency_key
         permit_id = permit_id or await _mint_auto_permit(
             auth=auth,
             tool_name=tool_name,

@@ -35,10 +35,12 @@ An identical retry within `MCP_UNKEYED_RETRY_WINDOW_SECONDS` (default 300) of
 the first call replays its receipt; the window slides from that first call,
 so a retry across a clock bucket edge still replays. If the stored result is
 a refunded pre-dispatch failure (nothing reached the tool), the retry runs
-again instead. Tools registered `read_only` keep a fresh key per call.
+again instead. Tools registered `read_only` get no derived key.
 Identical deliberate calls inside one window collapse into one, so send your
-own key when that matters. A window of `0` restores a fresh `mcp-auto-` key
-per call. The SDK's `invoke_tool`
+own key when that matters. The gateway never mints a random per-call key:
+an unkeyed call that gets no derived key (a `read_only` tool, a window of
+`0`, or an enterprise bearer that fails verification) is refused with
+`-32003 idempotency_key_required` before any permit, dispatch, or charge. The SDK's `invoke_tool`
 requires a key; its `"auto"` option derives one from arguments and is
 unsuitable when distinct calls can have the same arguments.
 

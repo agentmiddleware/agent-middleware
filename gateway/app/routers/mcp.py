@@ -4603,6 +4603,11 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
             )
         if resolved is not None:
             request.idempotency_key, permit_id = resolved
+        elif not request.idempotency_key:
+            # No deterministic retry slot and no client key: refuse rather
+            # than mint a random per-attempt key that would let a retry
+            # dispatch and bill twice (SEL-498 / #208).
+            raise ValueError("idempotency_key_required")
         else:
             permit_id = await _mint_auto_permit(
                 auth=request.auth,
@@ -4627,7 +4632,6 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
     except IdempotencyConflictError as exc:
         raise ValueError("idempotency_key_reused") from exc
     request.permit_id = permit_id
-    request.idempotency_key = request.idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
     return permit_id
 
 

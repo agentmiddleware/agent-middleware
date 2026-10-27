@@ -801,50 +801,59 @@ async def test_unkeyed_tools_call_retry_replays_without_second_dispatch(
         registry.unregister_local("standard-echo-retry")
 
 
+async def _ledger_debits(client, provisioned, tool):
+    ledger = await client.get(
+        f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+        headers=provisioned["agent_headers"],
+    )
+    assert ledger.status_code == 200, ledger.text
+    return [e for e in ledger.json()["entries"] if tool in e["description"]]
+
+
+def _assert_idempotency_key_required(resp):
+    assert resp.status_code == 200, resp.text
+    error = resp.json()["error"]
+    assert error["code"] == -32003
+    assert error["message"] == "idempotency_key_required"
+    assert error["data"]["reason_code"] == "idempotency_key_required"
+    assert error["data"]["remediation"]["type"] == "retry_with_idempotency_key"
+
+
 @pytest.mark.anyio
-async def test_unkeyed_retry_window_zero_restores_legacy_dispatch(
+async def test_unkeyed_call_with_window_zero_is_refused_without_dispatch(
     client, standard_mcp_enabled, clean_database, monkeypatch
 ):
-    """With the window disabled each unkeyed attempt dispatches (legacy)."""
+    """SEL-498: no retry slot and no key is refused, never a random key."""
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "MCP_UNKEYED_RETRY_WINDOW_SECONDS", 0)
     provisioned = await provision_agent_wallet(client)
     invocations: list[str] = []
-
-    def _echo(message="ok", n=0):
-        invocations.append(message)
-        return {"message": message}
-
-    registry = get_service_registry()
-    registry.register_local(
-        service_id="standard-echo-legacy",
-        name="Standard Echo Legacy",
-        description="Window disabled test tool",
-        category=ServiceCategory.AGENT_COMMS,
-        func=_echo,
-        credits_per_unit=2.0,
-        unit_name="call",
-    )
+    _register_counting_tool("standard-echo-legacy", invocations)
     headers = {**provisioned["agent_headers"], **MCP_HEADERS}
     try:
         for rid in (201, 202):
-            resp = await client.post(
-                "/mcp",
-                json=_rpc(
-                    "tools/call",
-                    request_id=rid,
-                    params={
-                        "name": "standard-echo-legacy",
-                        "arguments": {"message": "hi"},
-                    },
-                ),
-                headers=headers,
-            )
-            assert resp.status_code == 200
-        assert invocations == ["hi", "hi"]
+            resp = await _call(client, headers, "standard-echo-legacy", rid)
+            _assert_idempotency_key_required(resp)
+        assert invocations == []
+        assert await _ledger_debits(client, provisioned, "standard-echo-legacy") == []
+
+        # The remediation works: a keyed call and its keyed retry dispatch
+        # and bill exactly once.
+        keyed = {**headers, "Idempotency-Key": "sel-498-window-zero"}
+        first = await _call(client, keyed, "standard-echo-legacy", 203)
+        retry = await _call(client, keyed, "standard-echo-legacy", 204)
+        assert first.status_code == retry.status_code == 200
+        assert (
+            retry.json()["result"]["receipt"]["receipt_id"]
+            == first.json()["result"]["receipt"]["receipt_id"]
+        )
+        assert invocations == ["hi"]
+        assert (
+            len(await _ledger_debits(client, provisioned, "standard-echo-legacy")) == 1
+        )
     finally:
-        registry.unregister_local("standard-echo-legacy")
+        get_service_registry().unregister_local("standard-echo-legacy")
 
 
 def _register_counting_tool(service_id: str, invocations: list, **extra):
@@ -907,10 +916,10 @@ async def test_unkeyed_retry_straddling_window_boundary_dispatches_once(
 
 
 @pytest.mark.anyio
-async def test_unkeyed_read_only_tool_is_not_deduped(
+async def test_unkeyed_read_only_tool_is_refused_without_dispatch(
     client, standard_mcp_enabled, clean_database
 ):
-    """Codex blocking 3: only mutating tools get the deterministic key."""
+    """Read-only tools get no deterministic slot, so unkeyed calls are refused."""
     provisioned = await provision_agent_wallet(client)
     headers = {**provisioned["agent_headers"], **MCP_HEADERS}
     invocations: list[str] = []
@@ -918,10 +927,68 @@ async def test_unkeyed_read_only_tool_is_not_deduped(
     try:
         for rid in (1, 2):
             resp = await _call(client, headers, "echo-read-only", rid)
+            _assert_idempotency_key_required(resp)
+        assert invocations == []
+        assert await _ledger_debits(client, provisioned, "echo-read-only") == []
+
+        # Distinct keys are distinct reads; each dispatches (no stale replay).
+        for rid, key in ((3, "sel-498-read-a"), (4, "sel-498-read-b")):
+            resp = await _call(
+                client, {**headers, "Idempotency-Key": key}, "echo-read-only", rid
+            )
             assert resp.status_code == 200
+            assert "result" in resp.json(), resp.text
         assert invocations == ["hi", "hi"]
     finally:
         get_service_registry().unregister_local("echo-read-only")
+
+
+@pytest.mark.anyio
+async def test_demo_permit_mint_refuses_unkeyed_call_without_slot(monkeypatch):
+    """mcp.py demo path: no slot and no key raises before any permit is minted."""
+    from types import SimpleNamespace
+
+    from app.core.config import get_settings
+    from app.routers import mcp as mcp_router
+    from app.routers import mcp_standard
+
+    minted: list[str] = []
+
+    async def _no_slot(**_kwargs):
+        return None
+
+    async def _mint(**_kwargs):
+        minted.append("permit")
+        return "permit-should-not-exist"
+
+    async def _no_approval(_wallet_id):
+        return False
+
+    monkeypatch.setattr(mcp_standard, "_resolve_unkeyed_retry", _no_slot)
+    monkeypatch.setattr(mcp_standard, "_mint_auto_permit", _mint)
+    monkeypatch.setattr(mcp_router, "wallet_human_approval_required", _no_approval)
+    monkeypatch.setattr(get_settings(), "DEMO_ALLOWED_TOOLS", "partner.echo")
+    monkeypatch.setattr(mcp_router, "_ensure_local_mcp_tools_registered", lambda: None)
+    registry = get_service_registry()
+    existed = registry.get_local("partner.echo") is not None
+    if not existed:
+        _register_counting_tool("partner.echo", [])
+    request = SimpleNamespace(
+        auth=SimpleNamespace(tenant="demo", wallet_id="w-demo", allowed_tools=None),
+        wallet_id="w-demo",
+        permit_id=None,
+        tool_name="partner.echo",
+        arguments={"message": "hi"},
+        idempotency_key=None,
+    )
+    try:
+        with pytest.raises(ValueError, match="^idempotency_key_required$"):
+            await mcp_router._maybe_mint_demo_permit(request)
+        assert minted == []
+        assert request.idempotency_key is None
+    finally:
+        if not existed:
+            registry.unregister_local("partner.echo")
 
 
 def test_dogfood_notes_count_is_declared_read_only(monkeypatch):

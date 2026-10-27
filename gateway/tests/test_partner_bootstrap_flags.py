@@ -151,8 +151,11 @@ def test_bounds_default_to_absent(monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["--json", None])
-def test_cli_output_modes_never_print_full_key(monkeypatch, capsys, mode):
-    extra = [mode] if mode else []
+def test_cli_output_modes_never_print_full_key(monkeypatch, capsys, tmp_path, mode):
+    key_path = tmp_path / f"{uuid.uuid4()}.key"
+    extra = ["--key-file", str(key_path)]
+    if mode:
+        extra.append(mode)
     assert _run_main(monkeypatch, extra) == 0
     captured = capsys.readouterr()
     combined = captured.out + captured.err
@@ -163,7 +166,7 @@ def test_cli_output_modes_never_print_full_key(monkeypatch, capsys, mode):
         payload = json.loads(captured.out)
         assert "api_key" not in payload
         assert "api_key_masked" not in payload
-        assert "key_file" not in payload
+        assert payload["key_file"] == str(key_path)
         assert payload["key_id"] == KEY_ID
         assert payload["wallet_id"] == WAL_AGENT
         assert payload["key_prefix"] == KEY_PREFIX
@@ -172,6 +175,7 @@ def test_cli_output_modes_never_print_full_key(monkeypatch, capsys, mode):
         assert f"key_id:             {KEY_ID}\n" in captured.out
         assert f"key_prefix:         {KEY_PREFIX}\n" in captured.out
         assert "api_key" not in captured.out
+        assert f"key_file:           {key_path}\n" in captured.out
 
 
 @pytest.mark.parametrize("mode", ["--key-only", "--json", None])
@@ -204,17 +208,18 @@ def test_cli_key_file_writes_0600_and_omits_full_key_from_stdio(
 
 def test_key_file_refuses_existing_path(monkeypatch, capsys, tmp_path):
     key_path = tmp_path / "minted.key"
-    key_path.write_text("preexisting", encoding="utf-8")
+    preexisting = f"preexisting-{secrets.token_urlsafe(16)}"
+    key_path.write_text(preexisting, encoding="utf-8")
     with pytest.raises(SystemExit, match="already exists"):
         _run_main(monkeypatch, ["--key-file", str(key_path)])
     captured = capsys.readouterr()
     assert MINTED_KEY not in captured.out + captured.err
-    assert key_path.read_text(encoding="utf-8") == "preexisting"
+    assert key_path.read_text(encoding="utf-8") == preexisting
 
 
-# Fixed, obviously synthetic values for the reserve/mint/write tests below.
-FIXED_KEY = "fixed-test-key-value-001"
-FIXED_BODY_SENTINEL = "fixed-sentinel-response-body-001"
+# Runtime-generated values for the reserve/mint/write tests below.
+WRITE_KEY = secrets.token_urlsafe(32)
+BODY_SENTINEL = secrets.token_urlsafe(32)
 
 
 def test_reserve_key_file_uses_exclusive_0600_create(monkeypatch, tmp_path):
@@ -236,7 +241,8 @@ def test_reserve_key_file_uses_exclusive_0600_create(monkeypatch, tmp_path):
 
 def test_existing_key_file_skips_mint(monkeypatch, tmp_path):
     key_path = tmp_path / "minted.key"
-    key_path.write_text("fixed-preexisting-content", encoding="utf-8")
+    preexisting_content = f"preexisting-{secrets.token_urlsafe(16)}"
+    key_path.write_text(preexisting_content, encoding="utf-8")
 
     def _no_mint(**kwargs):
         raise AssertionError("provision must not run when --key-file exists")
@@ -246,19 +252,20 @@ def test_existing_key_file_skips_mint(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", _cli_args("--key-file", str(key_path)))
     with pytest.raises(SystemExit, match="already exists"):
         bootstrap.main()
-    assert key_path.read_text(encoding="utf-8") == "fixed-preexisting-content"
+    assert key_path.read_text(encoding="utf-8") == preexisting_content
 
 
 def test_failed_mint_removes_reserved_key_file(monkeypatch, tmp_path):
     key_path = tmp_path / "minted.key"
+    failure_marker = f"mint-failure-{uuid.uuid4().hex}"
 
     def _fail(**kwargs):
-        raise SystemExit("error: fixed-mint-failure")
+        raise SystemExit(f"error: {failure_marker}")
 
     monkeypatch.setenv("BOOTSTRAP_KEY", BOOTSTRAP_SECRET)
     monkeypatch.setattr(bootstrap, "provision", _fail)
     monkeypatch.setattr(sys, "argv", _cli_args("--key-file", str(key_path)))
-    with pytest.raises(SystemExit, match="fixed-mint-failure"):
+    with pytest.raises(SystemExit, match=failure_marker):
         bootstrap.main()
     assert not key_path.exists()
 
@@ -281,8 +288,8 @@ def test_write_key_fd_handles_short_writes_and_fsyncs(monkeypatch, tmp_path):
 
     monkeypatch.setattr(os, "write", _short_write)
     monkeypatch.setattr(os, "fsync", _record_fsync)
-    bootstrap._write_key_fd(fd, str(key_path), FIXED_KEY)
-    assert key_path.read_text(encoding="utf-8") == FIXED_KEY
+    bootstrap._write_key_fd(fd, str(key_path), WRITE_KEY)
+    assert key_path.read_text(encoding="utf-8") == WRITE_KEY
     assert fsynced == [fd]
     assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
 
@@ -292,14 +299,16 @@ def test_write_key_fd_failure_removes_file_and_closes_fd(monkeypatch, tmp_path):
     fd = bootstrap._reserve_key_file(str(key_path))
     real_write = os.write
 
+    write_failure = f"write-failure-{uuid.uuid4().hex}"
+
     def _fail_write(target_fd, data):
         if target_fd == fd:
-            raise OSError("fixed-write-failure")
+            raise OSError(write_failure)
         return real_write(target_fd, data)
 
     monkeypatch.setattr(os, "write", _fail_write)
-    with pytest.raises(SystemExit, match="fixed-write-failure"):
-        bootstrap._write_key_fd(fd, str(key_path), FIXED_KEY)
+    with pytest.raises(SystemExit, match=write_failure):
+        bootstrap._write_key_fd(fd, str(key_path), WRITE_KEY)
     assert not key_path.exists()
     with pytest.raises(OSError, match="Bad file descriptor"):
         os.fstat(fd)
@@ -308,17 +317,18 @@ def test_write_key_fd_failure_removes_file_and_closes_fd(monkeypatch, tmp_path):
 def test_post_error_omits_response_body():
     class _ErrorResponse:
         status_code = 502
-        text = FIXED_BODY_SENTINEL
+        text = BODY_SENTINEL
 
     class _ErrorClient:
         def post(self, path, json):
             return _ErrorResponse()
 
+    key_name = f"key-{uuid.uuid4()}"
     with pytest.raises(SystemExit) as excinfo:
-        bootstrap._post(_ErrorClient(), "/v1/api-keys", {"key_name": "fixed-name"})
+        bootstrap._post(_ErrorClient(), "/v1/api-keys", {"key_name": key_name})
     message = str(excinfo.value)
     assert "502" in message
-    assert FIXED_BODY_SENTINEL not in message
+    assert BODY_SENTINEL not in message
 
 
 def test_key_only_without_key_file_is_argparse_error(monkeypatch, capsys):
@@ -332,6 +342,87 @@ def test_key_only_without_key_file_is_argparse_error(monkeypatch, capsys):
         bootstrap.main()
     assert excinfo.value.code == 2
     assert "requires --key-file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode", ["--json", None])
+def test_missing_key_file_exits_and_skips_mint(monkeypatch, capsys, mode):
+    bootstrap_secret = secrets.token_urlsafe(32)
+    sponsor_name = f"sponsor-{uuid.uuid4()}"
+    agent_id = f"agent-{uuid.uuid4()}"
+    key_name = f"key-{uuid.uuid4()}"
+    argv = [
+        "partner_api_key_bootstrap.py",
+        "--api-url",
+        "https://api.example.test",
+        "--sponsor-name",
+        sponsor_name,
+        "--agent-id",
+        agent_id,
+        "--key-name",
+        key_name,
+    ]
+    if mode:
+        argv.append(mode)
+
+    def _no_mint(**kwargs):
+        raise AssertionError("provision must not run without --key-file")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", bootstrap_secret)
+    monkeypatch.setattr(bootstrap, "provision", _no_mint)
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as excinfo:
+        bootstrap.main()
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "--key-file is required" in err
+    assert bootstrap_secret not in err
+
+
+def test_write_failure_after_mint_prints_key_id_not_secret(
+    monkeypatch, capsys, tmp_path
+):
+    bootstrap_secret = secrets.token_urlsafe(32)
+    sponsor_name = f"sponsor-{uuid.uuid4()}"
+    agent_id = f"agent-{uuid.uuid4()}"
+    key_name = f"key-{uuid.uuid4()}"
+    key_path = tmp_path / f"{uuid.uuid4()}.key"
+    failure_marker = f"write-failure-{uuid.uuid4().hex}"
+
+    def _fail_write(fd, path, api_key):
+        raise SystemExit(f"error: {failure_marker}")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", bootstrap_secret)
+    monkeypatch.setattr(bootstrap.httpx, "Client", _FakeClient)
+    monkeypatch.setattr(bootstrap, "_write_key_fd", _fail_write)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "partner_api_key_bootstrap.py",
+            "--api-url",
+            "https://api.example.test",
+            "--sponsor-name",
+            sponsor_name,
+            "--agent-id",
+            agent_id,
+            "--key-name",
+            key_name,
+            "--key-file",
+            str(key_path),
+        ],
+    )
+    with pytest.raises(SystemExit, match=failure_marker):
+        bootstrap.main()
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert KEY_ID in captured.err
+    assert agent_id in captured.err
+    assert "active" in captured.err
+    assert "revoke" in captured.err.lower()
+    assert MINTED_KEY not in combined
+    assert MINTED_KEY[:8] not in combined
+    assert MINTED_KEY[-4:] not in combined
+    assert bootstrap_secret not in combined
 
 
 def test_bootstrap_doc_creates_config_dir_before_key_file():

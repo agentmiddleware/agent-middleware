@@ -285,9 +285,10 @@ def main() -> int:
         default=None,
         metavar="PATH",
         help=(
-            "Write the minted api_key to PATH (created mode 0600 with "
+            "Required: write the minted api_key to PATH (created mode 0600 with "
             "O_CREAT|O_EXCL|O_WRONLY; refused if PATH already exists). "
-            "Stdout prints PATH in --key-only mode, and JSON includes key_file."
+            "Stdout prints PATH in --key-only mode, and JSON includes key_file. "
+            "The minted key is never printed."
         ),
     )
     args = parser.parse_args()
@@ -303,6 +304,9 @@ def main() -> int:
             "error: --agent-wallet-id resume requires --sponsor-wallet-id "
             "(for operator record-keeping)"
         )
+
+    if not args.key_file:
+        parser.error("--key-file is required (the minted key is never printed)")
 
     bootstrap_key = _bootstrap_key(args.bootstrap_key)
 
@@ -351,7 +355,16 @@ def main() -> int:
     key_file = args.key_file
     if key_file:
         assert key_fd is not None  # reserved above whenever --key-file is given
-        _write_key_fd(key_fd, key_file, api_key)
+        try:
+            _write_key_fd(key_fd, key_file, api_key)
+        except SystemExit:
+            print(
+                f"error: failed to write --key-file {key_file} for "
+                f"key_id={key_id} agent_id={agent_id}; the key is active "
+                "and should be revoked",
+                file=sys.stderr,
+            )
+            raise
 
     if args.key_only:
         print(key_file)

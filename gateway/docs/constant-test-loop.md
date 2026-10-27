@@ -118,8 +118,7 @@ BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
   --budget-credits 5000 \
   --key-only \
   --key-file "$KEY_FILE"
-gh secret set CI_SMOKE_AGENT_KEY --repo agentmiddleware/agent-middleware < "$KEY_FILE"
-rm -f "$KEY_FILE"
+gh secret set CI_SMOKE_AGENT_KEY --repo agentmiddleware/agent-middleware < "$KEY_FILE" && rm -f "$KEY_FILE"
 ```
 
 ### Security Properties

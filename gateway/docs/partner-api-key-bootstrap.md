@@ -24,7 +24,9 @@ mkdir -p -m 700 ~/.config/amw
 
 # One-shot provisioner. The minted secret is never printed; it is written
 # to --key-file (created mode 0600, refused if the path already exists).
-# Without --key-file, stdout shows only non-secret identifiers (key id).
+# --key-file is required: stdout shows only non-secret identifiers (key id).
+# Parent dir must exist before --key-file is written.
+install -d -m 700 "$HOME/.config/amw"
 uv run --with-requirements requirements.txt \
   python scripts/partner_api_key_bootstrap.py \
   --api-url "$API_URL" \

@@ -31,15 +31,6 @@ TOOL = "jev-echo"
 REAL_POST = jev_guard._post
 
 
-def _without_request_id(payload):
-    """Drop the per-response request_id; the rest must replay unchanged."""
-    if isinstance(payload, dict):
-        return {
-            k: _without_request_id(v) for k, v in payload.items() if k != "request_id"
-        }
-    return payload
-
-
 def _response(*, injected=0.0):
     answers = {}
     for name, question in jev_guard.QUESTIONS.items():
@@ -342,9 +333,7 @@ async def test_enforce_uses_existing_approval_gate(
         receipt = response.json()["detail"]["receipt"]
         assert receipt["reason_code"] == "human_approval_rejected"
         await _assert_metadata(receipt, agent["agent_wallet_id"], verdict="escalate")
-        assert _without_request_id(
-            (await _invoke(client, agent, permit)).json()
-        ) == _without_request_id(response.json())
+        assert (await _invoke(client, agent, permit)).json() == response.json()
         assert len(calls) == len(mock_jev.calls) == 1
         assert registered_tool == []
     else:
@@ -503,8 +492,7 @@ async def test_enforce_ungoverned_denies(
     agent = await provision_agent_wallet(client)
     response = await _invoke(client, agent, None)
     assert response.status_code == 403, response.text
-    assert response.json()["detail"]["error"] == "jev_risk_review_required"
-    assert response.json()["detail"]["request_id"]
+    assert response.json()["detail"] == "jev_risk_review_required"
     assert registered_tool == []
     assert len(mock_jev.calls) == 1
 
@@ -810,7 +798,7 @@ async def test_upstream_terminal_metadata(
         )
         await _assert_metadata(receipt, agent["agent_wallet_id"], verdict="escalate")
         replay = await _invoke(client, agent, permit)
-        assert _without_request_id(replay.json()) == _without_request_id(payload)
+        assert replay.json() == payload
         assert len(mock_jev.calls) == 1
         assert executor.dispatch_count == (
             0 if upstream_mode == "pre_dispatch_failure" else 1

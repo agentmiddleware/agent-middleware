@@ -27,7 +27,7 @@ from dataclasses import asdict
 from decimal import Decimal
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
@@ -178,12 +178,16 @@ class GovernedToolError(RuntimeError):
         extra_data: dict[str, Any] | None = None,
         status_code: int = 500,
         jsonrpc_code: int = -32603,
+        tool_originated: bool = False,
     ) -> None:
         super().__init__(reason)
         self.receipt = receipt
         self.extra_data = extra_data or {}
         self.status_code = status_code
         self.jsonrpc_code = jsonrpc_code
+        # True when ``reason`` is a tool's own exception text rather than a
+        # gateway-chosen reason code; public surfaces must not echo it.
+        self.tool_originated = tool_originated
 
 
 class ToolPermissionDenied(PermissionError):
@@ -2889,6 +2893,7 @@ async def _execute_registered_tool_inner(
                 receipt=receipt_payload,
                 status_code=500,
                 jsonrpc_code=-32603,
+                tool_originated=True,
             ) from exc
         raise ToolExecutionError(str(exc)) from exc
 
@@ -4294,6 +4299,10 @@ async def _raise_replayed_error(replay: Any) -> None:
         extra_data=extra_data,
         status_code=replay.status_code,
         jsonrpc_code=_status_to_jsonrpc_code(replay.status_code, reason),
+        tool_originated=(
+            isinstance(receipt, dict)
+            and receipt.get("reason_code") == "tool_execution_failed"
+        ),
     )
 
 
@@ -4624,11 +4633,12 @@ async def _handle_tools_call(
 
 # Public error text for the legacy HTTP invoke route (follow-up to #242's
 # JSON-RPC fix). Exception text is logged with a request id and never copied
-# into the response; structured detail fields and status codes are unchanged.
+# into the response body. The request id travels in the X-Request-ID response
+# header so an idempotent replay body stays byte-identical to the original.
 _INVOKE_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _INVOKE_SURFACE = "/mcp/tools/{service_id}/invoke"
-_INVOKE_REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
-# Fixed reason strings the pipeline raises on purpose; echoed verbatim.
+# Gateway-chosen reason codes echoed verbatim. Anything else, including any
+# snake_case text a tool raised, maps to a canned message.
 _INVOKE_PUBLIC_REASONS: frozenset[str] = frozenset(
     {
         "Missing wallet_id",
@@ -4636,16 +4646,51 @@ _INVOKE_PUBLIC_REASONS: frozenset[str] = frozenset(
         "idempotency_in_progress",
         "invalid_idempotency_key",
         "permit_required",
-        "quote_already_consumed",
         "human_approval_pending",
         "human_approval_unavailable",
+        "human_approval_request_mismatch",
+        "approval_window_elapsed",
         "ledger_write_contended",
         "audit_chain_head_contention",
         "receipt_write_contended",
         "permit_write_contended",
+        "preacceptance_write_contended",
         "tool_execution_failed",
+        "quote_not_found",
+        "quote_wallet_mismatch",
+        "quote_tool_mismatch",
+        "quote_expired",
+        "quote_already_consumed",
+        "jev_risk_review_required",
+        "duplicate_request_new_key",
+        "action_permit_required",
+        "action_quote_unsupported",
+        "action_tool_binding_required",
+        "key_tool_not_allowed",
+        "demo_tool_not_allowed",
+        "anomalous_spend",
+        "iga_no_matching_role",
+        "insufficient_funds",
+        "wallet_frozen",
+        "wallet_expired",
+        "wallet_not_found",
+        "wallet_access_denied",
+        "signing_key_unavailable",
+        "dispatch_attempt_not_found",
+        "refund_failed",
+        "refund_reconciliation_failed",
+        "refund_reconciliation_resolution_invalid",
+        "refund_reconciliation_write_contended",
+        "upstream_pre_dispatch_failed",
+        "upstream_prepare_failed",
+        "upstream_returned_error",
+        "x402_settled_unrecoverable_replay",
+        "x402_settlement_needs_review",
     }
 )
+# extra_data keys a GovernedToolError may expose on this route. upstream_result
+# is the raw upstream payload and stays server-side.
+_INVOKE_PUBLIC_EXTRA_KEYS: tuple[str, ...] = ("dispatch", "refund_reconciliation")
 _INVOKE_PUBLIC_MESSAGE_BY_TYPE: tuple[tuple[type[BaseException], str], ...] = (
     (HumanApprovalPendingSignal, "human_approval_pending"),
     (IdempotencyInProgressError, "idempotency_in_progress"),
@@ -4670,26 +4715,24 @@ def _invoke_request_id(request: Request) -> str:
 
 def _invoke_public_message(exc: BaseException) -> str:
     """Canned client message for ``exc`` on the invoke route. Never ``str(exc)``."""
+    if isinstance(exc, GovernedToolError) and exc.tool_originated:
+        return "tool_execution_failed"
     text = str(exc)
     if text in REFUSAL_REASON_CODES or text in _INVOKE_PUBLIC_REASONS:
         return text
     for prefix in ("Tool not found", "Tool not executable", "refund_failed"):
         if text.startswith(prefix):
             return prefix
-    # Gateway-raised refusals carry a snake_case reason code (quote_expired,
-    # jev_risk_review_required, ...). That code is the public contract, not
-    # exception text, so it passes through. Free text from these types and
-    # anything a tool raised falls back to the canned table below.
-    if isinstance(exc, (GovernedToolError, PermissionError)) and (
-        _INVOKE_REASON_CODE_RE.fullmatch(text)
-    ):
-        return text
     for exc_type, message in _INVOKE_PUBLIC_MESSAGE_BY_TYPE:
         if isinstance(exc, exc_type):
             return message
     if isinstance(exc, GovernedToolError):
         return "tool_call_refused"
     return "Invalid request"
+
+
+def _invoke_public_extra_data(exc: GovernedToolError) -> dict[str, Any]:
+    return {k: exc.extra_data[k] for k in _INVOKE_PUBLIC_EXTRA_KEYS if k in exc.extra_data}
 
 
 def _invoke_log_error(exc: BaseException, request_id: str) -> str:
@@ -4721,6 +4764,7 @@ async def invoke_tool(
     service_id: str,
     request: ToolCallRequest,
     http_request: Request,
+    http_response: Response,
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ) -> ToolCallResponse:
@@ -4770,11 +4814,8 @@ async def invoke_tool(
         rid = _invoke_request_id(http_request)
         raise HTTPException(
             status_code=400,
-            detail={
-                "message": _invoke_log_error(exc, rid),
-                **exc.as_error_data(),
-                "request_id": rid,
-            },
+            detail={"message": _invoke_log_error(exc, rid), **exc.as_error_data()},
+            headers={"X-Request-ID": rid},
         ) from exc
 
     mcp_payload = {
@@ -4809,8 +4850,7 @@ async def invoke_tool(
         detail: dict[str, Any] = {"error": _invoke_log_error(exc, rid)}
         if exc.data:
             detail["approval"] = exc.data
-        detail["request_id"] = rid
-        raise HTTPException(status_code=exc.status_code, detail=detail)
+        raise HTTPException(status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid})
     except (
         IdempotencyInProgressError,
         LedgerWriteContendedError,
@@ -4845,7 +4885,8 @@ async def invoke_tool(
         rid = _invoke_request_id(http_request)
         raise HTTPException(
             status_code=409,
-            detail={"error": _invoke_log_error(exc, rid), "request_id": rid},
+            detail={"error": _invoke_log_error(exc, rid)},
+            headers={"X-Request-ID": rid},
         ) from exc
     except TerminalRecordContendedError as exc:
         # Stays 500 -- the server did fail to record the call, and this surface
@@ -4864,31 +4905,29 @@ async def invoke_tool(
             detail["receipt"] = exc.receipt
         if exc.details:
             detail["details"] = exc.details
-        detail["request_id"] = rid
-        raise HTTPException(status_code=403, detail=detail)
+        raise HTTPException(status_code=403, detail=detail, headers={"X-Request-ID": rid})
     except GovernedToolError as exc:
         rid = _invoke_request_id(http_request)
         detail = {"error": _invoke_log_error(exc, rid)}
         if exc.receipt:
             detail["receipt"] = exc.receipt
-        detail.update(exc.extra_data)
-        detail["request_id"] = rid
-        raise HTTPException(status_code=exc.status_code, detail=detail)
+        detail.update(_invoke_public_extra_data(exc))
+        raise HTTPException(status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid})
     except PermissionError as exc:
         rid = _invoke_request_id(http_request)
         raise HTTPException(
-            status_code=403,
-            detail={"error": _invoke_log_error(exc, rid), "request_id": rid},
+            status_code=403, detail=_invoke_log_error(exc, rid), headers={"X-Request-ID": rid}
         )
     except ToolExecutionError as exc:
         # Legacy (unpermitted) tool failure: compensation is complete. The
         # tool's own error stays in the server log under the request id.
         rid = _invoke_request_id(http_request)
         _invoke_log_error(exc, rid)
+        http_response.headers["X-Request-ID"] = rid
         public = "tool_execution_failed"
         return ToolCallResponse(
-            content=[{"type": "text", "text": f"Error: {public} (request_id={rid})"}],
-            structuredContent={"error": public, "request_id": rid},
+            content=[{"type": "text", "text": f"Error: {public}"}],
+            structuredContent={"error": public},
             isError=True,
         )
     except ValueError as exc:
@@ -4911,9 +4950,7 @@ async def invoke_tool(
             status = 501
         else:
             status = 400
-        raise HTTPException(
-            status_code=status, detail={"error": public, "request_id": rid}
-        )
+        raise HTTPException(status_code=status, detail=public, headers={"X-Request-ID": rid})
     except Exception as exc:
         return _internal_error_tool_result(
             exc, surface="/mcp/tools/{service_id}/invoke"

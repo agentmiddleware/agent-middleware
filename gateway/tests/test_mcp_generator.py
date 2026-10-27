@@ -953,8 +953,8 @@ class TestMcpInvokeRoute:
             assert payload["isError"] is True
             assert payload["code"] == "tool_execution_failed"
             # The tool's own exception text stays in the server log.
-            assert "insufficient_funds" not in payload["content"][0]["text"]
-            assert payload["structuredContent"]["request_id"]
+            assert "insufficient_funds" not in response.text
+            assert payload["content"][0]["text"] == "Error: tool_execution_failed"
         finally:
             registry.unregister_local("http-value-error-echo")
 

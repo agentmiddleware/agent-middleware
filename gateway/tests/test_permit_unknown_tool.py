@@ -372,7 +372,7 @@ async def test_denials_do_not_reveal_registration(
         )
         quote_id = quote.quote_id
     elif case == "invalid_quote":
-        quote_id = "quote-does-not-exist"
+        quote_id = f"quote-{uuid4()}"
 
     errors = []
     audits = []
@@ -382,7 +382,7 @@ async def test_denials_do_not_reveal_registration(
         sync_dogfood_tool_registration()
         assert (get_service_registry().get_local(UNKNOWN) is not None) == registered
 
-        request_id = f"registration-{case}-{registered}"
+        request_id = f"registration-{case}-{registered}-{uuid4()}"
         idempotency_key = None if case == "missing_key" else request_id
         if transport == "jsonrpc":
             body = _jsonrpc_body(
@@ -755,18 +755,21 @@ async def test_item2_denial_receipt_identical_for_registry_state(
 @pytest.mark.anyio
 @pytest.mark.usefixtures("strict_trust_mode")
 @pytest.mark.parametrize(
-    ("idempotency", "quote_id", "first_gate"),
+    ("idempotency", "bogus_quote", "first_gate"),
     [
-        (False, None, "idempotency_key_required"),
-        (True, "quote-does-not-exist", "quote_not_found"),
+        (False, False, "idempotency_key_required"),
+        (True, True, "quote_not_found"),
     ],
     ids=["no-idempotency-key", "bogus-quote"],
 )
 async def test_item3_same_gate_fires_first_for_registry_state(
-    client, clean_database, monkeypatch, idempotency, quote_id, first_gate
+    client, clean_database, monkeypatch, idempotency, bogus_quote, first_gate
 ):
     results = await _denial_for_each_registry_state(
-        client, monkeypatch, idempotency=idempotency, quote_id=quote_id
+        client,
+        monkeypatch,
+        idempotency=idempotency,
+        quote_id=f"quote-{uuid4()}" if bogus_quote else None,
     )
     for registered in (True, False):
         error, audit_error, _ = results[registered]

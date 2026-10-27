@@ -2725,32 +2725,53 @@ async def test_reservation_charge_expr_counts_orphan_receipts_in_postgres(
                     issued_at=base.issued_at,
                 )
             )
-            await session.flush()
-            for receipt_permit_id, charged in (
-                (permit_id, Decimal("3")),
-                (other_permit_id, Decimal("10")),
-            ):
-                session.add(
-                    ReceiptModel(
-                        receipt_id=f"rcpt-orphan-{uuid.uuid4().hex[:16]}",
-                        permit_id=receipt_permit_id,
-                        wallet_id=seeded_permit.wallet_id,
-                        tool=seeded_permit.tool_name,
-                        request_hash=sha256_hex({"orphan": receipt_permit_id}),
-                        credits_authorized=charged,
-                        credits_charged=charged,
-                        outcome="success",
-                        signature="test-signature",
-                        signature_key_id=seeded_permit.signing_key_id,
-                    )
-                )
 
+    # Real receipts from the receipt service: one charged against this permit
+    # (the orphan) and one against the other permit, which a correctly
+    # correlated subquery must exclude.
+    receipt_service = get_receipt_service()
+    record_ids: list[str] = []
     try:
+        for receipt_permit_id, charged in (
+            (permit_id, Decimal("3")),
+            (other_permit_id, Decimal("10")),
+        ):
+            request_payload = {"message": uuid.uuid4().hex}
+            record_id = await _create_receipt_idempotency_record(
+                seeded_permit, request_payload=request_payload
+            )
+            record_ids.append(record_id)
+            kwargs = _receipt_kwargs(
+                seeded_permit,
+                record_id=record_id,
+                request_payload=request_payload,
+                response_payload={"content": [{"type": "text", "text": "ok"}]},
+            )
+            kwargs.update(
+                permit_id=receipt_permit_id,
+                credits_authorized=charged,
+                credits_charged=charged,
+                outcome="success",
+            )
+            await receipt_service.create_receipt(**kwargs)
+
         await _assert_orphan_reservations(permit_id)
         # The other permit's receipt was never counted against this one,
         # and the other permit itself was never touched.
         assert await _permit_spent(other_permit_id) == Decimal("0")
+
+        # Disabled branch with receipts (10) above spent (0): the reservation
+        # is admitted and stores only the amount, never absorbing the excess.
+        assert (
+            await _guarded_reservation_rowcount(
+                other_permit_id, Decimal("1"), count_orphan_receipts=False
+            )
+            == 1
+        )
+        assert await _permit_spent(other_permit_id) == Decimal("1")
     finally:
+        for record_id in record_ids:
+            await _delete_receipt_idempotency_record(record_id)
         async with factory() as session:
             async with session.begin():
                 await session.execute(

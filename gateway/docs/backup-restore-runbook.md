@@ -166,17 +166,33 @@ scripts. Use a libpq URL (`postgresql://` or `postgres://`). Do not pass
 # defined in the repository.
 pg_dump --format=custom --no-owner --file=DUMP_FILE "$PGDUMP_URL"
 
-# Generic restore onto an existing database. This command is not defined in
-# the repository.
-pg_restore --clean --if-exists --no-owner --dbname="$PGDUMP_URL" DUMP_FILE
+# Generic restore into an empty (newly created) database. This command is
+# not defined in the repository. --exit-on-error stops at the first failure.
+pg_restore --exit-on-error --no-owner --dbname="$PGDUMP_URL" DUMP_FILE
 ```
+
+Restore into an empty, newly created database, not over the existing one.
+`pg_restore --clean` drops only the objects the archive will restore, so
+tables added by later migrations survive. For example, a dump taken at 043
+restored over a 044 database leaves `receipt_resolutions` and
+`resolution_chain_heads`, whose foreign keys reference `receipts`, `wallets`
+and `signing_keys` (`gateway/migrations/versions/044_receipt_resolutions.py`).
+Those dependencies break the restore, and the leftover tables block a later
+044 upgrade from creating them. Treat any restore error as a failed restore
+and do not continue to migrations or startup.
 
 Plain-SQL equivalent, also not defined in this repository:
 
 ```bash
 pg_dump --format=plain --no-owner --file=DUMP_FILE.sql "$PGDUMP_URL"
-psql "$PGDUMP_URL" --file=DUMP_FILE.sql
+# Empty target database only; stop on the first error.
+psql "$PGDUMP_URL" --set=ON_ERROR_STOP=1 --single-transaction --file=DUMP_FILE.sql
 ```
+
+A plain-SQL dump has no cleanup commands. Against an existing database it
+fails on existing tables and primary keys and leaves rows written after the
+backup in place. Without `ON_ERROR_STOP=1`, psql continues after errors and
+can exit as if it succeeded. Use it only on an empty, newly created database.
 
 Take the dump before `alembic upgrade head` or before a deploy with
 `RUN_MIGRATIONS_ON_START=true`. Rehearse restore on disposable PostgreSQL
@@ -334,10 +350,15 @@ agent-middleware-api chain lacks this repo's 044-046 objects until
 This repository does not define the restore command. After a dump taken with
 the generic `pg_dump` template above:
 
-1. Keep serving workers off, or keep them on a qualified image that matches
-   the schema you are restoring to (rollout rollback sections below).
-2. Restore with the generic `pg_restore` (or `psql`) template onto the target
-   database.
+1. Stop all writers before restoring: stop admitting requests, drain
+   in-flight work, and stop serving workers and background jobs. Keep them
+   stopped until the restore and the checks below are complete. Writes
+   accepted during a restore can be lost, and a governed MCP call can reach
+   the upstream while its ledger, receipt or idempotency records are being
+   replaced (`gateway/docs/partner-first-tool-runbook.md` relies on those
+   idempotency records to stop a repeated dispatch).
+2. Restore with the generic `pg_restore` (or `psql`) template into an empty,
+   newly created database. Stop if the restore reports any error.
 3. If the restored stamp is behind the packaged head of the image you will
    run, apply `alembic upgrade head` with that image's migrations
    (`gateway/app/db/database.py` stale-revision error).

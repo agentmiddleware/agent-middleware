@@ -211,7 +211,7 @@ async def test_rest_unregistered_tool_outside_permit_is_403_with_receipt(
             "mcp_context": {
                 "wallet_id": provisioned["agent_wallet_id"],
                 "permit_id": permit["permit_id"],
-                "idempotency_key": "unknown-tool-permit-rest-idem",
+                "idempotency_key": f"unknown-tool-permit-rest-idem-{uuid4()}",
             },
         },
         headers=provisioned["agent_headers"],
@@ -367,7 +367,7 @@ async def test_foreign_wallet_permit_does_not_leak_allowlist(client, clean_datab
     )
     attacker = await provision_agent_wallet(client)
     errors = []
-    for i, permit in enumerate((names_unknown, names_other)):
+    for permit in (names_unknown, names_other):
         resp = await client.post(
             "/mcp/messages",
             json=_jsonrpc_body(
@@ -489,3 +489,34 @@ async def test_bad_signature_rejected_before_allowlist_is_read(
     assert ALLOWED not in str(error)
     if action:
         assert await _receipt_count(provisioned["agent_wallet_id"]) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_bad_signature_rejected_before_any_permit_field(client, clean_database):
+    """The signature is checked before status, expiry or binding are read.
+
+    A forged row that is also marked revoked must still be refused as
+    permit_signature_invalid, not answered from its unsigned status.
+    """
+    provisioned, permit = await _permit_for_allowed_tool(client)
+    await _forge_signature(permit["permit_id"])
+    async with get_session_factory()() as session:
+        model = await session.get(PermitModel, permit["permit_id"])
+        model.status = "revoked"
+        await session.commit()
+    resp = await client.post(
+        "/mcp/messages",
+        json=_jsonrpc_body(
+            tool_name=UNKNOWN,
+            wallet_id=provisioned["agent_wallet_id"],
+            request_id=f"forged-revoked-{uuid4()}",
+            permit_id=permit["permit_id"],
+            idempotency_key=f"forged-revoked-idem-{uuid4()}",
+        ),
+        headers=provisioned["agent_headers"],
+    )
+    error = resp.json()["error"]
+    assert error["code"] == -32003
+    assert error["message"] == "permit_signature_invalid"
+    assert "allowed_tools" not in str(error)

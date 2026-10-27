@@ -22,6 +22,7 @@ from app.schemas.trust import PermitCreateRequest
 from app.services.permits import get_permit_service
 from app.services.service_registry import get_service_registry
 from tests.test_trust_helpers import (
+    resign_permit_model,
     BOOTSTRAP_HEADERS,
     provision_agent_wallet,
 )
@@ -1057,6 +1058,7 @@ async def test_max_calls_fractional_limit_fails_closed(client, clean_database):
             model = await session.get(PermitModel, permit_id)
             assert model is not None
             model.max_calls_per_tool_json = json.dumps({tool_name: 2.5})
+            await resign_permit_model(model)
             session.add(model)
             await session.commit()
 

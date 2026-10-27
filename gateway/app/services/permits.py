@@ -952,6 +952,18 @@ class PermitService:
         # reported as allowed and later subtracted from spent_credits.
         if not _storable_reservation_amount(estimated_credits):
             return PermitValidation(False, "permit_credits_invalid", model)
+        # Verify the signature before reading any permit content. Every check
+        # below reads permit fields (status, binding, allowed_tools, scopes,
+        # budgets) and some echo them back in denial details, so a forged or
+        # tampered row must be rejected before any of it is trusted or
+        # disclosed.
+        if not await self.verify_signature(model, session=session):
+            return PermitValidation(
+                False,
+                "permit_signature_invalid",
+                model,
+                {"key_id": model.key_id},
+            )
         now = utc_now()
         if model.status != "active":
             return PermitValidation(
@@ -987,17 +999,6 @@ class PermitService:
         if model.subject_key_id and model.subject_key_id != key_id:
             return PermitValidation(
                 False, "permit_key_mismatch", model, {"bound_to": "subject_key_id"}
-            )
-        # Verify the signature before reading any permit content. Every check
-        # below reads signed fields (allowed_tools, scopes, budgets) and some
-        # echo them back in denial details, so a forged or tampered row must
-        # be rejected before its allowlist is trusted or disclosed.
-        if not await self.verify_signature(model, session=session):
-            return PermitValidation(
-                False,
-                "permit_signature_invalid",
-                model,
-                {"key_id": model.key_id},
             )
         # An empty allowlist names no tool, so it admits none. The previous
         # `if allowed_tools and ...` form skipped this check for empty lists

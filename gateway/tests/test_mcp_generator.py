@@ -547,15 +547,19 @@ class TestMcpInvokeRoute:
         payload = response.json()
         assert payload["error"]["code"] == -32602
         assert payload["error"]["message"] == "Missing wallet_id in mcpContext"
-        assert payload["error"]["data"] == {
-            "code": "missing_wallet_id",
-            "message": (
-                "This call needs a wallet. Pass wallet_id from your demo key "
-                "response, or use a key with one wallet."
-            ),
-            "fix": "Pass wallet_id from your demo key response, or use a key with one wallet.",
-            "docs_url": "https://www.agentmiddleware.dev/docs/errors#missing_wallet_id",
-        }
+        data = payload["error"]["data"]
+        assert data["code"] == "missing_wallet_id"
+        assert data["message"] == (
+            "This call needs a wallet. Pass wallet_id from your demo key "
+            "response, or use a key with one wallet."
+        )
+        assert data["fix"] == (
+            "Pass wallet_id from your demo key response, or use a key with one wallet."
+        )
+        assert data["docs_url"] == (
+            "https://www.agentmiddleware.dev/docs/errors#missing_wallet_id"
+        )
+        assert "request_id" in data
 
     @pytest.mark.anyio
     async def test_messages_tools_call_maps_tool_not_found(self, clean_database):
@@ -584,7 +588,7 @@ class TestMcpInvokeRoute:
         assert response.status_code == 200
         payload = response.json()
         assert payload["error"]["code"] == -32001
-        assert payload["error"]["message"] == "Tool not found: missing-jsonrpc-tool"
+        assert payload["error"]["message"] == "Tool not found"
 
     @pytest.mark.anyio
     async def test_messages_tools_list_requires_api_key_header(self):
@@ -815,7 +819,9 @@ class TestMcpInvokeRoute:
             assert response.status_code == 200
             payload = response.json()
             assert payload["error"]["code"] == -32603
-            assert "boom" in payload["error"]["message"]
+            assert payload["error"]["message"] == "tool_execution_failed"
+            assert "boom" not in payload["error"]["message"]
+            assert "boom" not in response.text
             assert ledger_resp.status_code == 200
             tool_entries = [
                 entry
@@ -888,7 +894,10 @@ class TestMcpInvokeRoute:
             assert response.status_code == 200
             payload = response.json()
             assert payload["error"]["code"] == -32603
-            assert "insufficient_funds" in payload["error"]["message"]
+            # The tool's own text mimics a refusal code; the wrapped failure
+            # is classified by type, so the mimic must not select the message.
+            assert payload["error"]["message"] == "tool_execution_failed"
+            assert "insufficient_funds" not in response.text
             assert ledger_resp.status_code == 200
             tool_entries = [
                 entry
@@ -952,7 +961,11 @@ class TestMcpInvokeRoute:
             payload = response.json()
             assert payload["isError"] is True
             assert payload["code"] == "tool_execution_failed"
-            assert "insufficient_funds" in payload["content"][0]["text"]
+            # The tool's own error stays server-side; the client gets the
+            # classified message and a request id.
+            assert payload["content"][0]["text"] == "Error: tool_execution_failed"
+            assert "insufficient_funds" not in response.text
+            assert "request_id" in payload["structuredContent"]
         finally:
             registry.unregister_local("http-value-error-echo")
 

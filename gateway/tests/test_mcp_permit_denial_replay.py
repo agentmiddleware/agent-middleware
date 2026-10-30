@@ -51,7 +51,13 @@ async def test_foreign_permit_denial_replays_original_403(
                 "idempotency_key": key,
             },
         }
-        headers = {**tenant_b["agent_headers"], "Idempotency-Key": key}
+        headers = {
+            **tenant_b["agent_headers"],
+            "Idempotency-Key": key,
+            # Same caller correlation id on first and replay: refusals that
+            # echo it stay byte-identical.
+            "X-Request-ID": "sel482-fixed-request-id",
+        }
         path = f"/mcp/tools/{counted_tool.name}/invoke"
 
         first = await client.post(path, json=request, headers=headers)
@@ -82,6 +88,7 @@ async def test_foreign_permit_denial_replays_original_403(
             headers={
                 "X-API-Key": other_key.json()["api_key"],
                 "Idempotency-Key": key,
+                "X-Request-ID": "sel482-fixed-request-id-other",
             },
         )
 
@@ -101,7 +108,10 @@ async def test_foreign_permit_denial_replays_original_403(
     assert set(replay.json()["detail"]) == set(detail)
     assert replay.content == first.content
     assert refused_other_key.status_code == 403
-    assert refused_other_key.json()["detail"] == {"error": "permit_wallet_mismatch"}
+    assert refused_other_key.json()["detail"] == {
+        "error": "permit_wallet_mismatch",
+        "request_id": "sel482-fixed-request-id-other",
+    }
     assert tenant_a["agent_wallet_id"] not in first.text
     assert counted_tool.effects == []
 

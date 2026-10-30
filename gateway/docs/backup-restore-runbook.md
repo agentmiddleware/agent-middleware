@@ -471,7 +471,7 @@ After backup, upgrade, restore, or rollback:
    (`gateway/app/main.py`). Dockerfile bakes `.build_commit_sha`
    (`gateway/Dockerfile`; `gateway/scripts/write_build_commit_sha.py`).
 
-6. Revision-specific checks from the matching `schema-0NN-rollout.md` (legacy
+6. Revision-specific checks from the matching schema-NNN rollout doc (legacy
    permits for 040, demo kill switch for 043, resolution verification for 044,
    usage view for 046, and so on).
 

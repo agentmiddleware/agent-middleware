@@ -1127,4 +1127,3 @@ async def test_valid_action_permit_still_honors_allowlist_and_binding(
     )
     assert out_of_scope["code"] == -32003
     assert out_of_scope["message"] == "permit_tool_not_allowed", out_of_scope
-

@@ -17,7 +17,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -205,7 +205,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: false
@@ -303,6 +303,26 @@ jobs:
           test ! -e "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests/test_receipt_vectors.py
           uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests
 
+  framework-integrations:
+    name: Framework integrations
+    needs: detect
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Test framework integrations
+        run: uv run --no-project --isolated --python 3.12 --with pytest==9.1.1 --with-editable './sdk/python[verify]' python -m pytest integrations/framework_integrations/tests -q -rs
+
   postgres-concurrency:
     # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:
     # SQLite treats SELECT ... FOR UPDATE as a silent no-op, so these tests
@@ -338,7 +358,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           python-version: "3.12"
           enable-cache: false
@@ -418,7 +438,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           python-version: "3.12"
           enable-cache: false
@@ -443,6 +463,7 @@ jobs:
               "amw_action_dispatch",
               "amw_pg_stress",
               "amw_action_multiprocess",
+              "amw_rls_off_migration",
           )
 
 
@@ -496,9 +517,13 @@ jobs:
         env:
           ACTION_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_migration
           DISPATCH_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_dispatch
+          # Empty DB, never migrated by an earlier step: the 048 default-off
+          # proof refuses a reused database.
+          TENANT_RLS_OFF_MIGRATION_DATABASE_URL: postgresql+asyncpg://sellers@127.0.0.1:55439/amw_rls_off_migration
         run: |
           uv run --no-sync pytest -q -rs --timeout 300 \
             "tests/test_action_migrations.py::test_postgres_legacy_roundtrip_and_fail_closed_downgrade" \
+            "tests/test_047_048_negative_paths.py::test_postgres_default_off_creates_policies_but_leaves_rls_disabled" \
             tests/test_dispatch_call_slot_migration.py 2>&1 | tee "$GITHUB_WORKSPACE/proof-logs-migration.txt"
           test "${PIPESTATUS[0]}" -eq 0
       - name: Run asyncpg driver proofs
@@ -626,7 +651,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           python-version: "3.12"
           enable-cache: false
@@ -647,7 +672,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [lint, detect, python, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [lint, detect, python, framework-integrations, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

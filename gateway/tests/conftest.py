@@ -4,6 +4,7 @@ Sets up pytest-asyncio, database, and common fixtures.
 """
 
 import os
+import secrets
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -77,6 +78,7 @@ DORMANT_SURFACE_TEST_MODULES = frozenset(
         "test_billing",
         "test_discovery_drift",
         "test_golden_path",
+        "test_idempotency_billing_permit_breaks",
         "test_kyc",
         "test_mcp_trust_mode",
         "test_mcp_upstream_governed",
@@ -184,6 +186,10 @@ require_disposable_test_database()
 # aiosqlite connection whose worker thread is not a daemon, and an unclosed one
 # blocks interpreter shutdown. See the teardown in setup_database.
 os.environ.setdefault("STATE_BACKEND", "memory")
+# A per-session test pepper so tests that switch to a production-like
+# ENVIRONMENT still hash API keys (production fails closed without one).
+# Generated once per test session with secrets.token_urlsafe; never hardcoded.
+os.environ.setdefault("API_KEY_HASH_PEPPER", secrets.token_urlsafe(32))
 # Ephemeral SQLite create_all even when a job sets ENVIRONMENT=production
 # (production_trust CI). Never applies to Postgres — see allows_metadata_create_all.
 os.environ.setdefault("ALLOW_METADATA_CREATE_ALL", "true")
@@ -386,6 +392,7 @@ def mount_dormant_surfaces_for_marked_tests(request):
 async def setup_database():
     """Set up database tables before any tests run."""
     require_disposable_test_database()
+    import app.db.approval_gate_models  # noqa: F401 -- registers table on SQLModel.metadata
     from app.core.durable_state import close_durable_state
     from app.db.database import init_db, close_db
 
@@ -423,6 +430,7 @@ async def setup_database():
 #: tests/test_clean_database_coverage.py's exemption set fails that test, so a
 #: new trust-plane table cannot silently escape per-test cleanup.
 CLEAN_DATABASE_TABLES = (
+    "approval_gate_approvals",
     "receipt_resolutions",
     "resolution_chain_heads",
     "receipts",
@@ -440,6 +448,7 @@ CLEAN_DATABASE_TABLES = (
     "daily_balance_snapshots",
     "kyc_verifications",
     "refresh_tokens",
+    "api_key_usage_events",
     "api_keys",
     "key_rotation_logs",
     "service_registry",
@@ -452,21 +461,24 @@ CLEAN_DATABASE_TABLES = (
 
 @pytest_asyncio.fixture(scope="function")
 async def clean_database():
-    """Clean database tables between tests."""
+    """Clean database tables before and after tests that use this fixture."""
     require_disposable_test_database()
     from app.db.database import get_session_factory
 
-    factory = get_session_factory()
-    async with factory() as session:
-        for table in CLEAN_DATABASE_TABLES:
-            if table == "wallets":
-                await session.execute(
-                    text("UPDATE wallets SET parent_wallet_id = NULL")
-                )
-            await session.execute(text(f"DELETE FROM {table}"))
-        await session.commit()
+    async def clear_tables():
+        factory = get_session_factory()
+        async with factory() as session:
+            for table in CLEAN_DATABASE_TABLES:
+                if table == "wallets":
+                    await session.execute(
+                        text("UPDATE wallets SET parent_wallet_id = NULL")
+                    )
+                await session.execute(text(f"DELETE FROM {table}"))
+            await session.commit()
 
+    await clear_tables()
     yield
+    await clear_tables()
 
 
 @pytest.fixture
@@ -523,3 +535,13 @@ def enforce_naive_utc_datetime_columns():
     finally:
         event.remove(Session, "before_flush", assert_naive_datetime_values)
         event.remove(Engine, "before_execute", assert_naive_statement_parameters)
+
+
+@pytest.fixture(autouse=True)
+def _clear_verified_api_key_cache():
+    """Keep the in-process verified-key cache from leaking across tests."""
+    from app.services.api_key_service import clear_verified_key_cache
+
+    clear_verified_key_cache()
+    yield
+    clear_verified_key_cache()

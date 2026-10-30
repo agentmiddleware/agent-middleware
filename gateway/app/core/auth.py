@@ -7,9 +7,10 @@ Agents pass credentials via:
 """
 
 import hmac
+import ipaddress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
@@ -25,6 +26,22 @@ settings = get_settings()
 # amw_live_ bootstrap key pasted into the wrong variable never
 # authenticates through the static-dev path.
 STATIC_DEV_KEY_PREFIX = "amw_dev_"
+
+_FORWARDING_HEADERS = frozenset(
+    {
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-forwarded-port",
+        "x-forwarded-server",
+        "x-real-ip",
+        "x-client-ip",
+        "true-client-ip",
+        "cf-connecting-ip",
+        "x-original-forwarded-for",
+    }
+)
 
 api_key_header = APIKeyHeader(
     name=settings.API_KEY_HEADER,
@@ -100,7 +117,9 @@ class AuthContext:
         )
 
 
-async def _key_tenant_for_auth(key_tenant: str | None, wallet_id: str) -> str | None:
+async def _key_tenant_for_auth(
+    key_tenant: str | None, wallet_id: str, key_id: str | None = None
+) -> str | None:
     """Apply demo confinement to the key and its owning wallet."""
     from ..services.demo_tenant_boundary import (
         DEMO_KEY_ROUTE_FORBIDDEN,
@@ -112,6 +131,11 @@ async def _key_tenant_for_auth(key_tenant: str | None, wallet_id: str) -> str | 
     )
 
     tenant = await resolve_effective_tenant(key_tenant, wallet_id)
+    if key_id is not None:
+        acceptance = CREDENTIAL_ACCEPTANCE.get()
+        if acceptance is not None:
+            acceptance.key_id = key_id
+            acceptance.tenant = tenant
     if tenant != DEMO_TENANT_LABEL:
         return tenant
     if not get_settings().ENABLE_DEMO_TENANT:
@@ -148,9 +172,11 @@ _CREDENTIAL_REJECTED = {CREDENTIAL_REJECTED_HEADER: "1"}
 
 @dataclass
 class CredentialAcceptance:
-    """Whether ``get_auth_context`` accepted credentials during one request."""
+    """Accepted credentials and any database key resolved for the request."""
 
     accepted: bool = False
+    key_id: str | None = None
+    tenant: str | None = None
 
 
 # The converse signal, for RateLimitMiddleware's shared pre-auth bucket. A
@@ -171,6 +197,11 @@ async def get_auth_context(
     api_key: str | None = Security(api_key_header),
     authorization: Annotated[str | None, Header()] = None,
     _bearer: HTTPAuthorizationCredentials | None = Security(bearer_header),
+    # Bare `Request` (not Optional): FastAPI only injects the request for a
+    # plain Request annotation and rejects `Request | None` at route
+    # registration. The None default keeps direct non-HTTP callers working;
+    # on the HTTP path FastAPI always supplies the real request.
+    request: Request = None,  # type: ignore[assignment]
 ) -> AuthContext:
     """
     Validate credentials and return caller context.
@@ -183,19 +214,98 @@ async def get_auth_context(
     the Postgres CI job rebind VALID_API_KEYS and clear the settings cache after
     this module is already imported, and a captured `settings` would keep
     serving the stale key list.
+
+    ``request`` is injected by FastAPI on the HTTP path and bounds DEBUG
+    open mode to loopback callers; direct (non-HTTP) callers pass none and
+    keep the previous local behavior.
     """
     # HTTPBearer declares the OpenAPI alternative; raw Authorization stays
     # authoritative so malformed headers cannot fall back to an API key.
-    context = await _resolve_auth_context(api_key, authorization)
+    context = await _resolve_auth_context(api_key, authorization, request)
     acceptance = CREDENTIAL_ACCEPTANCE.get()
     if acceptance is not None:
         acceptance.accepted = True
+        acceptance.key_id = context.key_id
+        acceptance.tenant = context.tenant
     return context
+
+
+def _is_loopback_client(host: str | None) -> bool:
+    """Whether a peer address is loopback (or unknown).
+
+    Unknown (``None``) retains direct-helper compatibility. An HTTP request
+    with no client is rejected by ``_require_debug_open_loopback``. Non-IP
+    test hosts (Starlette's ``testclient``) are treated as loopback. An
+    unparseable non-empty host fails closed to non-loopback.
+    """
+    if not host:
+        return True
+    lowered = host.strip().casefold()
+    if lowered in {"localhost"} or lowered.endswith(".localhost"):
+        return True
+    if lowered == "testclient":
+        return True
+    try:
+        address = ipaddress.ip_address(lowered)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
+
+
+def _is_loopback_bind(host: str | None) -> bool:
+    """Accept only an explicit loopback bind address or localhost."""
+    if not host:
+        return False
+    host = host.strip().casefold()
+    if host == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
+
+
+def _require_debug_open_loopback(request: Request | None) -> None:
+    """Refuse DEBUG open-mode bootstrap auth outside direct loopback HTTP.
+
+    DEBUG open mode (DEBUG=true with no keys configured) exists so a local
+    checkout boots to a usable shell with zero setup. Without this check any
+    host that can reach the port inherits bootstrap admin, which turns a
+    buyer-visible demo on a shared network into an open admin shell. The
+    check runs only on this last-resort path: every configured credential
+    still authenticates from anywhere, and production-like environments
+    already refuse DEBUG at boot.
+    """
+    if request is None:
+        return
+    if (
+        request.client is not None
+        and _is_loopback_client(request.client.host)
+        and _is_loopback_bind(get_settings().HOST)
+        and not any(
+            name.casefold() in _FORWARDING_HEADERS for name in request.headers.keys()
+        )
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "invalid_api_key",
+            "message": "The provided API key is not authorized.",
+        },
+        headers=dict(_CREDENTIAL_REJECTED),
+    )
 
 
 async def _resolve_auth_context(
     api_key: str | None,
     authorization: str | None,
+    request: Request | None = None,
 ) -> AuthContext:
     """Authenticate the caller; ``get_auth_context`` records the acceptance."""
     settings = get_settings()
@@ -221,7 +331,7 @@ async def _resolve_auth_context(
         # API key is not an API credential: it falls through to
         # _auth_from_jwt and fails with 401 exactly as before.
         if api_key and is_iga_issuer_token(token):
-            context = await _resolve_auth_context(api_key, None)
+            context = await _resolve_auth_context(api_key, None, request)
             return replace(context, enterprise_bearer_token=token)
         return await _auth_from_jwt(token)
 
@@ -311,7 +421,9 @@ async def _resolve_auth_context(
 
     if candidate:
         if _key_is_live(candidate, utc_now()):
-            await _key_tenant_for_auth(candidate.tenant, candidate.wallet_id)
+            await _key_tenant_for_auth(
+                candidate.tenant, candidate.wallet_id, candidate.key_id
+            )
         try:
             db_key = await key_service.validate_key(stripped)
         except RuntimeError:
@@ -322,7 +434,9 @@ async def _resolve_auth_context(
     if db_key:
         from ..services.demo_tenant_boundary import parse_allowlist
 
-        tenant = await _key_tenant_for_auth(db_key.tenant, db_key.wallet_id)
+        tenant = await _key_tenant_for_auth(
+            db_key.tenant, db_key.wallet_id, db_key.key_id
+        )
         return AuthContext(
             source="db",
             raw_key=stripped,
@@ -356,6 +470,12 @@ async def _resolve_auth_context(
             headers=dict(_CREDENTIAL_REJECTED),
         )
 
+    # Last resort: DEBUG open mode (DEBUG=true, no keys configured) on a
+    # local-compatible environment. Require a loopback peer and configured
+    # bind with no forwarding headers. Direct in-process callers (no request)
+    # keep local behavior.
+    _require_debug_open_loopback(request)
+
     return AuthContext(
         source="env",
         raw_key=stripped,
@@ -380,6 +500,24 @@ async def reject_anonymous_production_catalog(request: Request) -> None:
         api_key=request.headers.get(settings.API_KEY_HEADER.lower())
         or request.headers.get("x-api-key"),
         authorization=request.headers.get("authorization"),
+    )
+
+
+def debug_open_auth_armed(settings: Any) -> bool:
+    """Whether this boot leaves DEBUG open mode reachable.
+
+    True when an unknown key would authenticate as bootstrap admin: DEBUG on,
+    no VALID_API_KEYS, no STATIC_DEV_API_KEYS, and a local-compatible
+    ENVIRONMENT (production-like boots refuse DEBUG before this matters),
+    and a loopback HOST (any other bind refuses open mode per request).
+    Startup logs it loudly so a shared demo never runs open by accident.
+    """
+    return bool(
+        settings.DEBUG
+        and not any(key.strip() for key in settings.VALID_API_KEYS.split(","))
+        and not settings.STATIC_DEV_API_KEYS.strip()
+        and not is_production_like_environment(settings.ENVIRONMENT)
+        and _is_loopback_bind(settings.HOST)
     )
 
 
@@ -464,7 +602,9 @@ async def _auth_from_jwt(token: str) -> AuthContext:
         and candidate.wallet_id == payload.sub
         and _key_is_live(candidate, utc_now())
     ):
-        await _key_tenant_for_auth(candidate.tenant, candidate.wallet_id)
+        await _key_tenant_for_auth(
+            candidate.tenant, candidate.wallet_id, candidate.key_id
+        )
 
     if not await key_service.consume_derived_key_use(payload.key_id, payload.sub):
         raise HTTPException(
@@ -507,7 +647,9 @@ async def _auth_from_jwt(token: str) -> AuthContext:
         )
     from ..services.demo_tenant_boundary import parse_allowlist
 
-    tenant = await _key_tenant_for_auth(key_row.tenant, key_row.wallet_id)
+    tenant = await _key_tenant_for_auth(
+        key_row.tenant, key_row.wallet_id, key_row.key_id
+    )
     return AuthContext(
         source="jwt",
         # Not a credential: a stable, non-secret handle for the API key that
@@ -525,12 +667,13 @@ async def _auth_from_jwt(token: str) -> AuthContext:
 
 async def verify_api_key(
     api_key: str | None = Security(api_key_header),
+    request: Request = None,  # type: ignore[assignment]
 ) -> str:
     """
     Validate the provided API key.
     Returns the raw key on success for backwards-compatible dependencies.
     """
-    context = await get_auth_context(api_key)
+    context = await get_auth_context(api_key, request=request)
     return context.raw_key
 
 

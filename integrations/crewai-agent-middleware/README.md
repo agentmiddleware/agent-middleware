@@ -14,7 +14,7 @@ This package is not published to PyPI. Install it from a checkout of
 this repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -e ./sdk/python
 python -m pip install -e integrations/crewai-agent-middleware
@@ -46,6 +46,21 @@ researcher = Agent(
     tools=[b2a_tool],
 )
 ```
+
+Call `b2a_tool.close()` when the agent is finished to close its HTTP client
+and private event loop. The tool also supports `with CrewAIB2ATool(...) as tool`
+for scoped use.
+
+When passing a borrowed `client`, async calls use it on the caller's event loop.
+Sync calls use a separate client on the tool's private event loop. Pass
+`sync_client_factory` to create that client with the same URL, timeout, transport,
+and authentication settings. The tool owns and closes the sync client; the caller
+still closes the borrowed client. A sync call with a borrowed client but no
+factory returns an error before sending a request.
+
+Direct `run()` callers now receive exceptions for terminal gateway errors
+instead of `"Error: ..."` strings. Handle those exceptions when calling the
+tool directly. CrewAI dispatch records them as non-retryable tool failures.
 
 ## Operations
 
@@ -129,5 +144,5 @@ b2a_tool = CrewAIB2ATool(
 ## Requirements
 
 - Python 3.11+
-- CrewAI 0.1.0+
+- CrewAI 1.15.30+
 - httpx 0.25.0+

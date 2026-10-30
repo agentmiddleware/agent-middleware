@@ -857,9 +857,21 @@ class Gateway:
             MCP_UPSTREAM_CONNECT_TIMEOUT_SECONDS=CONNECT_TIMEOUT_SECONDS,
             MCP_UPSTREAM_CALL_TIMEOUT_SECONDS=CALL_TIMEOUT_SECONDS,
         )
-        self.service = await register_configured_upstream_mcp(
+        registered = await register_configured_upstream_mcp(
             settings=settings, http_client=self._upstream_client
         )
+        # The lab configures one upstream tool by name and leaves
+        # MCP_UPSTREAM_MULTI_TOOL_ENABLED at its default, so registration returns
+        # that single service rather than a list. Narrow it here instead of
+        # widening self.service: a list would mean this configuration changed, and
+        # the reads below would quietly address the wrong shape.
+        if not isinstance(registered, dict):
+            raise RuntimeError(
+                "the failure lab registers a single upstream tool, so "
+                "register_configured_upstream_mcp must return one service; got "
+                f"{type(registered).__name__}"
+            )
+        self.service = registered
         self.configuration = {
             "public_tool_id": PUBLIC_TOOL,
             "upstream_tool_name": UPSTREAM_TOOL,

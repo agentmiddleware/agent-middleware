@@ -122,14 +122,16 @@ DEV_API_KEY_HASH_PEPPER = b"amw-local-dev-api-key-pepper-not-a-secret"
 def _configured_pepper() -> bytes | None:
     """The server pepper: process env first, then Settings (``.env``).
 
-    An explicitly empty environment value also masks dotenv in Settings;
-    production then fails closed instead of reviving a stale dotenv pepper.
+    An explicitly empty environment value masks dotenv and cached Settings;
+    production then fails closed instead of reviving a stale pepper.
     Settings holds it as a SecretStr so it is masked in any settings dump.
     It is never logged.
     """
-    value = os.environ.get(API_KEY_HASH_PEPPER_ENV, "").strip()
-    if not value:
-        value = get_settings().API_KEY_HASH_PEPPER.get_secret_value().strip()
+    value = (
+        os.environ[API_KEY_HASH_PEPPER_ENV]
+        if API_KEY_HASH_PEPPER_ENV in os.environ
+        else get_settings().API_KEY_HASH_PEPPER.get_secret_value()
+    ).strip()
     return value.encode("utf-8") if value else None
 
 

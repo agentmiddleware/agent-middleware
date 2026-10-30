@@ -288,7 +288,7 @@ async def test_unregistered_tool_without_permit_is_unchanged(client, clean_datab
         headers=provisioned["agent_headers"],
     )
     assert rpc.json()["error"]["code"] == -32001
-    assert rpc.json()["error"]["message"] == f"Tool not found: {UNKNOWN}"
+    assert rpc.json()["error"]["message"] == "Tool not found"
     assert mcp_router.settings.TRUST_MODE_ENABLED is True
 
 
@@ -464,6 +464,9 @@ async def test_denials_do_not_reveal_registration(
         container = (
             dict(error.get("data", {})) if transport == "jsonrpc" else normalized
         )
+        # main (#242) attaches a unique request_id to every public error; it must
+        # not distinguish registered from unregistered denials in this comparison.
+        container.pop("request_id", None)
         receipt = container.get("receipt")
         if receipt is not None:
             container["receipt"] = {

@@ -4,6 +4,11 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ## [Unreleased]
 
+- Partner bootstrap CLI (breaking): `gateway/scripts/partner_api_key_bootstrap.py`
+  never prints the minted agent API key. Operators must pass `--key-file`
+  (created mode 0600, refused if the path exists); human, `--json`, and
+  `--key-only` modes print only non-secret identifiers or the key-file path.
+  Pipelines that read the key from stdout must switch to `--key-file`.
 - API keys (breaking): keys are stored as salted, peppered scrypt hashes
   (`API_KEY_HASH_PEPPER`) and found by a non-secret indexed lookup id
   (migration 054). A bounded 60 s cache of recent verifications keeps repeat

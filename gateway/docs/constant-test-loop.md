@@ -72,8 +72,11 @@ Set `CI_SMOKE_AGENT_KEY` for a pre-provisioned agent credential. Optionally prov
 # never printed; --key-file writes it (mode 0600, path must not already exist).
 export BOOTSTRAP_KEY="amw_live_..."
 
+set -e
 set +x
-KEY_FILE="${TMPDIR:-/tmp}/amw-ci-smoke-key.$$"
+KEY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/amw-ci-smoke.XXXXXX")"
+chmod 700 "$KEY_DIR"
+KEY_FILE="$KEY_DIR/agent.key"
 PROVISION_JSON="$(python scripts/partner_api_key_bootstrap.py \
   --api-url https://api.thisisatest.tech \
   --agent-id ci-smoke-agent \
@@ -84,7 +87,7 @@ PROVISION_JSON="$(python scripts/partner_api_key_bootstrap.py \
 export CI_SMOKE_AGENT_KEY="$(cat "$KEY_FILE")"
 export CI_SMOKE_WALLET_ID="$(printf '%s' "$PROVISION_JSON" | jq -er .wallet_id)"
 export CI_SMOKE_KEY_ID="$(printf '%s' "$PROVISION_JSON" | jq -er .key_id)"
-rm -f "$KEY_FILE"
+rm -rf "$KEY_DIR"
 unset PROVISION_JSON
 
 # Run the constant test

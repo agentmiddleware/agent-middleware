@@ -115,23 +115,11 @@ test("hero Python copy requires an issued demo key and wallet", async () => {
   assert.equal(page.requests.length, 0);
 });
 
-test("homepage recorded replay matches the local proof transcript", () => {
-  const receipt = JSON.parse(readFileSync(new URL("./proof/receipt.json", import.meta.url), "utf8"));
-  const transcript = JSON.parse(readFileSync(new URL("./proof/transcript.json", import.meta.url), "utf8"));
-  assert.equal(receipt.receipt_id, "rcpt-9daf745e477d45ab");
-  assert.equal(transcript.live_receipt_verification.receipt_id, receipt.receipt_id);
-  assert.match(transcript.live_receipt_verification.output, /VERIFIED\s+rcpt-9daf745e477d45ab/);
-  const tool = transcript.latency.tool;
-  const permit = Object.fromEntries(transcript.steps.find((step) => step.id === "authorize").response);
-  assert.deepEqual(JSON.parse(permit.allowed_tools), [tool]);
-  const invoke = Object.fromEntries(transcript.steps.find((step) => step.id === "invoke").response);
-  const replay = Object.fromEntries(transcript.steps.find((step) => step.id === "replay").response);
-  assert.equal(invoke.receipt_id, replay.receipt_id);
-  assert.equal(replay["ledger debits for this tool"], "1");
-  assert.match(homeHtml, /aria-label="Recorded local run \(proof transcript\)">\s*<p>Recorded local run \(proof transcript\)<\/p>/);
-  assert.ok(homeHtml.includes(`call   receipt_id: ${invoke.receipt_id}\nretry  receipt_id: ${replay.receipt_id} (1 ledger debit)`));
-  assert.equal(homeHtml.split(invoke.receipt_id).length - 1, 2);
-  assert.ok(homeHtml.includes(`<p>tool <code>${tool}</code>, budget, expiry.</p>`));
+test("homepage shows no recorded receipt", () => {
+  assert.doesNotMatch(homeHtml, /hero-v2-output|Recorded local run/);
+  assert.doesNotMatch(homeHtml, /rcpt-[0-9a-f]{16}/);
+  assert.ok(homeHtml.includes("<h1>Let agents retry safely.</h1>\n            <p class=\"hero-v2-audience\">For developers whose AI agents call real tools and APIs, and who need every call permitted, logged and safe to retry.</p>"));
+  assert.ok(homeHtml.includes("<p>tool <code>trust-plane-echo</code>, budget, expiry.</p>"));
   assert.doesNotMatch(homeHtml, /Same receipt\. The tool did not run again\.|order-123/);
   assert.match(homeHtml, /<p>accepted request key, at most one gateway dispatch and debit; the gateway returns a signed receipt<\/p>/);
   assert.match(homeHtml, /<p>the same request key returns its linked receipt<\/p>/);

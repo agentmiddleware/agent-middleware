@@ -1596,14 +1596,35 @@ async def _execute_registered_tool_inner(
     # and, with an idempotency key, mints one signed denial receipt that a
     # same-key retry replays. Registered and unregistered tools are
     # indistinguishable.
-    action_out_of_scope = (
+    #
+    # Validate authenticity (signature, wallet, key, expiry, status) BEFORE
+    # allowlist membership chooses the branch. Reading allowed_tools first let
+    # a foreign or tampered complete action permit return
+    # action_tool_binding_required when the tool was listed and
+    # permit_wallet_mismatch / permit_signature_invalid when it was not.
+    action_out_of_scope = False
+    if (
         is_action
         # A partially populated action row (some action_* fields set, others
         # NULL) is malformed storage and stays on the action branch below.
         and all(value is not None for value in action_fields)
         and permit_id is not None
-        and tool_name not in _permit_allowed_tools(action_model)
-    )
+        and action_model is not None
+    ):
+        precheck = await get_permit_service().validate_for_action(
+            permit_id=permit_id,
+            wallet_id=wallet_id or "",
+            tool_name=tool_name,
+            estimated_credits=Decimal("0"),
+            key_id=auth.key_id,
+            arguments=arguments,
+        )
+        # Any denial — authenticity or allowlist — skips the action branch so
+        # the shared governed path below re-validates and raises. Authenticity
+        # failures therefore look identical whether or not the unsigned
+        # allowlist named the tool. Only a fully validated, in-scope permit
+        # continues into validate_action_request / binding checks.
+        action_out_of_scope = not precheck.allowed
     if (action_binding is not None or is_action) and not action_out_of_scope:
         if (
             is_action
@@ -4065,15 +4086,6 @@ _ACTION_PERMIT_FIELDS = (
     "action_public_tool_id",
     "action_upstream_binding_hash",
 )
-
-
-def _permit_allowed_tools(model: Any) -> list[str]:
-    """The permit row's allowed_tools; malformed storage reads as empty."""
-    try:
-        value = json.loads(model.allowed_tools_json or "[]")
-    except (TypeError, ValueError):
-        return []
-    return [str(item) for item in value] if isinstance(value, list) else []
 
 
 async def _release_unresolved_tool_idempotency(

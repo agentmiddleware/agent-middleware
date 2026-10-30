@@ -883,11 +883,13 @@ async def _action_permit_for_allowed_tool(client, tool_name: str = ALLOWED):
     return provisioned, permit
 
 
-async def _action_call(client, provisioned, permit_id, key, request_id=None):
+async def _action_call(
+    client, provisioned, permit_id, key, request_id=None, tool_name=UNKNOWN
+):
     resp = await client.post(
         "/mcp/messages",
         json=_jsonrpc_body(
-            tool_name=UNKNOWN,
+            tool_name=tool_name,
             wallet_id=provisioned["agent_wallet_id"],
             request_id=request_id or f"action-{uuid4()}",
             permit_id=permit_id,
@@ -999,3 +1001,130 @@ async def test_in_scope_action_permit_without_binding_is_binding_denial(
             )
             == 0
         )
+
+
+def _comparable_action_error(error: dict) -> dict:
+    """Strip per-call volatiles so two denials can be compared for equality.
+
+    ``receipt.tool`` echoes the requested tool name and is expected to differ
+    when the probe names two different tools; it is not allowlist membership.
+    """
+    normalized = dict(error)
+    data = dict(normalized.get("data") or {})
+    data.pop("request_id", None)
+    receipt = data.get("receipt")
+    if isinstance(receipt, dict):
+        data["receipt"] = {
+            key: value
+            for key, value in receipt.items()
+            if key not in _VOLATILE_RECEIPT_FIELDS | {"request_hash", "tool"}
+        }
+    details = data.get("details")
+    if isinstance(details, dict):
+        # Drop fields that echo the probed tool without changing the
+        # authenticity reason. requested_tool would differ by construction.
+        details = {
+            key: value
+            for key, value in details.items()
+            if key not in {"requested_tool", "allowed_tools"}
+        }
+        data["details"] = details
+    normalized["data"] = data
+    return normalized
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_tampered_action_permit_denial_identical_for_allowlist_membership(
+    client, clean_database
+):
+    """QA/DeepSeek dd2ddb2c: signature fails before allowlist chooses a branch.
+
+    A complete action permit with a forged signature must return the same
+    permit_signature_invalid denial whether the caller names a tool on the
+    unsigned allowlist or one that is not. Before the fix, an in-scope name
+    returned action_tool_binding_required without checking the signature.
+    """
+    provisioned, permit = await _action_permit_for_allowed_tool(client, ALLOWED)
+    await _forge_signature(permit["permit_id"])
+    errors = []
+    for tool_name in (ALLOWED, UNKNOWN):
+        errors.append(
+            await _action_call(
+                client,
+                provisioned,
+                permit["permit_id"],
+                f"tampered-action-idem-{uuid4()}",
+                tool_name=tool_name,
+            )
+        )
+    for error in errors:
+        assert error["code"] == -32003, error
+        assert error["message"] == "permit_signature_invalid", error
+        assert "allowed_tools" not in str(error)
+        assert ALLOWED not in str(error.get("data", {}).get("details", {}))
+    assert _comparable_action_error(errors[0]) == _comparable_action_error(errors[1])
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_foreign_action_permit_denial_identical_for_allowlist_membership(
+    client, clean_database
+):
+    """QA/DeepSeek dd2ddb2c: wallet binding fails before allowlist routing.
+
+    Another wallet's complete action permit must return the same
+    permit_wallet_mismatch denial for an allowlisted tool and a
+    non-allowlisted tool. Before the fix, an in-scope name returned
+    action_tool_binding_required and leaked membership.
+    """
+    victim, permit = await _action_permit_for_allowed_tool(client, ALLOWED)
+    attacker = await provision_agent_wallet(client)
+    errors = []
+    for tool_name in (ALLOWED, UNKNOWN):
+        resp = await client.post(
+            "/mcp/messages",
+            json=_jsonrpc_body(
+                tool_name=tool_name,
+                wallet_id=attacker["agent_wallet_id"],
+                request_id=f"foreign-action-{uuid4()}",
+                permit_id=permit["permit_id"],
+                idempotency_key=f"foreign-action-idem-{uuid4()}",
+            ),
+            headers=attacker["agent_headers"],
+        )
+        errors.append(resp.json()["error"])
+    for error in errors:
+        assert error["code"] == -32003, error
+        assert error["message"] == "permit_wallet_mismatch", error
+        assert "allowed_tools" not in str(error)
+        assert ALLOWED not in str(error.get("data", {}).get("details", {}))
+    assert _comparable_action_error(errors[0]) == _comparable_action_error(errors[1])
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("strict_trust_mode")
+async def test_valid_action_permit_still_honors_allowlist_and_binding(
+    client, clean_database
+):
+    """A verified action permit keeps in-scope binding and out-of-scope denials."""
+    provisioned, permit = await _action_permit_for_allowed_tool(client, ALLOWED)
+    in_scope = await _action_call(
+        client,
+        provisioned,
+        permit["permit_id"],
+        f"valid-action-in-{uuid4()}",
+        tool_name=ALLOWED,
+    )
+    assert in_scope["code"] == -32003
+    assert in_scope["message"] == "action_tool_binding_required", in_scope
+    out_of_scope = await _action_call(
+        client,
+        provisioned,
+        permit["permit_id"],
+        f"valid-action-out-{uuid4()}",
+        tool_name=UNKNOWN,
+    )
+    assert out_of_scope["code"] == -32003
+    assert out_of_scope["message"] == "permit_tool_not_allowed", out_of_scope
+

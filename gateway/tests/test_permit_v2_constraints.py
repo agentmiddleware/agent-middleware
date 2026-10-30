@@ -697,8 +697,8 @@ async def test_forbidden_fields_denies_matching_arg(client, clean_database):
         body = r.json()
         assert "error" in body
         assert body["error"]["code"] == -32003
-        assert "permit_forbidden_field" in body["error"]["message"]
-        assert "secret_token" in body["error"]["message"]
+        assert body["error"]["message"] == "permit_forbidden_field"
+        assert "secret_token" not in body["error"]["message"]
 
         # Verify no budget consumed (denial before reserve)
         factory = get_session_factory()

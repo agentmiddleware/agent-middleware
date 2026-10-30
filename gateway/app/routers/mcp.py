@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..audit.lightweight import record_audit
 from ..core.config import DuplicateGuardMode, get_settings
+from ..core.time import to_naive_utc, utc_now
 from ..core.reason_codes import REFUSAL_REASON_CODES, is_refusal_reason_code
 from ..policy.jev_guard import evaluate_jev_guard
 from ..services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
@@ -1597,11 +1598,19 @@ async def _execute_registered_tool_inner(
     # same-key retry replays. Registered and unregistered tools are
     # indistinguishable.
     #
-    # Validate authenticity (signature, wallet, key, expiry, status) BEFORE
+    # Authenticate the row (signature, status, expiry, wallet, key) BEFORE
     # allowlist membership chooses the branch. Reading allowed_tools first let
     # a foreign or tampered complete action permit return
     # action_tool_binding_required when the tool was listed and
     # permit_wallet_mismatch / permit_signature_invalid when it was not.
+    # Do not call validate_for_action here: that also enforces max_calls /
+    # budget and would refuse an exhausted but still-replayable action permit
+    # before the action idempotency short-circuit.
+    #
+    # An unauthenticated row stays on the action branch (never out_of_scope)
+    # so the pre-binding identity denial below raises the same reason for any
+    # tool_name, with action denial-receipt rules. Only authenticated rows may
+    # consult the unsigned allowlist for routing.
     action_out_of_scope = False
     if (
         is_action
@@ -1611,20 +1620,13 @@ async def _execute_registered_tool_inner(
         and permit_id is not None
         and action_model is not None
     ):
-        precheck = await get_permit_service().validate_for_action(
-            permit_id=permit_id,
+        authenticated = await _action_permit_authenticated_for_caller(
+            model=action_model,
             wallet_id=wallet_id or "",
-            tool_name=tool_name,
-            estimated_credits=Decimal("0"),
             key_id=auth.key_id,
-            arguments=arguments,
         )
-        # Any denial — authenticity or allowlist — skips the action branch so
-        # the shared governed path below re-validates and raises. Authenticity
-        # failures therefore look identical whether or not the unsigned
-        # allowlist named the tool. Only a fully validated, in-scope permit
-        # continues into validate_action_request / binding checks.
-        action_out_of_scope = not precheck.allowed
+        if authenticated:
+            action_out_of_scope = tool_name not in _permit_allowed_tools(action_model)
     if (action_binding is not None or is_action) and not action_out_of_scope:
         if (
             is_action
@@ -1658,6 +1660,23 @@ async def _execute_registered_tool_inner(
                 effective_request_payload=effective_request_payload,
                 effective_request_hash=effective_request_hash,
             )
+        if (
+            is_action
+            and action_model is not None
+            and all(value is not None for value in action_fields)
+        ):
+            # Complete action rows: reject unauthenticated callers before the
+            # binding check. Otherwise an allowlisted unknown tool raised
+            # action_tool_binding_required while the same foreign/tampered
+            # permit for a non-allowlisted tool took the governed path and
+            # returned permit_wallet_mismatch / permit_signature_invalid.
+            identity_reason = await _action_permit_identity_denial_reason(
+                model=action_model,
+                wallet_id=wallet_id or "",
+                key_id=auth.key_id,
+            )
+            if identity_reason is not None:
+                raise ToolPermissionDenied(identity_reason)
         if action_binding is None:
             # An in-scope action permit for a tool with no action binding
             # (registered without one, or unregistered). Nothing has been
@@ -4086,6 +4105,62 @@ _ACTION_PERMIT_FIELDS = (
     "action_public_tool_id",
     "action_upstream_binding_hash",
 )
+
+
+async def _action_permit_identity_denial_reason(
+    *,
+    model: PermitModel,
+    wallet_id: str,
+    key_id: str | None,
+) -> str | None:
+    """Return an authenticity denial reason, or None when the caller is bound.
+
+    Check order matches ``validate_action_request`` (wallet, key, status,
+    expiry, signature) so action denial surfaces stay stable. Stops before
+    allowlist, scopes, budget, and max_calls — those must not influence
+    branch selection for an unauthenticated row, and max_calls must not run
+    before action idempotency replay can short-circuit.
+    """
+    if model.subject_wallet_id != wallet_id:
+        return "permit_wallet_mismatch"
+    if model.subject_key_id and model.subject_key_id != key_id:
+        return "permit_key_mismatch"
+    if model.status != "active":
+        return f"permit_{model.status}"
+    if to_naive_utc(model.expires_at) <= utc_now():
+        return "permit_expired"
+    if not await get_permit_service().verify_signature(model):
+        return "permit_signature_invalid"
+    return None
+
+
+async def _action_permit_authenticated_for_caller(
+    *,
+    model: PermitModel,
+    wallet_id: str,
+    key_id: str | None,
+) -> bool:
+    """True when the action permit row is authentic for this caller.
+
+    Used only to decide whether unsigned ``allowed_tools`` may influence
+    action-vs-governed routing. A False result must not depend on which tool
+    was requested, and must not read the allowlist.
+    """
+    reason = await _action_permit_identity_denial_reason(
+        model=model,
+        wallet_id=wallet_id,
+        key_id=key_id,
+    )
+    return reason is None
+
+
+def _permit_allowed_tools(model: Any) -> list[str]:
+    """The permit row's allowed_tools; malformed storage reads as empty."""
+    try:
+        value = json.loads(model.allowed_tools_json or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else []
 
 
 async def _release_unresolved_tool_idempotency(

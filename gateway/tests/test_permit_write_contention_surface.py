@@ -520,8 +520,10 @@ async def test_a_call_that_already_ran_is_never_told_to_retry(
     assert PermitWriteContendedError.reason not in str(detail), detail
 
     # The caller's real answer survived the contention, and so did the receipt
-    # -- the whole reason the release absorbs rather than escalates.
-    assert "tool blew up" in detail["error"], detail
+    # -- the whole reason the release absorbs rather than escalates. The
+    # tool's own error stays server-side.
+    assert detail["error"] == "internal_error", detail
+    assert "tool blew up" not in resp.text
     assert detail["receipt"]["outcome"] == "failed_refunded", detail
     assert await _count_receipts() == 1
 
@@ -744,8 +746,10 @@ async def test_the_messages_surface_never_tells_a_charged_call_to_retry(
     error = resp.json()["error"]
     assert error["code"] != -32005, error
     assert error["message"] != PermitWriteContendedError.reason, error
-    # The caller's real answer and its receipt both survived.
-    assert "tool blew up" in error["message"], error
+    # The caller's real answer and its receipt both survived. The
+    # tool's own error stays server-side.
+    assert error["message"] == "internal_error", error
+    assert "tool blew up" not in resp.text
     assert await _count_receipts() == 1
 
 

@@ -541,7 +541,7 @@ async def build_receipt_evidence(
 
             # Bounded: verify this receipt's own audit event and its link to
             # the immediate predecessor. The whole-chain walk is not run here
-            # (its cost grows with the wallet's history); POST
+            # (it reads more rows as the wallet's history grows); POST
             # /v1/audit/verify-chain walks the chain in pages.
             chain = await verify_audit_event_link(audit_event)
             audit_chain_payload = AuditChainVerifyResponse(**asdict(chain))

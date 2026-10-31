@@ -319,9 +319,9 @@ async def get_receipt(
         "verifies the receipt's own audit event (payload hash, signature, "
         "chain hash) and its link to the immediate predecessor; its details "
         "report `scope=receipt_event_link` and `chain_walk=not_run`. The "
-        "wallet's whole chain is not walked here, so cost does not grow with "
-        "history. Use `POST /v1/audit/verify-chain` to walk the chain in "
-        "bounded pages."
+        "wallet's whole chain is not walked here: the check reads one event and "
+        "at most one predecessor. Use `POST /v1/audit/verify-chain` to walk the "
+        "chain in bounded pages."
     ),
 )
 async def get_receipt_evidence(

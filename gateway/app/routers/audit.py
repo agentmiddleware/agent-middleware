@@ -168,10 +168,12 @@ async def get_audit_summary(
         "that and is clamped to it. `valid` means no defect was found in the "
         "walked span. `complete` is true only when the walk reached the end "
         "of the chain and ran the head and deleted-tail checks. When "
-        "`complete` is false, pass `next_after_seq` and `next_after_event_id` as "
-        "`after_seq` and `after_event_id` to resume. "
-        "A global (operator) verification applies the same cap to each "
-        "wallet chain and reports `complete=false` if any chain was capped."
+        "`complete` is false on a single-wallet request, pass `next_after_seq` and "
+        "`next_after_event_id` as `after_seq` and `after_event_id` to resume. "
+        "A global (operator) verification applies the cap to each wallet chain "
+        "separately, so one request can walk more than the cap in total. It "
+        "reports `complete=false` if any chain was capped and returns no shared "
+        "cursor; resume each wallet on its own with `wallet_id`."
     ),
 )
 async def verify_chain(

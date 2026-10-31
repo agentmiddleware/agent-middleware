@@ -359,7 +359,7 @@
           "Control Plane Audit"
         ],
         "summary": "Verify Chain",
-        "description": "Verifies a wallet's hash-linked audit chain. One call walks at most `AUDIT_VERIFY_MAX_EVENTS` events (default 1000); `limit` can lower that and is clamped to it. `valid` means no defect was found in the walked span. `complete` is true only when the walk reached the end of the chain and ran the head and deleted-tail checks. When `complete` is false, pass `next_after_seq` and `next_after_event_id` as `after_seq` and `after_event_id` to resume. A global (operator) verification applies the same cap to each wallet chain and reports `complete=false` if any chain was capped.",
+        "description": "Verifies a wallet's hash-linked audit chain. One call walks at most `AUDIT_VERIFY_MAX_EVENTS` events (default 1000); `limit` can lower that and is clamped to it. `valid` means no defect was found in the walked span. `complete` is true only when the walk reached the end of the chain and ran the head and deleted-tail checks. When `complete` is false on a single-wallet request, pass `next_after_seq` and `next_after_event_id` as `after_seq` and `after_event_id` to resume. A global (operator) verification applies the cap to each wallet chain separately, so one request can walk more than the cap in total. It reports `complete=false` if any chain was capped and returns no shared cursor; resume each wallet on its own with `wallet_id`.",
         "operationId": "verify_chain_v1_audit_verify_chain_post",
         "security": [
           {
@@ -2984,7 +2984,7 @@
           "Trust Receipts"
         ],
         "summary": "Get Receipt Evidence",
-        "description": "Detailed evidence checks for a receipt. The `audit_chain` check verifies the receipt's own audit event (payload hash, signature, chain hash) and its link to the immediate predecessor; its details report `scope=receipt_event_link` and `chain_walk=not_run`. The wallet's whole chain is not walked here, so cost does not grow with history. Use `POST /v1/audit/verify-chain` to walk the chain in bounded pages.",
+        "description": "Detailed evidence checks for a receipt. The `audit_chain` check verifies the receipt's own audit event (payload hash, signature, chain hash) and its link to the immediate predecessor; its details report `scope=receipt_event_link` and `chain_walk=not_run`. The wallet's whole chain is not walked here: the check reads one event and at most one predecessor. Use `POST /v1/audit/verify-chain` to walk the chain in bounded pages.",
         "operationId": "get_receipt_evidence_v1_receipts__receipt_id__evidence_get",
         "security": [
           {
@@ -3185,7 +3185,7 @@
           "Trust / Evidence"
         ],
         "summary": "Buyer-facing trust evidence bundle",
-        "description": "Returns the single, verifiable artifact for a receipt: the signed receipt, its permit, the linked ledger entry and audit event, and a `verification` map (receipt signature, permit signature, audit chain, request hash). This is the artifact a buyer can hand to an auditor. The `audit_chain` verification covers the receipt's own audit event (payload hash, signature, chain hash) and its link to the immediate predecessor. It does not walk the wallet's whole chain, so its cost does not grow with history; `verification.audit_chain_scope` names that scope (`receipt_event_link`) and is absent when no audit event is linked. Use `POST /v1/audit/verify-chain` to walk the chain in bounded pages.",
+        "description": "Returns the single, verifiable artifact for a receipt: the signed receipt, its permit, the linked ledger entry and audit event, and a `verification` map (receipt signature, permit signature, audit chain, request hash). This is the artifact a buyer can hand to an auditor. The `audit_chain` verification covers the receipt's own audit event (payload hash, signature, chain hash) and its link to the immediate predecessor. It reads one event and at most one predecessor and does not walk the wallet's whole chain; `verification.audit_chain_scope` names that scope (`receipt_event_link`) and is absent when no audit event is linked. Use `POST /v1/audit/verify-chain` to walk the chain in bounded pages.",
         "operationId": "get_evidence_bundle_v1_evidence__receipt_id__get",
         "security": [
           {

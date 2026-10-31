@@ -818,6 +818,7 @@ async def _verify_single_chain(
                 .order_by(
                     cast(ColumnElement[Any], event_rows.seq),
                     cast(ColumnElement[Any], event_rows.created_at),
+                    cast(ColumnElement[Any], event_rows.event_id),
                 )
             )
             rows = snapshot.all()

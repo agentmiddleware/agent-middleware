@@ -21,6 +21,7 @@ from app.services.idempotency import get_idempotency_service
 from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from tests.test_trust_helpers import (
+    resign_permit_model,
     BOOTSTRAP_HEADERS,
     create_tool_permit,
     provision_agent_wallet,
@@ -640,6 +641,7 @@ async def test_authorize_and_reserve_rechecks_terminal_state_after_stale_prechec
             model.revoked_at = utc_now()
         else:
             model.expires_at = utc_now() - timedelta(seconds=1)
+            await resign_permit_model(model)
         session.add(model)
         await session.commit()
 
@@ -776,6 +778,7 @@ async def test_permit_service_validation_denial_reasons(client, clean_database):
         assert model is not None
         model.allowed_tools_json = json.dumps([])
         model.scopes_json = json.dumps(["billing:charge"])
+        await resign_permit_model(model)
         session.add(model)
         await session.commit()
 
@@ -853,6 +856,7 @@ async def test_reserve_budget_refuses_an_expired_permit(
             model = await session.get(PermitModel, permit.permit_id)
             assert model is not None
             model.expires_at = utc_now() - timedelta(seconds=1)
+            await resign_permit_model(model)
             session.add(model)
 
     with pytest.raises(PermitError) as excinfo:

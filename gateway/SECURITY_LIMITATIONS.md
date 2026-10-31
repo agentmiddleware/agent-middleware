@@ -230,10 +230,13 @@ missing control.
   address (a corporate NAT or proxy) still share one per-client anonymous
   bucket.
 - **Readiness:** `/health/ready` has its own per-client and route-wide
-  budgets and ignores credential headers, so anonymous traffic cannot make a
-  Kubernetes readinessProbe fail. It is limited rather than exempt because it
-  runs state store, MQTT and database checks. `/health/dependencies` stays on
-  the ordinary limits because it runs live Stripe and Sentinel probes.
+  budgets and ignores credential headers, so traffic on other routes, anonymous
+  or keyed, cannot consume the readiness budget. Readiness requests themselves
+  can still exhaust the route-wide readiness bucket (ten times the per-client
+  limit), and probes then receive 429 until the window resets. It is limited
+  rather than exempt because it runs state store, MQTT and database checks.
+  `/health/dependencies` stays on the ordinary limits because it runs live
+  Stripe and Sentinel probes.
 - **Namespaced buckets:** per-key and anonymous bucket names, and so their
   Redis keys, carry `STATE_NAMESPACE` and the public URL (or app name), so two
   deployments that share one Redis do not share budgets.

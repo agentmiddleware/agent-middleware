@@ -808,23 +808,32 @@ async def test_health_dependencies_remains_rate_limited() -> None:
 
 
 @pytest.mark.anyio
-async def test_keyed_callers_are_unaffected_by_an_anonymous_flood() -> None:
-    limiter = _anonymous_limiter(2)  # backstop = 40
-    for index in range(45):
-        await _status_for(limiter, "/v1/discover", client=f"198.51.100.{index + 1}")
-    assert await _status_for(limiter, "/v1/discover", client="198.51.100.200") == 429
-    assert (
-        await _status_for(
-            limiter, "/v1/wallets", api_key="valid-key", client="198.51.100.200"
+async def test_keyed_callers_are_unaffected_by_an_anonymous_flood(
+    accepted_keys,
+) -> None:
+    """Accepted keys go through the real auth dependency, not a stub."""
+    limiter = RateLimitMiddleware(_governed_app(), requests_per_minute=2)
+    limiter._redis_url = ""
+    transport = ASGITransport(app=limiter)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        # Spread over many addresses until the anonymous backstop (2 * 20) trips.
+        statuses = []
+        for index in range(45):
+            scope_client = f"198.51.100.{index + 1}"
+            statuses.append(
+                await _status_for(limiter, "/v1/discover", client=scope_client)
+            )
+        assert statuses[:40] == [200] * 40
+        assert statuses[40:] == [429] * 5
+        # A new anonymous client is refused by the backstop...
+        assert (
+            await _status_for(limiter, "/v1/discover", client="198.51.100.200") == 429
         )
-        == 200
-    )
-    assert (
-        await _status_for(
-            limiter, "/v1/wallets", api_key="valid-key", client="198.51.100.1"
-        )
-        == 200
-    )
+        # ...while accepted keys still authenticate and are served.
+        for key in accepted_keys[:3]:
+            response = await http.get("/v1/wallets", headers={"X-API-Key": key})
+            assert response.status_code == 200
+            assert response.json() == {"source": "env"}
 
 
 @pytest.mark.anyio
@@ -902,3 +911,14 @@ async def test_backends_share_bucket_names_and_redis_keys_are_namespaced(
     await _status_for(shared, "/v1/discover", client="192.0.2.5")
     assert seen
     assert all(key.startswith("rate_limit:ns_b:") for key in seen)
+
+
+def test_anonymous_global_multiplier_must_be_positive() -> None:
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    for bad in (0, -1):
+        with pytest.raises(ValidationError):
+            Settings(RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER=bad)
+    assert Settings(RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER=1)

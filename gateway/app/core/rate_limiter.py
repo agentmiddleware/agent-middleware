@@ -697,8 +697,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 bucket_limits.append(
                     (
                         _anonymous_global_bucket(),
-                        self.limit
-                        * max(1, settings.RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER),
+                        self.limit * settings.RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER,
                     )
                 )
 

@@ -534,3 +534,36 @@ async def test_single_event_link_resolves_legacy_predecessor_by_hash(clean_datab
     result = await verify_audit_event_link(events[2])
     assert result.valid is False
     assert result.reason == "audit_previous_hash_mismatch"
+
+
+@pytest.mark.anyio
+async def test_resume_cannot_pass_after_the_tail_and_head_are_deleted(
+    clean_database,
+):
+    """Deleting every later event and the head row must not verify clean."""
+    wallet_id = "wlt-bounded-resume-delete"
+    await _seed(wallet_id, 12)
+    first = await verify_audit_chain(wallet_id=wallet_id, limit=5)
+    assert first.valid and first.complete is False
+    factory = get_session_factory()
+    async with factory() as session:
+        await session.execute(
+            delete(ControlPlaneAuditEventModel).where(
+                ControlPlaneAuditEventModel.wallet_id == wallet_id,
+                ControlPlaneAuditEventModel.seq > first.next_after_seq,
+            )
+        )
+        await session.execute(
+            delete(AuditChainHeadModel).where(
+                AuditChainHeadModel.wallet_key == wallet_id
+            )
+        )
+        await session.commit()
+
+    resumed = await verify_audit_chain(
+        wallet_id=wallet_id,
+        after_seq=first.next_after_seq,
+        after_event_id=first.next_after_event_id,
+    )
+    assert resumed.valid is False
+    assert resumed.reason == "audit_chain_head_missing"

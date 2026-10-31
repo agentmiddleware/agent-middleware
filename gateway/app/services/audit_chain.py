@@ -729,6 +729,7 @@ async def _verify_single_chain(
     # Keyset position of the last walked event: (seq, created_at, event_id).
     cursor: tuple[int, datetime, str] | None = None
     expected_seq = 1
+    first_nonzero_seq: str | None = None
     # Last walked event as (event_id, seq, chain_hash); seeded from the cursor.
     last_walked: tuple[str, int, str | None] | None = None
     if after_seq is not None or after_event_id is not None:
@@ -769,6 +770,11 @@ async def _verify_single_chain(
         cursor = (anchor_seq, anchor_created, anchor_id)
         last_walked = (anchor_id, anchor_seq, anchor_hash)
         expected_seq = anchor_seq + 1
+        # The cursor event is evidence for the head-missing check below. Without
+        # it, deleting every later event and the head row would leave nothing to
+        # walk, and a resumed verification would report a clean, complete pass.
+        if anchor_seq != 0:
+            first_nonzero_seq = anchor_id
 
     walked = 0
     checked = 0
@@ -776,7 +782,6 @@ async def _verify_single_chain(
     first_event_id: str | None = None
     last_event_id: str | None = None
     first_seq_break: str | None = None
-    first_nonzero_seq: str | None = None
     head: AuditChainHeadModel | None = None
     reached_end = False
 

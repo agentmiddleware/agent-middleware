@@ -159,7 +159,6 @@ REQUIRED_PUBLIC_ASSETS = (
     "try/try.js",
     "proof/receipt.json",
     "proof/trust-keys.json",
-    "proof/transcript.json",
     # The standalone offline verifier ships with the page that documents it.
     # COPY_ASSETS already copies the whole proof/ directory; listing the file
     # here fails the build if it ever goes missing instead of publishing a
@@ -734,7 +733,7 @@ def render_console(
     recorded = html.escape(str(transcript.get("recorded_at", ""))[:10])
     parts.append(
         '<figcaption class="console-bar">'
-        f'<span class="console-title" id="{labelled_by}">governed loop · recorded</span>'
+        f'<span class="console-title" id="{labelled_by}">local demo recording</span>'
         f'<span class="console-meta">make prove-trust-plane · <time datetime="{recorded}">{recorded}</time></span>'
         "</figcaption>"
     )
@@ -767,7 +766,7 @@ def render_console(
     parts.append(
         '<p class="console-foot">'
         + html.escape(transcript["source"]["label"])
-        + ' <a href="/proof/transcript.json">Read the full recording.</a>'
+        + ' <a href="/proof/transcript.json">Read the full local demo recording.</a>'
         "</p>"
     )
     parts.append("</figure>")

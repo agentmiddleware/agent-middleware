@@ -60,7 +60,19 @@ Any Streamable HTTP MCP client can connect to `http://127.0.0.1:8000/mcp`
 with an `X-API-Key` header. An example client configuration is in
 [`examples/mcp-client/mcp.json`](examples/mcp-client/mcp.json).
 
-To use the hosted endpoint `https://api.agentmiddleware.dev/mcp` instead, [get an API key](https://www.agentmiddleware.dev/demo-key/) and send it as the `X-API-Key` header.
+To use the hosted endpoint instead of the local server, [get an API key](https://www.agentmiddleware.dev/demo-key/)
+and point the rest of this walkthrough at the hosted gateway:
+
+```bash
+export API_URL=https://api.agentmiddleware.dev
+export AMW_MCP_URL=https://api.agentmiddleware.dev/mcp
+export AGENT_API_KEY=<your API key>
+```
+
+The included client reads `AMW_MCP_URL` and `AGENT_API_KEY` and sends the key
+as the `X-API-Key` header. Set `AMW_TOOL` if your key is allowed a different
+tool than `partner.notes.write`. The `data/dogfood_partner_notes.jsonl` check
+below applies only to the local server.
 
 Standard MCP clients cannot send permit context, so the gateway mints a
 bounded permit for one tool with a short expiry from your wallet. Send an

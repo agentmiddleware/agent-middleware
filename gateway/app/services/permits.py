@@ -952,6 +952,18 @@ class PermitService:
         # reported as allowed and later subtracted from spent_credits.
         if not _storable_reservation_amount(estimated_credits):
             return PermitValidation(False, "permit_credits_invalid", model)
+        # Verify the signature before reading any permit content. Every check
+        # below reads permit fields (status, binding, allowed_tools, scopes,
+        # budgets) and some echo them back in denial details, so a forged or
+        # tampered row must be rejected before any of it is trusted or
+        # disclosed.
+        if not await self.verify_signature(model, session=session):
+            return PermitValidation(
+                False,
+                "permit_signature_invalid",
+                model,
+                {"key_id": model.key_id},
+            )
         now = utc_now()
         if model.status != "active":
             return PermitValidation(
@@ -1109,13 +1121,6 @@ class PermitService:
                     {"field": hit, "forbidden_fields": forbidden},
                 )
 
-        if not await self.verify_signature(model, session=session):
-            return PermitValidation(
-                False,
-                "permit_signature_invalid",
-                model,
-                {"key_id": model.key_id},
-            )
         return PermitValidation(True, None, model)
 
     @staticmethod
@@ -2248,7 +2253,13 @@ class PermitService:
         *,
         session: AsyncSession | None = None,
     ) -> bool:
-        payload = self._verification_payload(model)
+        # A row whose signed fields cannot even be rebuilt (for example a
+        # partial action contract) cannot carry a valid signature. Fail
+        # closed instead of raising, now that this runs before other checks.
+        try:
+            payload = self._verification_payload(model)
+        except ValueError:
+            return False
         return await get_signing_key_service().verify_payload(
             payload,
             signature=model.signature,

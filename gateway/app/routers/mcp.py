@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..audit.lightweight import record_audit
 from ..core.config import DuplicateGuardMode, get_settings
+from ..core.time import to_naive_utc, utc_now
 from ..core.reason_codes import REFUSAL_REASON_CODES, is_refusal_reason_code
 from ..policy.jev_guard import evaluate_jev_guard
 from ..services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
@@ -1123,6 +1124,27 @@ def _verified_enterprise_principal(
     return parse_enterprise_token(enterprise_bearer_token)
 
 
+async def _assert_replay_iga_access(*, auth: AuthContext, tool_name: str) -> None:
+    """Run the enterprise IGA gate before serving any stored result.
+
+    A replay must not hand one human principal another's result (or a result
+    it is no longer entitled to). The check spends no use (``consume=False``):
+    the original call already did.
+    """
+    try:
+        principal = _verified_enterprise_principal(auth.enterprise_bearer_token)
+        if principal is None:
+            return
+        decision = await enforce_tool_call(principal, tool_name, consume=False)
+    except IGAError as exc:
+        raise ToolPermissionDenied(exc.reason) from exc
+    if not decision.allowed:
+        raise ToolPermissionDenied(
+            decision.reason,
+            details={"reason_code": decision.reason, **decision.details},
+        )
+
+
 async def _execute_registered_tool(
     *,
     tool_name: str,
@@ -1381,6 +1403,103 @@ async def _assert_action_current_access(
         raise ToolPermissionDenied(policy.reason or "policy_denied")
 
 
+async def _deny_tool_outside_permit(
+    *,
+    idem: Any,
+    idem_started: bool,
+    permit_id: str,
+    wallet_id: str,
+    auth: AuthContext,
+    tool_name: str,
+    arguments: dict[str, Any],
+    endpoint: str,
+    idempotency_endpoint: str,
+    idempotency_key: str | None,
+    transport: str,
+    request_id: str | None,
+    effective_request_payload: dict[str, Any],
+    effective_request_hash: str,
+) -> None:
+    """Refuse a permit denial before registration can influence its evidence.
+
+    Returns without effect when the permit allows the tool. No credits are
+    authorized, reserved, charged, or dispatched for a refusal.
+    """
+    # Validate the permit (wallet, key, signature, expiry) BEFORE its allowlist
+    # influences the outcome. Reading allowed_tools first let a caller probe a
+    # permit_id belonging to another wallet: "not found" vs. a denial revealed
+    # whether that permit names the tool. A permit that fails validation keeps
+    # its narrower reason and details without exposing the allowlist.
+    validation = await get_permit_service().validate_for_action(
+        permit_id=permit_id,
+        wallet_id=wallet_id or "",
+        tool_name=tool_name,
+        estimated_credits=Decimal("0"),
+        key_id=auth.key_id,
+        arguments=arguments,
+    )
+    if validation.allowed:
+        # Continue to registration and price checks.
+        return
+    reason = validation.reason or "permit_tool_not_allowed"
+    details = validation.details
+    decision = evaluate_tool_invocation(
+        auth=auth,
+        wallet_id=wallet_id,
+        tool_name=tool_name,
+        estimated_cost=None,
+        request_id=request_id,
+    )
+    audit_event = await _audit_mcp_invocation(
+        effects_committed=False,
+        decision=decision,
+        endpoint=endpoint,
+        transport=transport,
+        ok=False,
+        error=reason,
+        extra_metadata={
+            "permit_id": permit_id,
+            "idempotency_key": idempotency_key,
+            "request_hash": effective_request_hash,
+        },
+    )
+    receipt_payload = None
+    # A signed receipt is minted only for an idempotent call: without a key
+    # there is no record to bind it to and retries would mint one per call.
+    if validation.permit is not None and wallet_id and idempotency_key:
+        receipt_payload = await _finalize_governed_denial(
+            unaccepted_action_owner_id=None,
+            idem=idem,
+            effects_committed=False,
+            approval_consumed=False,
+            permit_model=validation.permit,
+            wallet_id=wallet_id,
+            key_id=auth.key_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+            tool_name=tool_name,
+            request_payload=effective_request_payload,
+            arguments=arguments,
+            registered_cost=Decimal("0"),
+            audit_event_id=audit_event.event_id,
+            reason=reason,
+            reason_code=reason,
+            outcome="denied",
+            status_code=403,
+            response_extra_data={"details": details},
+        )
+    else:
+        await _complete_governed_denial_idempotency(
+            idem=idem,
+            idem_started=idem_started,
+            wallet_id=wallet_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+            reason=reason,
+        )
+    raise ToolPermissionDenied(reason, receipt=receipt_payload, details=details)
+
+
 async def _execute_registered_tool_inner(
     *,
     tool_name: str,
@@ -1476,25 +1595,114 @@ async def _execute_registered_tool_inner(
     service = registry.get_local(tool_name)
     if not service:
         service = await registry.get_persistent(tool_name)
+    if service and service.get("require_permit"):
+        governed_call = True
+        idempotency_endpoint = GOVERNED_MCP_IDEMPOTENCY_ENDPOINT
     action_identity = None
     action_binding = registry.get_action_binding(service) if service else None
     action_model = None
     if permit_id:
         async with get_session_factory()() as session:
             action_model = await session.get(PermitModel, permit_id)
-    is_action = action_model is not None and any(
-        getattr(action_model, field) is not None
-        for field in (
-            "action_contract_version",
-            "action_payload_hash",
-            "action_schema_id",
-            "action_schema_version",
-            "action_public_tool_id",
-            "action_upstream_binding_hash",
-        )
+    action_fields = (
+        [getattr(action_model, field) for field in _ACTION_PERMIT_FIELDS]
+        if action_model is not None
+        else []
     )
-    if action_binding is not None or is_action:
+    is_action = any(value is not None for value in action_fields)
+    # An action permit that does not name this tool is a permit-scope denial,
+    # decided before any registry-dependent action branch (binding lookup,
+    # validate_action_request). It takes the same governed path as a tool
+    # permit below: idempotency-key and quote gates, idempotency begin, then
+    # _deny_tool_outside_permit, which validates the permit (signature first)
+    # and, with an idempotency key, mints one signed denial receipt that a
+    # same-key retry replays. Registered and unregistered tools are
+    # indistinguishable.
+    #
+    # Authenticate the row (signature, status, expiry, wallet, key) BEFORE
+    # allowlist membership chooses the branch. Reading allowed_tools first let
+    # a foreign or tampered complete action permit return
+    # action_tool_binding_required when the tool was listed and
+    # permit_wallet_mismatch / permit_signature_invalid when it was not.
+    # Do not call validate_for_action here: that also enforces max_calls /
+    # budget and would refuse an exhausted but still-replayable action permit
+    # before the action idempotency short-circuit.
+    #
+    # An unauthenticated row stays on the action branch (never out_of_scope)
+    # so the pre-binding identity denial below raises the same reason for any
+    # tool_name, with action denial-receipt rules. Only authenticated rows may
+    # consult the unsigned allowlist for routing.
+    action_out_of_scope = False
+    if (
+        is_action
+        # A partially populated action row (some action_* fields set, others
+        # NULL) is malformed storage and stays on the action branch below.
+        and all(value is not None for value in action_fields)
+        and permit_id is not None
+        and action_model is not None
+    ):
+        authenticated = await _action_permit_authenticated_for_caller(
+            model=action_model,
+            wallet_id=wallet_id or "",
+            key_id=auth.key_id,
+        )
+        if authenticated:
+            action_out_of_scope = tool_name not in _permit_allowed_tools(action_model)
+    if (action_binding is not None or is_action) and not action_out_of_scope:
+        if (
+            is_action
+            and permit_id
+            and not all(value is not None for value in action_fields)
+        ):
+            # A partial action row is validated (signature first) before any
+            # binding decision, whatever the registry holds; a complete
+            # in-scope one is validated by validate_action_request below. No
+            # idempotency record has been begun here and none is passed, so
+            # _deny_tool_outside_permit itself mints nothing and completes
+            # nothing. The ToolPermissionDenied it raises reaches the caller
+            # through _execute_registered_tool, which attaches an unbound
+            # receipt (idempotency_record_id = None, one per call, never
+            # replayed) via _action_request_denial_receipt when the row still
+            # verifies; a row that fails signature verification (e.g.
+            # permit_signature_invalid) gets no receipt at all.
+            await _deny_tool_outside_permit(
+                idem=idem,
+                idem_started=False,
+                permit_id=permit_id,
+                wallet_id=wallet_id,
+                auth=auth,
+                tool_name=tool_name,
+                arguments=arguments,
+                endpoint=endpoint,
+                idempotency_endpoint=idempotency_endpoint,
+                idempotency_key=None,
+                transport=transport,
+                request_id=request_id,
+                effective_request_payload=effective_request_payload,
+                effective_request_hash=effective_request_hash,
+            )
+        if (
+            is_action
+            and action_model is not None
+            and all(value is not None for value in action_fields)
+        ):
+            # Complete action rows: reject unauthenticated callers before the
+            # binding check. Otherwise an allowlisted unknown tool raised
+            # action_tool_binding_required while the same foreign/tampered
+            # permit for a non-allowlisted tool took the governed path and
+            # returned permit_wallet_mismatch / permit_signature_invalid.
+            identity_reason = await _action_permit_identity_denial_reason(
+                model=action_model,
+                wallet_id=wallet_id or "",
+                key_id=auth.key_id,
+            )
+            if identity_reason is not None:
+                raise ToolPermissionDenied(identity_reason)
         if action_binding is None:
+            # An in-scope action permit for a tool with no action binding
+            # (registered without one, or unregistered). Nothing has been
+            # begun or recorded; _execute_registered_tool attaches an unbound
+            # denial receipt when the permit row verifies.
             raise ToolPermissionDenied("action_tool_binding_required")
         if not is_action or action_model is None:
             raise ToolPermissionDenied("action_permit_required")
@@ -1516,113 +1724,26 @@ async def _execute_registered_tool_inner(
         effective_request_payload = action_identity.request_payload
         effective_request_hash = sha256_hex(effective_request_payload)
 
-    if not service:
-        # Durable replay is authoritative even if an operator has since
-        # removed the executable registration. This is essential for terminal
-        # evidence recovery and avoids turning a completed invocation into a
-        # fresh "not found" response after restart or reconfiguration.
-        if governed_call and idempotency_key:
-            try:
-                idem_begin = await _begin_governed_mcp_idempotency(
-                    idem=idem,
-                    wallet_id=wallet_id,
-                    idempotency_key=idempotency_key,
-                    tool_name=tool_name,
-                    endpoint=endpoint,
-                    logical_request_payload=effective_request_payload,
-                    legacy_request_payload=request_payload,
-                    operation_kind="unresolved",
-                )
-                replay = idem_begin.replay
-                idem_started = True
-                if owned_record is not None:
-                    owned_record["record_id"] = idem_begin.record_id
-            except IdempotencyInProgressError:
-                raise
-            except IdempotencyConflictError as exc:
-                raise ValueError(str(exc)) from exc
-            if replay and replay.response_json:
-                if permit_id:
-                    await _assert_governed_replay_access(
-                        permit_id=permit_id,
-                        wallet_id=wallet_id,
-                        tool_name=tool_name,
-                        key_id=auth.key_id,
-                        replay=replay,
-                    )
-                await _raise_replayed_error(replay)
-                return replay.response_json
-        reason = f"Tool not found: {tool_name}"
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
-        )
-        raise ValueError(reason)
+    if action_identity is None:
+        if governed_call and permit_id and not idempotency_key:
+            await _audit_mcp_invocation(
+                effects_committed=False,
+                decision=tenant_decision,
+                endpoint=endpoint,
+                transport=transport,
+                ok=False,
+                error="idempotency_key_required",
+                extra_metadata={
+                    "permit_id": permit_id,
+                    "request_hash": effective_request_hash,
+                },
+            )
+            raise ValueError("idempotency_key_required")
 
-    execution_backend = str(service.get("execution_backend") or "metadata_only")
-    func = registry.get_local_func(tool_name)
-    upstream_executor = registry.get_executor(tool_name)
-    if execution_backend == "local" and func is None:
-        reason = f"Tool not executable: {tool_name}"
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
-        )
-        raise ValueError(reason)
-    if execution_backend == "upstream_mcp" and upstream_executor is None:
-        reason = f"Tool not executable: {tool_name}"
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
-        )
-        raise ValueError(reason)
-    if execution_backend not in {"local", "upstream_mcp"}:
-        reason = f"Tool not executable: {tool_name}"
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
-        )
-        raise ValueError(reason)
-
-    category = ServiceCategory(
-        service.get("category", ServiceCategory.PLATFORM_FEE.value)
-    )
-    # High-value tools can force the permit path even when legacy
-    # unpermitted MCP is otherwise allowed.
-    if service.get("require_permit"):
-        governed_call = True
-    if governed_call and action_identity is None:
-        idempotency_endpoint = GOVERNED_MCP_IDEMPOTENCY_ENDPOINT
-
-    registered_cost = _registered_tool_cost(service, category)
-
-    # A quote is a signed commitment to a price. Resolve it before anything
-    # downstream reads the cost, so the policy decision, the permit budget
-    # check, and the charge all see the number the caller was promised — not
-    # the live price it may have drifted from. Nothing is spent here; the
-    # single-use consume happens immediately before the charge.
+    # Quote validation and idempotency replay do not depend on registration.
+    # A refused request must cross the same gates for either registry state.
     quoted = None
-    if quote_id:
+    if quote_id and action_identity is None:
         quoted = await get_quote_service().validate_for_action(
             quote_id=quote_id,
             wallet_id=wallet_id,
@@ -1644,6 +1765,104 @@ async def _execute_registered_tool_inner(
                     "request_hash": effective_request_hash,
                 },
             )
+            raise PermissionError(reason)
+
+    if (
+        governed_call
+        and action_identity is None
+        and idempotency_key
+        and (permit_id or not service)
+    ):
+        execution_kind = (
+            str(service.get("execution_backend") or "metadata_only")
+            if service
+            else "unresolved"
+        )
+        try:
+            idem_begin = await _begin_governed_mcp_idempotency(
+                idem=idem,
+                wallet_id=wallet_id,
+                idempotency_key=idempotency_key,
+                tool_name=tool_name,
+                endpoint=endpoint,
+                logical_request_payload=effective_request_payload,
+                legacy_request_payload=request_payload,
+                operation_kind=execution_kind,
+                wait_timeout_seconds=(
+                    idempotency_wait_seconds
+                    if execution_kind == "upstream_mcp"
+                    else 0.0
+                ),
+            )
+            replay = idem_begin.replay
+            idem_started = True
+            if owned_record is not None:
+                owned_record["record_id"] = idem_begin.record_id
+        except (IdempotencyConflictError, IdempotencyInProgressError) as exc:
+            await _audit_mcp_invocation(
+                effects_committed=False,
+                decision=tenant_decision,
+                endpoint=endpoint,
+                transport=transport,
+                ok=False,
+                error=str(exc),
+                extra_metadata={
+                    "permit_id": permit_id,
+                    "idempotency_key": idempotency_key,
+                    "request_hash": effective_request_hash,
+                },
+            )
+            if isinstance(exc, IdempotencyInProgressError):
+                raise
+            raise ValueError(str(exc)) from exc
+        if replay and replay.response_json:
+            if permit_id:
+                await _assert_governed_replay_access(
+                    permit_id=permit_id,
+                    wallet_id=wallet_id,
+                    tool_name=tool_name,
+                    key_id=auth.key_id,
+                    replay=replay,
+                )
+            # Same IGA gate as the registered-tool replay path: a revoked
+            # principal must not read stored results via a removed tool.
+            await _assert_replay_iga_access(auth=auth, tool_name=tool_name)
+            await _raise_replayed_error(replay)
+            return replay.response_json
+
+    if governed_call and permit_id and action_identity is None:
+        # Decide permit refusals without a registered price. Denials authorize
+        # no credits and cannot reveal whether this tool is executable.
+        await _deny_tool_outside_permit(
+            idem=idem,
+            idem_started=idem_started,
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            auth=auth,
+            tool_name=tool_name,
+            arguments=arguments,
+            endpoint=endpoint,
+            idempotency_endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+            transport=transport,
+            request_id=request_id,
+            effective_request_payload=effective_request_payload,
+            effective_request_hash=effective_request_hash,
+        )
+
+    if not service:
+        reason = f"Tool not found: {tool_name}"
+        if permit_id:
+            # A permitted call: registry state is not the key's final answer.
+            await _release_unresolved_tool_idempotency(
+                idem=idem,
+                idem_begin=idem_begin if idem_started else None,
+                wallet_id=wallet_id,
+                endpoint=idempotency_endpoint,
+                idempotency_key=idempotency_key,
+            )
+        else:
+            # No permit: unchanged contract, a terminal replayable record.
             await _complete_governed_denial_idempotency(
                 idem=idem,
                 idem_started=idem_started,
@@ -1651,10 +1870,55 @@ async def _execute_registered_tool_inner(
                 endpoint=idempotency_endpoint,
                 idempotency_key=idempotency_key,
                 reason=reason,
+                status_code=400,
             )
-            # Denying beats quietly charging a different number: a price lock
-            # that silently reprices is worse than no lock at all.
-            raise PermissionError(reason)
+        raise ValueError(reason)
+
+    execution_backend = str(service.get("execution_backend") or "metadata_only")
+    func = registry.get_local_func(tool_name)
+    upstream_executor = registry.get_executor(tool_name)
+    if execution_backend == "local" and func is None:
+        reason = f"Tool not executable: {tool_name}"
+        await _release_unresolved_tool_idempotency(
+            idem=idem,
+            idem_begin=idem_begin if idem_started else None,
+            wallet_id=wallet_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+        )
+        raise ValueError(reason)
+    if execution_backend == "upstream_mcp" and upstream_executor is None:
+        reason = f"Tool not executable: {tool_name}"
+        await _release_unresolved_tool_idempotency(
+            idem=idem,
+            idem_begin=idem_begin if idem_started else None,
+            wallet_id=wallet_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+        )
+        raise ValueError(reason)
+    if execution_backend not in {"local", "upstream_mcp"}:
+        reason = f"Tool not executable: {tool_name}"
+        await _release_unresolved_tool_idempotency(
+            idem=idem,
+            idem_begin=idem_begin if idem_started else None,
+            wallet_id=wallet_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+        )
+        raise ValueError(reason)
+
+    category = ServiceCategory(
+        service.get("category", ServiceCategory.PLATFORM_FEE.value)
+    )
+    registered_cost = _registered_tool_cost(service, category)
+
+    # A quote is a signed commitment to a price. Resolve it before anything
+    # downstream reads the cost, so the policy decision, the permit budget
+    # check, and the charge all see the number the caller was promised — not
+    # the live price it may have drifted from. Nothing is spent here; the
+    # single-use consume happens immediately before the charge.
+    if quoted is not None and quoted.quote is not None:
         registered_cost = quoted.quote.quoted_credits
 
     charge_units = _charge_units_for_registered_cost(registered_cost, category)
@@ -1691,29 +1955,7 @@ async def _execute_registered_tool_inner(
                 "request_hash": effective_request_hash,
             },
         )
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason="permit_required",
-        )
         raise PermissionError("permit_required")
-    if governed_call and not idempotency_key:
-        await _audit_mcp_invocation(
-            effects_committed=False,
-            decision=decision,
-            endpoint=endpoint,
-            transport=transport,
-            ok=False,
-            error="idempotency_key_required",
-            extra_metadata={
-                "permit_id": permit_id,
-                "request_hash": effective_request_hash,
-            },
-        )
-        raise ValueError("idempotency_key_required")
 
     if action_identity is not None:
         existing = await idem.get_action_record(
@@ -1753,37 +1995,19 @@ async def _execute_registered_tool_inner(
                         admission.reason or "action_permit_denied"
                     )
 
-    if governed_call and idempotency_key and not idem_started:
+    if governed_call and idempotency_key and action_identity is not None:
         try:
-            if action_identity is not None:
-                idem_begin = await idem.begin_action_with_record(
-                    wallet_id=wallet_id,
-                    identity=action_identity,
-                    wait_timeout_seconds=idempotency_wait_seconds,
-                )
-            else:
-                idem_begin = await _begin_governed_mcp_idempotency(
-                    idem=idem,
-                    wallet_id=wallet_id,
-                    idempotency_key=idempotency_key,
-                    tool_name=tool_name,
-                    endpoint=endpoint,
-                    logical_request_payload=effective_request_payload,
-                    legacy_request_payload=request_payload,
-                    operation_kind=execution_backend,
-                    wait_timeout_seconds=(
-                        idempotency_wait_seconds
-                        if execution_backend == "upstream_mcp"
-                        else 0.0
-                    ),
-                )
+            idem_begin = await idem.begin_action_with_record(
+                wallet_id=wallet_id,
+                identity=action_identity,
+                wait_timeout_seconds=idempotency_wait_seconds,
+            )
             replay = idem_begin.replay
             idem_started = True
             if owned_record is not None:
                 owned_record["record_id"] = idem_begin.record_id
-                if action_identity is not None:
-                    owned_record["endpoint"] = action_identity.endpoint
-                    owned_record["key"] = action_identity.idempotency_key
+                owned_record["endpoint"] = action_identity.endpoint
+                owned_record["key"] = action_identity.idempotency_key
         except (IdempotencyConflictError, IdempotencyInProgressError) as exc:
             await _audit_mcp_invocation(
                 effects_committed=False,
@@ -1802,19 +2026,18 @@ async def _execute_registered_tool_inner(
                 raise
             raise ValueError(str(exc))
         if replay and replay.response_json:
-            if action_identity is not None:
-                # A waiter may observe completion after authority was revoked.
-                # This denial must never finalize or overwrite the accepted owner.
-                await _assert_action_current_access(
-                    permit_id=permit_id or "",
-                    wallet_id=wallet_id,
-                    auth=auth,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    money=money,
-                    estimated_cost=Decimal("0"),
-                    phase="replay",
-                )
+            # A waiter may observe completion after authority was revoked.
+            # This denial must never finalize or overwrite the accepted owner.
+            await _assert_action_current_access(
+                permit_id=permit_id or "",
+                wallet_id=wallet_id,
+                auth=auth,
+                tool_name=tool_name,
+                arguments=arguments,
+                money=money,
+                estimated_cost=Decimal("0"),
+                phase="replay",
+            )
             await _assert_governed_replay_access(
                 permit_id=permit_id,
                 wallet_id=wallet_id,
@@ -1822,6 +2045,7 @@ async def _execute_registered_tool_inner(
                 key_id=auth.key_id,
                 replay=replay,
             )
+            await _assert_replay_iga_access(auth=auth, tool_name=tool_name)
             await _raise_replayed_error(replay)
             return replay.response_json
 
@@ -3898,6 +4122,98 @@ def _governed_error_payload(
     return payload
 
 
+_ACTION_PERMIT_FIELDS = (
+    "action_contract_version",
+    "action_payload_hash",
+    "action_schema_id",
+    "action_schema_version",
+    "action_public_tool_id",
+    "action_upstream_binding_hash",
+)
+
+
+async def _action_permit_identity_denial_reason(
+    *,
+    model: PermitModel,
+    wallet_id: str,
+    key_id: str | None,
+) -> str | None:
+    """Return an authenticity denial reason, or None when the caller is bound.
+
+    Check order matches ``validate_action_request`` (wallet, key, status,
+    expiry, signature) so action denial surfaces stay stable. Stops before
+    allowlist, scopes, budget, and max_calls — those must not influence
+    branch selection for an unauthenticated row, and max_calls must not run
+    before action idempotency replay can short-circuit.
+    """
+    if model.subject_wallet_id != wallet_id:
+        return "permit_wallet_mismatch"
+    if model.subject_key_id and model.subject_key_id != key_id:
+        return "permit_key_mismatch"
+    if model.status != "active":
+        return f"permit_{model.status}"
+    if to_naive_utc(model.expires_at) <= utc_now():
+        return "permit_expired"
+    if not await get_permit_service().verify_signature(model):
+        return "permit_signature_invalid"
+    return None
+
+
+async def _action_permit_authenticated_for_caller(
+    *,
+    model: PermitModel,
+    wallet_id: str,
+    key_id: str | None,
+) -> bool:
+    """True when the action permit row is authentic for this caller.
+
+    Used only to decide whether unsigned ``allowed_tools`` may influence
+    action-vs-governed routing. A False result must not depend on which tool
+    was requested, and must not read the allowlist.
+    """
+    reason = await _action_permit_identity_denial_reason(
+        model=model,
+        wallet_id=wallet_id,
+        key_id=key_id,
+    )
+    return reason is None
+
+
+def _permit_allowed_tools(model: Any) -> list[str]:
+    """The permit row's allowed_tools; malformed storage reads as empty."""
+    try:
+        value = json.loads(model.allowed_tools_json or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+async def _release_unresolved_tool_idempotency(
+    *,
+    idem: Any,
+    idem_begin: IdempotencyBegin | None,
+    wallet_id: str,
+    endpoint: str,
+    idempotency_key: str | None,
+) -> None:
+    """Release a governed claim when the tool cannot run yet.
+
+    "Tool not found" / "Tool not executable" depend on the current registry,
+    not on the request, so they must not be stored as the key's final answer:
+    a same-key retry after the tool is registered or made executable has to
+    execute instead of replaying the old failure. Nothing has run and nothing
+    was charged, so the pinned record is simply deleted.
+    """
+    if idem_begin is None or not idempotency_key:
+        return
+    await idem.abandon(
+        wallet_id=wallet_id,
+        endpoint=endpoint,
+        idempotency_key=idempotency_key,
+        expected_record_id=idem_begin.record_id,
+    )
+
+
 async def _complete_governed_denial_idempotency(
     *,
     idem: Any,
@@ -4430,6 +4746,7 @@ async def _raise_replayed_error(replay: Any) -> None:
         return
     reason = str(replay.response_json.get("error") or "governed_call_failed")
     receipt = replay.response_json.get("receipt")
+    details = replay.response_json.get("details")
     extra_data = {}
     reconciliation = replay.response_json.get("refund_reconciliation")
     if isinstance(reconciliation, dict):
@@ -4464,7 +4781,6 @@ async def _raise_replayed_error(replay: Any) -> None:
     if isinstance(dispatch, dict):
         extra_data["dispatch"] = dispatch
     if replay.status_code == 403:
-        details = replay.response_json.get("details")
         raise ToolPermissionDenied(
             reason,
             receipt=receipt,
@@ -4665,7 +4981,7 @@ async def _audit_mcp_invocation(
             error=error,
             metadata={
                 "transport": transport,
-                "estimated_cost": decision.estimated_cost,
+                **({"estimated_cost": decision.estimated_cost} if ok else {}),
                 "policy_reason": decision.reason,
                 **(extra_metadata or {}),
             },
@@ -4740,19 +5056,43 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
     if registry.get_action_binding(record) is not None:
         raise ToolPermissionDenied("action_permit_required")
 
-    from .mcp_standard import _mint_auto_permit, _permit_error
+    from .mcp_standard import (
+        _mint_auto_permit,
+        _permit_error,
+        _resolve_unkeyed_retry,
+    )
 
     try:
-        permit_id = await _mint_auto_permit(
-            auth=request.auth,
-            tool_name=request.tool_name,
-            record=record,
-            client_key=request.idempotency_key,
-            requires_human_approval=await wallet_human_approval_required(
-                request.auth.wallet_id
-            ),
-            map_mcp_errors=False,
-        )
+        requires_approval = await wallet_human_approval_required(request.auth.wallet_id)
+        resolved = None
+        if not request.idempotency_key:
+            # Deterministic retry slot for unkeyed calls so a retry resolves
+            # to the same auto permit and replays instead of dispatching
+            # twice (SEL-484).
+            resolved = await _resolve_unkeyed_retry(
+                auth=request.auth,
+                tool_name=request.tool_name,
+                record=record,
+                arguments=request.arguments,
+                requires_human_approval=requires_approval,
+                map_mcp_errors=False,
+            )
+        if resolved is not None:
+            request.idempotency_key, permit_id = resolved
+        elif not request.idempotency_key:
+            # No deterministic retry slot and no client key: refuse rather
+            # than mint a random per-attempt key that would let a retry
+            # dispatch and bill twice (SEL-498 / #208).
+            raise ValueError("idempotency_key_required")
+        else:
+            permit_id = await _mint_auto_permit(
+                auth=request.auth,
+                tool_name=request.tool_name,
+                record=record,
+                client_key=request.idempotency_key,
+                requires_human_approval=requires_approval,
+                map_mcp_errors=False,
+            )
     except PermitWriteContendedError:
         raise
     except PermitError as exc:
@@ -4768,7 +5108,6 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
     except IdempotencyConflictError as exc:
         raise ValueError("idempotency_key_reused") from exc
     request.permit_id = permit_id
-    request.idempotency_key = request.idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
     return permit_id
 
 

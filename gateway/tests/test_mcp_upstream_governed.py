@@ -62,6 +62,7 @@ from app.services.upstream_mcp import (
     register_configured_upstream_mcp,
 )
 from tests.test_trust_helpers import (
+    resign_permit_model,
     BOOTSTRAP_HEADERS,
     create_tool_permit,
     provision_agent_wallet,
@@ -2800,6 +2801,7 @@ async def test_upstream_permit_denials_never_charge_or_dispatch(
                 model = await session.get(PermitModel, permit["permit_id"])
                 assert model is not None
                 model.expires_at = utc_now() - timedelta(seconds=1)
+                await resign_permit_model(model)
                 session.add(model)
                 await session.commit()
 
@@ -3302,3 +3304,28 @@ async def test_simulated_runtime_category_still_uses_the_runtime_mode_result(
         ]
     finally:
         get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_register_upstream_read_only_is_operator_declared(read_only):
+    """SEL-484: remote tools default to mutating; an operator may opt out."""
+    tool_name = f"upstream-ro-{read_only}"
+    registry = get_service_registry()
+    kwargs = {"read_only": True} if read_only else {}
+    try:
+        registry.register_upstream(
+            service_id=tool_name,
+            name=tool_name,
+            description="read_only flag test",
+            category=ServiceCategory.AGENT_COMMS,
+            executor=object(),
+            input_schema={"type": "object"},
+            output_schema=None,
+            credits_per_unit=1.0,
+            upstream_tool_name="partner.echo",
+            upstream_origin="https://partner.example",
+            **kwargs,
+        )
+        assert registry.get_local(tool_name)["read_only"] is read_only
+    finally:
+        registry.unregister_local(tool_name)

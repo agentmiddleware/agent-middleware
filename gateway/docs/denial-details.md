@@ -122,6 +122,7 @@ marked API-only occur before a signed denial receipt can be created.
 | `key_tool_not_allowed` | The API key's own tool allowlist excludes the tool. | Use a key that allows the tool. |
 | `demo_tool_not_allowed` | Demo-tenant wallets may call only the demo allowlist. | Use an allowed demo tool or a non-demo wallet. |
 | `demo_auto_permit_budget_exceeded` | The tool costs more than the demo auto-permit credit cap. | Use a cheaper tool or a non-demo wallet. |
+| `idempotency_key_required` | An unkeyed MCP `tools/call` got no derived retry key (a `read_only` tool, `MCP_UNKEYED_RETRY_WINDOW_SECONDS=0`, or an enterprise bearer that fails verification). Refused before any permit, dispatch, or charge instead of minting a random key. | Send an `Idempotency-Key` and reuse it when retrying the same call. |
 | `idempotency_key_required_for_human_approval` | The wallet policy requires approval, and without a client idempotency key each retry would page a human again. | Send an `Idempotency-Key` and retry the same call with the same key to poll the decision. |
 | `idempotency_key_not_a_string` | API-only: a supplied request key is not a string. | Send a string key. |
 | `idempotency_key_blank` | API-only: the key is empty or only whitespace. | Send a non-blank key. |

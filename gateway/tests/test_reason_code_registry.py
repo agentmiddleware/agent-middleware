@@ -68,6 +68,7 @@ PINNED = frozenset(
         "idempotency_key_control_characters",
         "idempotency_key_not_a_string",
         "idempotency_key_not_utf8",
+        "idempotency_key_required",
         "idempotency_key_required_for_human_approval",
         "idempotency_key_reused",
         "idempotency_key_too_long",

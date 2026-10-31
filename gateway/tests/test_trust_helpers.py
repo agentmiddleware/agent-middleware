@@ -83,3 +83,20 @@ async def create_tool_permit(
     )
     assert permit_resp.status_code == 201
     return permit_resp.json()
+
+
+async def resign_permit_model(model: Any) -> None:
+    """Re-sign a permit row after a test edits its signed fields in place.
+
+    validate_for_action verifies the signature before reading any permit
+    field, so a test that backdates expires_at or plants a malformed limit
+    must re-sign the row to reach the check it is exercising.
+    """
+    from app.services.permits import get_permit_service
+    from app.services.signing_keys import get_signing_key_service
+
+    signature, kid, _ = await get_signing_key_service().sign_payload(
+        get_permit_service()._unsigned_payload(model)
+    )
+    model.signature = signature
+    model.key_id = kid

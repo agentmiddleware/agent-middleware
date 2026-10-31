@@ -5,7 +5,7 @@ All settings are loaded from environment variables for zero-GUI deployment.
 
 from decimal import Decimal
 from enum import Enum
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # --- Server ---
-    HOST: str = "0.0.0.0"
+    # Loopback by default, matching uvicorn's own default bind. DEBUG open
+    # mode only serves requests when HOST is an explicit loopback bind, so a
+    # shared-interface default would refuse every local open-mode call.
+    # Deployments that bind a public interface set HOST explicitly.
+    HOST: str = "127.0.0.1"
     PORT: int = 8000
     CORS_ORIGINS: str = ""
 
@@ -58,11 +62,23 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     REDIS_URL: str = ""
     SQLITE_URL: str = ""
+    # PostgreSQL row-level security for wallet-scoped tables (migration
+    # 048_tenant_rls), ported from the archived agent-middleware-api Settings
+    # with the same name, default and validation. "off" (default): the
+    # migration creates the policies but leaves RLS disabled, so nothing
+    # changes for any client. "enforce": migrating in this mode enables and
+    # forces RLS. This gateway does not yet set app.current_wallet_id per
+    # transaction, so enforce fails closed for a NOSUPERUSER NOBYPASSRLS
+    # runtime role; see docs/schema-048-rollout.md. No effect on SQLite.
+    TENANT_RLS_MODE: str = "off"
 
     # --- Database Pool Settings ---
     # Used for SQLModel/SQLAlchemy async sessions
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
+
+    # Opt-in only; no automatic usage-event cleanup is scheduled.
+    API_KEY_USAGE_RETENTION_DAYS: int | None = Field(default=None, ge=0)
 
     # --- Authentication ---
     API_KEY_HEADER: str = "X-API-Key"
@@ -210,13 +226,15 @@ class Settings(BaseSettings):
     ENABLE_DOGFOOD_SECOND_TOOL: bool = False
 
     # --- Governed upstream MCP partner tool ---
-    # One explicitly configured Streamable HTTP server/tool for the
+    # One explicitly configured Streamable HTTP server, with one or more tools, for the
     # design-partner pilot. The adapter fails closed at startup when enabled
     # with incomplete or unsafe configuration.
     MCP_UPSTREAM_ENABLED: bool = False
     MCP_UPSTREAM_URL: str = ""
     MCP_UPSTREAM_TOOL_NAME: str = ""
     MCP_UPSTREAM_PUBLIC_TOOL_ID: str = ""
+    MCP_UPSTREAM_MULTI_TOOL_ENABLED: bool = False
+    MCP_UPSTREAM_TOOL_ALLOWLIST: str = ""
     MCP_UPSTREAM_BEARER_TOKEN: SecretStr = SecretStr("")
     MCP_UPSTREAM_CREDITS_PER_CALL: Decimal = Decimal("0")
     MCP_UPSTREAM_CONNECT_TIMEOUT_SECONDS: float = 5.0
@@ -234,6 +252,14 @@ class Settings(BaseSettings):
     JEV_RISK_GUARD_TIMEOUT_SECONDS: float = 1.5
     JEV_RISK_GUARD_TIERS: str = "medium,high"
     TYPESAFE_API_KEY: SecretStr = SecretStr("")
+    # Optional PostHog product tracking (docs/product-analytics.md). Blank
+    # key = tracking off. Declared here so .env entries load.
+    POSTHOG_API_KEY: SecretStr = SecretStr("")
+    POSTHOG_HOST: str = ""
+    # Server pepper for HMAC-SHA256 API-key digests. Required in
+    # production-like environments (startup refuses to boot without it).
+    # See docs/api-key-hashing.md. Never log it.
+    API_KEY_HASH_PEPPER: SecretStr = SecretStr("")
     TYPESAFE_BASE_URL: str = "https://api.typesafe.ai"
     # Default repeat detection window in seconds. Duplicates outside this window
     # are not detected.
@@ -285,6 +311,33 @@ class Settings(BaseSettings):
     ENABLE_STANDARD_MCP_ENDPOINT: bool = True
     STANDARD_MCP_PERMIT_TTL_SECONDS: int = 120
 
+    # Unkeyed tools/call retry safety (SEL-484 / G1, MCP issue #3394).
+    # A mutating call without a client idempotency key gets a deterministic
+    # key derived from wallet, API key, verified enterprise principal, tool and
+    # canonical arguments. The window slides from the first call (a retry that
+    # crosses a bucket edge still joins it), so a lost-response retry within
+    # this many seconds replays the original receipt instead of dispatching
+    # again; a refunded pre-dispatch failure is retried, not replayed.
+    # Read-only tools get no derived key, so unkeyed read-only calls are
+    # refused with idempotency_key_required (SEL-498); there is never a
+    # random per-call key. Identical deliberate unkeyed calls inside one
+    # window collapse to one dispatch; callers needing repeats must send
+    # distinct keys. 0 disables derived keys, so every unkeyed call is
+    # refused. The effective window is capped at the auto-permit TTL
+    # (STANDARD_MCP_PERMIT_TTL_SECONDS, default 120; lower for demo): a
+    # joined slot reuses its auto permit. With defaults the window is 120 s,
+    # and a later identical retry runs and bills again.
+    MCP_UNKEYED_RETRY_WINDOW_SECONDS: int = 300
+
+    @field_validator("MCP_UNKEYED_RETRY_WINDOW_SECONDS")
+    @classmethod
+    def _validate_unkeyed_retry_window(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(
+                "MCP_UNKEYED_RETRY_WINDOW_SECONDS must be >= 0 (0 disables)"
+            )
+        return value
+
     # --- Public MCP endpoint (POST /mcp/public) ---
     # Unauthenticated, read-only Streamable HTTP surface for MCP clients
     # that cannot hold an API key (public plugin runtimes such as ChatGPT
@@ -313,6 +366,15 @@ class Settings(BaseSettings):
     # re-declare it as a module constant — a second copy silently lets the
     # advertised rate drift from the rate real money converts at.
     EXCHANGE_RATE: Decimal = Decimal("1000.0")
+
+    @field_validator("TENANT_RLS_MODE")
+    @classmethod
+    def _validate_tenant_rls_mode(cls, value: str) -> str:
+        """Only the two documented modes; a typo must not silently mean off."""
+        normalized = (value or "").strip().lower()
+        if normalized not in {"off", "enforce"}:
+            raise ValueError("TENANT_RLS_MODE must be 'off' or 'enforce'")
+        return normalized
 
     @field_validator("EXCHANGE_RATE")
     @classmethod

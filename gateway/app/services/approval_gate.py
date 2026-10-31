@@ -41,11 +41,11 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal, TypeVar, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
 
-from app.core.time import to_naive_utc, utc_now
+from app.core.time import to_naive_utc
 from app.db.approval_gate_models import ApprovalGateModel
 from app.db.database import get_session_factory
 
@@ -162,10 +162,30 @@ class ApprovalRecord:
 class ApprovalStore:
     """Interface for pending approvals so a DB-backed store can replace memory."""
 
-    def save(self, record: ApprovalRecord) -> None:
+    def save(self, record: ApprovalRecord, *, now: float | None = None) -> None:
         raise NotImplementedError
 
     def get(self, nonce: str) -> ApprovalRecord | None:
+        raise NotImplementedError
+
+    def find_active_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        """Live record for a key: pending, or approved and unconsumed.
+
+        Only unexpired records (``deadline`` after ``now``) count; None when
+        no such record exists.
+        """
+        raise NotImplementedError
+
+    def find_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        """Live spent record for a key: consumed with deadline after now.
+
+        Used at creation to refuse a fresh mint while a prior spend's
+        deadline is still live; None when no such record exists.
+        """
         raise NotImplementedError
 
     def list_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
@@ -184,7 +204,9 @@ class ApprovalStore:
     def consume(self, nonce: str, *, now: float) -> ApprovalRecord | None:
         """Single-use: first call on approved marks consumed; later calls None.
 
-        Expired approvals (``deadline`` past ``now``) never consume.
+        Expired approvals (``now`` at or past ``deadline``) never consume,
+        and neither does a nonce whose idempotency key already spent on
+        another live record.
         """
         raise NotImplementedError
 
@@ -192,12 +214,24 @@ class ApprovalStore:
         """Flip pending to expired; None when missing."""
         raise NotImplementedError
 
-    async def asave(self, record: ApprovalRecord) -> None:
+    async def asave(self, record: ApprovalRecord, *, now: float | None = None) -> None:
         """Async ``save`` for handlers already on the app event loop."""
         raise NotImplementedError
 
     async def aget(self, nonce: str) -> ApprovalRecord | None:
         """Async ``get`` for handlers already on the app event loop."""
+        raise NotImplementedError
+
+    async def afind_active_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        """Async ``find_active_by_key`` for handlers already on the app loop."""
+        raise NotImplementedError
+
+    async def afind_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        """Async ``find_consumed_by_key`` for handlers on the app loop."""
         raise NotImplementedError
 
     async def alist_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
@@ -226,7 +260,8 @@ class InMemoryApprovalStore(ApprovalStore):
         self._lock = threading.Lock()
         self._records: dict[str, ApprovalRecord] = {}
 
-    def save(self, record: ApprovalRecord) -> None:
+    def save(self, record: ApprovalRecord, *, now: float | None = None) -> None:
+        del now  # in-memory records carry their own timestamps; nothing to stamp.
         with self._lock:
             self._records[record.nonce] = replace(record)
 
@@ -234,6 +269,39 @@ class InMemoryApprovalStore(ApprovalStore):
         with self._lock:
             record = self._records.get(nonce)
             return replace(record) if record else None
+
+    def find_active_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        with self._lock:
+            candidates = [
+                record
+                for record in self._records.values()
+                if record.idempotency_key == idempotency_key
+                and record.deadline > now
+                and (
+                    record.status == "pending"
+                    or (record.status == "approved" and not record.consumed)
+                )
+            ]
+            if not candidates:
+                return None
+            return replace(min(candidates, key=lambda r: (r.created_at, r.nonce)))
+
+    def find_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        with self._lock:
+            candidates = [
+                record
+                for record in self._records.values()
+                if record.idempotency_key == idempotency_key
+                and record.consumed
+                and record.deadline > now
+            ]
+            if not candidates:
+                return None
+            return replace(min(candidates, key=lambda r: (r.created_at, r.nonce)))
 
     def list_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
         with self._lock:
@@ -267,6 +335,20 @@ class InMemoryApprovalStore(ApprovalStore):
                 return None
             if record.deadline <= now:
                 return None
+            for other in self._records.values():
+                if (
+                    other.nonce != nonce
+                    and other.idempotency_key == record.idempotency_key
+                    and other.consumed
+                    and other.deadline > now
+                ):
+                    # Spent sibling blocks this spend: terminalize to denied
+                    # under the same lock so the approval can never revive
+                    # past the sibling's deadline.
+                    self._records[nonce] = replace(
+                        record, status="denied", decided_at=now
+                    )
+                    return None
             updated = replace(record, consumed=True)
             self._records[nonce] = updated
             return replace(updated)
@@ -281,11 +363,21 @@ class InMemoryApprovalStore(ApprovalStore):
                 self._records[nonce] = record
             return replace(record)
 
-    async def asave(self, record: ApprovalRecord) -> None:
-        self.save(record)
+    async def asave(self, record: ApprovalRecord, *, now: float | None = None) -> None:
+        self.save(record, now=now)
 
     async def aget(self, nonce: str) -> ApprovalRecord | None:
         return self.get(nonce)
+
+    async def afind_active_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        return self.find_active_by_key(idempotency_key, now=now)
+
+    async def afind_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        return self.find_consumed_by_key(idempotency_key, now=now)
 
     async def alist_pending(self, *, now: float | None = None) -> list[ApprovalRecord]:
         return self.list_pending(now=now)
@@ -336,7 +428,23 @@ def _from_db_time(value: datetime) -> float:
     return value.replace(tzinfo=timezone.utc).timestamp()
 
 
-def _model_from_record(record: ApprovalRecord) -> ApprovalGateModel:
+def _model_from_record(
+    record: ApprovalRecord, *, now: float | None = None
+) -> ApprovalGateModel:
+    if record.consumed:
+        # The consume UPDATE stamps the caller's now; a consumed record
+        # reaching save() (merge) falls back to the closest record timestamp
+        # so no wall-clock read sneaks in beside the gate clock.
+        stamp = now
+        if stamp is None:
+            stamp = (
+                record.decided_at
+                if record.decided_at is not None
+                else record.created_at
+            )
+        consumed_at = _to_db_time(stamp)
+    else:
+        consumed_at = None
     return ApprovalGateModel(
         nonce=record.nonce,
         idempotency_key=record.idempotency_key,
@@ -350,7 +458,7 @@ def _model_from_record(record: ApprovalRecord) -> ApprovalGateModel:
         decided_at=(
             _to_db_time(record.decided_at) if record.decided_at is not None else None
         ),
-        consumed_at=utc_now() if record.consumed else None,
+        consumed_at=consumed_at,
     )
 
 
@@ -384,13 +492,13 @@ class DbApprovalStore(ApprovalStore):
     retries can replay it, and an expired approval can never spend.
     """
 
-    def save(self, record: ApprovalRecord) -> None:
-        _run_sync(self.asave(record))
+    def save(self, record: ApprovalRecord, *, now: float | None = None) -> None:
+        _run_sync(self.asave(record, now=now))
 
-    async def asave(self, record: ApprovalRecord) -> None:
+    async def asave(self, record: ApprovalRecord, *, now: float | None = None) -> None:
         factory = get_session_factory()
         async with factory() as session:
-            await session.merge(_model_from_record(record))
+            await session.merge(_model_from_record(record, now=now))
             await session.commit()
 
     def get(self, nonce: str) -> ApprovalRecord | None:
@@ -403,6 +511,91 @@ class DbApprovalStore(ApprovalStore):
                 select(ApprovalGateModel).where(
                     cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
                 )
+            )
+            model = result.scalar_one_or_none()
+            return _record_from_model(model) if model is not None else None
+
+    def find_active_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        return _run_sync(self.afind_active_by_key(idempotency_key, now=now))
+
+    async def afind_active_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(ApprovalGateModel)
+                .where(
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.idempotency_key == idempotency_key,
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.deadline > _to_db_time(now),
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        or_(
+                            cast(
+                                ColumnElement[bool],
+                                ApprovalGateModel.status == "pending",
+                            ),
+                            and_(
+                                cast(
+                                    ColumnElement[bool],
+                                    ApprovalGateModel.status == "approved",
+                                ),
+                                cast(
+                                    ColumnElement[bool],
+                                    cast(Any, ApprovalGateModel.consumed_at).is_(None),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+                .order_by(
+                    col(ApprovalGateModel.created_at).asc(),
+                    col(ApprovalGateModel.nonce).asc(),
+                )
+                .limit(1)
+            )
+            model = result.scalar_one_or_none()
+            return _record_from_model(model) if model is not None else None
+
+    def find_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        return _run_sync(self.afind_consumed_by_key(idempotency_key, now=now))
+
+    async def afind_consumed_by_key(
+        self, idempotency_key: str, *, now: float
+    ) -> ApprovalRecord | None:
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(ApprovalGateModel)
+                .where(
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.idempotency_key == idempotency_key,
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        cast(Any, ApprovalGateModel.consumed_at).is_not(None),
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.deadline > _to_db_time(now),
+                    ),
+                )
+                .order_by(
+                    col(ApprovalGateModel.created_at).asc(),
+                    col(ApprovalGateModel.nonce).asc(),
+                )
+                .limit(1)
             )
             model = result.scalar_one_or_none()
             return _record_from_model(model) if model is not None else None
@@ -493,9 +686,48 @@ class DbApprovalStore(ApprovalStore):
         one caller (one retry, one transport) wins, a restart cannot
         resurrect a spent approval, and an approval whose deadline passed
         between the gate's expiry check and this UPDATE still cannot spend.
+        The ``NOT EXISTS`` sibling check extends the single spend to the
+        whole idempotency key: a second nonce approved for the same key
+        cannot spend while the first spend's deadline has not passed. When
+        the sibling check is what blocks the spend, a second conditional
+        UPDATE terminalizes this nonce to denied so it can never revive
+        past the sibling's deadline.
         """
         factory = get_session_factory()
         async with factory() as session:
+            # The key never changes after insert, so reading it first is safe;
+            # the NOT EXISTS check itself still runs inside the UPDATE below.
+            key_result = await session.execute(
+                select(ApprovalGateModel).where(
+                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
+                )
+            )
+            key_model = key_result.scalar_one_or_none()
+            if key_model is None:
+                return None
+            key = key_model.idempotency_key
+
+            def _sibling_live() -> Any:
+                return (
+                    select(1)
+                    .where(
+                        cast(
+                            ColumnElement[bool],
+                            ApprovalGateModel.idempotency_key == key,
+                        ),
+                        cast(ColumnElement[bool], ApprovalGateModel.nonce != nonce),
+                        cast(
+                            ColumnElement[bool],
+                            cast(Any, ApprovalGateModel.consumed_at).is_not(None),
+                        ),
+                        cast(
+                            ColumnElement[bool],
+                            ApprovalGateModel.deadline > _to_db_time(now),
+                        ),
+                    )
+                    .exists()
+                )
+
             updated = await session.execute(
                 update(ApprovalGateModel)
                 .where(
@@ -512,19 +744,45 @@ class DbApprovalStore(ApprovalStore):
                         ColumnElement[bool],
                         ApprovalGateModel.deadline > _to_db_time(now),
                     ),
+                    cast(ColumnElement[bool], ~_sibling_live()),
                 )
-                .values(consumed_at=utc_now())
+                .values(consumed_at=_to_db_time(now))
+            )
+            if cast(Any, updated).rowcount == 1:
+                await session.commit()
+                result = await session.execute(
+                    select(ApprovalGateModel).where(
+                        cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
+                    )
+                )
+                model = result.scalar_one_or_none()
+                return _record_from_model(model) if model is not None else None
+            # Spend lost: when a live spent sibling is the blocker, move this
+            # nonce to denied in one conditional UPDATE so it stays refused
+            # even after the sibling's deadline passes. Other losses
+            # (missing, denied, consumed, expired) match no row here.
+            await session.execute(
+                update(ApprovalGateModel)
+                .where(
+                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.status == "approved",
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        cast(Any, ApprovalGateModel.consumed_at).is_(None),
+                    ),
+                    cast(
+                        ColumnElement[bool],
+                        ApprovalGateModel.deadline > _to_db_time(now),
+                    ),
+                    cast(ColumnElement[bool], _sibling_live()),
+                )
+                .values(status="denied", decided_at=_to_db_time(now))
             )
             await session.commit()
-            if cast(Any, updated).rowcount != 1:
-                return None
-            result = await session.execute(
-                select(ApprovalGateModel).where(
-                    cast(ColumnElement[bool], ApprovalGateModel.nonce == nonce)
-                )
-            )
-            model = result.scalar_one_or_none()
-            return _record_from_model(model) if model is not None else None
+            return None
 
     def mark_expired(self, nonce: str, *, now: float) -> ApprovalRecord | None:
         return _run_sync(self.amark_expired(nonce, now=now))
@@ -564,6 +822,16 @@ ReceiptSink = Callable[[str, dict[str, Any]], None]
 
 
 def _log_receipt_sink(event: str, record: dict[str, Any]) -> None:
+    """Default gate receipt route: one structured log line per event.
+
+    Deliberately not the durable ReceiptService pipeline: create_receipt is
+    an async database write that needs permit/wallet/ledger identity the gate
+    does not have, and the sync evaluate() path cannot safely touch the
+    loop-bound engine. Every gate event (denied, timeout, tampered, ...,
+    consumed) flows through this single sink, so none is silently more or
+    less durable than the others; callers that need durability inject a
+    receipt_sink.
+    """
     logger.info(
         "approval_receipt event=%s record=%s", event, json.dumps(record, sort_keys=True)
     )
@@ -576,6 +844,33 @@ class ApprovalDecision:
     idempotency_key: str | None = None
     reason: RejectReason | None = None
     nonce: str | None = None
+
+
+def _seal_pause_state(
+    secret: bytes,
+    *,
+    args_hash: str,
+    caller: str,
+    tool: str,
+    session_id: str,
+    idempotency_key: str,
+    deadline: float,
+    nonce: str,
+) -> str:
+    """Seal the retry state for one pause, fresh or reused."""
+    return _seal_state(
+        secret,
+        {
+            "v": STATE_VERSION,
+            "argsHash": args_hash,
+            "principal": caller,
+            "tool": tool,
+            "sessionId": session_id,
+            "idempotencyKey": idempotency_key,
+            "deadline": deadline,
+            "nonce": nonce,
+        },
+    )
 
 
 def _pause_payload(tool: str, nonce: str, request_state: str) -> dict[str, Any]:
@@ -814,10 +1109,13 @@ class ApprovalGate:
 
     @staticmethod
     def _is_expired(now: float, sealed_deadline: Any, record: ApprovalRecord) -> bool:
+        # Expired when now >= deadline, matching the SQL conditions
+        # (deadline > now admits only the live). The in-memory store already
+        # uses deadline <= now / deadline > now, so all three agree.
         return (
             not isinstance(sealed_deadline, (int, float))
-            or now > sealed_deadline
-            or now > record.deadline
+            or now >= sealed_deadline
+            or now >= record.deadline
             or record.status == "expired"
         )
 
@@ -842,6 +1140,37 @@ class ApprovalGate:
             return ApprovalDecision(action="REJECT", reason="unsupported_client")
         secret = self._require_secret()
         now = self.clock()
+        spent = self.store.find_consumed_by_key(idempotency_key, now=now)
+        if spent is not None:
+            # Key already spent and the spend window is still live: refuse
+            # without minting so no second spendable nonce exists.
+            self._emit(
+                "replayed",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="replayed")
+        existing = self.store.find_active_by_key(idempotency_key, now=now)
+        if existing is not None:
+            # Same logical call already paused: reissue its pause instead of
+            # minting a second spendable approval for one idempotency key.
+            state = _seal_pause_state(
+                secret,
+                args_hash=args_hash,
+                caller=caller,
+                tool=tool,
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+                deadline=existing.deadline,
+                nonce=existing.nonce,
+            )
+            return ApprovalDecision(
+                action="PAUSE",
+                nonce=existing.nonce,
+                payload=_pause_payload(tool, existing.nonce, state),
+            )
         nonce = secrets.token_urlsafe(16)
         deadline = now + self._ttl
         self.store.save(
@@ -854,20 +1183,18 @@ class ApprovalGate:
                 session_id=session_id,
                 created_at=now,
                 deadline=deadline,
-            )
+            ),
+            now=now,
         )
-        state = _seal_state(
+        state = _seal_pause_state(
             secret,
-            {
-                "v": STATE_VERSION,
-                "argsHash": args_hash,
-                "principal": caller,
-                "tool": tool,
-                "sessionId": session_id,
-                "idempotencyKey": idempotency_key,
-                "deadline": deadline,
-                "nonce": nonce,
-            },
+            args_hash=args_hash,
+            caller=caller,
+            tool=tool,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+            deadline=deadline,
+            nonce=nonce,
         )
         return ApprovalDecision(
             action="PAUSE",
@@ -896,6 +1223,37 @@ class ApprovalGate:
             return ApprovalDecision(action="REJECT", reason="unsupported_client")
         secret = self._require_secret()
         now = self.clock()
+        spent = await self.store.afind_consumed_by_key(idempotency_key, now=now)
+        if spent is not None:
+            # Key already spent and the spend window is still live: refuse
+            # without minting so no second spendable nonce exists.
+            self._emit(
+                "replayed",
+                nonce=None,
+                tool=tool,
+                principal=caller,
+                session_id=session_id,
+            )
+            return ApprovalDecision(action="REJECT", reason="replayed")
+        existing = await self.store.afind_active_by_key(idempotency_key, now=now)
+        if existing is not None:
+            # Same logical call already paused: reissue its pause instead of
+            # minting a second spendable approval for one idempotency key.
+            state = _seal_pause_state(
+                secret,
+                args_hash=args_hash,
+                caller=caller,
+                tool=tool,
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+                deadline=existing.deadline,
+                nonce=existing.nonce,
+            )
+            return ApprovalDecision(
+                action="PAUSE",
+                nonce=existing.nonce,
+                payload=_pause_payload(tool, existing.nonce, state),
+            )
         nonce = secrets.token_urlsafe(16)
         deadline = now + self._ttl
         await self.store.asave(
@@ -908,20 +1266,18 @@ class ApprovalGate:
                 session_id=session_id,
                 created_at=now,
                 deadline=deadline,
-            )
+            ),
+            now=now,
         )
-        state = _seal_state(
+        state = _seal_pause_state(
             secret,
-            {
-                "v": STATE_VERSION,
-                "argsHash": args_hash,
-                "principal": caller,
-                "tool": tool,
-                "sessionId": session_id,
-                "idempotencyKey": idempotency_key,
-                "deadline": deadline,
-                "nonce": nonce,
-            },
+            args_hash=args_hash,
+            caller=caller,
+            tool=tool,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+            deadline=deadline,
+            nonce=nonce,
         )
         return ApprovalDecision(
             action="PAUSE",

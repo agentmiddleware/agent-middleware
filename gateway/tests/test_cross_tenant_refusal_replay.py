@@ -15,11 +15,8 @@ key, in two shapes:
 * B names A's wallet. The route refuses before any idempotency record exists,
   so the replay is re-evaluated and must be byte-identical.
 * B names its own wallet but A's permit. The gateway stores the refusal under
-  B's key, so the replay is served from that record. The guide says a replay
-  returns the original result; today the replay drops the denial receipt and
-  ``details`` that the first answer carried. That case is marked
-  ``xfail(strict=True)`` against the documented behavior so it flips to a
-  failure, and gets un-marked, once the gateway replays the full body.
+  B's key, so the replay is served from that record with the original denial
+  receipt and ``details``.
 """
 
 from __future__ import annotations
@@ -98,7 +95,13 @@ async def _call_twice(client, tool_name, tenant_b, mcp_context):
         "arguments": {"text": "one"},
         "mcp_context": {**mcp_context, "idempotency_key": TOOL_CALL_ID},
     }
-    headers = {**tenant_b["agent_headers"], "Idempotency-Key": TOOL_CALL_ID}
+    # A caller-provided correlation id is echoed into each refusal. Both calls
+    # carry the same one, so byte-identical refusals stay byte-identical.
+    headers = {
+        **tenant_b["agent_headers"],
+        "Idempotency-Key": TOOL_CALL_ID,
+        "X-Request-ID": "sel475-fixed-request-id",
+    }
     url = f"/mcp/tools/{tool_name}/invoke"
     first = await client.post(url, json=body, headers=headers)
     replay = await client.post(url, json=body, headers=headers)
@@ -133,7 +136,10 @@ async def test_foreign_wallet_refusal_replays_identically(
     )
 
     _assert_refusal_envelope(first, "wallet_access_denied")
-    assert first.json()["detail"] == {"error": "wallet_access_denied"}
+    assert first.json()["detail"] == {
+        "error": "wallet_access_denied",
+        "request_id": "sel475-fixed-request-id",
+    }
     # Same status, same headers that matter, same bytes.
     assert replay.status_code == first.status_code
     assert replay.headers["content-type"] == first.headers["content-type"]
@@ -234,14 +240,6 @@ async def test_foreign_permit_refusal_replay_has_no_side_effects(
     assert await _state(client, tenant_b, permit_a["permit_id"]) == before_b
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "SEL-475 doc/behavior mismatch: PR #209 says a retry with the same "
-        "key returns the original result, but the stored-refusal replay "
-        "drops detail.receipt and detail.details from the first 403."
-    ),
-)
 async def test_foreign_permit_refusal_replays_identically_per_docs(
     client,
     tenants,

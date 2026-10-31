@@ -4,11 +4,25 @@ API Key Management Router
 Handles API key creation, rotation, and revocation for wallet security.
 """
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from datetime import date, datetime, time, timedelta
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from ..core.dependencies import get_agent_money
 
 from ..core.auth import AuthContext, get_auth_context
+from ..db.database import get_session_factory
+from ..db.api_key_usage_view import (
+    DEFAULT_REPORT_DAYS,
+    STATEMENT_TIMEOUT_SQL,
+    UNFILTERED_MAX_DAYS,
+    bounded_daily_usage_sql,
+    is_statement_timeout,
+)
+from ..core.time import utc_now
 from ..core.wallet_resolution import resolve_wallet_id
 from ..services.api_key_service import (
     get_api_key_service,
@@ -37,6 +51,91 @@ router = APIRouter(
         403: {"description": "Insufficient permissions"},
     },
 )
+
+admin_router = APIRouter(
+    prefix="/v1/admin/api-keys",
+    tags=["API Key Management"],
+)
+
+
+class APIKeyUsageDailyRow(BaseModel):
+    key_id: str
+    day: date
+    calls: int
+    calls_4xx: int
+    calls_5xx: int
+    p50_latency_ms: float
+    p95_latency_ms: float
+    first_call_at: datetime
+    last_call_at: datetime
+
+
+class APIKeyUsageDailyResponse(BaseModel):
+    rows: list[APIKeyUsageDailyRow]
+
+
+@admin_router.get(
+    "/usage/daily",
+    response_model=APIKeyUsageDailyResponse,
+    summary="Admin: daily usage by API key",
+    description="Read daily call counts and latency for a bounded UTC window.",
+)
+async def admin_api_key_usage_daily(
+    key_id: str | None = None,
+    days: int = Query(DEFAULT_REPORT_DAYS, ge=1, le=90),
+    limit: int = Query(100, ge=1, le=200),
+    auth: AuthContext = Depends(get_auth_context),
+) -> APIKeyUsageDailyResponse:
+    auth.require_bootstrap_admin()
+    # Blank or whitespace-only key_id counts as missing.
+    key_id = (key_id or "").strip() or None
+    if key_id is None and days > UNFILTERED_MAX_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "key_id_required_for_long_window",
+                "message": (
+                    f"Windows longer than {UNFILTERED_MAX_DAYS} days require key_id."
+                ),
+            },
+        )
+    today = utc_now().date()
+    parameters = {
+        "start_at": datetime.combine(today - timedelta(days=days - 1), time.min),
+        "end_at": datetime.combine(today + timedelta(days=1), time.min),
+        "limit": limit,
+    }
+    if key_id is not None:
+        parameters["key_id"] = key_id
+    async with get_session_factory()() as session:
+        try:
+            if session.get_bind().dialect.name == "postgresql":
+                await session.execute(text(STATEMENT_TIMEOUT_SQL))
+            result = await session.execute(
+                text(bounded_daily_usage_sql(filter_key=key_id is not None)),
+                parameters,
+            )
+        except DBAPIError as error:
+            if not is_statement_timeout(error):
+                raise
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "usage_report_timeout",
+                    "message": (
+                        "Usage report timed out. Narrow the window."
+                        if key_id
+                        else "Usage report timed out. Narrow the window or set key_id."
+                    ),
+                },
+            ) from None
+        return APIKeyUsageDailyResponse(
+            rows=[
+                APIKeyUsageDailyRow.model_validate(dict(row))
+                for row in result.mappings()
+            ]
+        )
 
 
 def _not_found(error: str, message: str) -> dict:

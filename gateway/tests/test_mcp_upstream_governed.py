@@ -50,14 +50,19 @@ from app.services.quotes import get_quote_service
 from app.services.receipts import ReceiptService, get_receipt_service
 from app.services.service_registry import get_service_registry
 from app.services.signing_keys import sha256_hex
+from app.core.config import Settings
 from app.services.upstream_mcp import (
+    DiscoveredUpstreamTool,
+    UpstreamMcpAdapter,
     UpstreamMcpDeliveryUncertainError,
     UpstreamMcpPreDispatchError,
     UpstreamMcpResponseRejectedError,
     UpstreamMcpResult,
     UpstreamMcpReturnedError,
+    register_configured_upstream_mcp,
 )
 from tests.test_trust_helpers import (
+    resign_permit_model,
     BOOTSTRAP_HEADERS,
     create_tool_permit,
     provision_agent_wallet,
@@ -78,6 +83,12 @@ ExecutorMode = Literal[
     "delivery_uncertain",
     "response_rejected",
 ]
+
+
+def _error_without_request_id(error: dict) -> dict:
+    data = dict(error.get("data") or {})
+    data.pop("request_id", None)
+    return {**error, "data": data}
 
 
 def _upstream_result(payload: dict[str, Any]) -> UpstreamMcpResult:
@@ -607,6 +618,165 @@ async def test_governed_upstream_success_replays_without_second_debit_or_dispatc
 
 
 @pytest.mark.anyio
+async def test_configured_multi_tool_calls_keep_per_tool_governance(
+    client: AsyncClient,
+    clean_database: None,
+    monkeypatch,
+) -> None:
+    names = ("partner.read", "partner.write")
+    dispatched: list[str] = []
+
+    async def discover(self: UpstreamMcpAdapter) -> list[DiscoveredUpstreamTool]:
+        return [
+            DiscoveredUpstreamTool(
+                name=name,
+                description="Remote tool",
+                input_schema={
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                },
+                output_schema=None,
+            )
+            for name in names
+        ]
+
+    async def call(
+        self: UpstreamMcpAdapter,
+        arguments: dict[str, Any],
+        *,
+        invocation_id: str,
+        idempotency_key: str,
+        before_dispatch: Callable[[], Awaitable[None]],
+    ) -> UpstreamMcpResult:
+        assert invocation_id and idempotency_key
+        await before_dispatch()
+        dispatched.append(self.configuration.tool_name)
+        return _upstream_result(
+            {
+                "content": [{"type": "text", "text": self.configuration.tool_name}],
+                "isError": False,
+            }
+        )
+
+    monkeypatch.setattr(UpstreamMcpAdapter, "discover_tools", discover)
+    monkeypatch.setattr(UpstreamMcpAdapter, "call_tool", call)
+    settings = Settings(
+        _env_file=None,
+        ENVIRONMENT="local",
+        MCP_UPSTREAM_ENABLED=True,
+        MCP_UPSTREAM_URL="https://partner.example/mcp",
+        MCP_UPSTREAM_TOOL_NAME="",
+        MCP_UPSTREAM_PUBLIC_TOOL_ID="partner.multi",
+        MCP_UPSTREAM_MULTI_TOOL_ENABLED=True,
+        MCP_UPSTREAM_BEARER_TOKEN="test-only-token",
+        MCP_UPSTREAM_CREDITS_PER_CALL="2",
+    )
+    registry = get_service_registry()
+    registered = await register_configured_upstream_mcp(
+        settings=settings, registry=registry
+    )
+    assert isinstance(registered, list)
+    ids = {
+        service["upstream_tool_name"]: service["service_id"] for service in registered
+    }
+    provisioned = await provision_agent_wallet(client)
+    try:
+        permit_response = await client.post(
+            "/v1/permits",
+            json={
+                "issuer_wallet_id": provisioned["agent_wallet_id"],
+                "subject_wallet_id": provisioned["agent_wallet_id"],
+                "subject_key_id": provisioned["key_id"],
+                "allowed_tools": list(ids.values()),
+                "scopes": [
+                    *(f"tool:{tool_id}:invoke" for tool_id in ids.values()),
+                    "billing:charge",
+                ],
+                "max_credits": 50,
+                "expires_at": (utc_now() + timedelta(minutes=30)).isoformat(),
+            },
+            headers={**BOOTSTRAP_HEADERS, "Idempotency-Key": "multi-permit"},
+        )
+        assert permit_response.status_code == 201
+        permit = permit_response.json()
+        for name in names:
+            body = _call_body(
+                tool_name=ids[name],
+                wallet_id=provisioned["agent_wallet_id"],
+                permit_id=permit["permit_id"],
+                idempotency_key=f"multi-call-{name}",
+            )
+            first = await client.post(
+                "/mcp/messages", json=body, headers=provisioned["agent_headers"]
+            )
+            replay = await client.post(
+                "/mcp/messages", json=body, headers=provisioned["agent_headers"]
+            )
+            assert first.status_code == replay.status_code == 200
+            assert first.json()["result"] == replay.json()["result"]
+            persisted = await _load_persisted_invocation(
+                wallet_id=provisioned["agent_wallet_id"],
+                permit_id=permit["permit_id"],
+                idempotency_key=f"multi-call-{name}",
+            )
+            assert persisted.attempt.state == "succeeded"
+            assert persisted.receipt.outcome == "success"
+            assert persisted.receipt.credits_charged == Decimal("2")
+            assert persisted.receipt.dispatch_attempt_id == persisted.attempt.attempt_id
+            assert persisted.receipt.ledger_entry_id == persisted.debit.entry_id
+            assert persisted.debit.amount == Decimal("-2")
+            assert persisted.refunds == []
+            assert persisted.permit.spent_credits == Decimal(
+                "2" if name == "partner.read" else "4"
+            )
+            assert persisted.attempt.public_tool_id == ids[name]
+            assert persisted.attempt.upstream_tool_name == name
+        assert dispatched == list(names)
+
+        read_only_permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=ids["partner.read"],
+            idem_key="multi-read-only-permit",
+        )
+        wrong_permit = await client.post(
+            "/mcp/messages",
+            json=_call_body(
+                tool_name=ids["partner.write"],
+                wallet_id=provisioned["agent_wallet_id"],
+                permit_id=read_only_permit["permit_id"],
+                idempotency_key="multi-denied",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert wrong_permit.json()["error"]["message"] == "permit_tool_not_allowed"
+        assert (
+            wrong_permit.json()["error"]["data"]["receipt"]["reason_code"]
+            == "permit_tool_not_allowed"
+        )
+        assert (
+            wrong_permit.json()["error"]["data"]["receipt"]["ledger_entry_id"] is None
+        )
+        assert dispatched == list(names)
+
+        reused_key = await client.post(
+            "/mcp/messages",
+            json=_call_body(
+                tool_name=ids["partner.write"],
+                wallet_id=provisioned["agent_wallet_id"],
+                permit_id=permit["permit_id"],
+                idempotency_key="multi-call-partner.read",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert reused_key.json()["error"]["message"] == "idempotency_key_reused"
+        assert dispatched == list(names)
+    finally:
+        registry.unregister_execution_backend("upstream_mcp")
+
+
+@pytest.mark.anyio
 async def test_approval_required_upstream_crash_reconciliation_keeps_approval(
     client: AsyncClient,
     clean_database: None,
@@ -970,7 +1140,9 @@ async def test_confirmed_result_rejected_by_persistence_is_terminal_and_replayab
         first_error = first.json()["error"]
         assert first_error["code"] == -32006
         assert first_error["message"] == "response_rejected"
-        assert replay.json()["error"] == first_error
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert executor.dispatch_count == 1
         persisted = await _load_persisted_invocation(
             wallet_id=provisioned["agent_wallet_id"],
@@ -1047,7 +1219,9 @@ async def test_frozen_wallet_is_denied_before_upstream_dispatch_and_replays(
         first_error = first.json()["error"]
         assert first_error["code"] == -32003
         assert first_error["message"] == "wallet_frozen"
-        assert replay.json()["error"] == first_error
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         receipt_payload = first_error["data"]["receipt"]
         assert receipt_payload["outcome"] == "failed_refunded"
         assert receipt_payload["ledger_entry_id"] is None
@@ -1288,10 +1462,16 @@ async def test_prepare_commit_uncertain_preserves_owner_state_and_public_contrac
                     permit_id=permit["permit_id"],
                     idempotency_key=idempotency_key,
                 ),
-                headers=provisioned["agent_headers"],
+                headers={
+                    **provisioned["agent_headers"],
+                    "X-Request-ID": "prepare-uncertain-fixed-req",
+                },
             )
             assert uncertain.status_code == 409
-            assert uncertain.json()["detail"] == {"error": "idempotency_in_progress"}
+            assert uncertain.json()["detail"] == {
+                "error": "idempotency_in_progress",
+                "request_id": "prepare-uncertain-fixed-req",
+            }
         assert committed_attempt_id is not None
         assert executor.calls == []
 
@@ -1806,7 +1986,8 @@ async def test_precanonical_alternate_transport_identity_fails_closed(
                 headers=provisioned["agent_headers"],
             )
             assert response.status_code == 409
-            assert response.json()["detail"] == "idempotency_key_reused"
+            assert response.json()["detail"]["error"] == "idempotency_key_reused"
+            assert "request_id" in response.json()["detail"]
 
         assert executor.dispatch_count == 0
         assert await _wallet_debit_and_canonical_counts(
@@ -2247,7 +2428,9 @@ async def test_confirmed_upstream_failures_refund_and_replay_without_redispatch(
         )
 
         assert first.json()["error"]["message"] == expected_reason
-        assert replay.json()["error"] == first.json()["error"]
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first.json()["error"])
         receipt = first.json()["error"]["data"]["receipt"]
         assert receipt["outcome"] == "failed_refunded"
         assert receipt["credits_charged"] == "0"
@@ -2423,7 +2606,9 @@ async def test_expired_child_wallet_denial_is_signed_released_and_replayable(
 
         assert first.status_code == 200
         assert replay.status_code == 200
-        assert replay.json()["error"] == first.json()["error"]
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first.json()["error"])
         error = first.json()["error"]
         assert error["code"] == -32003
         assert error["message"] == "wallet_expired"
@@ -2545,7 +2730,9 @@ async def test_ambiguous_or_rejected_upstream_response_stays_charged_and_replays
         first_error = first.json()["error"]
         assert first_error["code"] == expected_code
         assert first_error["message"] == expected_reason
-        assert replay.json()["error"] == first_error
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         receipt = first_error["data"]["receipt"]
         assert receipt["outcome"] == expected_state
         assert Decimal(receipt["credits_charged"]) == Decimal("2")
@@ -2614,6 +2801,7 @@ async def test_upstream_permit_denials_never_charge_or_dispatch(
                 model = await session.get(PermitModel, permit["permit_id"])
                 assert model is not None
                 model.expires_at = utc_now() - timedelta(seconds=1)
+                await resign_permit_model(model)
                 session.add(model)
                 await session.commit()
 
@@ -3116,3 +3304,28 @@ async def test_simulated_runtime_category_still_uses_the_runtime_mode_result(
         ]
     finally:
         get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_register_upstream_read_only_is_operator_declared(read_only):
+    """SEL-484: remote tools default to mutating; an operator may opt out."""
+    tool_name = f"upstream-ro-{read_only}"
+    registry = get_service_registry()
+    kwargs = {"read_only": True} if read_only else {}
+    try:
+        registry.register_upstream(
+            service_id=tool_name,
+            name=tool_name,
+            description="read_only flag test",
+            category=ServiceCategory.AGENT_COMMS,
+            executor=object(),
+            input_schema={"type": "object"},
+            output_schema=None,
+            credits_per_unit=1.0,
+            upstream_tool_name="partner.echo",
+            upstream_origin="https://partner.example",
+            **kwargs,
+        )
+        assert registry.get_local(tool_name)["read_only"] is read_only
+    finally:
+        registry.unregister_local(tool_name)

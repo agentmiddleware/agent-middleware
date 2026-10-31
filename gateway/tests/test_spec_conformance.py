@@ -100,8 +100,8 @@ RECEIPT_DOCUMENTED = {
     "payload_hash",
 }
 # Additive receipt members named in spec/receipt-v0.1.md ("approval ids,
-# action bindings, constraint denials") plus reason_code, which the gateway
-# signs when present.
+# action bindings, constraint denials, enforcement posture") plus reason_code,
+# which the gateway signs when present.
 RECEIPT_ADDITIVE = {
     "reason_code",
     "approval_id",
@@ -112,6 +112,8 @@ RECEIPT_ADDITIVE = {
     "action_schema_version",
     "action_public_tool_id",
     "action_upstream_binding_hash",
+    "enforcement_mode",
+    "gateway_build",
 }
 # Always-signed receipt members: present even when the value is null.
 RECEIPT_ALWAYS_SIGNED = RECEIPT_DOCUMENTED - {

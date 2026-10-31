@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import sys
 from datetime import datetime, timezone
@@ -29,44 +30,222 @@ BASE_URL_ENV = "AMW_GATEWAY_URL"
 API_KEY_ENV = "VALID_API_KEYS"
 API_KEY_HEADER = "X-API-Key"
 
+_LOOPBACK_V4 = ipaddress.ip_network("127.0.0.0/8")
+_LOOPBACK_V6 = ipaddress.ip_address("::1")
+
+
+def _raw_authority(base_url: str) -> str | None:
+    """Authority after '://' up to / ? #; None when there is no '://'."""
+    sep = base_url.find("://")
+    if sep == -1:
+        return None
+    rest = base_url[sep + 3 :]
+    for i, ch in enumerate(rest):
+        if ch in "/?#":
+            return rest[:i]
+    return rest
+
+
+def _raw_port(authority: str) -> str | None:
+    """Port substring from a raw authority; None when absent or malformed."""
+    hostport = authority.rsplit("@", 1)[-1]
+    if hostport.startswith("["):
+        end = hostport.find("]")
+        if end == -1:
+            return None
+        after = hostport[end + 1 :]
+        if not after:
+            return None
+        if after.startswith(":"):
+            return after[1:]
+        return None
+    if ":" not in hostport:
+        return None
+    return hostport.rsplit(":", 1)[-1]
+
+
+def _refusal_reason(base_url: str) -> str | None:
+    """Why the API key must not be sent to base_url; None when allowed.
+
+    Allowed: any https URL, or http only on loopback (localhost, 127.0.0.0/8,
+    ::1). Control characters, whitespace, and non-numeric ports refuse
+    before the allowed returns. Any userinfo (username or password) refuses
+    before the allowed returns, so http://guest@localhost still refuses.
+    Otherwise the host comes from httpx.URL.host, so userinfo tricks such as
+    http://127.0.0.1@evil resolve to the real host (evil), and look-alikes
+    such as localhost.example or 127.0.0.1.nip.io fail both the exact
+    localhost match and the IP parse. Unknown schemes and empty hosts refuse.
+    The check uses httpx.URL, the same parser as the request. IDNA decode
+    errors on host access (malformed punycode) refuse as unparseable.
+    """
+    for ch in base_url:
+        if ord(ch) < 32 or ord(ch) == 127 or ch.isspace():
+            return "invalid characters in URL"
+    try:
+        parsed = httpx.URL(base_url)
+    except (httpx.InvalidURL, UnicodeError, ValueError):
+        return "unparseable URL"
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        if parsed.scheme:
+            return f"unsupported scheme {parsed.scheme!r}"
+        return "missing URL scheme"
+    try:
+        host = parsed.host or ""
+        has_userinfo = bool(parsed.username or parsed.password or parsed.userinfo)
+    except (UnicodeError, ValueError):
+        # httpx decodes IDNA on .host access, so malformed punycode
+        # (e.g. http://xn--) raises here, not at URL construction.
+        return "unparseable URL"
+    if not host:
+        return "missing host"
+    if has_userinfo:
+        return "userinfo not allowed"
+    authority = _raw_authority(base_url)
+    if authority is not None and "@" in authority:
+        return "userinfo not allowed"
+    if authority is not None:
+        port_str = _raw_port(authority)
+        if port_str and not (port_str.isascii() and port_str.isdigit()):
+            return f"invalid port {port_str!r}"
+    if scheme == "https":
+        return None
+    if host == "localhost":
+        return None
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return f"non-loopback http host {host!r}"
+    if addr in _LOOPBACK_V4 or addr == _LOOPBACK_V6:
+        return None
+    return f"non-loopback http host {host!r}"
+
+
+def _has_control_chars(value: str) -> bool:
+    """True when value holds C0, DEL, or C1 controls."""
+    for ch in value:
+        code = ord(ch)
+        if code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F:
+            return True
+    return False
+
 
 def _read_api_key() -> str:
-    """First key from API_KEY_ENV; empty when unset or blank."""
+    """First key from API_KEY_ENV; empty when unset or blank.
+
+    Raises ValueError with a fixed message when the key holds control
+    characters. The message never includes the value.
+    """
     for entry in os.environ.get(API_KEY_ENV, "").split(","):
-        if entry.strip():
-            return entry.strip()
+        candidate = entry.strip()
+        if candidate:
+            if _has_control_chars(candidate):
+                raise ValueError("invalid API key in VALID_API_KEYS")
+            return candidate
     return ""
 
 
 def _client(base_url: str, api_key: str) -> httpx.Client:
-    return httpx.Client(
-        base_url=base_url, timeout=10.0, headers={API_KEY_HEADER: api_key}
-    )
+    reason = _refusal_reason(base_url)
+    if reason is not None:
+        raise ValueError(f"refusing to send the API key: {reason}")
+    # trust_env=False: httpx honors ambient HTTP_PROXY/HTTPS_PROXY/ALL_PROXY
+    # by default, which would hand the bootstrap admin key to a proxy.
+    try:
+        return httpx.Client(
+            base_url=base_url,
+            timeout=10.0,
+            headers={API_KEY_HEADER: api_key},
+            trust_env=False,
+        )
+    except (httpx.InvalidURL, UnicodeError, ValueError):
+        # All other arguments are constants, so any decode error here is
+        # URL-driven and refuses cleanly without ever printing the key.
+        raise ValueError("refusing to send the API key: unparseable URL") from None
 
 
 def _format_time(value: float) -> str:
+    if isinstance(value, bool):
+        raise TypeError("bool is not a valid deadline")
     return datetime.fromtimestamp(value, tz=timezone.utc).strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
+
+
+def _is_pending_item(item: object) -> bool:
+    """True when item has the keys cmd_list prints, with a renderable deadline."""
+    if not isinstance(item, dict):
+        return False
+    if "nonce" not in item or "tool" not in item or "principal" not in item:
+        return False
+    deadline = item.get("deadline")
+    if not isinstance(deadline, (int, float)):
+        return False
+    try:
+        _format_time(deadline)
+    except (ValueError, OverflowError, OSError, TypeError):
+        return False
+    return True
 
 
 def cmd_list(args: argparse.Namespace) -> int:
     try:
         response = _client(args.base_url, args.api_key).get("/v1/approvals/pending")
         response.raise_for_status()
-    except httpx.HTTPError as exc:
+    except ValueError:
+        print("error: refusing to send the API key", file=sys.stderr)
+        return 1
+    except httpx.InvalidURL:
+        print("error: invalid gateway URL", file=sys.stderr)
+        return 1
+    except httpx.HTTPStatusError as exc:
         print(
-            f"error: gateway not reachable at {args.base_url}: {exc}", file=sys.stderr
+            f"gateway request failed: HTTP {exc.response.status_code}",
+            file=sys.stderr,
         )
         return 1
-    approvals = response.json().get("approvals", [])
+    except httpx.TransportError as exc:
+        print(
+            f"gateway unreachable at {args.base_url} ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 1
+    except httpx.HTTPError as exc:
+        print(
+            f"error: gateway request failed ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        payload = response.json()
+    except ValueError:
+        # ValueError covers json.JSONDecodeError from a non-JSON body.
+        print("gateway returned a non-JSON response", file=sys.stderr)
+        return 1
+    if not isinstance(payload, dict):
+        print("gateway returned an unexpected response", file=sys.stderr)
+        return 1
+    if "approvals" not in payload:
+        print("gateway returned an unexpected response", file=sys.stderr)
+        return 1
+    approvals = payload["approvals"]
+    if not isinstance(approvals, list) or any(
+        not _is_pending_item(item) for item in approvals
+    ):
+        print("gateway returned an unexpected response", file=sys.stderr)
+        return 1
     if not approvals:
         print("no pending approvals")
         return 0
     for item in approvals:
+        try:
+            rendered = _format_time(item["deadline"])
+        except (ValueError, OverflowError, OSError, TypeError):
+            print("gateway returned an unexpected response", file=sys.stderr)
+            return 1
         print(
             f"{item['nonce']} tool={item['tool']} principal={item['principal']} "
-            f"deadline={_format_time(item['deadline'])}"
+            f"deadline={rendered}"
         )
     return 0
 
@@ -76,9 +255,28 @@ def _decide(args: argparse.Namespace, action: str) -> int:
         response = _client(args.base_url, args.api_key).post(
             f"/v1/approvals/{args.nonce}/{action}"
         )
+    except ValueError:
+        print("error: refusing to send the API key", file=sys.stderr)
+        return 1
+    except httpx.InvalidURL:
+        print("error: invalid gateway URL", file=sys.stderr)
+        return 1
+    except httpx.HTTPStatusError as exc:
+        print(
+            f"gateway request failed: HTTP {exc.response.status_code}",
+            file=sys.stderr,
+        )
+        return 1
+    except httpx.TransportError as exc:
+        print(
+            f"gateway unreachable at {args.base_url} ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 1
     except httpx.HTTPError as exc:
         print(
-            f"error: gateway not reachable at {args.base_url}: {exc}", file=sys.stderr
+            f"error: gateway request failed ({type(exc).__name__})",
+            file=sys.stderr,
         )
         return 1
     if response.status_code == 404:
@@ -93,10 +291,32 @@ def _decide(args: argparse.Namespace, action: str) -> int:
         return 1
     try:
         response.raise_for_status()
-    except httpx.HTTPError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except httpx.HTTPStatusError as exc:
+        print(
+            f"gateway request failed: HTTP {exc.response.status_code}",
+            file=sys.stderr,
+        )
         return 1
-    print(f"{args.nonce}: {response.json().get('status')}")
+    except httpx.HTTPError as exc:
+        print(
+            f"error: gateway request failed ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        payload = response.json()
+    except ValueError:
+        # ValueError covers json.JSONDecodeError from a non-JSON body.
+        print("gateway returned a non-JSON response", file=sys.stderr)
+        return 1
+    if not isinstance(payload, dict):
+        print("gateway returned an unexpected response", file=sys.stderr)
+        return 1
+    status = payload.get("status")
+    if not isinstance(status, str) or not status:
+        print("gateway returned an unexpected response", file=sys.stderr)
+        return 1
+    print(f"{args.nonce}: {status}")
     return 0
 
 
@@ -120,7 +340,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    api_key = _read_api_key()
+    # Validate the destination before the key is read, so a refusal never
+    # attaches the bootstrap admin key to a request.
+    reason = _refusal_reason(args.base_url)
+    if reason is not None:
+        print(
+            "error: refusing to send the API key: "
+            f"{reason}; use an https URL or http on loopback "
+            "(localhost, 127.0.0.0/8, ::1)",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        api_key = _read_api_key()
+    except ValueError:
+        print("error: invalid API key in VALID_API_KEYS", file=sys.stderr)
+        return 1
     if not api_key:
         print(
             "error: VALID_API_KEYS is not set; export the gateway "

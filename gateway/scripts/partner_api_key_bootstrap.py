@@ -4,7 +4,10 @@
 Uses a bootstrap/admin key (VALID_API_KEYS) only to provision:
   sponsor wallet → agent wallet → DB-scoped agent API key.
 
-The agent secret is printed once. Requires network access to --api-url.
+The minted agent secret is never printed to stdout or stderr. Pass --key-file
+PATH to write it (reserved mode 0600 before minting, fails if PATH exists);
+stdout shows only non-secret identifiers (key id, wallet ids, key prefix).
+Requires network access to --api-url.
 Does not mint keys without a bootstrap secret (fail closed).
 
 Resume: pass --sponsor-wallet-id / --agent-wallet-id to skip earlier creates
@@ -26,6 +29,43 @@ import httpx
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"error: {message}")
+
+
+def _reserve_key_file(path: str) -> int:
+    """Create PATH exclusively (mode 0600) and return its fd; refuse if it exists."""
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        return os.open(path, flags, 0o600)
+    except FileExistsError:
+        raise SystemExit(f"error: --key-file {path} already exists")
+    except OSError as exc:
+        raise SystemExit(f"error: cannot write --key-file {path}: {exc}") from exc
+
+
+def _write_key_fd(fd: int, path: str, api_key: str) -> None:
+    """Write the full key to the reserved fd, fsync, then close.
+
+    On any error the fd is closed and PATH is unlinked before raising,
+    so a partial key file is never left behind.
+    """
+    data = api_key.encode("utf-8")
+    try:
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        os.fsync(fd)
+    except OSError as exc:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise SystemExit(f"error: cannot write --key-file {path}: {exc}") from exc
+    os.close(fd)
 
 
 def _require_safe_api_url(api_url: str) -> str:
@@ -65,7 +105,7 @@ def _bootstrap_key(cli_value: str | None) -> str:
 def _post(client: httpx.Client, path: str, body: dict[str, Any]) -> dict[str, Any]:
     resp = client.post(path, json=body)
     if resp.status_code >= 400:
-        raise SystemExit(f"error: POST {path} → {resp.status_code}: {resp.text[:500]}")
+        raise SystemExit(f"error: bootstrap request failed (HTTP {resp.status_code})")
     data = resp.json()
     _require(isinstance(data, dict), f"POST {path} returned non-object JSON")
     return data
@@ -92,14 +132,22 @@ def provision(
     Args:
         json_mode: If True, print only machine-readable status to stderr (never
             the api_key or bootstrap_key). Human text goes to stderr so
-            `jq -r .api_key` works on stdout JSON output.
+            stdout JSON stays pipeable. The minted secret is never in that JSON;
+            use --key-file to persist it.
     """
     base = _require_safe_api_url(api_url)
     headers = {
         "X-API-Key": bootstrap_key,
         "Content-Type": "application/json",
     }
-    with httpx.Client(base_url=base, headers=headers, timeout=60.0) as client:
+    # Stay on the named origin: an ambient proxy or a redirect can move this key.
+    with httpx.Client(
+        base_url=base,
+        headers=headers,
+        timeout=60.0,
+        trust_env=False,
+        follow_redirects=False,
+    ) as client:
         health = client.get("/health")
         _require(health.status_code == 200, f"/health → {health.status_code}")
 
@@ -153,7 +201,9 @@ def provision(
             key_body["max_uses"] = max_uses
         key = _post(client, "/v1/api-keys", key_body)
         api_key = key.get("api_key")
-        _require(bool(api_key), "api_key missing (shown only once)")
+        _require(
+            bool(api_key), "api_key missing (write with --key-file; never printed)"
+        )
 
         return {
             "api_url": base,
@@ -217,15 +267,28 @@ def main() -> int:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Print full JSON including api_key (default: human summary)",
+        help=(
+            "Print JSON identity fields to stdout without the secret "
+            "(and key_file when --key-file is given). Default: human summary."
+        ),
     )
     parser.add_argument(
         "--key-only",
         action="store_true",
         help=(
-            "Print only the minted api_key to stdout. Lets the secret be "
-            "piped straight into a secret store without a jq dependency, and "
-            "without the surrounding metadata landing wherever stdout goes."
+            "Print only the --key-file path. Requires --key-file. "
+            "Never prints the minted secret."
+        ),
+    )
+    parser.add_argument(
+        "--key-file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Required: write the minted api_key to PATH (created mode 0600 with "
+            "O_CREAT|O_EXCL|O_WRONLY; refused if PATH already exists). "
+            "Stdout prints PATH in --key-only mode, and JSON includes key_file. "
+            "The minted key is never printed."
         ),
     )
     args = parser.parse_args()
@@ -233,43 +296,103 @@ def main() -> int:
     if args.key_only and args.json:
         raise SystemExit("error: --key-only and --json are mutually exclusive")
 
+    if args.key_only and not args.key_file:
+        parser.error("--key-only requires --key-file (the key is never printed)")
+
     if args.agent_wallet_id and not args.sponsor_wallet_id:
         raise SystemExit(
             "error: --agent-wallet-id resume requires --sponsor-wallet-id "
             "(for operator record-keeping)"
         )
 
-    result = provision(
-        api_url=args.api_url,
-        bootstrap_key=_bootstrap_key(args.bootstrap_key),
-        sponsor_name=args.sponsor_name,
-        agent_id=args.agent_id,
-        budget_credits=args.budget_credits,
-        initial_credits=args.initial_credits,
-        key_name=args.key_name,
-        sponsor_wallet_id=args.sponsor_wallet_id,
-        agent_wallet_id=args.agent_wallet_id,
-        daily_limit=args.daily_limit,
-        expires_in_days=args.expires_in_days,
-        max_uses=args.max_uses,
-        json_mode=args.json,
-    )
+    if not args.key_file:
+        parser.error("--key-file is required (the minted key is never printed)")
+
+    bootstrap_key = _bootstrap_key(args.bootstrap_key)
+
+    # Reserve the key file before minting so a minted key is never discarded
+    # because its destination cannot be created.
+    key_fd = _reserve_key_file(args.key_file) if args.key_file else None
+
+    try:
+        result = provision(
+            api_url=args.api_url,
+            bootstrap_key=bootstrap_key,
+            sponsor_name=args.sponsor_name,
+            agent_id=args.agent_id,
+            budget_credits=args.budget_credits,
+            initial_credits=args.initial_credits,
+            key_name=args.key_name,
+            sponsor_wallet_id=args.sponsor_wallet_id,
+            agent_wallet_id=args.agent_wallet_id,
+            daily_limit=args.daily_limit,
+            expires_in_days=args.expires_in_days,
+            max_uses=args.max_uses,
+            json_mode=args.json,
+        )
+    except BaseException:
+        if key_fd is not None:
+            try:
+                os.close(key_fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(args.key_file)
+            except OSError:
+                pass
+        raise
+
+    # Non-secret identifiers for stdout. The minted secret below flows
+    # only to --key-file and never to print/log.
+    api_url = str(result["api_url"])
+    sponsor_wallet_id = str(result["sponsor_wallet_id"])
+    agent_wallet_id = str(result["agent_wallet_id"])
+    wallet_id = str(result["wallet_id"])
+    agent_id = str(result["agent_id"])
+    key_id = result.get("key_id")
+    key_prefix = result.get("key_prefix")
+    api_key = str(result["api_key"])
+    key_file = args.key_file
+    if key_file:
+        assert key_fd is not None  # reserved above whenever --key-file is given
+        try:
+            _write_key_fd(key_fd, key_file, api_key)
+        except SystemExit:
+            print(
+                f"error: failed to write --key-file {key_file} for "
+                f"key_id={key_id} agent_id={agent_id}; the key is active "
+                "and should be revoked",
+                file=sys.stderr,
+            )
+            raise
 
     if args.key_only:
-        print(result["api_key"])
+        print(key_file)
     elif args.json:
         # Machine-readable: JSON to stdout, all status to stderr.
-        # Never print bootstrap_key. This lets `jq -r .api_key` work.
-        print(json.dumps(result, indent=2))
+        # Never print bootstrap_key or the minted api_key.
+        payload: dict[str, Any] = {
+            "api_url": api_url,
+            "sponsor_wallet_id": sponsor_wallet_id,
+            "agent_wallet_id": agent_wallet_id,
+            "wallet_id": wallet_id,
+            "agent_id": agent_id,
+            "key_id": key_id,
+            "key_prefix": key_prefix,
+        }
+        if key_file:
+            payload["key_file"] = key_file
+        print(json.dumps(payload, indent=2))
     else:
-        # Human-readable summary to stdout (legacy behavior).
+        # Human-readable summary to stdout. Non-secret identifiers only.
         print("Partner API key bootstrap OK")
-        print(f"  api_url:            {result['api_url']}")
-        print(f"  sponsor_wallet_id:  {result['sponsor_wallet_id']}")
-        print(f"  agent_wallet_id:    {result['agent_wallet_id']}")
-        print(f"  key_id:             {result['key_id']}")
-        print(f"  key_prefix:         {result['key_prefix']}")
-        print(f"  api_key (once):     {result['api_key']}")
+        print(f"  api_url:            {api_url}")
+        print(f"  sponsor_wallet_id:  {sponsor_wallet_id}")
+        print(f"  agent_wallet_id:    {agent_wallet_id}")
+        print(f"  key_id:             {key_id}")
+        print(f"  key_prefix:         {key_prefix}")
+        if key_file:
+            print(f"  key_file:           {key_file}")
     return 0
 
 

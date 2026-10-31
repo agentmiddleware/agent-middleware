@@ -68,37 +68,27 @@ looks like the trust plane failing.
 Set `CI_SMOKE_AGENT_KEY` for a pre-provisioned agent credential. Optionally provide `CI_SMOKE_WALLET_ID` and `CI_SMOKE_KEY_ID` for faster startup (the script will fetch them from the API if not provided):
 
 ```bash
-# Provision an agent key once (using bootstrap key) and extract credentials in one pipeline
+# Provision an agent key once (using bootstrap key). The minted secret is
+# never printed; --key-file writes it (mode 0600, path must not already exist).
 export BOOTSTRAP_KEY="amw_live_..."
 
-# Provision once; keep every identity field from the same response.
-# Disable shell tracing while handling credentials. Do not print this JSON.
+set -e
 set +x
+KEY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/amw-ci-smoke.XXXXXX")"
+chmod 700 "$KEY_DIR"
+KEY_FILE="$KEY_DIR/agent.key"
 PROVISION_JSON="$(python scripts/partner_api_key_bootstrap.py \
   --api-url https://api.thisisatest.tech \
   --agent-id ci-smoke-agent \
   --key-name constant-test-loop \
   --budget-credits 5000 \
-  --json)"
-export CI_SMOKE_AGENT_KEY="$(printf '%s' "$PROVISION_JSON" | jq -er .api_key)"
+  --json \
+  --key-file "$KEY_FILE")"
+export CI_SMOKE_AGENT_KEY="$(cat "$KEY_FILE")"
 export CI_SMOKE_WALLET_ID="$(printf '%s' "$PROVISION_JSON" | jq -er .wallet_id)"
 export CI_SMOKE_KEY_ID="$(printf '%s' "$PROVISION_JSON" | jq -er .key_id)"
+rm -rf "$KEY_DIR"
 unset PROVISION_JSON
-
-# Or use a restrictive temporary file if needed
-KEY_FILE="$(mktemp)"
-umask 077
-python scripts/partner_api_key_bootstrap.py \
-  --api-url https://api.thisisatest.tech \
-  --agent-id ci-smoke-agent \
-  --key-name constant-test-loop \
-  --budget-credits 5000 \
-  --json > "$KEY_FILE"
-chmod 600 "$KEY_FILE"
-export CI_SMOKE_AGENT_KEY="$(jq -r .api_key "$KEY_FILE")"
-export CI_SMOKE_WALLET_ID="$(jq -r .wallet_id "$KEY_FILE")"
-export CI_SMOKE_KEY_ID="$(jq -r .key_id "$KEY_FILE")"
-rm "$KEY_FILE"  # Clean up immediately
 
 # Run the constant test
 API_URL=https://api.thisisatest.tech python scripts/constant_test_loop.py
@@ -106,31 +96,39 @@ API_URL=https://api.thisisatest.tech python scripts/constant_test_loop.py
 
 ## Machine-Readable Bootstrap Output
 
-`partner_api_key_bootstrap.py --json` prints JSON to stdout so the minted key can be piped directly:
+`partner_api_key_bootstrap.py --json` prints JSON identity fields to stdout
+without the secret. Persist the secret with `--key-file` (do not
+pre-create the path; the script refuses an existing file):
 
 ```bash
-# Pipe to jq to extract the agent API key
+KEY_FILE="${TMPDIR:-/tmp}/amw-ci-smoke-key.$$"
+
+# JSON identity fields on stdout; full key only in KEY_FILE
 BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
   --api-url https://api.thisisatest.tech \
   --agent-id ci-smoke-agent \
   --key-name test-key \
   --budget-credits 5000 \
-  --json | jq -r .api_key
+  --json \
+  --key-file "$KEY_FILE"
 
-# Or pipe directly to gh secret set
+# Or print only the key-file path, then load it into a secret store
+KEY_FILE="${TMPDIR:-/tmp}/amw-ci-smoke-key.$$"
 BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
   --api-url https://api.thisisatest.tech \
   --agent-id ci-smoke-agent \
   --key-name constant-test-loop \
   --budget-credits 5000 \
-  --json | jq -r .api_key | \
-  gh secret set CI_SMOKE_AGENT_KEY --repo agentmiddleware/agent-middleware
+  --key-only \
+  --key-file "$KEY_FILE"
+gh secret set CI_SMOKE_AGENT_KEY --repo agentmiddleware/agent-middleware < "$KEY_FILE" && rm -f "$KEY_FILE"
 ```
 
 ### Security Properties
 
 - Human/status text goes to stderr (never stdout in `--json` mode)
 - Bootstrap/admin key is never printed to stdout or stderr
+- The minted agent key is never printed to stdout or stderr; `--key-file` stores it
 - Agent key is never logged or printed during constant test execution
 - All secrets read from environment variables, never hardcoded
 
@@ -147,9 +145,9 @@ pytest tests/test_constant_test_loop.py -v
 ```
 
 Covers:
-- `--json` mode produces pipeable stdout
+- `--json` mode produces pipeable stdout (identity fields only, never `api_key`)
 - Bootstrap key never leaks to stdout or stderr
-- `jq -r .api_key` pipeline works
+- `--key-file` persists the minted secret at mode 0600
 - Constant test loop runs against local instance
 - Self-provisioning when no key provided
 - Agent key never logged during execution

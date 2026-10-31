@@ -353,6 +353,15 @@ class SigningKeyService:
             raise SigningKeyError("signing_key_not_active")
         return key
 
+    def offline_key_identity(self) -> tuple[str, str]:
+        """Return ``(key_id, public_key_b64)`` for the configured key, no DB.
+
+        Offline signers (``amw replay``) publish this pair next to what they
+        sign so verifiers can check it without the gateway's key table.
+        """
+        public_key_b64 = self._public_key_b64()
+        return self._key_id, public_key_b64
+
     def sign_payload_with_key_id(
         self,
         payload: dict[str, Any],

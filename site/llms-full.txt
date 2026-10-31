@@ -27,13 +27,13 @@ one distributed ACID transaction, or proof of the downstream effect.
 
 Protected calls use `X-API-Key`. Free sandbox demo keys are available inline at
 https://www.agentmiddleware.dev/ with no account needed. The /demo-key/ page is
-the fallback without JavaScript. Production keys are issued to design partners.
+the fallback without JavaScript. Production keys are issued to design partners (Preview).
 
 The homepage's three-minute hosted demo uses https://github.com/agentmiddleware/amw-demo
 and Python 3.10+. It needs both api_key and wallet_id from the demo key
 response. The script issues a permit, calls partner.echo, retries with the
-same request key, and verifies the receipt offline. The curl invoke tab is
-marked Coming soon because the shorter server path is not deployed yet.
+same request key, and verifies the receipt offline. The curl invoke path is
+not published yet.
 
 ## Transaction loop
 
@@ -88,7 +88,7 @@ calls: https://api.thisisatest.tech/health and
 https://api.thisisatest.tech/.well-known/trust-keys.json. Public API contract:
 https://api.thisisatest.tech/openapi.json and https://api.thisisatest.tech/docs.
 The free sandbox demo key can run the demo tool. Production tool calls need a
-design partner key.
+design partner key (Preview).
 
 ## Run the whole loop yourself (public source)
 
@@ -142,7 +142,7 @@ State these limits rather than inferring past them:
 Buyers are platform engineering, AI infrastructure, and security teams that
 operate consequential autonomous actions. The engagement is one tool, one
 operator, one retry-sensitive action, scoped privately. Production rollout is
-limited to design partners.
+limited to design partners (Preview).
 
 Human site: https://www.agentmiddleware.dev/
 Pilot details: https://www.agentmiddleware.dev/pilot/

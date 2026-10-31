@@ -2743,17 +2743,6 @@ body.home-light .hero-v2-tab-active::after {
   background: var(--home-blue);
   content: "";
 }
-body.home-light .hero-v2-tab-disabled {
-  min-width: 183px;
-  border-left: 1px solid var(--home-line);
-  color: var(--home-muted);
-}
-body.home-light .hero-v2-tab-disabled span {
-  padding: 3px 6px;
-  border: 1px solid #6b7280;
-  border-radius: 4px;
-  font-size: 0.625rem;
-}
 body.home-light .hero-v2-command-row { position: relative; }
 body.home-light .hero-v2-command-row pre {
   margin: 0;
@@ -2783,20 +2772,6 @@ body.home-light .hero-v2-curl-row {
 }
 body.home-light .hero-v2-curl-row pre { padding: 14px 64px 0 0; line-height: 1.375rem; }
 body.home-light .hero-v2-curl-row button { top: 6px; right: -8px; }
-body.home-light .hero-v2-output {
-  margin: 16px 23px 0;
-  border-top: 1px solid var(--home-line);
-}
-body.home-light .hero-v2-output p {
-  margin: 12px 0 0;
-  color: var(--home-muted);
-  font-size: 0.75rem;
-}
-body.home-light .hero-v2-command-row.hero-v2-output pre {
-  padding: 8px 0 0;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
 body.home-light .hero-v2-code-note {
   margin: 16px 23px 0;
   max-width: none;

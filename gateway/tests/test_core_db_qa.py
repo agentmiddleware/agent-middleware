@@ -376,6 +376,14 @@ def test_public_contact_valid_triple():
         ),
         (
             _Contact(
+                name="Acme Operations",
+                email="ops@acme-corp.com",
+                url="https://api.agentmiddleware.dev./book",
+            ),
+            "^PUBLIC_CONTACT_URL must point to a booking service$",
+        ),
+        (
+            _Contact(
                 name="Agent Middleware API",
                 email="ops@acme-corp.com",
                 url="https://acme-corp.com/c",

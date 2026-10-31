@@ -678,3 +678,8 @@ async def test_copied_tool_does_not_spend_the_original_permit_on_another_wallet(
         "permit_idempotency_key reused" in moved
         or ("wallet-2", "permit-wallet-2") in invokes
     )
+
+
+def test_base_url_defaults_to_the_production_api():
+    tool = CrewAIB2ATool(api_key="tenant-a-key", wallet_id="wallet-1")
+    assert tool.base_url == "https://api.agentmiddleware.dev"

@@ -63,7 +63,7 @@ def validated_public_contact(config: Any) -> dict[str, str] | None:
         raise ValueError("PUBLIC_CONTACT_URL must be an absolute HTTPS URL")
     if _reserved_contact_hostname(parsed_url.hostname):
         raise ValueError("PUBLIC_CONTACT_URL must use a routable public domain")
-    if parsed_url.hostname.casefold() in _BLOCKED_BOOKING_HOSTS:
+    if parsed_url.hostname.casefold().rstrip(".") in _BLOCKED_BOOKING_HOSTS:
         raise ValueError("PUBLIC_CONTACT_URL must point to a booking service")
 
     normalized = " ".join(values.values()).casefold()

@@ -25,7 +25,7 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   # Blessed ruff and mypy. Must match gateway/requirements-dev.txt.
   # mypy must also match the exact pin in gateway/requirements.txt.
-  RUFF_VERSION: "0.17.1"
+  RUFF_VERSION: "0.17.2"
   MYPY_VERSION: "2.4.0"
   PYTEST_VERSION: "9.1.1"
 

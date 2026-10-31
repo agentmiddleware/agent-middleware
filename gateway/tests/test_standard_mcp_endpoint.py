@@ -1520,14 +1520,24 @@ def test_unkeyed_retry_window_rejects_negative_and_keeps_zero():
 
 def test_unregistered_tool_replay_runs_iga_check():
     """Codex should-fix: the replay served after a tool is removed must run
-    the same IGA gate as the registered-tool replay path."""
+    the same IGA gate as the registered-tool replay path.
+
+    #232 moved durable replay for unregistered tools into the early
+    ``(permit_id or not service)`` idempotency begin; #233's IGA gate must
+    still run there before ``_raise_replayed_error``.
+    """
     import inspect
 
     from app.routers import mcp
 
     src = inspect.getsource(mcp)
-    end = src.index('reason = f"Tool not found')
-    branch = src[src.rindex("if not service:", 0, end) : end]
+    # The early begin that covers unregistered tools.
+    marker = "and (permit_id or not service)"
+    start = src.index(marker)
+    # Bound the search to this begin block: stop before the later
+    # permit-outside / Tool-not-found fallthrough.
+    end = src.index("if governed_call and permit_id and action_identity is None:", start)
+    branch = src[start:end]
     assert "_assert_replay_iga_access(auth=auth, tool_name=tool_name)" in branch
     assert branch.index("_assert_replay_iga_access") < branch.index(
         "_raise_replayed_error"

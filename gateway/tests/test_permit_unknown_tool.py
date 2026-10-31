@@ -298,6 +298,9 @@ async def test_standard_mcp_explicit_permit_unregistered_tool_is_permit_denial(
     client, clean_database, standard_mcp_enabled
 ):
     provisioned, permit = await _permit_for_allowed_tool(client)
+    # SEL-498 (#233): standard /mcp refuses unkeyed tools/call before any
+    # permit decision. Supply a client key so the #232 permit-scope denial
+    # is what we observe.
     resp = await client.post(
         "/mcp",
         json={
@@ -307,7 +310,12 @@ async def test_standard_mcp_explicit_permit_unregistered_tool_is_permit_denial(
             "params": {
                 "name": UNKNOWN,
                 "arguments": {},
-                "_meta": {"io.agentmiddleware/permit_id": permit["permit_id"]},
+                "_meta": {
+                    "io.agentmiddleware/permit_id": permit["permit_id"],
+                    "io.agentmiddleware/idempotency_key": (
+                        f"std-explicit-unknown-idem-{uuid4()}"
+                    ),
+                },
             },
         },
         headers={**provisioned["agent_headers"], **MCP_HEADERS},

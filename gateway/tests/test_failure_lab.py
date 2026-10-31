@@ -315,17 +315,27 @@ FUSE_CASES = (
     "lossy(httpx.AsyncHTTPTransport())",
     "httpx.AsyncHTTPTransport()",
     "lossy(lossy(httpx.AsyncHTTPTransport()))",
+    "lossy(lossy(ASGITransport(app=rail_app)))",
+    "lossy x5 over ASGITransport(app=rail_app)",
 )
 
-# Repoints DirectCaller at a real network transport, which is what a real
-# partner tool would sit behind. Nothing listens on the lab's upstream port, so
-# the arms before the fused one fail their checks against a dead socket — which
-# is fine, because checks record rather than raise, so the run still reaches
-# `native.key_conflict`.
+# Repoints DirectCaller at a transport that is not the lab's rail, which is what
+# a real partner tool would sit behind. The handler refuses every request instead
+# of reaching the network, so the arms before the fused one fail their checks
+# against a closed connection. That is fine, because checks record rather than
+# raise, so the run still reaches `native.key_conflict`. Relying on nothing
+# listening on the lab's upstream port would mean posting `payout.send` to
+# whatever did listen there.
 FOREIGN_DIRECT_CALLER = """
+def _refuse(request):
+    raise httpx.ConnectError(
+        "blocked: this test must not reach the network", request=request
+    )
+
+
 def _foreign_init(self, rail, injector, events):
     self._transport = fl.LossyTransport(
-        httpx.AsyncHTTPTransport(),
+        httpx.MockTransport(_refuse),
         hop=fl.HOP_AGENT_DOWNSTREAM,
         injector=injector,
     )
@@ -424,7 +434,16 @@ async def go():
             if not refused:
                 raise
             raised = str(refused[0])
-    return {"raised": raised, "effects": len(lab.rail.effects)}
+    attempts = sum(
+        1
+        for line in lab.events.path.read_text().splitlines()
+        if line.strip() and json.loads(line)["kind"] == "agent_attempt"
+    )
+    return {
+        "raised": raised,
+        "effects": len(lab.rail.effects),
+        "attempts": attempts,
+    }
 
 
 print("RESULT " + json.dumps(asyncio.run(go())))
@@ -441,7 +460,9 @@ print("RESULT " + json.dumps(asyncio.run(go())))
     )
 
     assert payload["raised"], "the fuse admitted a foreign target"
-    # Refused before any call, so the rail executed nothing at all.
+    # Refused before any call: no attempt was even emitted. The rail cannot
+    # prove this alone, because a foreign transport bypasses it entirely.
+    assert payload["attempts"] == 0
     assert payload["effects"] == 0
     assert "refused before any call" in payload["raised"]
     assert "no gateway" in payload["raised"]

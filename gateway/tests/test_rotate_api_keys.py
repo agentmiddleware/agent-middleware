@@ -132,7 +132,7 @@ def test_verify_rejects_unsafe_origins_before_probing(rotate, monkeypatch, targe
     ("target", "normalized"),
     [
         ("https://api.example.test/", "https://api.example.test"),
-        ("https://api.thisisatest.tech", "https://api.thisisatest.tech"),
+        ("https://api.agentmiddleware.dev", "https://api.agentmiddleware.dev"),
         ("http://localhost:8000", "http://localhost:8000"),
         ("http://127.0.0.1:8000", "http://127.0.0.1:8000"),
         ("http://[::1]:8000", "http://[::1]:8000"),

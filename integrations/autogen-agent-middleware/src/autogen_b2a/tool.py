@@ -80,7 +80,7 @@ class B2AFunctionTool:
         self,
         api_key: str,
         wallet_id: str,
-        base_url: str = "https://api.thisisatest.tech",
+        base_url: str = "https://api.agentmiddleware.dev",
         permit_budget: Decimal = Decimal(100),
         permit_ttl_minutes: int = 30,
     ):

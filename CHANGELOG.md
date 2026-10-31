@@ -4,6 +4,7 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ## [Unreleased]
 
+- Changed: the AutoGen (`autogen-agent-middleware`) and CrewAI (`crewai-agent-middleware`) integrations now default `base_url` to `https://api.agentmiddleware.dev` instead of `https://api.thisisatest.tech`. Pass `base_url` explicitly to keep the old host.
 - Partner bootstrap CLI (breaking): `gateway/scripts/partner_api_key_bootstrap.py`
   never prints the minted agent API key. Operators must pass `--key-file`
   (created mode 0600, refused if the path exists); human, `--json`, and

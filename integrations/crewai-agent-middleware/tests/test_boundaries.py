@@ -453,7 +453,10 @@ async def test_balance_and_discovery_use_this_tools_identity(monkeypatch):
 
     class _CaptureClient(real_client):
         def __init__(
-            self, api_key: str, base_url: str = "https://api.thisisatest.tech", **kwargs
+            self,
+            api_key: str,
+            base_url: str = "https://api.agentmiddleware.dev",
+            **kwargs,
         ):
             captured["constructed_key"] = api_key
             captured["constructed_url"] = base_url
@@ -675,3 +678,8 @@ async def test_copied_tool_does_not_spend_the_original_permit_on_another_wallet(
         "permit_idempotency_key reused" in moved
         or ("wallet-2", "permit-wallet-2") in invokes
     )
+
+
+def test_base_url_defaults_to_the_production_api():
+    tool = CrewAIB2ATool(api_key="tenant-a-key", wallet_id="wallet-1")
+    assert tool.base_url == "https://api.agentmiddleware.dev"

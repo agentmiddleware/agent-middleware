@@ -17,7 +17,7 @@ Never commit `VALID_API_KEYS` to git.
 ## Operator flow (live API)
 
 ```bash
-export API_URL="${PUBLIC_URL:-https://api.thisisatest.tech}"
+export API_URL="${PUBLIC_URL:-https://api.agentmiddleware.dev}"
 export BOOTSTRAP_KEY=...   # from secret manager / Railway variables — not a demo string
 
 mkdir -p -m 700 ~/.config/amw

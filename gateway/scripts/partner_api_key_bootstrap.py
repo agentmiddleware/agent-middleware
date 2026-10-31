@@ -224,7 +224,7 @@ def main() -> int:
     parser.add_argument(
         "--api-url",
         required=True,
-        help="Canonical public API origin, https://api.thisisatest.tech",
+        help="Canonical public API origin, https://api.agentmiddleware.dev",
     )
     parser.add_argument(
         "--bootstrap-key",

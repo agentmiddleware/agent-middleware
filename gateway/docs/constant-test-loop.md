@@ -45,7 +45,7 @@ deployment.
 
 ```bash
 python scripts/constant_test_loop.py \
-  --api-url https://api.thisisatest.tech \
+  --api-url https://api.agentmiddleware.dev \
   --tool partner.echo \
   --tool-args '{"text": "constant test loop"}'
 ```
@@ -78,7 +78,7 @@ KEY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/amw-ci-smoke.XXXXXX")"
 chmod 700 "$KEY_DIR"
 KEY_FILE="$KEY_DIR/agent.key"
 PROVISION_JSON="$(python scripts/partner_api_key_bootstrap.py \
-  --api-url https://api.thisisatest.tech \
+  --api-url https://api.agentmiddleware.dev \
   --agent-id ci-smoke-agent \
   --key-name constant-test-loop \
   --budget-credits 5000 \
@@ -91,7 +91,7 @@ rm -rf "$KEY_DIR"
 unset PROVISION_JSON
 
 # Run the constant test
-API_URL=https://api.thisisatest.tech python scripts/constant_test_loop.py
+API_URL=https://api.agentmiddleware.dev python scripts/constant_test_loop.py
 ```
 
 ## Machine-Readable Bootstrap Output
@@ -105,7 +105,7 @@ KEY_FILE="${TMPDIR:-/tmp}/amw-ci-smoke-key.$$"
 
 # JSON identity fields on stdout; full key only in KEY_FILE
 BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
-  --api-url https://api.thisisatest.tech \
+  --api-url https://api.agentmiddleware.dev \
   --agent-id ci-smoke-agent \
   --key-name test-key \
   --budget-credits 5000 \
@@ -115,7 +115,7 @@ BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
 # Or print only the key-file path, then load it into a secret store
 KEY_FILE="${TMPDIR:-/tmp}/amw-ci-smoke-key.$$"
 BOOTSTRAP_KEY="..." python scripts/partner_api_key_bootstrap.py \
-  --api-url https://api.thisisatest.tech \
+  --api-url https://api.agentmiddleware.dev \
   --agent-id ci-smoke-agent \
   --key-name constant-test-loop \
   --budget-credits 5000 \

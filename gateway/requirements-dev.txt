@@ -9,7 +9,7 @@
 # The SDK editable is not listed here because pip/uv resolve `-e` paths
 # against the working directory, not this file.
 -r requirements.txt
-ruff==0.17.1
+ruff==0.17.2
 mypy==2.4.0
 # requirements.txt already carries pytest, pytest-asyncio, and pytest-cov.
 # CI runs the gateway suite with `-n auto --timeout 300`.

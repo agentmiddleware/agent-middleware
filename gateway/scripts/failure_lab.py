@@ -865,8 +865,8 @@ class Gateway:
         registered = await register_configured_upstream_mcp(
             settings=settings, http_client=self._upstream_client
         )
-        # The lab configures one upstream tool by name and leaves
-        # MCP_UPSTREAM_MULTI_TOOL_ENABLED at its default, so registration returns
+        # The lab configures one upstream tool by name and pins
+        # MCP_UPSTREAM_MULTI_TOOL_ENABLED to False above, so registration returns
         # that single service rather than a list. Narrow it here instead of
         # widening self.service: a list would mean this configuration changed, and
         # the reads below would quietly address the wrong shape.

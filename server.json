@@ -12,7 +12,7 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://api.thisisatest.tech/mcp",
+      "url": "https://api.agentmiddleware.dev/mcp",
       "headers": [
         {
           "name": "X-API-Key",

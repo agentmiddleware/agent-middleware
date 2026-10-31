@@ -68,7 +68,7 @@ non-documentation files under `gateway/`, a project gateway depends on (for
 example `sdk/python`), or a shared path. They skip a pull request that changes
 only another project, for example `sdk/typescript` (`limit_matrix` in
 `.github/scripts/project_dependents.py`), and a docs-only pull request, where
-every changed file has a documentation suffix such as `.md` (changes under
+every changed file has a documentation suffix such as Markdown (changes under
 `spec/`, nested READMEs and deletions never count as docs-only; the `detect` job
 in `.github/workflows/ci.yml`). Both jobs use disposable
 Postgres service databases and set `AMW_TEST_DB_DISPOSABLE=1` in their job

@@ -39,6 +39,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from ..core import product_analytics
 from ..core.browser_origin import validate_browser_origin
 from ..core.config import get_settings
 from ..core.trust_mode import is_production_like_environment
@@ -171,6 +172,7 @@ async def self_provision_dev_key(
         key_name=request.key_name,
     )
 
+    product_analytics.track_signup(sponsor.wallet_id, method="dev_self_provision")
     return SelfProvisionResponse(
         sponsor_wallet_id=sponsor.wallet_id,
         wallet_id=agent.wallet_id,

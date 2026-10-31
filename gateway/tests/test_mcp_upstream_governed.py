@@ -1468,10 +1468,8 @@ async def test_prepare_commit_uncertain_preserves_owner_state_and_public_contrac
                 },
             )
             assert uncertain.status_code == 409
-            assert uncertain.json()["detail"] == {
-                "error": "idempotency_in_progress",
-                "request_id": "prepare-uncertain-fixed-req",
-            }
+            assert uncertain.json()["detail"] == {"error": "idempotency_in_progress"}
+            assert uncertain.headers["X-Request-ID"] == "prepare-uncertain-fixed-req"
         assert committed_attempt_id is not None
         assert executor.calls == []
 
@@ -1986,8 +1984,8 @@ async def test_precanonical_alternate_transport_identity_fails_closed(
                 headers=provisioned["agent_headers"],
             )
             assert response.status_code == 409
-            assert response.json()["detail"]["error"] == "idempotency_key_reused"
-            assert "request_id" in response.json()["detail"]
+            assert response.json()["detail"] == {"error": "idempotency_key_reused"}
+            assert response.headers["X-Request-ID"]
 
         assert executor.dispatch_count == 0
         assert await _wallet_debit_and_canonical_counts(

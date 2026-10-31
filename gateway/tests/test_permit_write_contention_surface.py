@@ -520,10 +520,10 @@ async def test_a_call_that_already_ran_is_never_told_to_retry(
     assert PermitWriteContendedError.reason not in str(detail), detail
 
     # The caller's real answer survived the contention, and so did the receipt
-    # -- the whole reason the release absorbs rather than escalates. The
-    # tool's own error stays server-side.
-    assert detail["error"] == "internal_error", detail
-    assert "tool blew up" not in resp.text
+    # -- the whole reason the release absorbs rather than escalates.
+    # The tool exception text stays in the server log, keyed by X-Request-ID.
+    assert "tool blew up" not in resp.text, detail
+    assert detail["error"] == "tool_execution_failed", detail
     assert detail["receipt"]["outcome"] == "failed_refunded", detail
     assert await _count_receipts() == 1
 

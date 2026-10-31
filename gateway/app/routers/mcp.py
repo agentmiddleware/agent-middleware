@@ -28,7 +28,7 @@ from dataclasses import asdict
 from decimal import Decimal
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
@@ -180,12 +180,16 @@ class GovernedToolError(RuntimeError):
         extra_data: dict[str, Any] | None = None,
         status_code: int = 500,
         jsonrpc_code: int = -32603,
+        tool_originated: bool = False,
     ) -> None:
         super().__init__(reason)
         self.receipt = receipt
         self.extra_data = extra_data or {}
         self.status_code = status_code
         self.jsonrpc_code = jsonrpc_code
+        # True when ``reason`` is a tool's own exception text rather than a
+        # gateway-chosen reason code; public surfaces must not echo it.
+        self.tool_originated = tool_originated
 
 
 class ToolPermissionDenied(PermissionError):
@@ -608,19 +612,6 @@ def _public_jsonrpc_error(
     return _jsonrpc_error_response(
         rpc_id, code, _public_jsonrpc_message(exc, code=code), payload_data
     )
-
-
-def _log_rest_error(exc: BaseException, *, request: Request, status_code: int) -> str:
-    """Log a REST invoke failure with a request id; return the id for the body."""
-    request_id = _mcp_request_id(request)
-    logger.error(
-        "mcp_rest_error surface=/mcp/tools/{service_id}/invoke request_id=%s status=%s class=%s error=%r",
-        request_id,
-        status_code,
-        type(exc).__name__,
-        _sanitize_log_message(exc),
-    )
-    return request_id
 
 
 class McpContext(BaseModel):
@@ -3295,6 +3286,7 @@ async def _execute_registered_tool_inner(
                 receipt=receipt_payload,
                 status_code=500,
                 jsonrpc_code=-32603,
+                tool_originated=True,
             ) from exc
         raise ToolExecutionError(str(exc)) from exc
 
@@ -4792,6 +4784,10 @@ async def _raise_replayed_error(replay: Any) -> None:
         extra_data=extra_data,
         status_code=replay.status_code,
         jsonrpc_code=_status_to_jsonrpc_code(replay.status_code, reason),
+        tool_originated=(
+            isinstance(receipt, dict)
+            and receipt.get("reason_code") == "tool_execution_failed"
+        ),
     )
 
 
@@ -5141,6 +5137,130 @@ async def _handle_tools_call(
     return response
 
 
+# Public error text for the legacy HTTP invoke route (follow-up to #242's
+# JSON-RPC fix). Exception text is logged with a request id and never copied
+# into the response body. The request id travels in the X-Request-ID response
+# header so an idempotent replay body stays byte-identical to the original.
+_INVOKE_SURFACE = "/mcp/tools/{service_id}/invoke"
+# Gateway-chosen reason codes echoed verbatim. Anything else, including any
+# snake_case text a tool raised, maps to a canned message.
+_INVOKE_PUBLIC_REASONS: frozenset[str] = frozenset(
+    {
+        "Missing wallet_id",
+        "idempotency_key_required",
+        "idempotency_in_progress",
+        "invalid_idempotency_key",
+        "permit_required",
+        "human_approval_pending",
+        "human_approval_unavailable",
+        "human_approval_request_mismatch",
+        "approval_window_elapsed",
+        "ledger_write_contended",
+        "audit_chain_head_contention",
+        "receipt_write_contended",
+        "permit_write_contended",
+        "preacceptance_write_contended",
+        "tool_execution_failed",
+        "quote_not_found",
+        "quote_wallet_mismatch",
+        "quote_tool_mismatch",
+        "quote_expired",
+        "quote_already_consumed",
+        "jev_risk_review_required",
+        "duplicate_request_new_key",
+        "action_permit_required",
+        "action_quote_unsupported",
+        "action_tool_binding_required",
+        "key_tool_not_allowed",
+        "demo_tool_not_allowed",
+        "anomalous_spend",
+        "iga_no_matching_role",
+        "insufficient_funds",
+        "wallet_frozen",
+        "wallet_expired",
+        "wallet_not_found",
+        "wallet_access_denied",
+        "signing_key_unavailable",
+        "dispatch_attempt_not_found",
+        "refund_failed",
+        "refund_reconciliation_failed",
+        "refund_reconciliation_resolution_invalid",
+        "refund_reconciliation_write_contended",
+        "upstream_pre_dispatch_failed",
+        "upstream_prepare_failed",
+        "upstream_returned_error",
+        "x402_settled_unrecoverable_replay",
+        "x402_settlement_needs_review",
+    }
+)
+# extra_data keys a GovernedToolError may expose on this route. upstream_result
+# is the raw upstream payload and stays server-side.
+_INVOKE_PUBLIC_EXTRA_KEYS: tuple[str, ...] = (
+    "dispatch",
+    "refund_reconciliation",
+    "reason_code",
+    "remediation",
+    "requested",
+)
+# extra_data["error"] replaces the canned message only when it is one of these
+# server-built codes (the demo auto-mint budget refusal sets it).
+_INVOKE_PUBLIC_EXTRA_ERRORS: frozenset[str] = frozenset({"authority_required"})
+_INVOKE_PUBLIC_MESSAGE_BY_TYPE: tuple[tuple[type[BaseException], str], ...] = (
+    (HumanApprovalPendingSignal, "human_approval_pending"),
+    (IdempotencyInProgressError, "idempotency_in_progress"),
+    (LedgerWriteContendedError, "ledger_write_contended"),
+    (AuditChainContendedError, "audit_chain_head_contention"),
+    (ReceiptWriteContendedError, "receipt_write_contended"),
+    (PermitWriteContendedError, "permit_write_contended"),
+    (ToolPermissionDenied, "Permission denied"),
+    (PermissionError, "Permission denied"),
+    (ToolExecutionError, "tool_execution_failed"),
+    (InvalidIdempotencyKeyError, "invalid_idempotency_key"),
+)
+
+
+def _invoke_public_message(exc: BaseException) -> str:
+    """Canned client message for ``exc`` on the invoke route. Never ``str(exc)``."""
+    if isinstance(exc, GovernedToolError) and exc.tool_originated:
+        return "tool_execution_failed"
+    text = str(exc)
+    if text in REFUSAL_REASON_CODES or text in _INVOKE_PUBLIC_REASONS:
+        return text
+    for prefix in ("Tool not found", "Tool not executable", "refund_failed"):
+        if text.startswith(prefix):
+            return prefix
+    for exc_type, message in _INVOKE_PUBLIC_MESSAGE_BY_TYPE:
+        if isinstance(exc, exc_type):
+            return message
+    if isinstance(exc, GovernedToolError):
+        return "tool_call_refused"
+    return "Invalid request"
+
+
+def _invoke_public_extra_data(exc: GovernedToolError) -> dict[str, Any]:
+    public = {
+        k: exc.extra_data[k] for k in _INVOKE_PUBLIC_EXTRA_KEYS if k in exc.extra_data
+    }
+    if exc.extra_data.get("error") in _INVOKE_PUBLIC_EXTRA_ERRORS:
+        public["error"] = exc.extra_data["error"]
+    return public
+
+
+def _invoke_log_error(exc: BaseException, request_id: str) -> str:
+    """Log the error class under ``request_id``; return the canned message.
+
+    The exception text is not logged: it can carry upstream payloads or key
+    material.
+    """
+    logger.error(
+        "mcp_invoke_error surface=%s request_id=%s class=%s",
+        _INVOKE_SURFACE,
+        request_id,
+        type(exc).__name__,
+    )
+    return _invoke_public_message(exc)
+
+
 @router.post(
     "/tools/{service_id}/invoke",
     name="Invoke MCP Tool",
@@ -5158,6 +5278,7 @@ async def invoke_tool(
     service_id: str,
     request: ToolCallRequest,
     http_request: Request,
+    http_response: Response,
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ) -> ToolCallResponse:
@@ -5204,14 +5325,11 @@ async def invoke_tool(
             ]
         )
     except InvalidIdempotencyKeyError as exc:
-        rest_request_id = _log_rest_error(exc, request=http_request, status_code=400)
+        rid = _mcp_request_id(http_request)
         raise HTTPException(
             status_code=400,
-            detail={
-                "message": "invalid_idempotency_key",
-                **exc.as_error_data(),
-                "request_id": rest_request_id,
-            },
+            detail={"message": _invoke_log_error(exc, rid), **exc.as_error_data()},
+            headers={"X-Request-ID": rid},
         ) from exc
 
     mcp_payload = {
@@ -5242,16 +5360,13 @@ async def invoke_tool(
             response["permit_id"] = auto_permit_id
         return ToolCallResponse(**response)
     except HumanApprovalPendingSignal as exc:
-        rest_request_id = _log_rest_error(
-            exc, request=http_request, status_code=exc.status_code
-        )
-        detail: dict[str, Any] = {
-            "error": _public_jsonrpc_message(exc, code=exc.jsonrpc_code),
-            "request_id": rest_request_id,
-        }
+        rid = _mcp_request_id(http_request)
+        detail: dict[str, Any] = {"error": _invoke_log_error(exc, rid)}
         if exc.data:
             detail["approval"] = exc.data
-        raise HTTPException(status_code=exc.status_code, detail=detail)
+        raise HTTPException(
+            status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid}
+        )
     except (
         IdempotencyInProgressError,
         LedgerWriteContendedError,
@@ -5283,13 +5398,11 @@ async def invoke_tool(
         # A contention loss whose effects committed does not arrive here at
         # all: the five receipt sites and the audit site re-raise it as
         # TerminalRecordContendedError, which the next branch answers.
-        rest_request_id = _log_rest_error(exc, request=http_request, status_code=409)
+        rid = _mcp_request_id(http_request)
         raise HTTPException(
             status_code=409,
-            detail={
-                "error": _public_jsonrpc_message(exc, code=-32005),
-                "request_id": rest_request_id,
-            },
+            detail={"error": _invoke_log_error(exc, rid)},
+            headers={"X-Request-ID": rid},
         ) from exc
     except TerminalRecordContendedError as exc:
         # Stays 500 -- the server did fail to record the call, and this surface
@@ -5297,57 +5410,49 @@ async def invoke_tool(
         # What changes is the body: a named reason and its remediation instead
         # of an opaque internal_error, matching the -32007 the JSON-RPC
         # surfaces return for the identical state.
-        rest_request_id = _log_rest_error(
-            exc, request=http_request, status_code=exc.status_code
-        )
-        terminal_detail = _terminal_record_contended_data(exc.reason)
-        terminal_detail["request_id"] = rest_request_id
+        rid = _mcp_request_id(http_request)
+        _invoke_log_error(exc, rid)
         raise HTTPException(
             status_code=exc.status_code,
-            detail=terminal_detail,
+            detail=_terminal_record_contended_data(exc.reason),
+            headers={"X-Request-ID": rid},
         ) from exc
     except ToolPermissionDenied as exc:
-        rest_request_id = _log_rest_error(exc, request=http_request, status_code=403)
-        detail = {
-            "error": _public_jsonrpc_message(exc, code=-32003),
-            "request_id": rest_request_id,
-        }
+        rid = _mcp_request_id(http_request)
+        detail = {"error": _invoke_log_error(exc, rid)}
         if exc.receipt:
             detail["receipt"] = exc.receipt
         if exc.details:
             detail["details"] = exc.details
-        raise HTTPException(status_code=403, detail=detail)
-    except GovernedToolError as exc:
-        rest_request_id = _log_rest_error(
-            exc, request=http_request, status_code=exc.status_code
+        raise HTTPException(
+            status_code=403, detail=detail, headers={"X-Request-ID": rid}
         )
-        detail = {"error": _public_jsonrpc_message(exc, code=exc.jsonrpc_code)}
+    except GovernedToolError as exc:
+        rid = _mcp_request_id(http_request)
+        detail = {"error": _invoke_log_error(exc, rid)}
         if exc.receipt:
             detail["receipt"] = exc.receipt
-        detail.update(exc.extra_data)
-        detail["request_id"] = rest_request_id
-        raise HTTPException(status_code=exc.status_code, detail=detail)
+        detail.update(_invoke_public_extra_data(exc))
+        raise HTTPException(
+            status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid}
+        )
     except PermissionError as exc:
-        rest_request_id = _log_rest_error(exc, request=http_request, status_code=403)
-        permission_message = _public_jsonrpc_message(exc, code=-32003)
-        if permission_message == str(exc):
-            # A stable denial string keeps its contract shape.
-            raise HTTPException(status_code=403, detail=str(exc))
+        rid = _mcp_request_id(http_request)
         raise HTTPException(
             status_code=403,
-            detail={"error": permission_message, "request_id": rest_request_id},
+            detail=_invoke_log_error(exc, rid),
+            headers={"X-Request-ID": rid},
         )
     except ToolExecutionError as exc:
         # Legacy (unpermitted) tool failure: compensation is complete. The
-        # tool's own error stays in the server log; the client gets the
-        # classified message and a request id, as on the JSON-RPC path.
-        rest_request_id = _log_rest_error(exc, request=http_request, status_code=200)
+        # tool's own error stays in the server log under the request id.
+        rid = _mcp_request_id(http_request)
+        _invoke_log_error(exc, rid)
+        http_response.headers["X-Request-ID"] = rid
+        public = "tool_execution_failed"
         return ToolCallResponse(
-            content=[{"type": "text", "text": "Error: tool_execution_failed"}],
-            structuredContent={
-                "error": "tool_execution_failed",
-                "request_id": rest_request_id,
-            },
+            content=[{"type": "text", "text": f"Error: {public}"}],
+            structuredContent={"error": public},
             isError=True,
         )
     except ValueError as exc:
@@ -5357,63 +5462,33 @@ async def invoke_tool(
                 exc, surface="/mcp/tools/{service_id}/invoke"
             )
         if message == "insufficient_funds":
-            rest_request_id = _log_rest_error(
-                exc, request=http_request, status_code=402
-            )
+            rid = _mcp_request_id(http_request)
+            _invoke_log_error(exc, rid)
             raise HTTPException(
                 status_code=402,
-                detail={
-                    "error": "insufficient_funds",
-                    "request_id": rest_request_id,
-                },
+                detail={"error": "insufficient_funds"},
+                headers={"X-Request-ID": rid},
             )
         if message == "idempotency_key_reused":
-            rest_request_id = _log_rest_error(
-                exc, request=http_request, status_code=409
-            )
+            rid = _mcp_request_id(http_request)
+            _invoke_log_error(exc, rid)
             raise HTTPException(
                 status_code=409,
-                detail={
-                    "error": "idempotency_key_reused",
-                    "request_id": rest_request_id,
-                },
+                detail={"error": "idempotency_key_reused"},
+                headers={"X-Request-ID": rid},
             )
         if message in {"wallet_frozen", "wallet_expired"}:
-            rest_request_id = _log_rest_error(
-                exc, request=http_request, status_code=403
-            )
-            raise HTTPException(
-                status_code=403,
-                detail={"error": message, "request_id": rest_request_id},
-            )
+            raise HTTPException(status_code=403, detail={"error": message})
+        rid = _mcp_request_id(http_request)
+        public = _invoke_log_error(exc, rid)
         if message.startswith("Tool not found"):
-            rest_request_id = _log_rest_error(
-                exc, request=http_request, status_code=404
-            )
-            raise HTTPException(
-                status_code=404,
-                detail={"error": "Tool not found", "request_id": rest_request_id},
-            )
-        if message.startswith("Tool not executable"):
-            rest_request_id = _log_rest_error(
-                exc, request=http_request, status_code=501
-            )
-            raise HTTPException(
-                status_code=501,
-                detail={
-                    "error": "Tool not executable",
-                    "request_id": rest_request_id,
-                },
-            )
-        rest_request_id = _log_rest_error(exc, request=http_request, status_code=400)
+            status = 404
+        elif message.startswith("Tool not executable"):
+            status = 501
+        else:
+            status = 400
         raise HTTPException(
-            status_code=400,
-            detail={
-                "error": _public_jsonrpc_message(
-                    exc, code=_value_error_jsonrpc_code(message) or -32602
-                ),
-                "request_id": rest_request_id,
-            },
+            status_code=status, detail=public, headers={"X-Request-ID": rid}
         )
     except Exception as exc:
         return _internal_error_tool_result(

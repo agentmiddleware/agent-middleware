@@ -299,18 +299,17 @@ async def test_rest_invoke_permission_denied_hides_exception_text(
     assert sentinel not in resp.text
     detail = resp.json()["detail"]
     assert detail["error"] == "Permission denied"
-    assert detail["request_id"] == request_id
+    assert "request_id" not in detail
+    assert resp.headers["X-Request-ID"] == request_id
     assert detail["receipt"]["receipt_id"] == receipt_id
     assert detail["details"] == {"reason_code": "fixed-242-probe"}
+    # The invoke route logs only the exception class under the request id.
     matched = [
-        r
-        for r in caplog.records
-        if r.name == LOGGER
-        and request_id in r.getMessage()
-        and sentinel in r.getMessage()
+        r for r in caplog.records if r.name == LOGGER and request_id in r.getMessage()
     ]
     assert matched, caplog.text
-    _assert_clean_error_log(matched[0], exc_type="ToolPermissionDenied")
+    message = _assert_clean_error_log(matched[0], exc_type="ToolPermissionDenied")
+    assert sentinel not in message
 
 
 @pytest.mark.anyio
@@ -337,17 +336,14 @@ async def test_rest_invoke_tool_failure_hides_exception_text(
     body = resp.json()
     assert body["isError"] is True
     assert body["content"] == [{"type": "text", "text": "Error: tool_execution_failed"}]
-    assert body["structuredContent"]["error"] == "tool_execution_failed"
-    assert body["structuredContent"]["request_id"] == request_id
+    assert body["structuredContent"] == {"error": "tool_execution_failed"}
+    assert resp.headers["X-Request-ID"] == request_id
     matched = [
-        r
-        for r in caplog.records
-        if r.name == LOGGER
-        and request_id in r.getMessage()
-        and sentinel in r.getMessage()
+        r for r in caplog.records if r.name == LOGGER and request_id in r.getMessage()
     ]
     assert matched, caplog.text
-    _assert_clean_error_log(matched[0], exc_type="ToolExecutionError")
+    message = _assert_clean_error_log(matched[0], exc_type="ToolExecutionError")
+    assert sentinel not in message
 
 
 @pytest.mark.anyio
@@ -659,7 +655,7 @@ async def test_messages_log_injection_is_escaped_capped_and_typed(
 async def test_rest_invoke_log_injection_is_escaped_capped_and_typed(
     client, clean_database, monkeypatch, caplog
 ):
-    """The REST invoke log path sanitizes, types, and caps the same way."""
+    """The REST invoke log line carries only the class, never injected text."""
     provisioned = await provision_agent_wallet(client)
     request_id = _fresh_request_id()
     core = _fresh_sentinel(tag="RINJECT")
@@ -681,17 +677,14 @@ async def test_rest_invoke_log_injection_is_escaped_capped_and_typed(
     assert "FORGED" not in resp.text
     detail = resp.json()["detail"]
     assert detail["error"] == "Permission denied"
-    assert detail["request_id"] == request_id
+    assert resp.headers["X-Request-ID"] == request_id
     matched = [
         r for r in caplog.records if r.name == LOGGER and request_id in r.getMessage()
     ]
     assert matched, caplog.text
     message = _assert_clean_error_log(matched[0], exc_type="ToolPermissionDenied")
-    assert core in message
+    # The invoke route never logs exception text, so nothing can be injected.
+    assert core not in message
+    assert "FORGED" not in message
     assert "\x00" not in message
-    assert "\\r" in message
-    assert "\\n" in message
-    assert "\\x00" in message
-    assert "...[truncated]" in message
-    assert "Q" * 600 not in message
     assert len(message) < 800

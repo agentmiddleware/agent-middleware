@@ -108,10 +108,8 @@ async def test_foreign_permit_denial_replays_original_403(
     assert set(replay.json()["detail"]) == set(detail)
     assert replay.content == first.content
     assert refused_other_key.status_code == 403
-    assert refused_other_key.json()["detail"] == {
-        "error": "permit_wallet_mismatch",
-        "request_id": "sel482-fixed-request-id-other",
-    }
+    assert refused_other_key.json()["detail"] == {"error": "permit_wallet_mismatch"}
+    assert refused_other_key.headers["X-Request-ID"] == "sel482-fixed-request-id-other"
     assert tenant_a["agent_wallet_id"] not in first.text
     assert counted_tool.effects == []
 

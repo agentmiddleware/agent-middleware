@@ -8,10 +8,14 @@ traceability exercise worthless.
 
 from __future__ import annotations
 
+import hashlib
+import errno
 import json
+from pathlib import Path
 
 import pytest
 
+import failure_lab.evidence as evidence
 from failure_lab.evidence import (
     MIN_SCANNABLE_SECRET_LENGTH,
     build_evidence_bundle,
@@ -20,6 +24,7 @@ from failure_lab.evidence import (
     assert_no_secret_leak,
     find_leaked_secrets,
     redact,
+    verify_bundle_integrity,
 )
 from failure_lab.telemetry import (
     CONVERSION_SOURCES,
@@ -238,3 +243,311 @@ class TestTheBundleRefusesToLeak:
             if path.is_file() and secret in path.read_text(errors="ignore")
         ]
         assert not survivors, survivors
+
+
+def _manifest(bundle, files):
+    (bundle / "manifest.json").write_text(json.dumps({"files": files}))
+
+
+def test_integrity_check_accepts_a_regular_file_inside_the_bundle(tmp_path):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    body = b"inside"
+    (bundle / "report.txt").write_bytes(body)
+    _manifest(
+        bundle,
+        [
+            {
+                "path": "report.txt",
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "bytes": len(body),
+            }
+        ],
+    )
+    report = verify_bundle_integrity(bundle)
+    assert report.ok, report.problems
+    assert report.checked == 1
+
+
+def test_integrity_check_does_not_hash_a_path_that_leaves_the_bundle(tmp_path):
+    """A manifest path of ../ or an absolute path is not a bundle file.
+
+    pathlib joins an absolute path by discarding the bundle directory, and
+    a matching hash would then make the check pass for bytes that are not
+    in the bundle.
+    """
+    outside = tmp_path / "outside.txt"
+    payload = b"not-in-the-bundle"
+    outside.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    entry = {"sha256": digest, "bytes": len(payload)}
+
+    parent_ref = tmp_path / "parent-ref"
+    parent_ref.mkdir()
+    _manifest(parent_ref, [{**entry, "path": "../outside.txt"}])
+    parent_report = verify_bundle_integrity(parent_ref)
+    assert not parent_report.ok
+    assert parent_report.checked == 0
+    assert any("not read" in problem for problem in parent_report.problems)
+
+    absolute = tmp_path / "absolute"
+    absolute.mkdir()
+    _manifest(absolute, [{**entry, "path": str(outside)}])
+    absolute_report = verify_bundle_integrity(absolute)
+    assert not absolute_report.ok
+    assert absolute_report.checked == 0
+
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "report.txt").symlink_to(outside)
+    _manifest(linked, [{**entry, "path": "report.txt"}])
+    linked_report = verify_bundle_integrity(linked)
+    assert not linked_report.ok
+    assert linked_report.checked == 0
+    assert outside.read_bytes() == payload
+
+
+def test_integrity_check_accepts_nested_files_and_reports_missing_files(tmp_path):
+    bundle = tmp_path / "bundle"
+    (bundle / "nested").mkdir(parents=True)
+    body = b"nested"
+    (bundle / "nested" / "report.txt").write_bytes(body)
+    _manifest(
+        bundle,
+        [
+            {
+                "path": "nested/report.txt",
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "bytes": len(body),
+            },
+            {"path": "missing.txt", "sha256": "0" * 64, "bytes": 1},
+        ],
+    )
+    report = verify_bundle_integrity(bundle)
+    assert report.checked == 1
+    assert report.missing == ["missing.txt"]
+    assert not report.ok
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "../outside.txt",
+        "/outside.txt",
+        "bad\x00name",
+        4,
+        "C:/x",
+        "C:\\x",
+        "c:x",
+        "//server/share",
+        "\\\\server\\share",
+    ],
+)
+def test_integrity_check_never_hashes_unsafe_manifest_paths(
+    tmp_path, monkeypatch, unsafe
+):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    _manifest(bundle, [{"path": unsafe, "sha256": "0" * 64, "bytes": 1}])
+
+    def forbidden_hash(_path):
+        pytest.fail("unsafe target was hashed")
+
+    monkeypatch.setattr(evidence, "_sha256_file", forbidden_hash)
+    report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.checked == 0
+    assert any("not read" in problem for problem in report.problems)
+
+
+def test_integrity_check_rejects_escaping_parent_link_and_linked_manifest(
+    tmp_path, monkeypatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "payload.txt").write_bytes(b"outside")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "linked").symlink_to(outside, target_is_directory=True)
+    _manifest(bundle, [{"path": "linked/payload.txt", "sha256": "0" * 64}])
+    monkeypatch.setattr(
+        evidence, "_sha256_file", lambda _path: pytest.fail("outside hashed")
+    )
+    report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.checked == 0
+
+    linked_bundle = tmp_path / "linked-bundle"
+    linked_bundle.mkdir()
+    (linked_bundle / "manifest.json").symlink_to(bundle / "manifest.json")
+    monkeypatch.setattr(
+        Path, "read_text", lambda _path, **_kw: pytest.fail("linked manifest read")
+    )
+    linked_report = verify_bundle_integrity(linked_bundle)
+    assert not linked_report.ok
+    assert linked_report.checked == 0
+
+
+def test_integrity_check_reports_unlisted_symlink_without_reading_target(
+    tmp_path, monkeypatch
+):
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"outside")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "unlisted.txt").symlink_to(outside)
+    _manifest(bundle, [])
+    monkeypatch.setattr(
+        evidence, "_sha256_file", lambda _path: pytest.fail("unlisted link was hashed")
+    )
+    report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.checked == 0
+    assert report.unexpected == ["unlisted.txt"]
+    assert outside.read_bytes() == b"outside"
+
+
+def test_integrity_check_accepts_empty_and_nested_regular_bundles(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    _manifest(empty, [])
+    assert verify_bundle_integrity(empty).ok
+
+    nested = tmp_path / "nested"
+    (nested / "subdir").mkdir(parents=True)
+    payload = b"regular"
+    (nested / "subdir" / "payload.txt").write_bytes(payload)
+    _manifest(
+        nested,
+        [
+            {
+                "path": "subdir/payload.txt",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+            }
+        ],
+    )
+    report = verify_bundle_integrity(nested)
+    assert report.ok, report.problems
+    assert report.checked == 1
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "nested"])
+@pytest.mark.parametrize("error", [errno.EIO, errno.EACCES], ids=["eio", "permission"])
+def test_integrity_check_reports_directory_scan_failure(
+    tmp_path, monkeypatch, nested, error
+):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    blocked = bundle / "subdir" if nested else bundle
+    if nested:
+        blocked.mkdir()
+    (blocked / "unlisted.txt").write_bytes(b"not indexed")
+    _manifest(bundle, [])
+    original_scandir = evidence.os.scandir
+
+    def failing_scandir(path):
+        if Path(path) == blocked:
+            raise OSError(error, "synthetic directory scan failure")
+        return original_scandir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(evidence.os, "scandir", failing_scandir)
+        report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.checked == 0
+    assert any("could not scan" in problem for problem in report.problems)
+
+
+def test_integrity_check_does_not_descend_into_unlisted_directory_link(
+    tmp_path, monkeypatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "payload.txt").write_bytes(b"outside")
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "linked").symlink_to(outside, target_is_directory=True)
+    _manifest(bundle, [])
+    original_scandir = evidence.os.scandir
+
+    def guarded_scandir(path):
+        assert Path(path) != outside, "outside directory was scanned"
+        return original_scandir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(evidence.os, "scandir", guarded_scandir)
+        patch.setattr(
+            evidence,
+            "_sha256_file",
+            lambda _path: pytest.fail("outside target was hashed"),
+        )
+        report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.unexpected == ["linked"]
+
+
+@pytest.mark.parametrize("failure", [OSError, RuntimeError])
+def test_integrity_check_reports_entry_classification_failure(
+    tmp_path, monkeypatch, failure
+):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "unlisted.txt").write_bytes(b"not indexed")
+    _manifest(bundle, [])
+
+    class BrokenEntry:
+        path = str(bundle / "unlisted.txt")
+
+        def is_dir(self, *, follow_symlinks):
+            assert follow_symlinks is False
+            raise failure("synthetic entry classification failure")
+
+    class BrokenListing:
+        def __enter__(self):
+            return iter([BrokenEntry()])
+
+        def __exit__(self, *_args):
+            return False
+
+    with monkeypatch.context() as patch:
+        patch.setattr(evidence.os, "scandir", lambda _path: BrokenListing())
+        report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert any("could not scan" in problem for problem in report.problems)
+
+
+@pytest.mark.parametrize(
+    "files", [None, {}, [1], [None], [{"path": "file", "bytes": "invalid"}]]
+)
+def test_integrity_check_handles_malformed_manifest_shapes(tmp_path, files):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "file").write_bytes(b"ok")
+    _manifest(bundle, files)
+    report = verify_bundle_integrity(bundle)
+    assert not report.ok
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, OSError, ValueError])
+def test_integrity_check_handles_resolution_failure_without_hashing(
+    tmp_path, monkeypatch, failure
+):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "file").write_bytes(b"ok")
+    _manifest(bundle, [{"path": "file", "sha256": "0" * 64}])
+    original_resolve = Path.resolve
+
+    def broken_resolve(path, *args, **kwargs):
+        if path.name == "file":
+            raise failure("cannot resolve")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", broken_resolve)
+    monkeypatch.setattr(
+        evidence, "_sha256_file", lambda _path: pytest.fail("unresolved target hashed")
+    )
+    report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.checked == 0

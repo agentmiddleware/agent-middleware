@@ -140,6 +140,193 @@ def test_the_gateway_adding_nothing_is_a_reachable_conclusion():
     )
 
 
+def test_a_baseline_that_executed_nothing_is_not_called_sufficient():
+    """Zero duplicates from a tool that never ran is not a handled test.
+
+    A baseline that records no downstream effect suppresses duplicates by
+    doing nothing. The telemetry path already refuses to call that a pass.
+    The visitor-facing conclusion has to refuse it too, including when the
+    other baseline really did duplicate and the gateway prevented that.
+    """
+    never_ran = _result(
+        [
+            _entry(Configuration.DIRECT_NAIVE, verdict=Verdict.OBSERVED, executions=0),
+            _entry(Configuration.DIRECT_NATIVE, verdict=Verdict.FAIL, executions=0),
+            _entry(
+                Configuration.GATEWAY_NATIVE,
+                verdict=Verdict.PASS,
+                executions=1,
+                dispatches=1,
+            ),
+        ]
+    )
+    conclusion = build_comparison(never_ran).conclusion
+    assert conclusion.kind is ConclusionKind.INCONCLUSIVE
+    assert "handled" not in conclusion.text
+    assert conclusion.duplicates_prevented_vs_existing == 0
+    assert conclusion.duplicates_prevented_vs_native == 0
+
+    hidden_duplicate = _result(
+        [
+            _entry(Configuration.DIRECT_NAIVE, verdict=Verdict.OBSERVED, executions=2),
+            _entry(Configuration.DIRECT_NATIVE, verdict=Verdict.FAIL, executions=0),
+            _entry(
+                Configuration.GATEWAY_NATIVE,
+                verdict=Verdict.PASS,
+                executions=1,
+                dispatches=1,
+            ),
+        ]
+    )
+    prevented = build_comparison(hidden_duplicate).conclusion
+    assert prevented.kind is ConclusionKind.GATEWAY_PREVENTED_DUPLICATES
+    assert prevented.duplicates_prevented_vs_existing == 1
+
+
+def test_a_failing_baseline_is_not_reported_as_sufficient():
+    """Verdict FAIL means the baseline did not hold. Do not invert that."""
+    result = _result(
+        [
+            _entry(Configuration.DIRECT_NAIVE, verdict=Verdict.FAIL, executions=1),
+            _entry(Configuration.DIRECT_NATIVE, verdict=Verdict.FAIL, executions=1),
+            _entry(
+                Configuration.GATEWAY_NATIVE,
+                verdict=Verdict.PASS,
+                executions=1,
+                dispatches=1,
+            ),
+        ]
+    )
+    conclusion = build_comparison(result).conclusion
+    assert conclusion.kind is ConclusionKind.INCONCLUSIVE
+    assert conclusion.kind is not ConclusionKind.EXISTING_INTEGRATION_SUFFICIENT
+    assert conclusion.kind is not ConclusionKind.NATIVE_CONTROLS_SUFFICIENT
+    assert (
+        "none has both a PASS verdict and the required downstream execution"
+        in conclusion.text
+    )
+    assert (
+        "cannot establish that the intended business action succeeded"
+        in conclusion.text
+    )
+
+
+@pytest.mark.parametrize(
+    "baseline", [Configuration.DIRECT_NAIVE, Configuration.DIRECT_NATIVE]
+)
+def test_pass_verdict_without_downstream_execution_is_inconclusive(baseline):
+    result = _result(
+        [
+            _entry(baseline, verdict=Verdict.PASS, executions=0),
+            _entry(Configuration.GATEWAY_NATIVE, verdict=Verdict.PASS, executions=1),
+        ]
+    )
+
+    conclusion = build_comparison(result).conclusion
+    assert conclusion.kind is ConclusionKind.INCONCLUSIVE
+    assert (
+        "none has both a PASS verdict and the required downstream execution"
+        in conclusion.text
+    )
+
+
+@pytest.mark.parametrize(
+    ("existing_verdict", "existing_count", "native_verdict", "native_count"),
+    [
+        (Verdict.OBSERVED, 0, Verdict.FAIL, 0),
+        (Verdict.FAIL, 1, Verdict.FAIL, 1),
+        (Verdict.ERROR, 0, Verdict.NOT_RUN, 0),
+        (Verdict.NOT_APPLICABLE, 0, Verdict.NOT_RUN, 0),
+    ],
+)
+def test_unqualified_baselines_never_get_a_sufficient_conclusion(
+    existing_verdict, existing_count, native_verdict, native_count
+):
+    result = _result(
+        [
+            _entry(
+                Configuration.DIRECT_NAIVE,
+                verdict=existing_verdict,
+                executions=existing_count,
+            ),
+            _entry(
+                Configuration.DIRECT_NATIVE,
+                verdict=native_verdict,
+                executions=native_count,
+            ),
+            _entry(Configuration.GATEWAY_NATIVE, verdict=Verdict.PASS, executions=1),
+        ]
+    )
+    comparison = build_comparison(result)
+    assert comparison.conclusion.kind not in {
+        ConclusionKind.EXISTING_INTEGRATION_SUFFICIENT,
+        ConclusionKind.NATIVE_CONTROLS_SUFFICIENT,
+    }
+    rendered = render_run_json([comparison], environment=ENVIRONMENT)
+    assert comparison.conclusion.kind.value in rendered
+
+
+def test_equal_duplicate_counts_do_not_claim_native_sufficiency():
+    comparison = build_comparison(
+        _result(
+            [
+                _entry(
+                    Configuration.DIRECT_NAIVE, verdict=Verdict.OBSERVED, executions=2
+                ),
+                _entry(
+                    Configuration.DIRECT_NATIVE, verdict=Verdict.OBSERVED, executions=2
+                ),
+                _entry(
+                    Configuration.GATEWAY_NATIVE, verdict=Verdict.PASS, executions=2
+                ),
+            ]
+        )
+    )
+    assert comparison.conclusion.kind is ConclusionKind.INCONCLUSIVE
+    assert comparison.conclusion.duplicates_prevented_vs_native == 0
+    assert comparison.conclusion.duplicates_prevented_vs_existing == 0
+    assert all(column.duplicate_effects == 1 for column in comparison.columns)
+
+
+def test_observed_single_effect_does_not_prove_existing_integration_sufficient():
+    comparison = build_comparison(
+        _result(
+            [
+                _entry(
+                    Configuration.DIRECT_NAIVE, verdict=Verdict.OBSERVED, executions=1
+                ),
+                _entry(Configuration.DIRECT_NATIVE, verdict=Verdict.FAIL, executions=1),
+                _entry(
+                    Configuration.GATEWAY_NATIVE, verdict=Verdict.PASS, executions=1
+                ),
+            ]
+        )
+    )
+    assert comparison.conclusion.kind is ConclusionKind.INCONCLUSIVE
+    assert comparison.conclusion.duplicates_prevented_vs_existing == 0
+    assert comparison.conclusion.duplicates_prevented_vs_native == 0
+
+
+def test_a_short_existing_column_does_not_hide_a_native_baseline_that_ran():
+    result = _result(
+        [
+            _entry(Configuration.DIRECT_NAIVE, verdict=Verdict.OBSERVED, executions=0),
+            _entry(
+                Configuration.DIRECT_NATIVE, verdict=Verdict.PASS, executions=1, known=1
+            ),
+            _entry(
+                Configuration.GATEWAY_NATIVE,
+                verdict=Verdict.PASS,
+                executions=1,
+                dispatches=1,
+                known=1,
+            ),
+        ]
+    )
+    conclusion = build_comparison(result).conclusion
+    assert conclusion.kind is ConclusionKind.NATIVE_CONTROLS_SUFFICIENT
+
+
 def test_an_already_correct_existing_integration_is_told_so():
     result = _result(
         [

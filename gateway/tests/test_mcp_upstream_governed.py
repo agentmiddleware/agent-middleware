@@ -62,6 +62,7 @@ from app.services.upstream_mcp import (
     register_configured_upstream_mcp,
 )
 from tests.test_trust_helpers import (
+    resign_permit_model,
     BOOTSTRAP_HEADERS,
     create_tool_permit,
     provision_agent_wallet,
@@ -2800,6 +2801,7 @@ async def test_upstream_permit_denials_never_charge_or_dispatch(
                 model = await session.get(PermitModel, permit["permit_id"])
                 assert model is not None
                 model.expires_at = utc_now() - timedelta(seconds=1)
+                await resign_permit_model(model)
                 session.add(model)
                 await session.commit()
 

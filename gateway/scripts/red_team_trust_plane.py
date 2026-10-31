@@ -71,7 +71,9 @@ from app.db.database import close_db, get_session_factory, init_db  # noqa: E402
 from app.db.models import PermitModel  # noqa: E402
 from app.main import app  # noqa: E402
 from app.schemas.billing import ServiceCategory  # noqa: E402
+from app.services.permits import get_permit_service  # noqa: E402
 from app.services.service_registry import get_service_registry  # noqa: E402
+from app.services.signing_keys import get_signing_key_service  # noqa: E402
 
 
 def remove_demo_db() -> None:
@@ -223,6 +225,13 @@ async def _force_permit_expired(permit_id: str) -> None:
         )
         model = result.scalar_one()
         model.expires_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        # The signature is verified before expiry is read, so re-sign the
+        # row to model a genuinely expired permit rather than a forged one.
+        signature, kid, _ = await get_signing_key_service().sign_payload(
+            get_permit_service()._unsigned_payload(model)
+        )
+        model.signature = signature
+        model.key_id = kid
         session.add(model)
         await session.commit()
 

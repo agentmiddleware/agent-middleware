@@ -697,10 +697,18 @@ async def _governed_tools_call(
     # require a prior tools/list before they resolve here.
     _ensure_local_mcp_tools_registered()
     record = get_service_registry().get_local(tool_name)
-    if record is None:
+    if record is None and not permit_id:
+        # No permit is minted for a tool that does not exist. With an explicit
+        # permit the governed pipeline decides instead: it checks the permit's
+        # allowlist first, so an unnamed tool is a -32003 permit denial with a
+        # receipt, and only a tool the permit names falls back to -32001.
         raise _mcp_error(-32001, f"Tool not found: {tool_name}")
 
-    if get_service_registry().get_action_binding(record) is not None and not permit_id:
+    if (
+        record is not None
+        and get_service_registry().get_action_binding(record) is not None
+        and not permit_id
+    ):
         raise _mcp_error(-32003, "action_permit_required")
 
     # Wallet policy shapes the permit this surface mints. A policy demanding a
@@ -735,6 +743,9 @@ async def _governed_tools_call(
     # (SEL-484). Keyed calls are untouched.
     resolved = None
     if client_idempotency_key is None and permit_id is None:
+        # The -32001 above already refused unknown tools without a permit, so
+        # record is resolved for this unkeyed auto-mint path (#232 + #233).
+        assert record is not None
         resolved = await _resolve_unkeyed_retry(
             auth=auth,
             tool_name=tool_name,
@@ -755,13 +766,16 @@ async def _governed_tools_call(
                 -32003, "idempotency_key_required", _IDEMPOTENCY_KEY_REQUIRED_DATA
             )
         idempotency_key = client_idempotency_key
-        permit_id = permit_id or await _mint_auto_permit(
-            auth=auth,
-            tool_name=tool_name,
-            record=record,
-            client_key=client_idempotency_key,
-            requires_human_approval=requires_human_approval,
-        )
+        if not permit_id:
+            if record is None:  # Checked before any auto-mint.
+                raise RuntimeError("auto-permit mint requires a resolved tool record")
+            permit_id = await _mint_auto_permit(
+                auth=auth,
+                tool_name=tool_name,
+                record=record,
+                client_key=client_idempotency_key,
+                requires_human_approval=requires_human_approval,
+            )
 
     call_params = {
         "name": tool_name,

@@ -53,6 +53,11 @@ class WalletModel(SQLModel, table=True):
     daily_limit: Optional[Decimal] = Field(default=None, decimal_places=8)
     daily_spent: Decimal = Field(default=Decimal("0"), decimal_places=8)
     daily_reset_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
+    # Account-level product activation claim (root wallets only), set once by
+    # a conditional UPDATE on the first key use; see 055 migration.
+    product_activated_at: Optional[datetime] = Field(
+        sa_type=NaiveUTCDateTime, default=None
+    )
 
     # Velocity monitoring (spend per hour for anomaly detection)
     hourly_limit: Optional[Decimal] = Field(default=None, decimal_places=8)
@@ -273,7 +278,10 @@ class APIKeyModel(SQLModel, table=True):
     key_id: str = Field(primary_key=True, max_length=50)
     wallet_id: str = Field(max_length=50, foreign_key="wallets.wallet_id", index=True)
 
-    key_hash: str = Field(max_length=64, index=True)
+    # Salted, peppered scrypt hash (see docs/api-key-hashing.md).
+    key_hash: str = Field(max_length=255, index=True)
+    # Non-secret lookup id (first 16 chars of the key), indexed for lookup.
+    key_lookup: str | None = Field(default=None, max_length=16, index=True)
     key_prefix: str = Field(max_length=8)
 
     status: str = Field(default="active", max_length=20)

@@ -166,13 +166,19 @@ or any application table that already holds rows, and it takes an advisory lock
 so two runs cannot overlap. Without the opt-in environment variables it skips,
 so it never interferes with `make test`.
 
-CI runs these in the `postgres_permit_concurrency` job, as two steps against
-one PostgreSQL service: **16** crash/reconciliation cases plus **one**
-fixture-saturation guard in `tests/test_mcp_postgres_multiprocess.py`, then the **17** row-lock
-concurrency tests in `tests/test_permit_postgres_concurrency.py`. That job
-installs dependencies with `pip` rather than `uv`, so its step is spelled
-inline; the Make target is the operator-facing equivalent, not a literal
-copy of the CI step.
+CI runs these in two jobs of `.github/workflows/ci.yml`, `postgres-concurrency`
+and `postgres-proofs`, each against its own disposable PostgreSQL service. The
+**16** crash/reconciliation cases plus **one** fixture-saturation guard in
+`tests/test_mcp_postgres_multiprocess.py` (17 tests) run in the `postgres-proofs`
+step "Run multiprocess crash proofs". The **21** row-lock concurrency tests in
+`tests/test_permit_postgres_concurrency.py` run in both jobs. Both jobs install
+dependencies with `uv pip install`; the Make target is the operator-facing
+equivalent, not a literal copy of the CI steps. On pull requests both jobs run
+only when the change touches any path under `gateway/`, a project gateway
+depends on, or a shared path, and are skipped for docs-only pull requests, where
+every changed file in the whole pull request is documentation (see
+[TESTING_TIERS.md](TESTING_TIERS.md)); on every push to `main`, merge-group run
+and manual run they always run.
 
 ### Claim-fence evidence
 
@@ -299,8 +305,12 @@ Being explicit about the boundary is what makes the proofs worth anything.
   wallet-status, and row-lock suites described above; production configuration
   is enforced separately by the `production_trust` CI job. Local execution of
   those checks does not establish hosted deployment readiness.
-- **Tenant isolation is application-layer.** PostgreSQL row-level security is
-  not implemented and no public multi-tenant isolation guarantee is made.
+- **Tenant isolation is application-layer.** Migration 048 creates row-level
+  security policies and `TENANT_RLS_MODE` exists, but it defaults to `off`, the
+  gateway does not yet set the per-transaction wallet scope that `enforce` mode
+  needs ([schema-048-rollout.md](schema-048-rollout.md)), and the proof that
+  `enforce` forces RLS (`tests/test_tenant_rls_migration.py`) does not run in
+  CI. No public multi-tenant isolation guarantee is made.
 
 ## Where provability goes next
 

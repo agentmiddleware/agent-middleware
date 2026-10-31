@@ -117,6 +117,13 @@ its ``inner`` property) and compares the leaf ``ASGITransport``'s app by
 ``is``. A real network transport at the leaf reads as foreign, which is the
 case that matters: it is what a real partner tool would sit behind.
 
+The walk stops after four ``LossyTransport`` layers and refuses anything
+deeper, even when the leaf under those layers is the lab's own rail. No
+legitimate chain in this lab wraps the leaf that many times, so a deeper one
+means the caller is not shaped the way the fuse expects, and the fuse fails
+closed rather than guessing. An arbitrarily wrapped in-process rail does not
+pass.
+
 A refusal exits **2**, deliberately distinct from the **1** the lab exits when
 an expectation merely broke. A safety refusal is not a failed measurement, and
 an operator reading exit codes should not have to tell them apart by eye. The

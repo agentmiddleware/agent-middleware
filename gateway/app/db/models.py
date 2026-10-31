@@ -53,6 +53,11 @@ class WalletModel(SQLModel, table=True):
     daily_limit: Optional[Decimal] = Field(default=None, decimal_places=8)
     daily_spent: Decimal = Field(default=Decimal("0"), decimal_places=8)
     daily_reset_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
+    # Account-level product activation claim (root wallets only), set once by
+    # a conditional UPDATE on the first key use; see 055 migration.
+    product_activated_at: Optional[datetime] = Field(
+        sa_type=NaiveUTCDateTime, default=None
+    )
 
     # Velocity monitoring (spend per hour for anomaly detection)
     hourly_limit: Optional[Decimal] = Field(default=None, decimal_places=8)

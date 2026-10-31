@@ -8,6 +8,8 @@ updates:
     schedule:
       interval: weekly
       day: monday
+      time: "06:00"
+      timezone: America/Los_Angeles
     groups:
       actions:
         patterns: ["*"]
@@ -25,10 +27,16 @@ updates:
     schedule:
       interval: weekly
       day: monday
+      time: "06:00"
+      timezone: America/Los_Angeles
     open-pull-requests-limit: 10
     groups:
-      python-minor-patch:
-        update-types: ["minor", "patch"]
+      python-dependencies:
+        applies-to: version-updates
+        patterns: ["*"]
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
     commit-message:
       prefix: "deps(py)"
 
@@ -43,10 +51,16 @@ updates:
     schedule:
       interval: weekly
       day: monday
+      time: "06:00"
+      timezone: America/Los_Angeles
     open-pull-requests-limit: 10
     groups:
-      npm-minor-patch:
-        update-types: ["minor", "patch"]
+      npm-dependencies:
+        applies-to: version-updates
+        patterns: ["*"]
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
     commit-message:
       prefix: "deps(npm)"
 
@@ -55,5 +69,8 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    groups:
+      gateway-images:
+        patterns: ["*"]
     commit-message:
       prefix: "deps(docker)"

@@ -22,6 +22,7 @@ consequential MCP tool behind a governed boundary. Start with the
 | Plan a design-partner evaluation | [Design partner guide](../DESIGN_PARTNER_GUIDE.md) |
 | Tell plain pytest, Postgres, and live runs apart | [Test tiers](TESTING_TIERS.md) |
 | Contribute to the repository | [Contributing guide](../../CONTRIBUTING.md) |
+| Review GitHub organization and repository settings | [GitHub organization configuration](github-org-configuration.md) |
 
 ## Agent and API discovery
 

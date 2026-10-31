@@ -18,6 +18,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from ..core import product_analytics
 from ..core.auth import AuthContext, get_auth_context, verify_api_key
 from ..core.config import get_settings
 from ..core.wallet_resolution import resolve_wallet_id
@@ -280,7 +281,7 @@ async def create_sponsor_wallet(
         if request.initial_credits
         else Decimal("0")
     )
-    return await money.create_sponsor_wallet(
+    wallet = await money.create_sponsor_wallet(
         sponsor_name=request.sponsor_name,
         email=request.email,
         initial_credits=initial,
@@ -288,6 +289,10 @@ async def create_sponsor_wallet(
         metadata=request.metadata,
         require_kyc=request.require_kyc,
     )
+    product_analytics.track_signup(
+        wallet.wallet_id, method="sponsor_wallet", email=request.email
+    )
+    return wallet
 
 
 @router.post(

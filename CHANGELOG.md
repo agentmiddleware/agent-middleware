@@ -12,6 +12,11 @@ This repository starts with a fresh history. Releases are listed here once tagge
   peppered scrypt too. Production-like environments refuse to boot without
   the pepper; local and test use a public dev pepper. See
   docs/api-key-hashing.md.
+- Optional PostHog product tracking (`POSTHOG_API_KEY`, `POSTHOG_HOST`; off when
+  unset): identify with email and `signup` on account creation, `activation` once
+  per account on first key use. Fail-safe and non-blocking. Adds migration 055: run
+  `alembic upgrade head` before starting the image, or set
+  `RUN_MIGRATIONS_ON_START=true` so the entrypoint migrates on boot.
 - Upstream MCP (Preview): optional multi-tool discovery and exact-name allowlist with
   stable public IDs, per-tool permit scope, and unchanged per-call credits.
   Health reports `upstream_tool_mode: multi_tool_preview` while it is on.

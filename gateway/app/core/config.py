@@ -252,6 +252,10 @@ class Settings(BaseSettings):
     JEV_RISK_GUARD_TIMEOUT_SECONDS: float = 1.5
     JEV_RISK_GUARD_TIERS: str = "medium,high"
     TYPESAFE_API_KEY: SecretStr = SecretStr("")
+    # Optional PostHog product tracking (docs/product-analytics.md). Blank
+    # key = tracking off. Declared here so .env entries load.
+    POSTHOG_API_KEY: SecretStr = SecretStr("")
+    POSTHOG_HOST: str = ""
     # Server pepper for HMAC-SHA256 API-key digests. Required in
     # production-like environments (startup refuses to boot without it).
     # See docs/api-key-hashing.md. Never log it.

@@ -61,8 +61,13 @@ two-process crash harness (`make prove-crash-recovery`,
 `tests/test_mcp_postgres_multiprocess.py`) additionally needs
 `STATE_BACKEND=postgres` and `MCP_STRESS_DB_ISOLATED=1`.
 
-CI runs tier 2 on every pull request in `postgres-concurrency` and
-`postgres-proofs` (`.github/workflows/ci.yml`). Both jobs use disposable
+CI runs tier 2 in `postgres-concurrency` and `postgres-proofs`
+(`.github/workflows/ci.yml`) on every push to `main`, every merge-group run and
+every manual run. On pull requests the two jobs run when the change touches
+`gateway/`, a project gateway depends on (for example `sdk/python`), or a shared
+path; a pull request that changes only another project, for example
+`sdk/typescript`, skips both (`limit_matrix` in
+`.github/scripts/project_dependents.py`). Both jobs use disposable
 Postgres service databases and set `AMW_TEST_DB_DISPOSABLE=1` in their job
 environment; the shared fixture then accepts PostgreSQL URLs with
 `ENVIRONMENT=test`. `postgres-proofs` runs row-lock, action

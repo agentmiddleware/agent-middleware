@@ -220,7 +220,23 @@ missing control.
   a domain-separated SHA-256 digest of the value, never the key itself, so the
   limiter's Redis key names hold neither live API keys nor the `key_hash` the
   key table stores for them.
-- **No key:** one shared `anonymous` bucket for the whole deployment.
+- **No key:** one anonymous bucket per observed client address, so one
+  stranger can only spend their own budget and cannot starve other clients,
+  `/.well-known/trust-keys.json` or `/v1/discover`. A deployment-wide
+  anonymous backstop at `RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER` times the
+  per-client limit (default 20) still brakes a flood spread over many
+  addresses; when it trips, anonymous callers get 429 until the window
+  resets, and callers with a key are unaffected. Callers that share an egress
+  address (a corporate NAT or proxy) still share one per-client anonymous
+  bucket.
+- **Readiness:** `/health/ready` has its own per-client and route-wide
+  budgets and ignores credential headers, so anonymous traffic cannot make a
+  Kubernetes readinessProbe fail. It is limited rather than exempt because it
+  runs state store, MQTT and database checks. `/health/dependencies` stays on
+  the ordinary limits because it runs live Stripe and Sentinel probes.
+- **Namespaced buckets:** per-key and anonymous bucket names, and so their
+  Redis keys, carry `STATE_NAMESPACE` and the public URL (or app name), so two
+  deployments that share one Redis do not share budgets.
 - **Unaccepted credentials:** the per-key bucket is selected from a
   caller-supplied header before the key has been verified, so every request
   whose credentials the app does not accept is additionally charged to one

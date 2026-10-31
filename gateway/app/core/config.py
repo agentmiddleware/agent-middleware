@@ -457,6 +457,8 @@ class Settings(BaseSettings):
     # Authenticated routes use the API key. The unauthenticated public MCP
     # route uses a canonical client IP plus a deployment-wide backstop.
     RATE_LIMIT_PER_MINUTE: int = 120
+    # Deployment-wide anonymous ceiling, as a multiple of RATE_LIMIT_PER_MINUTE.
+    RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER: int = 20
 
     # --- LLM / AI Agent Intelligence ---
     # Provider: openai, azure, anthropic, ollama

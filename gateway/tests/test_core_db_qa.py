@@ -902,7 +902,9 @@ def test_api_key_buckets_are_digests_not_plaintext():
     assert "live-secret-key" not in bucket
     assert _api_key_bucket("live-secret-key") == bucket
     assert _api_key_bucket("other-key") != bucket
-    assert _api_key_bucket(None) == "anonymous"
+    anonymous = _api_key_bucket(None, "198.51.100.7")
+    assert anonymous.endswith(":anonymous:client:198.51.100.7")
+    assert anonymous != _api_key_bucket(None, "198.51.100.8")
     assert _api_key_bucket("key") == _api_key_bucket("key".strip())
 
 

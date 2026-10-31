@@ -3304,3 +3304,28 @@ async def test_simulated_runtime_category_still_uses_the_runtime_mode_result(
         ]
     finally:
         get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_register_upstream_read_only_is_operator_declared(read_only):
+    """SEL-484: remote tools default to mutating; an operator may opt out."""
+    tool_name = f"upstream-ro-{read_only}"
+    registry = get_service_registry()
+    kwargs = {"read_only": True} if read_only else {}
+    try:
+        registry.register_upstream(
+            service_id=tool_name,
+            name=tool_name,
+            description="read_only flag test",
+            category=ServiceCategory.AGENT_COMMS,
+            executor=object(),
+            input_schema={"type": "object"},
+            output_schema=None,
+            credits_per_unit=1.0,
+            upstream_tool_name="partner.echo",
+            upstream_origin="https://partner.example",
+            **kwargs,
+        )
+        assert registry.get_local(tool_name)["read_only"] is read_only
+    finally:
+        registry.unregister_local(tool_name)

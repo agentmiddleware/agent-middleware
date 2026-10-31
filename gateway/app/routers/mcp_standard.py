@@ -61,7 +61,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import uuid
+import time
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -84,6 +84,14 @@ from app.services.receipts import ReceiptWriteContendedError
 from app.services.billing_engine import LedgerWriteContendedError
 from app.core.config import get_settings
 from app.core.time import utc_now
+from app.core.oidc_iga import IGAError
+from app.services.mcp_retry_key import (
+    bucket_for,
+    derive_retry_identity,
+    is_no_effect_failure,
+    principal_binding,
+    slot_key,
+)
 from app.routers.mcp import (
     _MAX_JSON_NESTING_DEPTH,
     GovernedToolError,
@@ -99,11 +107,13 @@ from app.routers.mcp import (
     _loads_strict_json,
     _terminal_record_contended_data,
     _value_error_jsonrpc_code,
+    _verified_enterprise_principal,
 )
 from app.schemas.trust import PermitCreateRequest
 from app.services.agent_money import get_agent_money
 from app.services.idempotency import (
     IdempotencyConflictError,
+    IdempotencyFence,
     IdempotencyInProgressError,
     InvalidIdempotencyKeyError,
     get_idempotency_service,
@@ -146,6 +156,20 @@ _SERVER_INSTRUCTIONS = (
     " The serverInfo.name is a stable legacy compatibility identifier; the "
     "instructions describe the current product category."
 )
+
+
+_IDEMPOTENCY_KEY_REQUIRED_DATA: dict[str, Any] = {
+    "error": "idempotency_key_required",
+    "reason_code": "idempotency_key_required",
+    "remediation": {
+        "type": "retry_with_idempotency_key",
+        "detail": (
+            "Send an Idempotency-Key header (or params._meta"
+            '["io.agentmiddleware/idempotency_key"]) and reuse the same key '
+            "when retrying the same call."
+        ),
+    },
+}
 
 
 def _mcp_error(code: int, message: str, data: dict[str, Any] | None = None) -> McpError:
@@ -270,6 +294,213 @@ def _client_idempotency_key(
         raise _mcp_error(-32602, str(exc), exc.as_error_data()) from exc
 
 
+def _auto_permit_mint_key(client_key: str) -> str:
+    return "smcp-" + hashlib.sha256(client_key.encode("utf-8")).hexdigest()[:48]
+
+
+_UNKEYED_RETRY_LOCK_ENDPOINT = "/mcp#unkeyed-retry-lock"
+_UNKEYED_RETRY_LOCK_WAIT_SECONDS = 5.0
+# Far above the worst-case hold (a few DB round trips plus one permit mint).
+_UNKEYED_RETRY_LOCK_STALE_SECONDS = 120
+# A pre-dispatch (no side effect) failure rolls the call forward to a fresh
+# attempt slot; bounded so a permanently failing upstream eventually replays
+# its failure instead of being re-run forever.
+_UNKEYED_RETRY_MAX_ATTEMPTS = 3
+
+
+def _unkeyed_clock() -> float:
+    """Epoch seconds for window bucketing (patched in tests)."""
+    return time.time()
+
+
+def _auto_permit_ttl_seconds(
+    *, tenant: str | None, requires_human_approval: bool
+) -> int:
+    """TTL in seconds of the auto permit ``_mint_auto_permit`` would mint.
+
+    An approval-gated permit must stay valid for the whole decision window
+    plus the normal TTL as execution margin: permit expiry is validated
+    before the approval is polled, so a shorter-lived permit would strand a
+    decision made late in the window as a terminal permit_expired denial.
+    Demo permits are further capped by the demo TTL limits.
+    """
+    settings = get_settings()
+    ttl_seconds = settings.STANDARD_MCP_PERMIT_TTL_SECONDS
+    if requires_human_approval:
+        ttl_seconds += approval_window_seconds()
+    if tenant == "demo":
+        ttl_seconds = min(ttl_seconds, settings.DEMO_AUTO_PERMIT_TTL_SECONDS)
+        if settings.DEMO_MAX_PERMIT_TTL_MINUTES is not None:
+            ttl_seconds = min(ttl_seconds, settings.DEMO_MAX_PERMIT_TTL_MINUTES * 60)
+    return ttl_seconds
+
+
+def _effective_unkeyed_retry_window(
+    *, tenant: str | None = None, requires_human_approval: bool = False
+) -> int:
+    """Retry window in seconds, capped at the TTL of the auto permit minted.
+
+    A joined slot reuses the permit minted for the first attempt, so a window
+    longer than that permit's lifetime would resolve a late retry to an
+    expired permit (a denial instead of a replay or a fresh mint). The cap is
+    the TTL the mint will actually use, including the demo limits. 0 disables.
+    """
+    window = get_settings().MCP_UNKEYED_RETRY_WINDOW_SECONDS
+    if window <= 0:
+        return 0
+    ttl_seconds = _auto_permit_ttl_seconds(
+        tenant=tenant, requires_human_approval=requires_human_approval
+    )
+    return min(window, max(ttl_seconds, 0))
+
+
+async def _acquire_unkeyed_retry_lock(wallet_id: str, lock_key: str) -> str:
+    """Serialize slot selection for one call identity; return the lock row id.
+
+    The lock is an uncompleted idempotency row: the unique insert is the
+    mutex, ``abandon`` releases it. A row left by a crashed holder is
+    released once it is older than the stale threshold, so a holder that
+    merely stalls can lose the lock: it must re-check ownership with
+    its record id (the mint-row insert is fenced on it) before acting and release only its own
+    row (``expected_record_id``).
+    """
+    idem = get_idempotency_service()
+    deadline = time.monotonic() + _UNKEYED_RETRY_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            begun = await idem.begin_with_record(
+                wallet_id=wallet_id,
+                endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
+                idempotency_key=lock_key,
+                request_payload={"kind": "unkeyed-retry-lock"},
+            )
+            if begun.replay is not None:
+                # Never expected for a lock row (it is never completed).
+                raise IdempotencyInProgressError("idempotency_in_progress")
+            return begun.record_id
+        except IdempotencyInProgressError:
+            held = await idem.get_record(
+                wallet_id=wallet_id,
+                endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
+                idempotency_key=lock_key,
+            )
+            if held is not None and held.created_at < utc_now() - timedelta(
+                seconds=_UNKEYED_RETRY_LOCK_STALE_SECONDS
+            ):
+                await idem.abandon(
+                    wallet_id=wallet_id,
+                    endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
+                    idempotency_key=lock_key,
+                    expected_record_id=held.record_id,
+                )
+                continue
+            if time.monotonic() >= deadline:
+                raise
+            await anyio.sleep(0.02)
+
+
+async def _resolve_unkeyed_retry(
+    *,
+    auth: AuthContext,
+    tool_name: str,
+    record: dict[str, Any],
+    arguments: dict[str, Any],
+    requires_human_approval: bool,
+    map_mcp_errors: bool = True,
+) -> tuple[str, str] | None:
+    """Pick the retry slot for an unkeyed mutating call and mint its permit.
+
+    Returns ``(idempotency_key, permit_id)``, or None when no slot applies and
+    the caller must refuse the unkeyed call (SEL-498): read-only tools (a replay would serve a
+    stale read), the window disabled, or an enterprise bearer that fails
+    verification (the governed pipeline denies that call regardless).
+
+    Under a per-identity lock:
+    * a live slot from the previous window (first minted less than one window
+      ago) is joined, so a retry or a concurrent twin straddling the bucket
+      boundary resolves to the same key: the window slides from the first
+      call instead of resetting at fixed boundaries;
+    * an attempt whose stored result is a refunded pre-dispatch failure (no
+      side effects) rolls forward to the next attempt slot, so the retry runs
+      again instead of replaying that failure;
+    * the auto permit is minted before the lock is released, so any later
+      caller sees the chosen slot.
+    """
+    window = _effective_unkeyed_retry_window(
+        tenant=auth.tenant, requires_human_approval=requires_human_approval
+    )
+    wallet_id = auth.wallet_id
+    if window <= 0 or not wallet_id or record.get("read_only"):
+        return None
+    try:
+        principal = _verified_enterprise_principal(auth.enterprise_bearer_token)
+    except IGAError:
+        return None
+    identity = derive_retry_identity(
+        wallet_id=wallet_id,
+        key_id=auth.key_id,
+        principal=principal_binding(principal),
+        tool_name=tool_name,
+        arguments=arguments,
+    )
+    idem = get_idempotency_service()
+    lock_key = "ulock-" + identity[:48]
+    try:
+        lock_record_id = await _acquire_unkeyed_retry_lock(wallet_id, lock_key)
+    except IdempotencyInProgressError as exc:
+        if map_mcp_errors:
+            raise _mcp_error(-32005, "idempotency_in_progress") from exc
+        raise
+    try:
+        bucket = bucket_for(_unkeyed_clock(), window)
+        chosen = bucket
+        previous = await idem.get_record(
+            wallet_id=wallet_id,
+            endpoint=_AUTO_PERMIT_ENDPOINT,
+            idempotency_key=_auto_permit_mint_key(
+                slot_key(identity, window_seconds=window, bucket=bucket - 1, attempt=0)
+            ),
+        )
+        if previous is not None and previous.created_at > utc_now() - timedelta(
+            seconds=window
+        ):
+            chosen = bucket - 1
+        key = slot_key(identity, window_seconds=window, bucket=chosen, attempt=0)
+        for attempt in range(_UNKEYED_RETRY_MAX_ATTEMPTS):
+            key = slot_key(
+                identity, window_seconds=window, bucket=chosen, attempt=attempt
+            )
+            stored = await idem.get_governed_mcp_record(
+                wallet_id=wallet_id, idempotency_key=key
+            )
+            if stored is None or not is_no_effect_failure(stored.response_json):
+                break
+        # The mint-row insert is fenced on this lock row: it is written only
+        # if we still own the lock, in the same transaction. A holder that
+        # stalled past the stale threshold and was taken over gets -32005
+        # and never mints or dispatches.
+        permit_id = await _mint_auto_permit(
+            auth=auth,
+            tool_name=tool_name,
+            record=record,
+            client_key=key,
+            lock_fence=(_UNKEYED_RETRY_LOCK_ENDPOINT, lock_key, lock_record_id),
+            requires_human_approval=requires_human_approval,
+            map_mcp_errors=map_mcp_errors,
+        )
+        return key, permit_id
+    finally:
+        # Shielded so a cancelled request still releases its lock row
+        # instead of blocking the identity until the stale threshold.
+        with anyio.CancelScope(shield=True):
+            await idem.abandon(
+                wallet_id=wallet_id,
+                endpoint=_UNKEYED_RETRY_LOCK_ENDPOINT,
+                idempotency_key=lock_key,
+                expected_record_id=lock_record_id,
+            )
+
+
 async def _mint_auto_permit(
     *,
     auth: AuthContext,
@@ -278,6 +509,7 @@ async def _mint_auto_permit(
     client_key: str | None,
     requires_human_approval: bool = False,
     map_mcp_errors: bool = True,
+    lock_fence: IdempotencyFence | None = None,
 ) -> str:
     """Mint the bounded single-tool permit backing this call.
 
@@ -290,13 +522,9 @@ async def _mint_auto_permit(
     if not wallet_id:  # narrowed by the caller; fail closed regardless
         raise _mcp_error(-32003, "wallet_scoped_key_required")
     settings = get_settings()
-    # An approval-gated permit must stay valid for the whole decision window
-    # plus the normal TTL as execution margin: permit expiry is validated
-    # before the approval is polled, so a shorter-lived permit would strand a
-    # decision made late in the window as a terminal permit_expired denial.
-    ttl_seconds = settings.STANDARD_MCP_PERMIT_TTL_SECONDS
-    if requires_human_approval:
-        ttl_seconds += approval_window_seconds()
+    ttl_seconds = _auto_permit_ttl_seconds(
+        tenant=auth.tenant, requires_human_approval=requires_human_approval
+    )
     budget = _tool_call_budget(record)
     if auth.tenant == "demo":
         demo_tools = settings.demo_allowed_tools_list
@@ -322,9 +550,6 @@ async def _mint_auto_permit(
             if map_mcp_errors:
                 raise _permit_error(error, tool_name=tool_name, record=record)
             raise error
-        ttl_seconds = min(ttl_seconds, settings.DEMO_AUTO_PERMIT_TTL_SECONDS)
-        if settings.DEMO_MAX_PERMIT_TTL_MINUTES is not None:
-            ttl_seconds = min(ttl_seconds, settings.DEMO_MAX_PERMIT_TTL_MINUTES * 60)
     permit_request = PermitCreateRequest(
         issuer_wallet_id=wallet_id,
         subject_wallet_id=wallet_id,
@@ -347,7 +572,7 @@ async def _mint_auto_permit(
         return permit.permit_id
 
     idem = get_idempotency_service()
-    mint_key = "smcp-" + hashlib.sha256(client_key.encode("utf-8")).hexdigest()[:48]
+    mint_key = _auto_permit_mint_key(client_key)
     mint_payload: dict[str, Any] = {
         "kind": "standard-mcp-auto-permit",
         "tool": tool_name,
@@ -360,11 +585,12 @@ async def _mint_auto_permit(
     if requires_human_approval:
         mint_payload["requires_human_approval"] = True
     try:
-        mint_replay = await idem.begin(
+        mint_begun = await idem.begin_with_record(
             wallet_id=wallet_id,
             endpoint=_AUTO_PERMIT_ENDPOINT,
             idempotency_key=mint_key,
             request_payload=mint_payload,
+            fence=lock_fence,
         )
     except IdempotencyConflictError as exc:
         if map_mcp_errors:
@@ -374,20 +600,26 @@ async def _mint_auto_permit(
         if map_mcp_errors:
             raise _mcp_error(-32005, "idempotency_in_progress") from exc
         raise
+    mint_replay = mint_begun.replay
     if mint_replay and mint_replay.response_json:
         return mint_replay.response_json["permit_id"]
 
+    # Any mint failure (PermitError, PermitWriteContendedError, another
+    # exception, or cancellation) releases only this attempt's row, so a
+    # retry can mint again instead of waiting on an orphaned in-progress row.
     try:
         permit = await get_permit_service().create_permit(
             permit_request, subject_key_id=auth.key_id, auth=auth
         )
-    except PermitError as exc:
-        await idem.abandon(
-            wallet_id=wallet_id,
-            endpoint=_AUTO_PERMIT_ENDPOINT,
-            idempotency_key=mint_key,
-        )
-        if map_mcp_errors:
+    except BaseException as exc:
+        with anyio.CancelScope(shield=True):
+            await idem.abandon(
+                wallet_id=wallet_id,
+                endpoint=_AUTO_PERMIT_ENDPOINT,
+                idempotency_key=mint_key,
+                expected_record_id=mint_begun.record_id,
+            )
+        if isinstance(exc, PermitError) and map_mcp_errors:
             raise _permit_error(exc, tool_name=tool_name, record=record) from exc
         raise
     await idem.complete(
@@ -506,17 +738,41 @@ async def _governed_tools_call(
         )
 
     auto_minted = permit_id is None
-    idempotency_key = client_idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
-    if not permit_id:
-        if record is None:  # Checked before any auto-mint.
-            raise RuntimeError("auto-permit mint requires a resolved tool record")
-        permit_id = await _mint_auto_permit(
+    # Unkeyed mutating calls get a deterministic retry slot so a lost-response
+    # retry resolves to the same auto permit and replays the original receipt
+    # (SEL-484). Keyed calls are untouched.
+    resolved = None
+    if client_idempotency_key is None and permit_id is None:
+        resolved = await _resolve_unkeyed_retry(
             auth=auth,
             tool_name=tool_name,
             record=record,
-            client_key=client_idempotency_key,
+            arguments=arguments,
             requires_human_approval=requires_human_approval,
         )
+    if resolved is not None:
+        idempotency_key, permit_id = resolved
+    else:
+        if not client_idempotency_key:
+            # No client key and no deterministic retry slot (read-only tool,
+            # window 0, or an unverifiable enterprise bearer). A random
+            # per-attempt key would let a lost-response retry dispatch and
+            # bill twice, so refuse before any permit, dispatch, or charge
+            # (SEL-498 / #208).
+            raise _mcp_error(
+                -32003, "idempotency_key_required", _IDEMPOTENCY_KEY_REQUIRED_DATA
+            )
+        idempotency_key = client_idempotency_key
+        if not permit_id:
+            if record is None:  # Checked before any auto-mint.
+                raise RuntimeError("auto-permit mint requires a resolved tool record")
+            permit_id = await _mint_auto_permit(
+                auth=auth,
+                tool_name=tool_name,
+                record=record,
+                client_key=client_idempotency_key,
+                requires_human_approval=requires_human_approval,
+            )
 
     call_params = {
         "name": tool_name,

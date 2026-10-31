@@ -276,11 +276,46 @@ asked for: every retry carrying the same malformed key would become a new
 charged operation (`test_mcp_idempotency_key_validation`).
 
 Only a genuinely **absent** key — no header, no body entry, or a JSON `null`
-entry — is treated as an un-keyed call. On the standard MCP endpoint that means
-a generated key, and every un-keyed call, retries included, is a new charged
-operation. Clients that retry must always send their own persistent key; a
-governed `/mcp/messages` call without one is refused with
-`idempotency_key_required`.
+entry — is treated as an un-keyed call. On the standard MCP endpoint (and the
+`/mcp/messages` demo auto-permit path) an un-keyed call to a mutating tool
+gets a deterministic `mcp-retry-` key from the caller's wallet and API key,
+the verified enterprise principal (provider, issuer, subject) when an IGA
+bearer is present, the tool, and the canonical JSON of the arguments. The
+JSON-RPC id is not part of it, because retries carry fresh ids.
+
+- **Sliding window.** Slot selection and the auto-permit mint run under a
+  per-identity lock row. A slot first minted less than
+  the effective window ago is joined (the smaller of
+  `MCP_UNKEYED_RETRY_WINDOW_SECONDS`, default 300, and the auto-permit TTL,
+  default 120 and lower for demo tenants; so 120 s by default, after which an
+  identical unkeyed retry runs and bills again) even if the
+  clock bucket has rolled over, so a retry or concurrent twin straddling the
+  edge resolves to one dispatch. A concurrent duplicate either replays the
+  same receipt or gets the retryable `idempotency_in_progress`. A lock older
+  than 120 s is treated as abandoned and can be taken over. The auto-permit
+  mint row is written only if the writer still owns the lock (checked in the
+  same transaction as the insert), so a stalled former holder never mints or
+  dispatches, and it releases only its own lock row.
+- **IGA before replay.** A replay of a stored governed result re-runs the IGA
+  check (without spending a use) first, and the principal is part of the key,
+  so one human never receives another's stored result.
+- **Mutating tools only.** Tools registered `read_only` (for example
+  `partner.notes.count`) get no derived key, so an unkeyed call to one is
+  refused (below). Undeclared tools are treated as mutating.
+- **No-effect failures retry.** If the stored result is a refunded
+  pre-dispatch failure, the retry moves to the next attempt slot and runs
+  again (up to three attempts per window) instead of replaying the failure.
+
+Two deliberately identical un-keyed calls inside one window still collapse
+into one; clients that need repeats must send their own key. The gateway never mints a
+random per-call key: an unkeyed call with no derived key (a `read_only` tool,
+the window set to `0`, or an enterprise bearer that fails verification) is
+refused with JSON-RPC `-32003` `idempotency_key_required` (HTTP 400 on
+`/mcp/tools/{service_id}/invoke`) before any permit, dispatch, or charge, so
+a retry cannot run or bill twice. A
+governed `/mcp/messages` call without a key is still refused with
+`idempotency_key_required`, and a wallet that requires human approval still
+needs an explicit key.
 
 The governed AWI HTTP routes — `POST /v1/awi/execute`,
 `/v1/awi/passkey/challenge`, `/v1/awi/passkey/verify`, `/v1/awi/dom/sync`,

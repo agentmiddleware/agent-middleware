@@ -384,14 +384,14 @@ async def test_standard_distinct_valid_keys_stay_distinct_operations(
 
 
 @pytest.mark.parametrize("meta", [_ABSENT, None], ids=["no-entry", "json-null"])
-async def test_standard_unkeyed_calls_are_documented_as_new_operations(
+async def test_standard_unkeyed_retry_is_one_operation(
     client, standard_mcp_enabled, clean_database, counted_tool, meta
 ):
-    """No key anywhere (or a JSON null entry) means each call is a new charge.
+    """No key anywhere (or a JSON null entry) gets a derived retry key.
 
-    This pins the documented contract for un-keyed clients so it cannot drift
-    silently in either direction: absent must not be refused like malformed,
-    and it must not be quietly deduplicated either.
+    SEL-484: an identical un-keyed call inside the retry window replays the
+    first receipt instead of charging, dispatching, or minting again. Absent
+    must still not be refused like malformed.
     """
     provisioned = await provision_agent_wallet(client)
     headers = {**provisioned["agent_headers"], **MCP_HEADERS}
@@ -403,11 +403,11 @@ async def test_standard_unkeyed_calls_are_documented_as_new_operations(
         ]["receipt_id"]
         for _ in range(2)
     ]
-    assert len(set(receipts)) == 2
+    assert len(set(receipts)) == 1
     snapshot = await _snapshot(client, provisioned, counted_tool)
-    assert snapshot["effects"] == 2
-    assert snapshot["ledger_entries"] == base["ledger_entries"] + 2
-    assert snapshot["permits"] == base["permits"] + 2
+    assert snapshot["effects"] == 1
+    assert snapshot["ledger_entries"] == base["ledger_entries"] + 1
+    assert snapshot["permits"] == base["permits"] + 1
 
 
 # --------------------------------------------------------------------------- #

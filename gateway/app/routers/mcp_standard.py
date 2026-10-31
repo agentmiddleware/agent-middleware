@@ -743,6 +743,9 @@ async def _governed_tools_call(
     # (SEL-484). Keyed calls are untouched.
     resolved = None
     if client_idempotency_key is None and permit_id is None:
+        # The -32001 above already refused unknown tools without a permit, so
+        # record is resolved for this unkeyed auto-mint path (#232 + #233).
+        assert record is not None
         resolved = await _resolve_unkeyed_retry(
             auth=auth,
             tool_name=tool_name,

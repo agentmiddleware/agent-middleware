@@ -849,6 +849,11 @@ class Gateway:
             _env_file=None,
             ENVIRONMENT="local",
             MCP_UPSTREAM_ENABLED=True,
+            # Pinned, not left to the default: `Settings` reads unset fields
+            # from the process environment, so an exported
+            # MCP_UPSTREAM_MULTI_TOOL_ENABLED would otherwise put this lab in
+            # multi-tool mode, which its one-tool design does not support.
+            MCP_UPSTREAM_MULTI_TOOL_ENABLED=False,
             MCP_UPSTREAM_URL=UPSTREAM_URL,
             MCP_UPSTREAM_TOOL_NAME=UPSTREAM_TOOL,
             MCP_UPSTREAM_PUBLIC_TOOL_ID=PUBLIC_TOOL,
@@ -1772,8 +1777,12 @@ class Lab:
         line(f"  run dir:  {self.run_dir}")
 
         async with self.rail.lifespan():
-            await self.gateway.start()
+            # Startup is inside the boundary: it acquires the database and the
+            # upstream client before it can fail, and `stop` is null-safe, so a
+            # partial start still gets cleaned up.
             try:
+                await self.gateway.start()
+
                 banner("1. The existing integration")
                 await self.existing_control()
                 await self.existing_lost_response()

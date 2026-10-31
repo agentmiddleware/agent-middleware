@@ -342,6 +342,10 @@ async def test_verify_chain_endpoint_pages_and_rejects_bad_input(
         headers=BOOTSTRAP_HEADERS,
     )
     assert global_cursor.status_code == 422
+    # Same list shape as the documented HTTPValidationError.
+    detail = global_cursor.json()["detail"]
+    assert isinstance(detail, list)
+    assert detail[0]["loc"] == ["body", "after_seq"]
 
 
 @pytest.mark.anyio

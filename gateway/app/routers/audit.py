@@ -193,7 +193,18 @@ async def verify_chain(
     if wallet_id is None and (
         request.after_seq is not None or request.after_event_id is not None
     ):
-        raise HTTPException(status_code=422, detail="after_seq_requires_wallet_id")
+        # Same list shape as FastAPI validation errors, which is what the
+        # route documents for 422 (HTTPValidationError).
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {
+                    "loc": ["body", "after_seq"],
+                    "msg": "after_seq and after_event_id require a wallet_id",
+                    "type": "value_error",
+                }
+            ],
+        )
     result = await verify_audit_chain(
         wallet_id=wallet_id,
         created_after=request.created_after,

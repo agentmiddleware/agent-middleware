@@ -359,7 +359,7 @@
           "Control Plane Audit"
         ],
         "summary": "Verify Chain",
-        "description": "Verifies a wallet's hash-linked audit chain. One call walks at most `AUDIT_VERIFY_MAX_EVENTS` events (default 1000); `limit` can lower that and is clamped to it. `valid` means no defect was found in the walked span. `complete` is true only when the walk reached the end of the chain and ran the head and deleted-tail checks. When `complete` is false, pass `next_after_seq` as `after_seq` to resume. A global (operator) verification applies the same cap to each wallet chain and reports `complete=false` if any chain was capped.",
+        "description": "Verifies a wallet's hash-linked audit chain. One call walks at most `AUDIT_VERIFY_MAX_EVENTS` events (default 1000); `limit` can lower that and is clamped to it. `valid` means no defect was found in the walked span. `complete` is true only when the walk reached the end of the chain and ran the head and deleted-tail checks. When `complete` is false, pass `next_after_seq` and `next_after_event_id` as `after_seq` and `after_event_id` to resume. A global (operator) verification applies the same cap to each wallet chain and reports `complete=false` if any chain was capped.",
         "operationId": "verify_chain_v1_audit_verify_chain_post",
         "security": [
           {
@@ -6461,6 +6461,18 @@
             "title": "After Seq",
             "description": "Resume a single wallet chain after the event with this sequence number: the next_after_seq of a partial response. Not valid for a global (operator, wallet_id omitted) verification."
           },
+          "after_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Event Id",
+            "description": "The next_after_event_id of a partial response, sent with after_seq. Required to resume at seq 0: pre-sequence audit rows all store seq 0."
+          },
           "limit": {
             "anyOf": [
               {
@@ -6547,6 +6559,17 @@
               }
             ],
             "title": "Next After Seq"
+          },
+          "next_after_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After Event Id"
           }
         },
         "type": "object",

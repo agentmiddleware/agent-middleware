@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
@@ -11,7 +13,13 @@ from app.db.database import get_session_factory
 from app.db.models import AuditChainHeadModel, ControlPlaneAuditEventModel
 from app.main import app
 from app.services import audit_chain
-from app.services.audit_chain import verify_audit_chain
+from app.core.time import utc_now
+from app.services.audit_chain import (
+    audit_payload,
+    verify_audit_chain,
+    verify_audit_event_link,
+)
+from app.services.signing_keys import get_signing_key_service, sha256_hex
 from app.services.audit_log import record_audit_event
 from tests.test_evidence_bundle import _invoke_governed_tool
 from tests.test_trust_helpers import provision_agent_wallet
@@ -39,14 +47,19 @@ async def _walk(wallet_id: str, **kwargs):
     """Follow next_after_seq to the end; return every verdict in order."""
     verdicts = []
     after_seq = None
+    after_event_id = None
     for _ in range(100):
         verdict = await verify_audit_chain(
-            wallet_id=wallet_id, after_seq=after_seq, **kwargs
+            wallet_id=wallet_id,
+            after_seq=after_seq,
+            after_event_id=after_event_id,
+            **kwargs,
         )
         verdicts.append(verdict)
         if verdict.complete or not verdict.valid or verdict.next_after_seq is None:
             return verdicts
         after_seq = verdict.next_after_seq
+        after_event_id = verdict.next_after_event_id
     raise AssertionError("cursor did not terminate")
 
 
@@ -395,3 +408,122 @@ async def test_receipt_evidence_catches_tamper_of_its_own_event(client, clean_da
     assert check["status"] == "failed"
     assert check["reason"] == "audit_payload_hash_mismatch"
     assert body["valid"] is False
+
+
+async def _seed_legacy(wallet_id: str, count: int) -> list[str]:
+    """Insert a chain signed before seq existed: every row stores seq=0."""
+    service = get_signing_key_service()
+    key = await service.ensure_active_key()
+    start = utc_now()
+    previous_hash = None
+    rows = []
+    for n in range(count):
+        model = ControlPlaneAuditEventModel(
+            event_id=f"audit-legacy-{n:05d}",
+            created_at=start + timedelta(milliseconds=n),
+            seq=0,
+            event="trust.legacy",
+            wallet_id=wallet_id,
+            ok=True,
+            metadata_json="{}",
+        )
+        model.previous_hash = previous_hash
+        payload = audit_payload(
+            event_id=model.event_id,
+            created_at=model.created_at,
+            event=model.event,
+            wallet_id=wallet_id,
+            tool=None,
+            endpoint=None,
+            auth_source=None,
+            key_id=None,
+            policy_decision_id=None,
+            request_id=None,
+            ok=True,
+            error=None,
+            metadata_json="{}",
+            previous_hash=previous_hash,
+        )
+        payload_hash = sha256_hex(payload)
+        payload["payload_hash"] = payload_hash
+        signature, signature_key_id, _ = service.sign_payload_with_key_id(
+            payload, key.key_id
+        )
+        model.payload_hash = payload_hash
+        model.signature = signature
+        model.signature_key_id = signature_key_id
+        model.chain_hash = sha256_hex(
+            {
+                "previous_hash": previous_hash,
+                "payload_hash": payload_hash,
+                "signature": signature,
+            }
+        )
+        previous_hash = model.chain_hash
+        rows.append(model)
+    factory = get_session_factory()
+    async with factory() as session:
+        session.add_all(rows)
+        session.add(
+            AuditChainHeadModel(
+                wallet_key=wallet_id,
+                last_seq=0,
+                last_chain_hash=previous_hash,
+                updated_at=utc_now(),
+            )
+        )
+        await session.commit()
+    return [row.event_id for row in rows]
+
+
+@pytest.mark.anyio
+async def test_legacy_seq_zero_chain_longer_than_a_page_pages_cleanly(
+    clean_database, monkeypatch
+):
+    wallet_id = "wlt-bounded-legacy"
+    count = audit_chain._VERIFY_PAGE_SIZE * 2 + 40
+    event_ids = await _seed_legacy(wallet_id, count)
+    _set_cap(monkeypatch, audit_chain._VERIFY_PAGE_SIZE + 30)
+
+    verdicts = await _walk(wallet_id)
+    assert all(v.valid for v in verdicts), verdicts
+    assert verdicts[-1].complete is True
+    assert sum(v.checked_events for v in verdicts) == count
+    # The cursor lands inside the seq=0 run, so it must name the event.
+    assert verdicts[0].next_after_seq == 0
+    assert verdicts[0].next_after_event_id is not None
+    # A bare seq=0 cursor cannot say where in the run to resume.
+    ambiguous = await verify_audit_chain(wallet_id=wallet_id, after_seq=0)
+    assert ambiguous.valid is False
+    assert ambiguous.reason == "audit_cursor_ambiguous"
+    assert event_ids  # seeded
+
+
+@pytest.mark.anyio
+async def test_single_event_link_resolves_legacy_predecessor_by_hash(clean_database):
+    wallet_id = "wlt-bounded-legacy-link"
+    await _seed_legacy(wallet_id, 3)
+    factory = get_session_factory()
+    async with factory() as session:
+        events = (
+            (
+                await session.execute(
+                    select(ControlPlaneAuditEventModel)
+                    .where(ControlPlaneAuditEventModel.wallet_id == wallet_id)
+                    .order_by(ControlPlaneAuditEventModel.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    for event in events:
+        assert (await verify_audit_event_link(event)).valid is True
+    # A legacy event whose previous_hash names no row in the chain is a break.
+    orphan = events[2]
+    orphan.previous_hash = "0" * 64
+    result = await verify_audit_event_link(orphan)
+    assert result.valid is False
+    assert result.reason in {
+        "audit_previous_hash_mismatch",
+        "audit_payload_hash_mismatch",
+    }

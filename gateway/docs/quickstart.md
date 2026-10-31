@@ -247,7 +247,8 @@ hash-links across the span the call walked; an edited or deleted event would
 surface as `"valid": false` with the broken link named in `broken_event_id`.
 One call walks at most 1000 events. `"complete": true` means it reached the
 end of the chain; if it is `false`, repeat the call with
-`{"after_seq": <next_after_seq>}` until it is `true`.
+`{"after_seq": <next_after_seq>, "after_event_id": <next_after_event_id>}`
+until it is `true`.
 
 ## 7. Overspend on purpose (~2 minutes)
 

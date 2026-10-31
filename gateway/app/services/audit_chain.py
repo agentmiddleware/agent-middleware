@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import asc, desc, literal, or_, select, true, update
+from sqlalchemy import and_, asc, desc, literal, or_, select, true, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.sql.elements import ColumnElement
@@ -448,7 +448,8 @@ class AuditChainVerification:
     ``valid`` means no defect was found in that span. ``complete`` is true only
     when the walk reached the end of the chain and ran the head and deleted-tail
     checks. A capped walk returns ``complete=False`` and, for a single chain, the
-    ``next_after_seq`` cursor to resume from. Never read ``valid=True`` with
+    ``next_after_seq`` cursor to resume from. Legacy rows all store ``seq=0``,
+    so the cursor also carries ``next_after_event_id``; pass both back. Never read ``valid=True`` with
     ``complete=False`` as a full-chain pass.
     """
 
@@ -460,6 +461,7 @@ class AuditChainVerification:
     broken_event_id: str | None = None
     complete: bool = True
     next_after_seq: int | None = None
+    next_after_event_id: str | None = None
 
 
 def effective_verify_limit(limit: int | None) -> int:
@@ -476,17 +478,20 @@ async def verify_audit_chain(
     created_after: datetime | None = None,
     created_before: datetime | None = None,
     after_seq: int | None = None,
+    after_event_id: str | None = None,
     limit: int | None = None,
 ) -> AuditChainVerification:
     """Verify at most ``AUDIT_VERIFY_MAX_EVENTS`` events of each wallet chain.
 
-    ``after_seq`` resumes a single chain after the event with that sequence
-    (the ``next_after_seq`` of a partial verdict). ``limit`` lowers the cap for
+    ``after_seq`` (with ``after_event_id``) resumes a single chain after that
+    event: the ``next_after_seq`` and ``next_after_event_id`` of a partial
+    verdict. ``after_event_id`` is required when ``after_seq`` is 0, because
+    every pre-sequence row stores ``seq=0``. ``limit`` lowers the cap for
     this call and is clamped to it.
     """
     max_events = effective_verify_limit(limit)
     if wallet_id is None:
-        if after_seq is not None:
+        if after_seq is not None or after_event_id is not None:
             raise ValueError("audit_after_seq_requires_wallet")
         # Global verification: walk every per-wallet chain, INCLUDING the
         # wallet-less chain (events whose wallet_id IS NULL -- system and
@@ -528,6 +533,7 @@ async def verify_audit_chain(
                 created_after=created_after,
                 created_before=created_before,
                 after_seq=None,
+                after_event_id=None,
                 max_events=max_events,
             )
             checked += chain_result.checked_events
@@ -559,6 +565,7 @@ async def verify_audit_chain(
         created_after=created_after,
         created_before=created_before,
         after_seq=after_seq,
+        after_event_id=after_event_id,
         max_events=max_events,
     )
 
@@ -607,6 +614,28 @@ async def _event_defect(
     return None, payload
 
 
+def _after_cursor(cursor: tuple[int, datetime, str]) -> ColumnElement[bool]:
+    """Rows strictly after ``(seq, created_at, event_id)`` in walk order."""
+    seq, created_at, event_id = cursor
+    model = ControlPlaneAuditEventModel
+    return cast(
+        ColumnElement[bool],
+        or_(
+            cast(Any, model.seq) > seq,
+            and_(
+                cast(Any, model.seq) == seq,
+                or_(
+                    cast(Any, model.created_at) > created_at,
+                    and_(
+                        cast(Any, model.created_at) == created_at,
+                        cast(Any, model.event_id) > event_id,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
 async def verify_audit_event_link(
     event: ControlPlaneAuditEventModel,
 ) -> AuditChainVerification:
@@ -619,23 +648,44 @@ async def verify_audit_event_link(
     ``complete`` is always False, and sequence holes or a deleted tail are
     outside its scope.
     """
+    chain_filter = _chain_wallet_filter(event.wallet_id)
     factory = get_session_factory()
     async with factory() as session:
-        result = await session.execute(
-            select(
-                cast(Any, ControlPlaneAuditEventModel.chain_hash),
+        if event.seq > 0:
+            result = await session.execute(
+                select(cast(Any, ControlPlaneAuditEventModel.chain_hash))
+                .where(
+                    chain_filter,
+                    cast(
+                        ColumnElement[bool], ControlPlaneAuditEventModel.seq < event.seq
+                    ),
+                )
+                .order_by(
+                    desc(cast(ColumnElement[Any], ControlPlaneAuditEventModel.seq)),
+                    desc(
+                        cast(ColumnElement[Any], ControlPlaneAuditEventModel.created_at)
+                    ),
+                )
+                .limit(1)
             )
-            .where(
-                _chain_wallet_filter(event.wallet_id),
-                cast(ColumnElement[bool], ControlPlaneAuditEventModel.seq < event.seq),
+        elif event.previous_hash is not None:
+            # Rows signed before sequence numbers all store seq=0, so order
+            # cannot name the predecessor. Find the row whose chain hash this
+            # event claims as its previous hash; none means the link is broken.
+            result = await session.execute(
+                select(cast(Any, ControlPlaneAuditEventModel.chain_hash))
+                .where(
+                    chain_filter,
+                    cast(
+                        ColumnElement[bool],
+                        ControlPlaneAuditEventModel.chain_hash == event.previous_hash,
+                    ),
+                )
+                .limit(1)
             )
-            .order_by(
-                desc(cast(ColumnElement[Any], ControlPlaneAuditEventModel.seq)),
-                desc(cast(ColumnElement[Any], ControlPlaneAuditEventModel.created_at)),
-            )
-            .limit(1)
-        )
-        predecessor = result.first()
+        else:
+            result = None
+        predecessor = result.first() if result is not None else None
     expected_previous = predecessor[0] if predecessor else None
     reason, _ = await _event_defect(
         event, expected_previous_hash=expected_previous, check_signature=True
@@ -657,12 +707,14 @@ async def _verify_single_chain(
     created_after: datetime | None = None,
     created_before: datetime | None = None,
     after_seq: int | None = None,
+    after_event_id: str | None = None,
     max_events: int | None = None,
 ) -> AuditChainVerification:
     """Verify one wallet's audit chain, walking at most ``max_events`` events.
 
     ``wallet_id=None`` and ``wallet_id=""`` are the wallet-less chain
-    (NULL and blank ids together). The walk pages by ``seq`` (keyset), carrying
+    (NULL and blank ids together). The walk pages by the keyset ``(seq, created_at,
+    event_id)``, so rows sharing ``seq=0`` (pre-sequence rows) page correctly, carrying
     the previous chain hash across pages, so memory is bounded by the page size.
     """
     if max_events is None:
@@ -674,41 +726,49 @@ async def _verify_single_chain(
     factory = get_session_factory()
 
     previous_hash: str | None = None
-    cursor = after_seq
+    # Keyset position of the last walked event: (seq, created_at, event_id).
+    cursor: tuple[int, datetime, str] | None = None
     expected_seq = 1
     # Last walked event as (event_id, seq, chain_hash); seeded from the cursor.
     last_walked: tuple[str, int, str | None] | None = None
-    if after_seq is not None:
-        async with factory() as session:
-            anchor_result = await session.execute(
-                select(
-                    cast(Any, ControlPlaneAuditEventModel.event_id),
-                    cast(Any, ControlPlaneAuditEventModel.chain_hash),
+    if after_seq is not None or after_event_id is not None:
+        anchor_stmt = select(
+            cast(Any, ControlPlaneAuditEventModel.event_id),
+            cast(Any, ControlPlaneAuditEventModel.chain_hash),
+            cast(Any, ControlPlaneAuditEventModel.seq),
+            cast(Any, ControlPlaneAuditEventModel.created_at),
+        ).where(chain_filter)
+        if after_event_id is not None:
+            anchor_stmt = anchor_stmt.where(
+                cast(
+                    ColumnElement[bool],
+                    ControlPlaneAuditEventModel.event_id == after_event_id,
                 )
-                .where(chain_filter, seq_col == after_seq)
-                .order_by(
-                    asc(
-                        cast(ColumnElement[Any], ControlPlaneAuditEventModel.created_at)
-                    )
-                )
-                .limit(2)
             )
-            anchors = anchor_result.all()
+        if after_seq is not None:
+            anchor_stmt = anchor_stmt.where(seq_col == after_seq)
+        async with factory() as session:
+            anchors = (await session.execute(anchor_stmt.limit(2))).all()
         if not anchors:
             return AuditChainVerification(
                 False, 0, reason="audit_cursor_event_missing", complete=False
             )
         if len(anchors) > 1:
+            # Several rows share the cursor's seq. Only legacy rows (seq 0) may;
+            # elsewhere a duplicate seq is itself a defect.
+            legacy = anchors[0][2] == 0
             return AuditChainVerification(
                 False,
                 0,
-                reason="audit_sequence_gap",
-                broken_event_id=anchors[1][0],
+                reason="audit_cursor_ambiguous" if legacy else "audit_sequence_gap",
+                broken_event_id=None if legacy else anchors[1][0],
                 complete=False,
             )
-        previous_hash = anchors[0][1]
-        last_walked = (anchors[0][0], after_seq, anchors[0][1])
-        expected_seq = after_seq + 1
+        anchor_id, anchor_hash, anchor_seq, anchor_created = anchors[0]
+        previous_hash = anchor_hash
+        cursor = (anchor_seq, anchor_created, anchor_id)
+        last_walked = (anchor_id, anchor_seq, anchor_hash)
+        expected_seq = anchor_seq + 1
 
     walked = 0
     checked = 0
@@ -724,10 +784,11 @@ async def _verify_single_chain(
         page_size = min(_VERIFY_PAGE_SIZE, max_events - walked)
         page_stmt = select(ControlPlaneAuditEventModel).where(chain_filter)
         if cursor is not None:
-            page_stmt = page_stmt.where(seq_col > cursor)
+            page_stmt = page_stmt.where(_after_cursor(cursor))
         page_stmt = page_stmt.order_by(
             asc(seq_col),
             asc(cast(ColumnElement[Any], ControlPlaneAuditEventModel.created_at)),
+            asc(cast(ColumnElement[Any], ControlPlaneAuditEventModel.event_id)),
         ).limit(page_size)
 
         async with factory() as session:
@@ -802,48 +863,26 @@ async def _verify_single_chain(
 
         walked += len(page)
         if page:
-            cursor = page[-1].seq
+            cursor = (page[-1].seq, page[-1].created_at, page[-1].event_id)
         if len(page) < page_size:
             reached_end = True
             break
         # A full page: more rows may follow. A second row sharing the last seq
-        # would be skipped by the seq cursor, so look for one before moving on.
-        assert last_walked is not None
-        async with factory() as session:
-            duplicate = (
-                await session.execute(
-                    select(cast(Any, ControlPlaneAuditEventModel.event_id))
-                    .where(
-                        chain_filter,
-                        seq_col == last_walked[1],
-                        cast(
-                            ColumnElement[bool],
-                            ControlPlaneAuditEventModel.event_id != last_walked[0],
-                        ),
-                    )
-                    .limit(1)
-                )
-            ).first()
-            if duplicate is not None:
-                return AuditChainVerification(
-                    False,
-                    checked,
-                    first_event_id,
-                    last_event_id,
-                    "audit_sequence_gap",
-                    duplicate[0],
-                    complete=False,
-                )
-            if walked >= max_events:
+        # sorts after the cursor and is walked next, where the sequence check
+        # flags it. Only at the cap does the walk stop, so ask whether anything
+        # remains beyond the last walked event.
+        if walked >= max_events:
+            assert cursor is not None
+            async with factory() as session:
                 more = (
                     await session.execute(
                         select(cast(Any, ControlPlaneAuditEventModel.event_id))
-                        .where(chain_filter, seq_col > last_walked[1])
+                        .where(chain_filter, _after_cursor(cursor))
                         .limit(1)
                     )
                 ).first()
-                reached_end = more is None
-                break
+            reached_end = more is None
+            break
 
     def head_level_failure(reason: str, broken: str | None) -> AuditChainVerification:
         return AuditChainVerification(
@@ -881,5 +920,6 @@ async def _verify_single_chain(
         first_event_id,
         last_event_id,
         complete=reached_end,
-        next_after_seq=None if reached_end else cursor,
+        next_after_seq=None if reached_end or cursor is None else cursor[0],
+        next_after_event_id=None if reached_end or cursor is None else cursor[2],
     )

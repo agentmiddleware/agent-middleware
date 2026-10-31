@@ -393,6 +393,14 @@ class AuditChainVerifyRequest(BaseModel):
             "a global (operator, wallet_id omitted) verification."
         ),
     )
+    after_event_id: str | None = Field(
+        default=None,
+        description=(
+            "The next_after_event_id of a partial response, sent with "
+            "after_seq. Required to resume at seq 0: pre-sequence audit rows "
+            "all store seq 0."
+        ),
+    )
     limit: int | None = Field(
         default=None,
         ge=1,
@@ -421,6 +429,7 @@ class AuditChainVerifyResponse(BaseModel):
     broken_event_id: str | None = None
     complete: bool = True
     next_after_seq: int | None = None
+    next_after_event_id: str | None = None
 
 
 class ReceiptEvidenceCheck(BaseModel):

@@ -384,15 +384,43 @@ class AuditChainVerifyRequest(BaseModel):
     wallet_id: str | None = None
     created_after: datetime | None = None
     created_before: datetime | None = None
+    after_seq: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Resume a single wallet chain after the event with this sequence "
+            "number: the next_after_seq of a partial response. Not valid for "
+            "a global (operator, wallet_id omitted) verification."
+        ),
+    )
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Most events to walk in this call. Values above the server maximum "
+            "(AUDIT_VERIFY_MAX_EVENTS) are clamped to it."
+        ),
+    )
 
 
 class AuditChainVerifyResponse(BaseModel):
+    """Verdict over the span of the chain this call walked.
+
+    valid=true means no defect was found in that span. complete=true means the
+    walk reached the end of the chain and ran the head and deleted-tail checks.
+    When complete=false the rest of the chain is unverified: resume with
+    next_after_seq (single wallet chains), and never treat the result as a
+    full-chain pass.
+    """
+
     valid: bool
     checked_events: int
     first_event_id: str | None = None
     last_event_id: str | None = None
     reason: str | None = None
     broken_event_id: str | None = None
+    complete: bool = True
+    next_after_seq: int | None = None
 
 
 class ReceiptEvidenceCheck(BaseModel):

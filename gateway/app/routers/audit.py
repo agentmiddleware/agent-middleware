@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.auth import AuthContext, get_auth_context
 from app.schemas.audit import (
@@ -159,7 +159,20 @@ async def get_audit_summary(
     return AuditSummaryResponse(**summary)
 
 
-@router.post("/verify-chain", response_model=AuditChainVerifyResponse)
+@router.post(
+    "/verify-chain",
+    response_model=AuditChainVerifyResponse,
+    description=(
+        "Verifies a wallet's hash-linked audit chain. One call walks at most "
+        "`AUDIT_VERIFY_MAX_EVENTS` events (default 1000); `limit` can lower "
+        "that and is clamped to it. `valid` means no defect was found in the "
+        "walked span. `complete` is true only when the walk reached the end "
+        "of the chain and ran the head and deleted-tail checks. When "
+        "`complete` is false, pass `next_after_seq` as `after_seq` to resume. "
+        "A global (operator) verification applies the same cap to each "
+        "wallet chain and reports `complete=false` if any chain was capped."
+    ),
+)
 async def verify_chain(
     request: AuditChainVerifyRequest,
     auth: AuthContext = Depends(get_auth_context),
@@ -174,9 +187,13 @@ async def verify_chain(
         wallet_id = auth.wallet_id
     else:
         auth.require_bootstrap_admin()
+    if wallet_id is None and request.after_seq is not None:
+        raise HTTPException(status_code=422, detail="after_seq_requires_wallet_id")
     result = await verify_audit_chain(
         wallet_id=wallet_id,
         created_after=request.created_after,
         created_before=request.created_before,
+        after_seq=request.after_seq,
+        limit=request.limit,
     )
     return AuditChainVerifyResponse(**asdict(result))

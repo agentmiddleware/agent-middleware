@@ -311,7 +311,19 @@ async def get_receipt(
     return receipt
 
 
-@router.get("/{receipt_id}/evidence", response_model=ReceiptEvidenceResponse)
+@router.get(
+    "/{receipt_id}/evidence",
+    response_model=ReceiptEvidenceResponse,
+    description=(
+        "Detailed evidence checks for a receipt. The `audit_chain` check "
+        "verifies the receipt's own audit event (payload hash, signature, "
+        "chain hash) and its link to the immediate predecessor; its details "
+        "report `scope=receipt_event_link` and `chain_walk=not_run`. The "
+        "wallet's whole chain is not walked here, so cost does not grow with "
+        "history. Use `POST /v1/audit/verify-chain` to walk the chain in "
+        "bounded pages."
+    ),
+)
 async def get_receipt_evidence(
     receipt_id: str,
     auth: AuthContext = Depends(get_auth_context),

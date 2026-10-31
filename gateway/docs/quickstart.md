@@ -243,8 +243,11 @@ curl -s -X POST "$API_URL/v1/audit/verify-chain" \
 ```
 
 `"valid": true` with a non-zero `checked_events` means the recorded history
-hash-links end to end; an edited or deleted event would surface as
-`"valid": false` with the broken link named in `broken_event_id`.
+hash-links across the span the call walked; an edited or deleted event would
+surface as `"valid": false` with the broken link named in `broken_event_id`.
+One call walks at most 1000 events. `"complete": true` means it reached the
+end of the chain; if it is `false`, repeat the call with
+`{"after_seq": <next_after_seq>}` until it is `true`.
 
 ## 7. Overspend on purpose (~2 minutes)
 

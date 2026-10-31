@@ -22,7 +22,12 @@ router = APIRouter(prefix="/v1/evidence", tags=["Trust / Evidence"])
         "Returns the single, verifiable artifact for a receipt: the signed "
         "receipt, its permit, the linked ledger entry and audit event, and a "
         "`verification` map (receipt signature, permit signature, audit chain, "
-        "request hash). This is the artifact a buyer can hand to an auditor."
+        "request hash). This is the artifact a buyer can hand to an auditor. "
+        "The `audit_chain` verification covers the receipt's own audit event "
+        "(payload hash, signature, chain hash) and its link to the immediate "
+        "predecessor. It does not walk the wallet's whole chain, so its cost "
+        "does not grow with history; use `POST /v1/audit/verify-chain` to walk "
+        "the chain in bounded pages."
     ),
 )
 async def get_evidence_bundle(

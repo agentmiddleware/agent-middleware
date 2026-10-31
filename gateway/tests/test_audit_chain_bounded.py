@@ -518,12 +518,15 @@ async def test_single_event_link_resolves_legacy_predecessor_by_hash(clean_datab
         )
     for event in events:
         assert (await verify_audit_event_link(event)).valid is True
-    # A legacy event whose previous_hash names no row in the chain is a break.
-    orphan = events[2]
-    orphan.previous_hash = "0" * 64
-    result = await verify_audit_event_link(orphan)
+    # Delete the predecessor: events[2].previous_hash now names no row, which
+    # reaches the link check itself rather than failing the signed payload.
+    async with factory() as session:
+        await session.execute(
+            delete(ControlPlaneAuditEventModel).where(
+                ControlPlaneAuditEventModel.event_id == events[1].event_id
+            )
+        )
+        await session.commit()
+    result = await verify_audit_event_link(events[2])
     assert result.valid is False
-    assert result.reason in {
-        "audit_previous_hash_mismatch",
-        "audit_payload_hash_mismatch",
-    }
+    assert result.reason == "audit_previous_hash_mismatch"

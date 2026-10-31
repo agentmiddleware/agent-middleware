@@ -174,10 +174,11 @@ step "Run multiprocess crash proofs". The **21** row-lock concurrency tests in
 `tests/test_permit_postgres_concurrency.py` run in both jobs. Both jobs install
 dependencies with `uv pip install`; the Make target is the operator-facing
 equivalent, not a literal copy of the CI steps. On pull requests both jobs run
-only when the change touches non-documentation files under `gateway/`, a project
-gateway depends on, or a shared path, and are skipped for docs-only pull
-requests (see [TESTING_TIERS.md](TESTING_TIERS.md)); on every push to `main`,
-merge-group run and manual run they always run.
+only when the change touches any path under `gateway/`, a project gateway
+depends on, or a shared path, and are skipped for docs-only pull requests, where
+every changed file in the whole pull request is documentation (see
+[TESTING_TIERS.md](TESTING_TIERS.md)); on every push to `main`, merge-group run
+and manual run they always run.
 
 ### Claim-fence evidence
 

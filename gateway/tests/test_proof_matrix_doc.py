@@ -59,32 +59,38 @@ def _parametrize_cases(decorator: ast.expr) -> int | None:
     for keyword in decorator.keywords:
         if keyword.arg == "argvalues":
             values = keyword.value
-    assert isinstance(values, (ast.List, ast.Tuple)), (
-        "parametrize with non-literal argvalues: count its cases here explicitly"
-    )
+    # An unpacked entry ([*CASES]) is a list node whose length is not its case count.
+    assert isinstance(values, (ast.List, ast.Tuple)) and not any(
+        isinstance(entry, ast.Starred) for entry in values.elts
+    ), "parametrize with non-literal argvalues: count its cases here explicitly"
     return len(values.elts)
+
+
+def _cases_from(decorators: list[ast.expr]) -> int:
+    """Product of the parametrize case counts among ``decorators``."""
+    cases = 1
+    for decorator in decorators:
+        cases *= _parametrize_cases(decorator) or 1
+    return cases
 
 
 def _collected_case_count(source: str) -> int:
     """Number of cases pytest collects from a module, without importing it."""
-    functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    total = 0
     for node in ast.parse(source).body:
         if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
-            functions.extend(
-                n
-                for n in node.body
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            # Class-level parametrize multiplies every test method in the class.
+            per_method = _cases_from(node.decorator_list)
+            total += sum(
+                per_method * _cases_from(method.decorator_list)
+                for method in node.body
+                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and method.name.startswith("test_")
             )
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            functions.append(node)
-    total = 0
-    for function in functions:
-        if not function.name.startswith("test_"):
-            continue
-        cases = 1
-        for decorator in function.decorator_list:
-            cases *= _parametrize_cases(decorator) or 1
-        total += cases
+        elif isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ) and node.name.startswith("test_"):
+            total += _cases_from(node.decorator_list)
     return total
 
 

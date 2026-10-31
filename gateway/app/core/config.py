@@ -252,6 +252,10 @@ class Settings(BaseSettings):
     JEV_RISK_GUARD_TIMEOUT_SECONDS: float = 1.5
     JEV_RISK_GUARD_TIERS: str = "medium,high"
     TYPESAFE_API_KEY: SecretStr = SecretStr("")
+    # Optional PostHog product tracking (docs/product-analytics.md). Blank
+    # key = tracking off. Declared here so .env entries load.
+    POSTHOG_API_KEY: SecretStr = SecretStr("")
+    POSTHOG_HOST: str = ""
     # Server pepper for HMAC-SHA256 API-key digests. Required in
     # production-like environments (startup refuses to boot without it).
     # See docs/api-key-hashing.md. Never log it.
@@ -306,6 +310,33 @@ class Settings(BaseSettings):
     # serving and advertising it.
     ENABLE_STANDARD_MCP_ENDPOINT: bool = True
     STANDARD_MCP_PERMIT_TTL_SECONDS: int = 120
+
+    # Unkeyed tools/call retry safety (SEL-484 / G1, MCP issue #3394).
+    # A mutating call without a client idempotency key gets a deterministic
+    # key derived from wallet, API key, verified enterprise principal, tool and
+    # canonical arguments. The window slides from the first call (a retry that
+    # crosses a bucket edge still joins it), so a lost-response retry within
+    # this many seconds replays the original receipt instead of dispatching
+    # again; a refunded pre-dispatch failure is retried, not replayed.
+    # Read-only tools get no derived key, so unkeyed read-only calls are
+    # refused with idempotency_key_required (SEL-498); there is never a
+    # random per-call key. Identical deliberate unkeyed calls inside one
+    # window collapse to one dispatch; callers needing repeats must send
+    # distinct keys. 0 disables derived keys, so every unkeyed call is
+    # refused. The effective window is capped at the auto-permit TTL
+    # (STANDARD_MCP_PERMIT_TTL_SECONDS, default 120; lower for demo): a
+    # joined slot reuses its auto permit. With defaults the window is 120 s,
+    # and a later identical retry runs and bills again.
+    MCP_UNKEYED_RETRY_WINDOW_SECONDS: int = 300
+
+    @field_validator("MCP_UNKEYED_RETRY_WINDOW_SECONDS")
+    @classmethod
+    def _validate_unkeyed_retry_window(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(
+                "MCP_UNKEYED_RETRY_WINDOW_SECONDS must be >= 0 (0 disables)"
+            )
+        return value
 
     # --- Public MCP endpoint (POST /mcp/public) ---
     # Unauthenticated, read-only Streamable HTTP surface for MCP clients

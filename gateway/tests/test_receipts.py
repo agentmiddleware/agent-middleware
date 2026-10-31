@@ -262,7 +262,8 @@ async def test_dynamic_forbidden_field_denial_signs_stable_reason_without_charge
 
     assert response.status_code == 200, response.text
     error = response.json()["error"]
-    assert error["message"] == f"permit_forbidden_field:{unsafe_field_name}"
+    assert error["message"] == "permit_forbidden_field"
+    assert unsafe_field_name not in error["message"]
     receipt = error["data"]["receipt"]
     assert receipt["reason_code"] == "permit_forbidden_field"
     assert receipt["ledger_entry_id"] is None

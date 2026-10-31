@@ -148,6 +148,23 @@ def test_empty_env_pepper_does_not_revive_dotenv_secret(monkeypatch, tmp_path) -
     svc.validate_api_key_hashing_config()
 
 
+@pytest.mark.parametrize("empty_value", ["", "   "])
+def test_empty_env_pepper_does_not_revive_cached_settings(
+    monkeypatch, empty_value
+) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv(svc.API_KEY_HASH_PEPPER_ENV, secrets.token_urlsafe(32))
+    get_settings.cache_clear()
+    try:
+        get_settings()
+        svc.validate_api_key_hashing_config()
+        monkeypatch.setenv(svc.API_KEY_HASH_PEPPER_ENV, empty_value)
+        with pytest.raises(svc.APIKeyHashingUnavailable):
+            svc.validate_api_key_hashing_config()
+    finally:
+        get_settings.cache_clear()
+
+
 @pytest.mark.anyio
 async def test_row_authenticates(clean_database, pepper: str) -> None:
     stored = svc.hash_api_key(KEY)

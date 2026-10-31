@@ -50,6 +50,8 @@ use them as product onboarding or a public capability list:
 - [`agent-recipes.md`](agent-recipes.md) and
   [`human-onboarding.md`](human-onboarding.md) are legacy proof-surface
   material, not the supported one-tool pilot.
+- [Product analytics](product-analytics.md) documents the optional PostHog
+  signup, identify and activation events (`POSTHOG_API_KEY`, `POSTHOG_HOST`).
 - [Pods](pods.md) are a dormant trust feature, not part of the supported pilot.
 - `server.json` at the repository root is the official MCP registry
   manifest. It advertises the standard MCP endpoint

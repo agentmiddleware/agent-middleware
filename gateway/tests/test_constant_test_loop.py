@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import signal
 import socket
 import subprocess
@@ -655,8 +656,9 @@ def test_off_loopback_runs_require_a_pinned_tool_and_approved_payload():
     assert "b2a_placeholder" not in result.stdout + result.stderr
 
 
-def test_bootstrap_key_only_pipes_without_jq():
+def test_bootstrap_key_only_pipes_without_jq(tmp_path):
     """--key-only and --json both write stdout, so they cannot both apply."""
+    bootstrap_secret = secrets.token_urlsafe(32)
     result = subprocess.run(
         [
             sys.executable,
@@ -668,12 +670,13 @@ def test_bootstrap_key_only_pipes_without_jq():
         ],
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", "BOOTSTRAP_KEY": "placeholder"},
+        env={"PATH": "/usr/bin:/bin", "BOOTSTRAP_KEY": bootstrap_secret},
     )
     assert result.returncode != 0
     assert "mutually exclusive" in result.stderr
 
-    # --key-only must not have opened a path around the fail-closed check.
+    # --key-only without --key-file is an argparse error (exit 2): the minted
+    # key is never printed, so a missing destination would discard it.
     result = subprocess.run(
         [
             sys.executable,
@@ -684,10 +687,30 @@ def test_bootstrap_key_only_pipes_without_jq():
         ],
         capture_output=True,
         text=True,
+        env={"PATH": "/usr/bin:/bin", "BOOTSTRAP_KEY": bootstrap_secret},
+    )
+    assert result.returncode == 2
+    assert "requires --key-file" in result.stderr
+
+    # --key-only must not have opened a path around the fail-closed check.
+    key_file = tmp_path / "agent.key"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP_SCRIPT),
+            "--api-url",
+            "https://api.example.org",
+            "--key-only",
+            "--key-file",
+            str(key_file),
+        ],
+        capture_output=True,
+        text=True,
         env={"PATH": "/usr/bin:/bin"},
     )
     assert result.returncode != 0
     assert "BOOTSTRAP_KEY" in result.stderr
+    assert not key_file.exists()
 
 
 def test_unusable_tool_pin_exits_as_configuration_not_invariant_failure(

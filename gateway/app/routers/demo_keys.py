@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from ..core.auth import AuthContext, get_auth_context
+from ..core import product_analytics
 from ..core.config import get_settings
 from ..core.rate_limiter import _client_id
 from ..services.demo_tenant import (
@@ -225,6 +226,7 @@ async def issue_demo_key(
         key_id=minted["key_id"],
         wallet_id=minted["wallet_id"],
     )
+    product_analytics.track_signup(minted["sponsor_wallet_id"], method="demo_key")
     base_url = settings.PUBLIC_URL.rstrip("/") if settings.PUBLIC_URL else ""
     return DemoKeyIssueResponse(
         api_key=minted["api_key"],

@@ -20,13 +20,20 @@ Never commit `VALID_API_KEYS` to git.
 export API_URL="${PUBLIC_URL:-https://api.agentmiddleware.dev}"
 export BOOTSTRAP_KEY=...   # from secret manager / Railway variables — not a demo string
 
-# One-shot provisioner (prints agent key once to stdout):
+mkdir -p -m 700 ~/.config/amw
+
+# One-shot provisioner. The minted secret is never printed; it is written
+# to --key-file (created mode 0600, refused if the path already exists).
+# --key-file is required: stdout shows only non-secret identifiers (key id).
+# Parent dir must exist before --key-file is written.
+install -d -m 700 "$HOME/.config/amw"
 uv run --with-requirements requirements.txt \
   python scripts/partner_api_key_bootstrap.py \
   --api-url "$API_URL" \
   --sponsor-name "Partner Co" \
   --agent-id "partner-agent-001" \
-  --budget-credits 1000
+  --budget-credits 1000 \
+  --key-file "$HOME/.config/amw/partner-agent-001.key"
 ```
 
 Optional bounds on what you mint (all default to unlimited):
@@ -43,10 +50,11 @@ uv run --with-requirements requirements.txt \
   python scripts/partner_api_key_bootstrap.py \
   --api-url "$API_URL" \
   --sponsor-wallet-id "$SPONSOR_WALLET_ID" \
-  --agent-wallet-id "$AGENT_WALLET_ID"
+  --agent-wallet-id "$AGENT_WALLET_ID" \
+  --key-file "$HOME/.config/amw/partner-agent-001.key"
 ```
 
-Hand the **agent** key (and wallet id) to the partner over a secure channel.
+Read the agent key from that file and hand it (and the wallet id) to the partner over a secure channel.
 Revoke when the engagement ends:
 
 ```bash

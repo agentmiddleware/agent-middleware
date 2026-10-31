@@ -26,8 +26,10 @@ router = APIRouter(prefix="/v1/evidence", tags=["Trust / Evidence"])
         "The `audit_chain` verification covers the receipt's own audit event "
         "(payload hash, signature, chain hash) and its link to the immediate "
         "predecessor. It does not walk the wallet's whole chain, so its cost "
-        "does not grow with history; use `POST /v1/audit/verify-chain` to walk "
-        "the chain in bounded pages."
+        "does not grow with history; `verification.audit_chain_scope` names that "
+        "scope (`receipt_event_link`) and is absent when no audit event is "
+        "linked. Use `POST /v1/audit/verify-chain` to walk the chain in "
+        "bounded pages."
     ),
 )
 async def get_evidence_bundle(

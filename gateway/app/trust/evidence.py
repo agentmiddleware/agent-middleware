@@ -684,6 +684,13 @@ def build_evidence_bundle(evidence: ReceiptEvidenceResponse) -> EvidenceBundleRe
             "dispatch_linkage",
         ),
     }
+    # audit_chain covers the receipt's own audit event and its link to the
+    # immediate predecessor, not the whole wallet chain. Say so in the flat
+    # artifact, where a consumer reads it, not only in the nested details.
+    audit_check = checks_by_name.get("audit_chain")
+    audit_scope = audit_check.details.get("scope") if audit_check else None
+    if audit_scope:
+        verification["audit_chain_scope"] = str(audit_scope)
 
     return EvidenceBundleResponse(
         receipt_id=evidence.receipt_id,

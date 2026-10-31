@@ -10,6 +10,7 @@ silently.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -46,16 +47,58 @@ def test_ci_job_names_in_docs_exist_in_the_workflow():
         assert not missing, f"{path.name} names CI jobs that do not exist: {missing}"
 
 
+def _parametrize_cases(decorator: ast.expr) -> int | None:
+    """Case count of a ``pytest.mark.parametrize`` decorator, None if not one."""
+    if not (
+        isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "parametrize"
+    ):
+        return None
+    values: ast.expr | None = decorator.args[1] if len(decorator.args) > 1 else None
+    for keyword in decorator.keywords:
+        if keyword.arg == "argvalues":
+            values = keyword.value
+    assert isinstance(values, (ast.List, ast.Tuple)), (
+        "parametrize with non-literal argvalues: count its cases here explicitly"
+    )
+    return len(values.elts)
+
+
+def _collected_case_count(source: str) -> int:
+    """Number of cases pytest collects from a module, without importing it."""
+    functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            functions.extend(
+                n
+                for n in node.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.append(node)
+    total = 0
+    for function in functions:
+        if not function.name.startswith("test_"):
+            continue
+        cases = 1
+        for decorator in function.decorator_list:
+            cases *= _parametrize_cases(decorator) or 1
+        total += cases
+    return total
+
+
 def test_proof_matrix_row_lock_count_matches_the_suite():
     """The matrix quotes the row-lock suite size; recount it from the file."""
     text = (GATEWAY / "docs" / "PROOF_MATRIX.md").read_text()
     suite = (GATEWAY / "tests" / "test_permit_postgres_concurrency.py").read_text()
-    defined = len(re.findall(r"^(?:async )?def test_", suite, flags=re.MULTILINE))
     match = re.search(r"\*\*(\d+)\*\* row-lock\s+concurrency tests", text)
     assert match, "PROOF_MATRIX.md no longer states the row-lock test count"
-    # Parametrized tests collect more cases than there are definitions, so the
-    # documented number may exceed the definition count but never undercut it.
-    assert int(match.group(1)) >= defined
+    collected = _collected_case_count(suite)
+    assert collected > 0
+    assert int(match.group(1)) == collected, (
+        f"PROOF_MATRIX.md says {match.group(1)} row-lock tests, the suite collects {collected}"
+    )
 
 
 def test_threat_model_describes_current_api_key_storage():

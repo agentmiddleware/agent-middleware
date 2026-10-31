@@ -1536,7 +1536,9 @@ def test_unregistered_tool_replay_runs_iga_check():
     start = src.index(marker)
     # Bound the search to this begin block: stop before the later
     # permit-outside / Tool-not-found fallthrough.
-    end = src.index("if governed_call and permit_id and action_identity is None:", start)
+    end = src.index(
+        "if governed_call and permit_id and action_identity is None:", start
+    )
     branch = src[start:end]
     assert "_assert_replay_iga_access(auth=auth, tool_name=tool_name)" in branch
     assert branch.index("_assert_replay_iga_access") < branch.index(

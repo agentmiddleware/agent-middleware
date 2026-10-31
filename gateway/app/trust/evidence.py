@@ -344,11 +344,11 @@ def _dispatch_evidence(
     )
 
 
-async def _refund_exists(
+async def _get_refund_entry_model(
     *,
     wallet_id: str,
     ledger_entry_id: str,
-) -> bool:
+) -> LedgerEntryModel | None:
     factory = get_session_factory()
     async with factory() as session:
         result = await session.execute(
@@ -364,7 +364,7 @@ async def _refund_exists(
                 ),
             )
         )
-        return result.scalar_one_or_none() is not None
+        return result.scalar_one_or_none()
 
 
 async def authorize_receipt_access(
@@ -582,17 +582,66 @@ async def build_receipt_evidence(
                 ledger_failures.append("ledger_wallet_mismatch")
             if ledger_entry.action != LedgerAction.DEBIT.value:
                 ledger_failures.append("ledger_action_not_debit")
-            if receipt.credits_charged > Decimal("0"):
-                expected_amount = -receipt.credits_charged
-                if ledger_entry.amount != expected_amount:
+            if receipt.outcome == "failed_refunded":
+                # Prove the refund, do not merely observe that some refund row
+                # exists. An existence-only check certifies a partial, zero,
+                # excess or wrong-sign refund as a full one, which makes the
+                # signed evidence bundle say something the ledger contradicts.
+                # Three facts have to hold together: the receipt claims no net
+                # charge, the debit is a real negative amount, and the refund
+                # exactly offsets that debit.
+                #
+                # Checked ahead of the credits_charged branches, not after
+                # them, so a failed_refunded receipt that claims a non-zero
+                # charge cannot route itself into the debit-only check and skip
+                # the refund entirely.
+                if receipt.credits_charged != Decimal("0"):
+                    ledger_failures.append("refund_net_charge_mismatch")
+                debit_amount_valid = (
+                    ledger_entry.amount.is_finite()
+                    and receipt.credits_authorized.is_finite()
+                    and ledger_entry.amount < Decimal("0")
+                    # Anchor the debit to an amount the receipt signs. Comparing
+                    # the refund only against the debit leaves the debit's own
+                    # magnitude a free variable, so rewriting both rows together
+                    # -- debit -1000 with refund +1000 -- satisfies every other
+                    # check here while the wallet was charged an amount the
+                    # receipt never authorized. credits_charged is 0 on a
+                    # refunded receipt, so credits_authorized is the quantity
+                    # that still carries the debit's magnitude;
+                    # governed_metering.aligned_credits_charged enforces
+                    # abs(debit) == credits_authorized on every write path that
+                    # can produce one of these receipts.
+                    and ledger_entry.amount == -receipt.credits_authorized
+                )
+                if not debit_amount_valid:
                     ledger_failures.append("ledger_amount_mismatch")
-            elif receipt.outcome == "failed_refunded":
-                refund_found = await _refund_exists(
+                refund_entry = await _get_refund_entry_model(
                     wallet_id=receipt.wallet_id,
                     ledger_entry_id=receipt.ledger_entry_id,
                 )
-                if not refund_found:
+                if refund_entry is None:
                     ledger_failures.append("refund_entry_not_found")
+                elif (
+                    not refund_entry.amount.is_finite()
+                    or refund_entry.amount <= Decimal("0")
+                    or not debit_amount_valid
+                    or refund_entry.amount != -ledger_entry.amount
+                ):
+                    ledger_failures.append("refund_amount_mismatch")
+            elif receipt.credits_charged > Decimal("0"):
+                expected_amount = -receipt.credits_charged
+                if ledger_entry.amount != expected_amount:
+                    ledger_failures.append("ledger_amount_mismatch")
+            else:
+                # A zero-charge receipt linked to a ledger entry must still
+                # match it. Only a zero-amount entry is consistent with no
+                # charge, so any other amount fails the linkage instead of
+                # passing silently. Without this branch the chain had no
+                # terminal case at all: a zero-charge, non-refunded receipt
+                # pointing at an arbitrary debit certified clean.
+                if ledger_entry.amount != -receipt.credits_charged:
+                    ledger_failures.append("ledger_amount_mismatch")
             checks.append(
                 _check(
                     "ledger_linkage",

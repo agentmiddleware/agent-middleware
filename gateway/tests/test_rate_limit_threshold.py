@@ -61,14 +61,19 @@ def _governed_app() -> FastAPI:
 def test_discovery_payload_matches_the_documented_120_default(monkeypatch) -> None:
     from app.core import rate_limiter as rate_limiter_module
 
-    fake = type("Settings", (), {"RATE_LIMIT_PER_MINUTE": 120})()
+    fake = type(
+        "Settings",
+        (),
+        {"RATE_LIMIT_PER_MINUTE": 120, "RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER": 20},
+    )()
     monkeypatch.setattr(rate_limiter_module, "get_settings", lambda: fake)
 
     payload = rate_limit_discovery()
     assert payload["requests_per_minute"] == 120
     assert payload["window_seconds"] == 60
     assert payload["burst_allowance"] == 0
-    assert payload["unauthenticated_scope"] == "shared_anonymous_bucket"
+    assert payload["unauthenticated_scope"] == "per_client_anonymous_bucket"
+    assert payload["unauthenticated_global_multiplier"] == 20
 
 
 @pytest.mark.anyio
@@ -612,7 +617,9 @@ async def test_bucket_key_is_canonicalized_like_auth() -> None:
     assert third.status_code == 429
 
 
-async def _status_for(app, path: str, *, api_key: str | None = None) -> int:
+async def _status_for(
+    app, path: str, *, api_key: str | None = None, client: str = "127.0.0.1"
+) -> int:
     """Drive one raw ASGI request with an already decoded routing path."""
     seen: list[int] = []
     headers = [(b"host", b"test")]
@@ -628,7 +635,7 @@ async def _status_for(app, path: str, *, api_key: str | None = None) -> int:
         "raw_path": path.replace("?", "%3F").replace("#", "%23").encode("ascii"),
         "query_string": b"",
         "headers": headers,
-        "client": ("127.0.0.1", 5000),
+        "client": (client, 5000),
         "server": ("test", 80),
     }
 
@@ -696,3 +703,222 @@ async def test_encoded_delimiter_does_not_use_public_mcp_bucket(path: str) -> No
     public._redis_url = ""
     assert await _status_for(public, "/mcp/public", api_key="first-key") == 200
     assert await _status_for(public, "/mcp/public", api_key="second-key") == 429
+
+
+# --- Anonymous bucket isolation (PLAT-1) ------------------------------------
+
+_PUBLIC_PATHS = (
+    "/v1/discover",
+    "/.well-known/trust-keys.json",
+    "/health/ready",
+    "/health/dependencies",
+)
+
+
+async def _public_asgi(scope, receive, send):
+    await PlainTextResponse("ok")(scope, receive, send)
+
+
+def _anonymous_limiter(limit: int = 3) -> RateLimitMiddleware:
+    limiter = RateLimitMiddleware(_public_asgi, requests_per_minute=limit)
+    limiter._redis_url = ""  # in-memory counter; no Redis client is opened
+    return limiter
+
+
+@pytest.mark.anyio
+async def test_one_anonymous_client_cannot_starve_other_clients() -> None:
+    limiter = _anonymous_limiter(3)
+    seq_a = [
+        await _status_for(limiter, "/v1/discover", client="203.0.113.1")
+        for _ in range(4)
+    ]
+    assert seq_a == [200, 200, 200, 429]
+    for path in ("/v1/discover", "/.well-known/trust-keys.json", "/health/ready"):
+        assert await _status_for(limiter, path, client="203.0.113.2") == 200
+    # The first client stays limited on the paths it exhausted.
+    assert (
+        await _status_for(limiter, "/.well-known/trust-keys.json", client="203.0.113.1")
+        == 429
+    )
+    # /health stays exempt.
+    assert await _status_for(limiter, "/health", client="203.0.113.1") == 200
+
+
+@pytest.mark.anyio
+async def test_anonymous_global_backstop_limits_a_distributed_flood() -> None:
+    limiter = _anonymous_limiter(2)  # backstop = 2 * 20 = 40
+    statuses = [
+        await _status_for(limiter, "/v1/discover", client=f"198.51.100.{index}")
+        for index in range(1, 61)
+    ]
+    assert statuses[:40] == [200] * 40
+    assert statuses[40:] == [429] * 20
+    # A caller with a key is not charged to the anonymous backstop.
+    assert await _status_for(limiter, "/v1/wallets", api_key="paid-key") == 200
+
+
+@pytest.mark.anyio
+async def test_anonymous_backstop_multiplier_is_configurable(monkeypatch) -> None:
+    from app.core import rate_limiter as rate_limiter_module
+
+    monkeypatch.setattr(
+        rate_limiter_module.settings, "RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER", 2
+    )
+    limiter = _anonymous_limiter(2)  # backstop = 4
+    statuses = [
+        await _status_for(limiter, "/v1/discover", client=f"198.51.100.{index}")
+        for index in range(1, 7)
+    ]
+    assert statuses == [200, 200, 200, 200, 429, 429]
+
+
+@pytest.mark.anyio
+async def test_readiness_has_its_own_budget() -> None:
+    limiter = _anonymous_limiter(3)
+    client = "203.0.113.9"
+    for _ in range(3):
+        assert await _status_for(limiter, "/v1/discover", client=client) == 200
+    assert await _status_for(limiter, "/v1/discover", client=client) == 429
+    # The same address still gets readiness, from its own bucket.
+    assert await _status_for(limiter, "/health/ready", client=client) == 200
+    # Readiness is limited, not exempt, and a key header does not buy more.
+    assert await _status_for(limiter, "/health/ready", client=client) == 200
+    assert await _status_for(limiter, "/health/ready", client=client) == 200
+    assert await _status_for(limiter, "/health/ready", client=client) == 429
+    assert (
+        await _status_for(limiter, "/health/ready", api_key="k", client=client) == 429
+    )
+    # Readiness traffic did not spend the anonymous discovery budget of others.
+    assert await _status_for(limiter, "/v1/discover", client="203.0.113.10") == 200
+
+
+@pytest.mark.anyio
+async def test_health_dependencies_remains_rate_limited() -> None:
+    limiter = _anonymous_limiter(2)
+    client = "203.0.113.20"
+    statuses = [
+        await _status_for(limiter, "/health/dependencies", client=client)
+        for _ in range(3)
+    ]
+    assert statuses == [200, 200, 429]
+    # Another client keeps its own budget.
+    assert (
+        await _status_for(limiter, "/health/dependencies", client="203.0.113.21") == 200
+    )
+
+
+@pytest.mark.anyio
+async def test_keyed_callers_are_unaffected_by_an_anonymous_flood(
+    accepted_keys,
+) -> None:
+    """Accepted keys go through the real auth dependency, not a stub."""
+    limiter = RateLimitMiddleware(_governed_app(), requests_per_minute=2)
+    limiter._redis_url = ""
+    transport = ASGITransport(app=limiter)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        # Spread over many addresses until the anonymous backstop (2 * 20) trips.
+        statuses = []
+        for index in range(45):
+            scope_client = f"198.51.100.{index + 1}"
+            statuses.append(
+                await _status_for(limiter, "/v1/discover", client=scope_client)
+            )
+        assert statuses[:40] == [200] * 40
+        assert statuses[40:] == [429] * 5
+        # A new anonymous client is refused by the backstop...
+        assert (
+            await _status_for(limiter, "/v1/discover", client="198.51.100.200") == 429
+        )
+        # ...while accepted keys still authenticate and are served.
+        for key in accepted_keys[:3]:
+            response = await http.get("/v1/wallets", headers={"X-API-Key": key})
+            assert response.status_code == 200
+            assert response.json() == {"source": "env"}
+
+
+@pytest.mark.anyio
+async def test_backends_share_bucket_names_and_redis_keys_are_namespaced(
+    monkeypatch,
+) -> None:
+    from app.core import rate_limiter as rate_limiter_module
+
+    monkeypatch.setattr(rate_limiter_module.settings, "STATE_NAMESPACE", "ns_a")
+    monkeypatch.setattr(rate_limiter_module.settings, "PUBLIC_URL", "https://a.test")
+
+    seen: list[str] = []
+
+    class _RecordingRedis:
+        def __init__(self) -> None:
+            self.counts: dict[str, int] = {}
+
+        async def incr(self, key: str) -> int:
+            seen.append(key)
+            self.counts[key] = self.counts.get(key, 0) + 1
+            return self.counts[key]
+
+        async def expire(self, key: str, _seconds: int) -> bool:
+            return True
+
+        async def decr(self, key: str) -> int:
+            self.counts[key] = self.counts.get(key, 0) - 1
+            return self.counts[key]
+
+        async def delete(self, key: str) -> int:
+            self.counts.pop(key, None)
+            return 1
+
+    fake = _RecordingRedis()
+
+    async def _fake_redis():
+        return fake
+
+    shared = RateLimitMiddleware(_public_asgi, requests_per_minute=5)
+    shared._get_redis = _fake_redis  # type: ignore[method-assign]
+    in_memory = _anonymous_limiter(5)
+
+    requests = [
+        ("/v1/discover", None),
+        ("/health/ready", None),
+        ("/v1/wallets", "namespaced-key"),
+    ]
+    for limiter in (shared, in_memory):
+        for path, key in requests:
+            assert (
+                await _status_for(limiter, path, api_key=key, client="192.0.2.5") == 200
+            )
+
+    prefix = "ns_a:https://a.test:"
+    redis_buckets = {
+        key.removeprefix("rate_limit:").rsplit(":", 1)[0]
+        for key in seen
+        if not key.startswith(f"rate_limit:{prefix}preauth")
+    }
+    memory_buckets = {
+        key for key in in_memory._requests if not key.startswith(f"{prefix}preauth")
+    }
+    assert redis_buckets == memory_buckets
+    assert redis_buckets
+    assert all(bucket.startswith(prefix) for bucket in redis_buckets)
+    assert any(":anonymous:client:192.0.2.5" in bucket for bucket in redis_buckets)
+    assert any(bucket.endswith(":anonymous:global") for bucket in redis_buckets)
+    assert any(":api_key_sha256:" in bucket for bucket in redis_buckets)
+    assert any(":route:health-ready:client:" in bucket for bucket in redis_buckets)
+    assert not any("namespaced-key" in key for key in seen)
+
+    # A second deployment on the same Redis does not share the budget.
+    monkeypatch.setattr(rate_limiter_module.settings, "STATE_NAMESPACE", "ns_b")
+    seen.clear()
+    await _status_for(shared, "/v1/discover", client="192.0.2.5")
+    assert seen
+    assert all(key.startswith("rate_limit:ns_b:") for key in seen)
+
+
+def test_anonymous_global_multiplier_must_be_positive() -> None:
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    for bad in (0, -1):
+        with pytest.raises(ValidationError):
+            Settings(RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER=bad)
+    assert Settings(RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER=1)

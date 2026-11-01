@@ -72,6 +72,21 @@ _PUBLIC_MCP_PATH = "/mcp/public"
 _PUBLIC_MCP_BUCKET_PREFIX = "route:mcp-public"
 _PUBLIC_MCP_GLOBAL_LIMIT_MULTIPLIER = 10
 
+# Readiness has its own per-client and deployment-wide budgets, so neither a
+# stranger's anonymous traffic nor a key-holder's traffic can starve the
+# Kubernetes readinessProbe, and a flood of readiness requests cannot spend an
+# anonymous caller's budget. The handler is not cheap (state store, MQTT and
+# database checks), so it is limited rather than exempt.
+_HEALTH_READY_PATH = "/health/ready"
+_HEALTH_READY_BUCKET_PREFIX = "route:health-ready"
+_HEALTH_READY_GLOBAL_LIMIT_MULTIPLIER = 10
+
+# Requests with no credential are charged to a per-client anonymous bucket, so
+# one stranger can only spend their own budget, plus a deployment-wide backstop
+# so a flood spread over many addresses still meets a ceiling. The backstop is
+# a multiple of the per-client limit (RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER).
+_ANONYMOUS_BUCKET_PREFIX = "anonymous"
+
 # Shared ceiling on requests whose credentials the app did not accept —
 # refused, or never checked because the route does not authenticate. The
 # per-key bucket is chosen from a caller-supplied header before the key has
@@ -98,7 +113,8 @@ def rate_limit_discovery() -> dict[str, Any]:
     """Describe the limit ``RateLimitMiddleware`` actually enforces.
 
     One budget per 60-second window, keyed by the ``X-API-Key`` header value.
-    Requests without a key share a single 'anonymous' bucket. There is no burst
+    Requests without a key are charged to a per-client anonymous bucket, plus a
+    deployment-wide anonymous backstop. There is no burst
     allowance and no per-partner override; ``RATE_LIMIT_PER_MINUTE`` is the
     only knob, so this payload is derived from it rather than hardcoded. A
     burst of 40 requests will not 429: the 121st counted request in a 60-second
@@ -125,7 +141,10 @@ def rate_limit_discovery() -> dict[str, Any]:
         "window_seconds": 60,
         "window_accounting": "fixed_window_shared_rolling_window_in_memory",
         "scope": "per_api_key",
-        "unauthenticated_scope": "shared_anonymous_bucket",
+        "unauthenticated_scope": "per_client_anonymous_bucket",
+        "unauthenticated_global_multiplier": (
+            cfg.RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER
+        ),
         "rejected_credentials_scope": "shared_per_client_bucket",
         "rejected_credentials_multiplier": _PREAUTH_LIMIT_MULTIPLIER,
         "burst_allowance": 0,
@@ -208,8 +227,22 @@ def _client_id(request: Request) -> str:
         return peer_host
 
 
-def _api_key_bucket(presented_key: str | None) -> str:
+def _limiter_namespace() -> str:
+    """Prefix that keeps deployments sharing one Redis in separate buckets."""
+    return f"{settings.STATE_NAMESPACE}:{settings.PUBLIC_URL or settings.APP_NAME}"
+
+
+def _anonymous_global_bucket() -> str:
+    """Name the deployment-wide backstop shared by all anonymous callers."""
+    return f"{_limiter_namespace()}:{_ANONYMOUS_BUCKET_PREFIX}:global"
+
+
+def _api_key_bucket(presented_key: str | None, client_id: str = "unknown") -> str:
     """Name a presented key's bucket without putting the key itself in it.
+
+    A request with no key is charged to a bucket for the observed client, never
+    to one bucket shared by every stranger. Every name carries the limiter
+    namespace so two deployments on one Redis do not share a budget.
 
     Bucket names become Redis key names, so the raw header value would write
     every API key that called in the last minute into the limiter's store in
@@ -217,12 +250,13 @@ def _api_key_bucket(presented_key: str | None) -> str:
     domain-separated so the name is not also the ``key_hash`` the API-key
     table stores for the same key.
     """
+    namespace = _limiter_namespace()
     if presented_key is None:
-        return "anonymous"
+        return f"{namespace}:{_ANONYMOUS_BUCKET_PREFIX}:client:{client_id}"
     digest = hashlib.sha256(
         _API_KEY_BUCKET_DOMAIN + presented_key.encode("utf-8")
     ).hexdigest()
-    return f"api_key_sha256:{digest}"
+    return f"{namespace}:api_key_sha256:{digest}"
 
 
 class RateLimiterUnavailable(RuntimeError):
@@ -626,32 +660,46 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # from the Internet).
         routing_path = _routing_path(request)
         public_mcp_request = routing_path.rstrip("/") == _PUBLIC_MCP_PATH
-        if public_mcp_request:
+        health_ready_request = routing_path.rstrip("/") == _HEALTH_READY_PATH
+        # Both routes never authenticate and ignore credential headers, so
+        # they are keyed by client and a route-wide ceiling only.
+        keyless_route = public_mcp_request or health_ready_request
+        presented_key: str | None = None
+        if keyless_route:
             client_id = _client_id(request)
-            namespace = (
-                f"{settings.STATE_NAMESPACE}:{settings.PUBLIC_URL or settings.APP_NAME}"
-            )
+            namespace = _limiter_namespace()
+            if public_mcp_request:
+                prefix = _PUBLIC_MCP_BUCKET_PREFIX
+                global_multiplier = _PUBLIC_MCP_GLOBAL_LIMIT_MULTIPLIER
+            else:
+                prefix = _HEALTH_READY_BUCKET_PREFIX
+                global_multiplier = _HEALTH_READY_GLOBAL_LIMIT_MULTIPLIER
             bucket_limits = [
+                (f"{namespace}:{prefix}:client:{client_id}", self.limit),
                 (
-                    f"{namespace}:{_PUBLIC_MCP_BUCKET_PREFIX}:client:{client_id}",
-                    self.limit,
-                ),
-                (
-                    f"{namespace}:{_PUBLIC_MCP_BUCKET_PREFIX}:global",
-                    max(
-                        self.limit,
-                        self.limit * _PUBLIC_MCP_GLOBAL_LIMIT_MULTIPLIER,
-                    ),
+                    f"{namespace}:{prefix}:global",
+                    max(self.limit, self.limit * global_multiplier),
                 ),
             ]
         else:
             # Canonicalize the way auth does (app.core.auth strips before
             # lookup): otherwise "key" and "key " count as separate buckets and
             # one accepted credential can sidestep the per-key limit. A blank
-            # header is no credential at all, so it shares the anonymous
-            # bucket. The bucket is then named by a digest, never the key.
+            # header is no credential at all, so it is charged as anonymous.
+            # The bucket is then named by a digest, never the key.
             presented_key = _presented_rate_identity(request)
-            bucket_limits = [(_api_key_bucket(presented_key), self.limit)]
+            bucket_limits = [
+                (_api_key_bucket(presented_key, _client_id(request)), self.limit)
+            ]
+            if presented_key is None:
+                # Per-client anonymous budgets cannot be exhausted by another
+                # stranger; this backstop still brakes a distributed flood.
+                bucket_limits.append(
+                    (
+                        _anonymous_global_bucket(),
+                        self.limit * settings.RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER,
+                    )
+                )
 
         # Skip rate limiting for docs, health, and test clients
         skip_paths = (
@@ -678,7 +726,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # In test / CI environments, the special "test-key" bypasses rate limits
         # so that large test suites don't self-throttle.
         if (
-            not public_mcp_request
+            not keyless_route
             and presented_key == "test-key"
             and not is_production_like_environment(settings.ENVIRONMENT)
         ):
@@ -706,7 +754,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # a 404) never refuses an invented key either. Rotation buys nothing
         # past the bucket, and a request whose credentials the app accepts
         # leaves it exactly as it found it.
-        preauth_bucket = None if public_mcp_request else self._preauth_bucket(request)
+        preauth_bucket = None if keyless_route else self._preauth_bucket(request)
         preauth_reserved = False
         preauth_in_memory = False
         keep_reservation = False

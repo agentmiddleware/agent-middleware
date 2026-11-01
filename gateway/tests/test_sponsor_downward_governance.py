@@ -18,10 +18,15 @@ from sqlalchemy import text
 from app.db.database import get_session_factory
 from app.main import app
 from app.schemas.trust import PermitCreateRequest
+from app.core.config import get_settings
+from app.core.jwt import get_jwt_service
 from app.services.agent_money import get_agent_money
 from app.services.ownership import CallerIdentity
 from app.services.permits import get_permit_service
-from app.services.wallet_hierarchy import wallet_strictly_governs
+from app.services.wallet_hierarchy import (
+    wallet_is_or_descends_from,
+    wallet_strictly_governs,
+)
 from tests.test_trust_helpers import BOOTSTRAP_HEADERS, provision_agent_wallet
 
 
@@ -113,6 +118,12 @@ async def world(client, clean_database):
         "grandchild": grandchild,
         "unrelated": unrelated,
     }
+
+
+async def _key_statuses(client: AsyncClient, wallet_id: str) -> set[str]:
+    resp = await client.get(f"/v1/api-keys/{wallet_id}", headers=BOOTSTRAP_HEADERS)
+    assert resp.status_code == 200, resp.text
+    return {k["status"] for k in resp.json()["keys"]}
 
 
 def _emergency(client, wallet_id, headers, create_new_key=False):
@@ -325,6 +336,8 @@ async def test_sibling_gets_403_on_every_route(client, world):
     assert set(routes.values()) == {403}, routes
     stored = await get_permit_service().get_permit(permit.permit_id)
     assert stored.status == "active"
+    # The denied emergency revoke and key revoke left the target's keys alone.
+    assert await _key_statuses(client, w["agent"]["wallet_id"]) == {"active"}
 
 
 @pytest.mark.anyio
@@ -335,6 +348,9 @@ async def test_unrelated_tenant_gets_403_and_cannot_tell_wallets_apart(client, w
     )
     routes = await _all_routes(client, w, w["unrelated"], w["agent"], permit.permit_id)
     assert set(routes.values()) == {403}, routes
+    assert await _key_statuses(client, w["agent"]["wallet_id"]) == {"active"}
+    stored = await get_permit_service().get_permit(permit.permit_id)
+    assert stored.status == "active"
 
     # A foreign wallet and a wallet that does not exist answer identically.
     headers = w["unrelated"]["headers"]
@@ -415,8 +431,15 @@ async def test_service_layer_refuses_ancestor_without_the_route_opt_in(client, w
 # --- the hierarchy rule fails closed on a malformed chain --------------------
 
 
-async def _set_parent(wallet_id: str, parent: str | None) -> None:
+async def _set_parent(
+    wallet_id: str, parent: str | None, *, foreign_keys: bool = True
+) -> None:
     async with get_session_factory()() as session:
+        if not foreign_keys:
+            # Simulates a row the foreign key would normally refuse.
+            if session.bind.dialect.name != "sqlite":
+                pytest.skip("foreign key suspension is sqlite only")
+            await session.execute(text("PRAGMA foreign_keys=OFF"))
         await session.execute(
             text("UPDATE wallets SET parent_wallet_id = :p WHERE wallet_id = :w"),
             {"p": parent, "w": wallet_id},
@@ -470,3 +493,277 @@ async def test_hierarchy_walk_respects_the_depth_cap(client, world):
             w["grandchild"]["wallet_id"],
             max_depth=3,
         )
+
+
+# --- follow-up: issuer != subject, pinned cycles, depth cap ------------------
+
+
+@pytest.mark.anyio
+async def test_permit_revoke_follows_the_issuer_wallet_not_the_subject(client, world):
+    """A permit issued by S to A (or G) is revocable by S only.
+
+    The subject is encumbered, but revoke authority is the issuer's. A route
+    that authorized on the subject wallet would let A or G revoke it.
+    """
+    w = world
+    s_id = w["sponsor"]["wallet_id"]
+    to_agent = await _permit(s_id, w["agent"]["wallet_id"], None, "s2a")
+    to_grandchild = await _permit(s_id, w["grandchild"]["wallet_id"], None, "s2g")
+
+    for permit in (to_agent, to_grandchild):
+        for caller in ("agent", "grandchild", "sibling", "unrelated"):
+            denied = await client.post(
+                f"/v1/permits/{permit.permit_id}/revoke",
+                headers=w[caller]["headers"],
+            )
+            assert denied.status_code == 403, (caller, denied.text)
+        assert (await get_permit_service().get_permit(permit.permit_id)).status == (
+            "active"
+        )
+        ok = await client.post(
+            f"/v1/permits/{permit.permit_id}/revoke", headers=w["sponsor"]["headers"]
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["status"] == "revoked"
+
+
+@pytest.mark.anyio
+async def test_sponsor_inside_a_cycle_and_a_missing_row_above_the_match(client, world):
+    """The strict rule needs a sound chain; the creation rule stops at a match."""
+    w = world
+    s, a, g = (
+        w["sponsor"]["wallet_id"],
+        w["agent"]["wallet_id"],
+        w["grandchild"]["wallet_id"],
+    )
+    money = get_agent_money()
+
+    # Cycle that contains the sponsor: G -> A -> S -> G.
+    await _set_parent(s, g)
+    assert not await money.wallet_strictly_governs(s, g)
+    assert not await money.wallet_strictly_governs(s, a)
+    assert not await money.wallet_strictly_governs(a, g)
+    # Permit creation keeps its first-match rule for the same chain.
+    assert await money.is_wallet_or_descendant(g, s)
+    assert await money.is_wallet_or_descendant(a, s)
+    # The routes fail closed for the sponsor key on the cyclic chain.
+    for path in (f"/v1/api-keys/{g}", f"/v1/api-keys/{g}/logs"):
+        denied = await client.get(path, headers=w["sponsor"]["headers"])
+        assert denied.status_code == 403, denied.text
+    assert (await _emergency(client, g, w["sponsor"]["headers"])).status_code == 403
+    assert await _key_statuses(client, g) == {"active"}
+
+    # Missing row above the match: S points at a wallet row that is absent.
+    await _set_parent(s, None)
+    await _set_parent(s, "wal-missing-above", foreign_keys=False)
+    assert not await money.wallet_strictly_governs(s, g)
+    assert not await money.wallet_strictly_governs(s, a)
+    assert await money.is_wallet_or_descendant(g, s)
+    assert await money.is_wallet_or_descendant(a, s)
+    denied = await client.get(f"/v1/api-keys/{g}", headers=w["sponsor"]["headers"])
+    assert denied.status_code == 403
+
+
+class _FakeWallet:
+    def __init__(self, parent: str | None):
+        self.parent_wallet_id = parent
+
+
+class _ChainSession:
+    """Just enough of AsyncSession for the walk: ``w0 -> w1 -> ... -> wN``."""
+
+    def __init__(self, length: int):
+        self._length = length
+
+    async def get(self, _model, wallet_id: str):
+        index = int(wallet_id[1:])
+        if index > self._length:
+            return None
+        return _FakeWallet(f"w{index + 1}" if index < self._length else None)
+
+
+@pytest.mark.anyio
+async def test_default_depth_cap_is_pinned_for_both_rules():
+    # Permit-creation rule, default cap 32: an ancestor 32 hops up counts, 33 not.
+    session = _ChainSession(40)
+    assert await wallet_is_or_descends_from(session, "w0", "w32")
+    assert not await wallet_is_or_descends_from(session, "w0", "w33")
+
+    # Strict rule, default cap 32. The chain must also reach its root inside the
+    # cap, so it is one hop shallower than the creation rule: the nearest
+    # ancestor at hop 1 and the root at hop 31 pass, a root at hop 32 does not.
+    assert await wallet_strictly_governs(_ChainSession(31), "w31", "w0")
+    assert await wallet_strictly_governs(_ChainSession(31), "w1", "w0")
+    assert not await wallet_strictly_governs(_ChainSession(32), "w32", "w0")
+    # A chain that goes on past the cap grants nothing, even to a near ancestor.
+    assert not await wallet_strictly_governs(_ChainSession(40), "w1", "w0")
+
+
+# --- follow-up: other caller kinds behave as at exact-wallet access ---------
+
+
+@pytest.fixture
+def signing_key(monkeypatch):
+    # 32 raw bytes, strict base64; the same non-secret test material CI uses.
+    monkeypatch.setenv(
+        "TRUST_SIGNING_PRIVATE_KEY_B64", "dGVzdC1zaWduaW5nLWtleS1tYXRlcmlhbC0zMmJ5dGU="
+    )
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+
+
+def _bearer(wallet: dict) -> dict:
+    """The token /v1/auth/token mints for this key (that route is dormant)."""
+    token = get_jwt_service().create_access_token(
+        wallet_id=wallet["wallet_id"],
+        key_id=wallet["key_id"],
+        scopes=["billing:charge", "tool:invoke"],
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.mark.anyio
+async def test_jwt_from_the_sponsor_key_governs_down_but_never_mints(
+    client, world, signing_key
+):
+    w = world
+    sponsor_jwt = _bearer(w["sponsor"])
+    agent_id = w["agent"]["wallet_id"]
+    permit = await _permit(agent_id, agent_id, w["agent"]["key_id"], "jwt")
+
+    # Same answers as the sponsor's own key gets.
+    assert (
+        await client.get(f"/v1/api-keys/{agent_id}", headers=sponsor_jwt)
+    ).status_code == 200
+    assert (
+        await client.get(f"/v1/permits?wallet_id={agent_id}", headers=sponsor_jwt)
+    ).status_code == 200
+    # A JWT is still refused a replacement key on the ancestor path.
+    minted = await _emergency(client, agent_id, sponsor_jwt, create_new_key=True)
+    assert minted.status_code == 403, minted.text
+    assert minted.json()["detail"]["error"] == "jwt_cannot_mint_api_key"
+    assert await _key_statuses(client, agent_id) == {"active"}
+    revoked = await client.post(
+        f"/v1/permits/{permit.permit_id}/revoke", headers=sponsor_jwt
+    )
+    assert revoked.status_code == 200
+
+    # A JWT minted from a descendant, sibling or unrelated key gets nothing up.
+    sponsor_permit = await _permit(
+        w["sponsor"]["wallet_id"], w["sponsor"]["wallet_id"], None, "jwt-up"
+    )
+    for name in ("agent", "grandchild", "sibling", "unrelated"):
+        caller = {"headers": _bearer(w[name])}
+        routes = await _all_routes(
+            client, w, caller, w["sponsor"], sponsor_permit.permit_id
+        )
+        assert set(routes.values()) == {403}, (name, routes)
+    assert await _key_statuses(client, w["sponsor"]["wallet_id"]) == {"active"}
+
+
+@pytest.mark.anyio
+async def test_enterprise_bearer_rider_changes_nothing(client, world, monkeypatch):
+    """An enterprise bearer next to X-API-Key is attribution, not authority."""
+    monkeypatch.setattr("app.core.auth.is_iga_issuer_token", lambda _token: True)
+    w = world
+    rider = {"Authorization": "Bearer enterprise-token-not-an-api-credential"}
+    agent_id = w["agent"]["wallet_id"]
+
+    as_sponsor = {**w["sponsor"]["headers"], **rider}
+    plain = await client.get(
+        f"/v1/api-keys/{agent_id}", headers=w["sponsor"]["headers"]
+    )
+    ridden = await client.get(f"/v1/api-keys/{agent_id}", headers=as_sponsor)
+    assert plain.status_code == ridden.status_code == 200
+
+    sponsor_permit = await _permit(
+        w["sponsor"]["wallet_id"], w["sponsor"]["wallet_id"], None, "ent"
+    )
+    for name in ("agent", "sibling", "unrelated"):
+        caller = {"headers": {**w[name]["headers"], **rider}}
+        routes = await _all_routes(
+            client, w, caller, w["sponsor"], sponsor_permit.permit_id
+        )
+        assert set(routes.values()) == {403}, (name, routes)
+    # The bearer alone, with no API key, is still not a credential.
+    alone = await client.get(f"/v1/api-keys/{agent_id}", headers=rider)
+    assert alone.status_code in (401, 403)
+    assert await _key_statuses(client, w["sponsor"]["wallet_id"]) == {"active"}
+
+
+@pytest.fixture
+def demo_enabled():
+    from app.services.demo_tenant import _memory_counters
+
+    names = (
+        "ENVIRONMENT",
+        "REDIS_URL",
+        "ENABLE_DEMO_TENANT",
+        "DEMO_ALLOWED_ORIGINS",
+        "DEMO_ISSUE_PER_IP_PER_DAY",
+        "DEMO_ISSUE_GLOBAL_PER_HOUR",
+        "DEMO_ISSUE_GLOBAL_PER_DAY",
+        "DEMO_MAX_LIVE_KEYS",
+    )
+    settings = get_settings()
+    saved = {name: getattr(settings, name) for name in names}
+    _memory_counters.clear()
+    settings.ENVIRONMENT = "local"
+    settings.REDIS_URL = ""
+    settings.ENABLE_DEMO_TENANT = True
+    settings.DEMO_ALLOWED_ORIGINS = "https://agentmiddleware.dev"
+    settings.DEMO_ISSUE_PER_IP_PER_DAY = 10
+    settings.DEMO_ISSUE_GLOBAL_PER_HOUR = 100
+    settings.DEMO_ISSUE_GLOBAL_PER_DAY = 100
+    settings.DEMO_MAX_LIVE_KEYS = 100
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(settings, name, value)
+        _memory_counters.clear()
+
+
+@pytest.mark.anyio
+async def test_demo_key_gets_the_same_answers_at_a_descendant_as_at_its_own_wallet(
+    client, world, demo_enabled
+):
+    """Demo confinement runs before the route, so ancestry adds no demo power."""
+    w = world
+    issued = await client.post("/v1/demo/keys", json={})
+    assert issued.status_code == 201, issued.text
+    demo_wallet = issued.json()["wallet_id"]
+    demo_headers = {"X-API-Key": issued.json()["api_key"]}
+    # Not reachable through the API; tamper so the demo wallet has a descendant.
+    agent_id = w["agent"]["wallet_id"]
+    await _set_parent(agent_id, demo_wallet)
+    assert await get_agent_money().wallet_strictly_governs(demo_wallet, agent_id)
+
+    # Credential routes are denied to a demo key at either wallet, identically.
+    for target in (demo_wallet, agent_id):
+        for method, path in (
+            ("GET", f"/v1/api-keys/{target}"),
+            ("GET", f"/v1/api-keys/{target}/logs"),
+            ("DELETE", f"/v1/api-keys/{target}/key-x"),
+        ):
+            resp = await client.request(method, path, headers=demo_headers)
+            assert resp.status_code == 403, (path, resp.text)
+            assert resp.json()["detail"]["error"] == "demo_key_route_forbidden"
+        resp = await _emergency(client, target, demo_headers)
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "demo_key_route_forbidden"
+    assert await _key_statuses(client, agent_id) == {"active"}
+
+    # Permit routes stay open to a demo key as before; the descendant answer
+    # equals the own-wallet answer (no extra demo power, no extra denial).
+    own = await client.get(f"/v1/permits?wallet_id={demo_wallet}", headers=demo_headers)
+    below = await client.get(f"/v1/permits?wallet_id={agent_id}", headers=demo_headers)
+    assert own.status_code == below.status_code
+    # A descendant key reaching up at the demo wallet gets nothing.
+    up = await client.get(
+        f"/v1/permits?wallet_id={demo_wallet}", headers=w["agent"]["headers"]
+    )
+    assert up.status_code == 403

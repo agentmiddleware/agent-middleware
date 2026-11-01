@@ -1294,6 +1294,7 @@ async def _execute_registered_tool(
                         record_endpoint == "/mcp/action/v1"
                         or generic_precharge
                         or not owned_record.get("past_precharge_span")
+                        or isinstance(exc, PermitWriteContendedError)
                     ):
                         # Only confirmed deletion proves this invocation's use
                         # unaccepted. Inner cleanup may already have released
@@ -1304,9 +1305,12 @@ async def _execute_registered_tool(
                         # advised retry as iga_max_uses_exceeded. A contention
                         # type that escapes before the reserve is the same
                         # case: no inner branch has run to release the use.
-                        # Past the reserve, contention on a non-action record
-                        # stays with the inner branches, which release their
-                        # own use.
+                        # So is a contended reserve: it is the only place the
+                        # permit type escapes the inner function, because both
+                        # post-charge budget releases absorb their own. Past
+                        # the reserve, the other contention types on a
+                        # non-action record stay with the inner branches, which
+                        # release their own use.
                         await _release_iga_use(
                             owned_record.get("iga_granted_use"),
                             tool_name,
@@ -1314,6 +1318,7 @@ async def _execute_registered_tool(
                                 "precharge_fault"
                                 if generic_precharge
                                 or not owned_record.get("past_precharge_span")
+                                or isinstance(exc, PermitWriteContendedError)
                                 else "preacceptance_write_contended"
                             ),
                         )

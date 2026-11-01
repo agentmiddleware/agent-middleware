@@ -1254,7 +1254,7 @@ async def test_ledger_contention_releases_iga_use(
         registry.unregister_local(E2E_TOOL)
 
 
-@pytest.mark.parametrize("fault", ["generic", "audit_contended"])
+@pytest.mark.parametrize("fault", ["generic", "audit_contended", "reserve_contended"])
 async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
     iga_config, clean_database, rsa_key, client, monkeypatch, fault
 ):
@@ -1266,6 +1266,7 @@ async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
     """
     from app.routers import mcp as mcp_router
     from app.services.audit_chain import AuditChainContendedError
+    from app.services.permits import PermitService, PermitWriteContendedError
 
     calls: list[dict] = []
     registry = _register_e2e_tool(calls)
@@ -1291,7 +1292,20 @@ async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
                 raise RuntimeError("policy backend down")
             return await real(*args, **kwargs)
 
-        monkeypatch.setattr(mcp_router, "evaluate_wallet_policy", one_shot)
+        if fault == "reserve_contended":
+            real_reserve = PermitService.authorize_and_reserve
+
+            async def one_shot_reserve(self, *args, **kwargs):
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    raise PermitWriteContendedError()
+                return await real_reserve(self, *args, **kwargs)
+
+            monkeypatch.setattr(
+                PermitService, "authorize_and_reserve", one_shot_reserve
+            )
+        else:
+            monkeypatch.setattr(mcp_router, "evaluate_wallet_policy", one_shot)
         first = await _invoke_tool_call(
             client,
             wallet_id=setup["agent_wallet_id"],

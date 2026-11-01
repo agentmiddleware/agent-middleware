@@ -316,6 +316,7 @@ FUSE_CASES = (
     "httpx.AsyncHTTPTransport()",
     "lossy(lossy(httpx.AsyncHTTPTransport()))",
     "lossy(lossy(ASGITransport(app=rail_app)))",
+    "lossy x4 over ASGITransport(app=rail_app)",
     "lossy x5 over ASGITransport(app=rail_app)",
 )
 

@@ -2389,6 +2389,11 @@ def run_guard_self_check() -> int:
                 True,
             ),
             (
+                "lossy x4 over ASGITransport(app=rail_app)",
+                lossy(lossy(lossy(lossy(ASGITransport(app=rail_app))))),
+                True,
+            ),
+            (
                 "lossy x5 over ASGITransport(app=rail_app)",
                 lossy(lossy(lossy(lossy(lossy(ASGITransport(app=rail_app)))))),
                 False,

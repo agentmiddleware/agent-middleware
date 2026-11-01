@@ -144,7 +144,7 @@ causes no effects:
 python scripts/failure_lab.py --self-check-guards
 ```
 
-It builds eight transport chains and asserts the fuse admits only the three
+It builds nine transport chains and asserts the fuse admits only the four
 that terminate in the rail's own app, printing one line per case.
 
 **What the fuse does not cover.** It addresses the unauthorized-payload hazard

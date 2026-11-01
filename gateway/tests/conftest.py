@@ -209,8 +209,8 @@ os.environ.setdefault("VALID_API_KEYS", "test-key")
 os.environ.setdefault("TRUST_MODE_ENABLED", "false")
 os.environ.setdefault("ALLOW_LEGACY_UNPERMITTED_MCP", "true")
 # Stop the suite from self-throttling. RateLimitMiddleware exempts only the
-# literal "test-key"; unauthenticated requests all share the "anonymous"
-# bucket and provisioned agent keys each get their own, so a fast full-suite
+# literal "test-key"; unauthenticated requests share a per-client
+# "anonymous" bucket (one address in tests) and provisioned agent keys each get their own, so a fast full-suite
 # run can cross the 120/min default and return 429 where a test expects
 # 401/403 (observed as a flaky `assert 429 == 401` in
 # test_tenant_isolation_hardening). Raising the limit for tests removes the

@@ -1291,7 +1291,9 @@ async def _execute_registered_tool(
                         expected_record_id=record_id,
                     )
                     if abandoned and (
-                        record_endpoint == "/mcp/action/v1" or generic_precharge
+                        record_endpoint == "/mcp/action/v1"
+                        or generic_precharge
+                        or not owned_record.get("past_precharge_span")
                     ):
                         # Only confirmed deletion proves this invocation's use
                         # unaccepted. Inner cleanup may already have released
@@ -1299,15 +1301,19 @@ async def _execute_registered_tool(
                         # A generic pre-charge fault has no inner handler, and
                         # the use was recorded before the gates that can raise,
                         # so a max_uses=1 principal would otherwise meet the
-                        # advised retry as iga_max_uses_exceeded. The contention
-                        # types on a non-action record stay with the inner
-                        # branches, which release their own use.
+                        # advised retry as iga_max_uses_exceeded. A contention
+                        # type that escapes before the reserve is the same
+                        # case: no inner branch has run to release the use.
+                        # Past the reserve, contention on a non-action record
+                        # stays with the inner branches, which release their
+                        # own use.
                         await _release_iga_use(
                             owned_record.get("iga_granted_use"),
                             tool_name,
                             reason=(
                                 "precharge_fault"
                                 if generic_precharge
+                                or not owned_record.get("past_precharge_span")
                                 else "preacceptance_write_contended"
                             ),
                         )

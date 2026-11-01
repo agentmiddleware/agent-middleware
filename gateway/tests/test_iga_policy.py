@@ -1254,8 +1254,9 @@ async def test_ledger_contention_releases_iga_use(
         registry.unregister_local(E2E_TOOL)
 
 
+@pytest.mark.parametrize("fault", ["generic", "audit_contended"])
 async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
-    iga_config, clean_database, rsa_key, client, monkeypatch
+    iga_config, clean_database, rsa_key, client, monkeypatch, fault
 ):
     """A fault after the use is recorded and before the reserve hands it back.
 
@@ -1264,11 +1265,12 @@ async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
     ``max_uses=1`` principal is refused the retry the key now permits.
     """
     from app.routers import mcp as mcp_router
+    from app.services.audit_chain import AuditChainContendedError
 
     calls: list[dict] = []
     registry = _register_e2e_tool(calls)
     try:
-        setup = await _provision_for_e2e(client, idem_key="iga-e2e-precharge-permit")
+        setup = await _provision_for_e2e(client, idem_key=f"iga-e2e-precharge-{fault}")
         bundle_wallet = await _make_wallet()
         policy_id = await _make_bundle(bundle_wallet, allowed_tools=[E2E_TOOL])
         iga_config(
@@ -1284,6 +1286,8 @@ async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
         async def one_shot(*args, **kwargs):
             state["calls"] += 1
             if state["calls"] == 1:
+                if fault == "audit_contended":
+                    raise AuditChainContendedError("head contended")
                 raise RuntimeError("policy backend down")
             return await real(*args, **kwargs)
 
@@ -1292,10 +1296,10 @@ async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
             client,
             wallet_id=setup["agent_wallet_id"],
             permit_id=setup["permit_id"],
-            idem_key="iga-e2e-precharge-1",
+            idem_key=f"iga-e2e-precharge-{fault}-1",
             headers=headers,
         )
-        assert first["error"]["message"] == "internal_error", first
+        assert "error" in first, first
         assert state["calls"] == 1
         assert calls == []
         assert oidc_iga._lifetime_uses == {}
@@ -1305,7 +1309,7 @@ async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
             client,
             wallet_id=setup["agent_wallet_id"],
             permit_id=setup["permit_id"],
-            idem_key="iga-e2e-precharge-1",
+            idem_key=f"iga-e2e-precharge-{fault}-1",
             headers=headers,
         )
         assert "result" in retry, retry

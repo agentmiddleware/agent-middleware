@@ -435,16 +435,24 @@ async def _set_parent(
     wallet_id: str, parent: str | None, *, foreign_keys: bool = True
 ) -> None:
     async with get_session_factory()() as session:
-        if not foreign_keys:
-            # Simulates a row the foreign key would normally refuse.
-            if session.bind.dialect.name != "sqlite":
-                pytest.skip("foreign key suspension is sqlite only")
-            await session.execute(text("PRAGMA foreign_keys=OFF"))
-        await session.execute(
-            text("UPDATE wallets SET parent_wallet_id = :p WHERE wallet_id = :w"),
-            {"p": parent, "w": wallet_id},
-        )
-        await session.commit()
+        if not foreign_keys and session.bind.dialect.name != "sqlite":
+            pytest.skip("foreign key suspension is sqlite only")
+        try:
+            if not foreign_keys:
+                # Simulates a row the foreign key would normally refuse.
+                await session.execute(text("PRAGMA foreign_keys=OFF"))
+            await session.execute(
+                text("UPDATE wallets SET parent_wallet_id = :p WHERE wallet_id = :w"),
+                {"p": parent, "w": wallet_id},
+            )
+            await session.commit()
+        finally:
+            if not foreign_keys:
+                # The pragma is per connection and the pool reuses connections,
+                # so put enforcement back before the connection is returned.
+                await session.rollback()
+                await session.execute(text("PRAGMA foreign_keys=ON"))
+                await session.commit()
 
 
 @pytest.mark.anyio
@@ -761,7 +769,8 @@ async def test_demo_key_gets_the_same_answers_at_a_descendant_as_at_its_own_wall
     # equals the own-wallet answer (no extra demo power, no extra denial).
     own = await client.get(f"/v1/permits?wallet_id={demo_wallet}", headers=demo_headers)
     below = await client.get(f"/v1/permits?wallet_id={agent_id}", headers=demo_headers)
-    assert own.status_code == below.status_code
+    assert own.status_code == 200, own.text
+    assert below.status_code == 200, below.text
     # A descendant key reaching up at the demo wallet gets nothing.
     up = await client.get(
         f"/v1/permits?wallet_id={demo_wallet}", headers=w["agent"]["headers"]

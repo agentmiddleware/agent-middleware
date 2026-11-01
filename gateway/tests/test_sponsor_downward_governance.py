@@ -262,7 +262,10 @@ async def test_grandparent_governs_a_grandchild(client, world):
     # The intermediate agent governs its own child the same way.
     again = await _emergency(client, gid, w["agent"]["headers"])
     assert again.status_code == 200
-    assert sponsor  # sponsor key untouched
+    assert again.json()["revoked_keys"] == []  # already revoked by the sponsor
+    own = await client.get(f"/v1/api-keys/{w['sponsor']['wallet_id']}", headers=sponsor)
+    assert own.status_code == 200
+    assert {k["status"] for k in own.json()["keys"]} == {"active"}
 
 
 @pytest.mark.anyio

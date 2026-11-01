@@ -1261,6 +1261,14 @@ async def _execute_registered_tool(
             or isinstance(exc, _RECORD_KEEPING_ERRORS)
         ):
             raise
+        generic_precharge = not isinstance(
+            exc,
+            (
+                AuditChainContendedError,
+                ReceiptWriteContendedError,
+                PermitWriteContendedError,
+            ),
+        )
         record_id = owned_record.get("record_id")
         record_key = owned_record.get("key", idempotency_key)
         if record_id and wallet_id and record_key:
@@ -1282,14 +1290,26 @@ async def _execute_registered_tool(
                         idempotency_key=record_key,
                         expected_record_id=record_id,
                     )
-                    if abandoned and record_endpoint == "/mcp/action/v1":
+                    if abandoned and (
+                        record_endpoint == "/mcp/action/v1" or generic_precharge
+                    ):
                         # Only confirmed deletion proves this invocation's use
                         # unaccepted. Inner cleanup may already have released
                         # it; in that case abandon returns False, not a refund.
+                        # A generic pre-charge fault has no inner handler, and
+                        # the use was recorded before the gates that can raise,
+                        # so a max_uses=1 principal would otherwise meet the
+                        # advised retry as iga_max_uses_exceeded. The contention
+                        # types on a non-action record stay with the inner
+                        # branches, which release their own use.
                         await _release_iga_use(
                             owned_record.get("iga_granted_use"),
                             tool_name,
-                            reason="preacceptance_write_contended",
+                            reason=(
+                                "precharge_fault"
+                                if generic_precharge
+                                else "preacceptance_write_contended"
+                            ),
                         )
                 except Exception:
                     logger.exception(
@@ -2188,7 +2208,7 @@ async def _execute_registered_tool_inner(
                     iga_decision.policy_id,
                     iga_decision.reservation,
                 )
-                if action_identity is not None and owned_record is not None:
+                if owned_record is not None:
                     owned_record["iga_granted_use"] = iga_granted_use
     except IGAError as exc:
         # Catches verification failures for bearers routed to the IGA layer

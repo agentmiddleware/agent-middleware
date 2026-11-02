@@ -45,7 +45,7 @@ _PROD_TRUST_ENV = {
     "DEBUG": "false",
     "WEBAUTHN_ALLOW_MOCK": "false",
     "TRUST_SIGNING_PRIVATE_KEY_B64": _TEST_SIGNING_PRIVATE_KEY_B64,
-    "PUBLIC_URL": "https://api.thisisatest.tech",
+    "PUBLIC_URL": "https://api.agentmiddleware.dev",
     # A production posture is not complete without the relational database the
     # wallets, permits, receipts, and ledger live in. It is PostgreSQL because
     # validate_trust_mode_config refuses SQLite here: SQLAlchemy silently drops

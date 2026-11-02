@@ -4,6 +4,7 @@ API Key Management Router
 Handles API key creation, rotation, and revocation for wallet security.
 """
 
+import logging
 from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -23,7 +24,10 @@ from ..db.api_key_usage_view import (
     is_statement_timeout,
 )
 from ..core.time import utc_now
-from ..core.wallet_resolution import resolve_wallet_id
+from ..core.wallet_resolution import (
+    require_governing_wallet_access,
+    resolve_wallet_id,
+)
 from ..services.api_key_service import (
     get_api_key_service,
     InvalidRotationRequestError,
@@ -42,6 +46,8 @@ from ..schemas.billing import (
     EmergencyKeyRevocationRequest,
     RotationType,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/v1/api-keys",
@@ -301,7 +307,8 @@ async def list_api_keys(
     auth: AuthContext = Depends(get_auth_context),
 ):
     """List all API keys for a wallet."""
-    auth.require_wallet_access(wallet_id)
+    # A strict ancestor may list a descendant's keys (masked, as for the owner).
+    await require_governing_wallet_access(auth, wallet_id, get_agent_money())
     service = get_api_key_service()
 
     try:
@@ -430,11 +437,22 @@ async def revoke_api_key(
     auth: AuthContext = Depends(get_auth_context),
 ):
     """Revoke an API key immediately."""
-    auth.require_wallet_access(wallet_id)
+    via_ancestry = await require_governing_wallet_access(
+        auth, wallet_id, get_agent_money()
+    )
     service = get_api_key_service()
 
     try:
         await service.revoke_key(wallet_id, key_id, reason)
+        if via_ancestry:
+            logger.warning(
+                "api key %s of descendant wallet %s revoked by ancestor "
+                "wallet %s (key %s)",
+                key_id,
+                wallet_id,
+                auth.wallet_id,
+                auth.key_id,
+            )
     except WalletNotFoundError as e:
         raise HTTPException(
             status_code=404,
@@ -463,8 +481,21 @@ async def emergency_revoke(
 
     Use this when a wallet may be compromised.
     Optionally creates a new emergency key.
+
+    When the caller is a strict ancestor of the wallet (not the wallet itself
+    or a bootstrap admin), ``create_new_key`` is ignored: no replacement key is
+    minted for the descendant and ``new_key`` is null. A JWT caller must send
+    ``create_new_key`` false, because the default true is refused with 403
+    ``jwt_cannot_mint_api_key`` before anything is revoked.
     """
-    wallet_id = resolve_wallet_id(request.wallet_id, auth)
+    if request.wallet_id is None:
+        wallet_id = resolve_wallet_id(None, auth)
+        via_ancestry = False
+    else:
+        wallet_id = request.wallet_id
+        via_ancestry = await require_governing_wallet_access(
+            auth, wallet_id, get_agent_money()
+        )
     if request.create_new_key:
         _refuse_jwt_minter(auth)
     service = get_api_key_service()
@@ -479,6 +510,16 @@ async def emergency_revoke(
             # the wallet-wide donor rule.
             bounding_key_id=(None if auth.is_bootstrap_admin else (auth.key_id or "")),
         )
+
+        if via_ancestry:
+            logger.warning(
+                "emergency revocation of descendant wallet %s by ancestor "
+                "wallet %s (key %s): %d keys revoked",
+                wallet_id,
+                auth.wallet_id,
+                auth.key_id,
+                len(result["revoked_keys"]),
+            )
 
         new_key = None
         if result["new_key"]:
@@ -519,7 +560,9 @@ async def get_rotation_logs(
     auth: AuthContext = Depends(get_auth_context),
 ):
     """Get rotation audit logs for a wallet."""
-    auth.require_wallet_access(wallet_id)
+    # Key ids and reasons only, the same class of data as the masked key list,
+    # so a strict ancestor may read a descendant's logs.
+    await require_governing_wallet_access(auth, wallet_id, get_agent_money())
     service = get_api_key_service()
 
     try:

@@ -437,3 +437,8 @@ def test_blank_api_key_and_wallet_are_rejected_at_construction():
         B2AFunctionTool(api_key="tenant-a-key", wallet_id="")
     with pytest.raises(ValueError, match="api_key"):
         B2AFunctionTool(api_key=None, wallet_id="wallet-1")  # type: ignore[arg-type]
+
+
+def test_base_url_defaults_to_the_production_api():
+    tool = B2AFunctionTool(api_key="tenant-a-key", wallet_id="wallet-1")
+    assert tool.client.base_url == "https://api.agentmiddleware.dev"

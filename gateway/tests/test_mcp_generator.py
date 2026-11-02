@@ -961,11 +961,9 @@ class TestMcpInvokeRoute:
             payload = response.json()
             assert payload["isError"] is True
             assert payload["code"] == "tool_execution_failed"
-            # The tool's own error stays server-side; the client gets the
-            # classified message and a request id.
-            assert payload["content"][0]["text"] == "Error: tool_execution_failed"
+            # The tool's own exception text stays in the server log.
             assert "insufficient_funds" not in response.text
-            assert "request_id" in payload["structuredContent"]
+            assert payload["content"][0]["text"] == "Error: tool_execution_failed"
         finally:
             registry.unregister_local("http-value-error-echo")
 

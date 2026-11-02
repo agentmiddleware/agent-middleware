@@ -36,6 +36,7 @@ from app.services.ownership import (
     require_permit_issuer,
     require_permit_party,
 )
+from app.services.wallet_hierarchy import wallet_strictly_governs
 from app.services.signing_keys import get_signing_key_service, sha256_hex
 
 logger = logging.getLogger(__name__)
@@ -533,9 +534,17 @@ class PermitService:
         return permit_model_to_response(model)
 
     async def revoke_permit(
-        self, permit_id: str, *, caller: CallerIdentity
+        self,
+        permit_id: str,
+        *,
+        caller: CallerIdentity,
+        allow_ancestor: bool = False,
     ) -> PermitResponse:
         """Revoke an active permit.
+
+        The issuer wallet may revoke. With ``allow_ancestor`` (set only by the
+        revoke route), a strict ancestor of the issuer wallet may too; the
+        hierarchy is re-checked here so the service does not trust the route.
 
         The write matches only ``status = 'active'``. A repeat call, or a call
         against a permit that is already expired or exhausted, returns the
@@ -546,11 +555,22 @@ class PermitService:
             owner = await session.get(PermitModel, permit_id)
             if owner is None:
                 raise PermitError("permit_not_found")
-            require_permit_issuer(
-                caller,
-                issuer_wallet_id=owner.issuer_wallet_id,
-                error=PermitAccessDeniedError,
-            )
+            try:
+                require_permit_issuer(
+                    caller,
+                    issuer_wallet_id=owner.issuer_wallet_id,
+                    error=PermitAccessDeniedError,
+                )
+            except PermitAccessDeniedError:
+                if not (
+                    allow_ancestor
+                    and caller.wallet_id is not None
+                    and owner.issuer_wallet_id is not None
+                    and await wallet_strictly_governs(
+                        session, caller.wallet_id, owner.issuer_wallet_id
+                    )
+                ):
+                    raise
             # Guarded write, same shape as the budget reservation: a second
             # caller cannot overwrite revoked_at after the status has left
             # active, including when the two calls overlap.

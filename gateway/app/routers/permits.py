@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -8,7 +9,10 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.core.auth import AuthContext, get_auth_context
 from app.core.config import get_settings
-from app.core.wallet_resolution import resolve_wallet_id
+from app.core.wallet_resolution import (
+    require_governing_wallet_access,
+    resolve_wallet_id,
+)
 from app.schemas.trust import (
     ActionPermitFields,
     ActionPermitCreateRequest,
@@ -43,6 +47,8 @@ from app.trust import (
 
 action_router = APIRouter(prefix="/v1/action-permits", tags=["Trust Permits"])
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/v1/permits", tags=["Trust Permits"])
 
 
@@ -71,9 +77,11 @@ async def list_permits(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
+    money: AgentMoney = Depends(get_agent_money),
 ) -> PermitListResponse:
     if wallet_id:
-        auth.require_wallet_access(wallet_id)
+        # A strict ancestor may list a descendant's permits.
+        await require_governing_wallet_access(auth, wallet_id, money)
     elif auth.wallet_id:
         # An unscoped list is an operator view. A wallet key asking for it means
         # "my permits", so scope it to the caller rather than refusing: the
@@ -258,20 +266,35 @@ async def list_permit_receipts(
 async def revoke_permit(
     permit_id: str,
     auth: AuthContext = Depends(get_auth_context),
+    money: AgentMoney = Depends(get_agent_money),
 ) -> PermitResponse:
     service = get_permit_service()
     existing = await service.get_permit(permit_id)
     if not existing:
         raise HTTPException(status_code=404, detail="permit_not_found")
-    auth.require_wallet_access(existing.issuer_wallet_id)
+    # The issuer wallet, or a strict ancestor of it, may revoke.
+    via_ancestry = await require_governing_wallet_access(
+        auth, existing.issuer_wallet_id, money
+    )
     try:
         permit = await service.revoke_permit(
-            permit_id, caller=CallerIdentity.from_auth(auth)
+            permit_id,
+            caller=CallerIdentity.from_auth(auth),
+            allow_ancestor=via_ancestry,
         )
     except PermitAccessDeniedError as exc:
         raise HTTPException(status_code=403, detail=exc.reason)
     except PermitError as exc:
         raise HTTPException(status_code=404, detail=exc.reason)
+    if via_ancestry:
+        logger.warning(
+            "permit %s revoked by ancestor wallet %s (key %s) for descendant "
+            "issuer wallet %s",
+            permit_id,
+            auth.wallet_id,
+            auth.key_id,
+            existing.issuer_wallet_id,
+        )
     return permit
 
 

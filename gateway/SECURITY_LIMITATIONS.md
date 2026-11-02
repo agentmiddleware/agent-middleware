@@ -230,8 +230,12 @@ missing control.
   set, a production-like environment never falls back to it and fails closed
   instead; other environments fall back to it when Redis is unreachable.
   `rate_limits.window_accounting` in discovery names the difference between the
-  two algorithms, and `rate_limits.counter_scope` says which one applies:
-  `shared_redis` when `REDIS_URL` is set, otherwise `per_process`.
+  two algorithms. `rate_limits.counter_scope` reports the configured scope:
+  `shared_redis` when `REDIS_URL` is set, otherwise `per_process`. It is
+  configuration, not live state. With `REDIS_URL` set but unreachable in a
+  non-production-like environment, the limiter counts in memory while the field
+  still says `shared_redis`; fallbacks that have happened show under
+  `runtime_degradation` on `/health/dependencies`.
 - **Counters are shared only with Redis.** Every bound below (per key,
   anonymous, readiness and pre-auth) is per process when `REDIS_URL` is unset,
   so with several workers or replicas the effective ceiling is the stated
@@ -311,8 +315,8 @@ missing control.
   closed (`503`), never silently wider than declared. Without `REDIS_URL`
   there is no shared limiter to lose: each worker or replica enforces the
   declared limit on its own, so the effective limit is the declared limit times
-  the process count, and the deployment is reported as degraded (see the
-  startup posture notes above).
+  the process count, and a production-like deployment is reported as degraded
+  (see the startup posture notes above).
 
 `GET /` and `GET /v1/discover` both publish this as `rate_limits`.
 

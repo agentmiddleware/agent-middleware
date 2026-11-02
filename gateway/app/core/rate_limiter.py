@@ -128,13 +128,15 @@ def rate_limit_discovery() -> dict[str, Any]:
     difference rather than letting a reader infer one algorithm from
     ``window_seconds``.
 
-    Which backend counts is a deployment fact, published as
-    ``counter_scope``: ``shared_redis`` when ``REDIS_URL`` is set, otherwise
-    ``per_process``. Without ``REDIS_URL`` every worker and replica keeps its
-    own counters in any environment, so each limit is multiplied by the
-    process count. Only a production-like deployment that sets ``REDIS_URL``
-    refuses to fall back to memory when Redis fails. A production-like
-    deployment without ``REDIS_URL`` is reported as degraded on
+    The configured counting backend is published as ``counter_scope``:
+    ``shared_redis`` when ``REDIS_URL`` is set, otherwise ``per_process``. It
+    reports configuration, not live state: with ``REDIS_URL`` set but
+    unreachable outside a production-like environment the limiter counts in
+    memory while the field still says ``shared_redis``. Without ``REDIS_URL``
+    every worker and replica keeps its own counters in any environment, so each
+    limit is multiplied by the process count. Only a production-like deployment
+    that sets ``REDIS_URL`` refuses to fall back to memory when Redis fails. A
+    production-like deployment without ``REDIS_URL`` is reported as degraded on
     ``/health/dependencies`` (``runtime_degradation``, reason
     ``rate_limiter_redis_not_configured``) and logged once at startup.
 

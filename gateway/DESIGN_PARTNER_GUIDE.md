@@ -93,19 +93,25 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
   touches that bucket, and neither does a permit denial: being refused on
   scope is normal governed traffic, not a bad credential.
 - **Window accounting:** the shared Redis limiter counts fixed 60-second
-  buckets; the in-memory fallback (never used in a production-like
-  environment, which fails closed) counts a rolling 60 seconds. Budget and
-  window length are the contract — `rate_limits.window_accounting` in
-  discovery says which backend counts how.
+  buckets; the in-memory limiter counts a rolling 60 seconds. The in-memory
+  limiter counts whenever the deployment has no `REDIS_URL`, in any
+  environment, and each worker or replica then keeps its own counters.
+  Budget and window length are the contract. `rate_limits.window_accounting`
+  in discovery says how the two backends count, and
+  `rate_limits.counter_scope` reports the configured scope (`shared_redis` or
+  `per_process`).
 - **Exempt paths:** `/`, `/health`, `/.well-known/agent.json`, `/llms.txt`,
   `/docs`, `/redoc`, `/openapi.json`, and the served markdown docs.
 - **`POST /mcp/public` (when enabled):** per client IP at the same limit, plus
   a global cap of ten times the limit.
 - **No burst allowance and no per-key override.** Raising the limit for one
   partner today means raising it for the whole deployment.
-- **Redis outage:** production-like environments return `503` instead of
-  falling back to per-process memory, so the limit is never silently wider
-  than declared.
+- **Redis outage:** with `REDIS_URL` set, production-like environments return
+  `503` instead of falling back to per-process memory, so the limit is never
+  silently wider than declared. Without `REDIS_URL` there is no shared limiter
+  to lose: the limit is enforced per process, so the effective limit is the
+  declared limit times the process count, and a production-like deployment is
+  reported as degraded on `/health/dependencies`.
 
 `GET /v1/discover` → `rate_limits` and `GET /` → `rate_limits` report the
 same figure the middleware enforces.

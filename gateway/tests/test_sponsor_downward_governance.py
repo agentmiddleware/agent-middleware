@@ -776,3 +776,57 @@ async def test_demo_key_gets_the_same_answers_at_a_descendant_as_at_its_own_wall
         f"/v1/permits?wallet_id={demo_wallet}", headers=w["agent"]["headers"]
     )
     assert up.status_code == 403
+
+
+# --- follow-up #284: the permit-creation rule stops at the first match -------
+
+
+class _CountingSession:
+    """A parent map standing in for the wallets table; counts every lookup."""
+
+    def __init__(self, parents: dict[str, str | None]):
+        self._parents = parents
+        self.gets = 0
+
+    async def get(self, _model, wallet_id: str):
+        self.gets += 1
+        if wallet_id not in self._parents:
+            return None
+        return _FakeWallet(self._parents[wallet_id])
+
+
+@pytest.mark.anyio
+async def test_permit_creation_rule_stops_at_the_first_match():
+    # Direct child: the first parent is the ancestor, one lookup.
+    session = _CountingSession({"c": "p", "p": None})
+    assert await wallet_is_or_descends_from(session, "c", "p")
+    assert session.gets == 1
+
+    # Ancestor at hop 1, a link above it points at a row that does not exist:
+    # still True after the first lookup, while the strict rule is False.
+    session = _CountingSession({"c": "p", "p": "ghost"})
+    assert await wallet_is_or_descends_from(session, "c", "p")
+    assert session.gets == 1
+    strict = _CountingSession({"c": "p", "p": "ghost"})
+    assert not await wallet_strictly_governs(strict, "p", "c")
+
+    # A cycle above the match does not change the creation answer either.
+    session = _CountingSession({"c": "p", "p": "q", "q": "p"})
+    assert await wallet_is_or_descends_from(session, "c", "p")
+    assert session.gets == 1
+    assert not await wallet_strictly_governs(
+        _CountingSession({"c": "p", "p": "q", "q": "p"}), "p", "c"
+    )
+
+    # Ancestor at hop 2: two lookups, not the whole chain.
+    session = _CountingSession({"c": "m", "m": "p", "p": "r", "r": None})
+    assert await wallet_is_or_descends_from(session, "c", "p")
+    assert session.gets == 2
+
+    # No match walks to the root and answers False; equal ids need no lookup.
+    session = _CountingSession({"c": "p", "p": None})
+    assert not await wallet_is_or_descends_from(session, "c", "x")
+    assert session.gets == 2
+    session = _CountingSession({"c": "p", "p": None})
+    assert await wallet_is_or_descends_from(session, "c", "c")
+    assert session.gets == 0

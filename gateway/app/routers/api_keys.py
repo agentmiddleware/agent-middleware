@@ -481,6 +481,12 @@ async def emergency_revoke(
 
     Use this when a wallet may be compromised.
     Optionally creates a new emergency key.
+
+    When the caller is a strict ancestor of the wallet (not the wallet itself
+    or a bootstrap admin), ``create_new_key`` is ignored: no replacement key is
+    minted for the descendant and ``new_key`` is null. A JWT caller must send
+    ``create_new_key`` false, because the default true is refused with 403
+    ``jwt_cannot_mint_api_key`` before anything is revoked.
     """
     if request.wallet_id is None:
         wallet_id = resolve_wallet_id(None, auth)

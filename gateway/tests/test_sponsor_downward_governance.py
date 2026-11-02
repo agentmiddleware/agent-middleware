@@ -776,3 +776,67 @@ async def test_demo_key_gets_the_same_answers_at_a_descendant_as_at_its_own_wall
         f"/v1/permits?wallet_id={demo_wallet}", headers=w["agent"]["headers"]
     )
     assert up.status_code == 403
+
+
+# --- follow-up #284: the permit-creation rule stops at the first match -------
+
+
+class _CountingSession:
+    """A real database session whose ``get`` lookups are counted."""
+
+    def __init__(self, session):
+        self._session = session
+        self.gets = 0
+
+    async def get(self, *args, **kwargs):
+        self.gets += 1
+        return await self._session.get(*args, **kwargs)
+
+
+async def _counted(call, *args) -> tuple[bool, int]:
+    async with get_session_factory()() as session:
+        counting = _CountingSession(session)
+        return await call(counting, *args), counting.gets
+
+
+@pytest.mark.anyio
+async def test_permit_creation_rule_stops_at_the_first_match(world):
+    """Real wallets S -> A -> G, with S a sibling's parent too."""
+    w = world
+    s, a, g, sib = (
+        w["sponsor"]["wallet_id"],
+        w["agent"]["wallet_id"],
+        w["grandchild"]["wallet_id"],
+        w["sibling"]["wallet_id"],
+    )
+    # Direct child: the first parent is the ancestor, one lookup.
+    assert await _counted(wallet_is_or_descends_from, a, s) == (True, 1)
+    assert await _counted(wallet_is_or_descends_from, g, a) == (True, 1)
+    # Ancestor at hop 2: two lookups, not the whole chain.
+    assert await _counted(wallet_is_or_descends_from, g, s) == (True, 2)
+    # No match walks to the root and answers False; equal ids need no lookup.
+    assert await _counted(wallet_is_or_descends_from, a, sib) == (False, 2)
+    assert await _counted(wallet_is_or_descends_from, a, a) == (True, 0)
+    # The strict rule is not the same walk: it needs the complete chain.
+    assert await _counted(wallet_strictly_governs, s, g) == (True, 3)
+
+
+@pytest.mark.anyio
+async def test_permit_creation_rule_ignores_a_malformed_link_above_the_match(world):
+    w = world
+    s, a, g = (
+        w["sponsor"]["wallet_id"],
+        w["agent"]["wallet_id"],
+        w["grandchild"]["wallet_id"],
+    )
+    # A cycle above the match (S -> A, while A -> S): still True after the
+    # first lookup; the strict rule is False for the same chain.
+    await _set_parent(s, a)
+    assert await _counted(wallet_is_or_descends_from, g, a) == (True, 1)
+    assert not (await _counted(wallet_strictly_governs, a, g))[0]
+
+    # A missing row above the match (S -> a wallet that does not exist).
+    await _set_parent(s, None)
+    await _set_parent(s, "wal-missing-above", foreign_keys=False)
+    assert await _counted(wallet_is_or_descends_from, g, a) == (True, 1)
+    assert not (await _counted(wallet_strictly_governs, a, g))[0]

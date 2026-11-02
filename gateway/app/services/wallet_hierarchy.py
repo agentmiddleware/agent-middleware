@@ -64,12 +64,27 @@ async def wallet_is_or_descends_from(
     """True if ``wallet_id`` is ``ancestor_wallet_id`` or below it.
 
     This is the permit-creation rule: it stops at the first match, so a
-    malformed chain above the match does not change the answer.
+    malformed chain above the match does not change the answer and a direct
+    child costs one lookup. It reads the chain one wallet at a time instead of
+    through ``walk_wallet_ancestry``, which loads the whole chain for the
+    strict rule below; keep the two apart so this hot path stays cheap and the
+    strict rule stays untouched.
     """
     if wallet_id == ancestor_wallet_id:
         return True
-    ancestry = await walk_wallet_ancestry(session, wallet_id, max_depth=max_depth)
-    return ancestor_wallet_id in ancestry.ancestors
+    current = wallet_id
+    seen: set[str] = set()
+    for _ in range(max_depth):
+        if current in seen:
+            return False
+        seen.add(current)
+        wallet = await session.get(WalletModel, current)
+        if wallet is None or not wallet.parent_wallet_id:
+            return False
+        if wallet.parent_wallet_id == ancestor_wallet_id:
+            return True
+        current = wallet.parent_wallet_id
+    return False
 
 
 async def wallet_strictly_governs(

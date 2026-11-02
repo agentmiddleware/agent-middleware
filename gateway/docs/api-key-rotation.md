@@ -113,9 +113,11 @@ Who may call them:
   `revoke_old: true`, or rotate returns `422` `invalid_rotation_request`.
 - A bounded wallet key may call emergency revoke. If it requests a replacement,
   the new key inherits only the caller key's remaining bounds.
-- An ancestor's emergency revoke ignores `create_new_key`: it mints no
-  replacement key for the descendant (`new_key` is null). Each ancestor
-  revoke is logged with the ancestor's wallet and key id.
+- An ancestor using a database key ignores `create_new_key`: it mints no
+  replacement key (`new_key` is null). An authorized JWT ancestor must set
+  `create_new_key` to false; the default true returns `403`
+  `jwt_cannot_mint_api_key` before revocation. Each ancestor revoke is
+  logged with the ancestor's wallet and key id.
 
 ### Rotate one key
 

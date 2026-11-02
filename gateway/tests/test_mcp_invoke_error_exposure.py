@@ -51,7 +51,10 @@ def _assert_logged(caplog, exc: BaseException, marker: str, request_id: str) -> 
         for line in lines
     ), lines
     # The exception text can carry upstream payloads; only its class is logged.
-    assert not any(marker in line for line in lines), lines
+    # Check every captured record, not only the mcp_invoke_error lines.
+    assert not any(marker in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]
 
 
 async def _invoke(client: AsyncClient, wallet_id: str, headers: dict[str, str]):
@@ -225,6 +228,19 @@ def test_snake_case_tool_text_is_not_echoed():
         mcp_router._invoke_public_message(mcp_router.GovernedToolError("quote_expired"))
         == "quote_expired"
     )
+    # Suffixed refusal codes match the JSON-RPC bare-code contract.
+    assert (
+        mcp_router._invoke_public_message(
+            mcp_router.ToolPermissionDenied("permit_forbidden_field:customer_id")
+        )
+        == "permit_forbidden_field"
+    )
+    assert (
+        mcp_router._invoke_public_message(
+            mcp_router.GovernedToolError("permit_forbidden_field:customer_id")
+        )
+        == "permit_forbidden_field"
+    )
 
 
 @pytest.mark.anyio
@@ -242,3 +258,64 @@ async def test_replayed_tool_failure_stays_canned():
         await mcp_router._raise_replayed_error(replay)
     assert raised.value.tool_originated is True
     assert mcp_router._invoke_public_message(raised.value) == "tool_execution_failed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("code", ["wallet_frozen", "wallet_expired"])
+async def test_wallet_status_errors_include_request_correlation(
+    clean_database, monkeypatch, caplog, code
+):
+    exc = ValueError(code)
+
+    async def boom(_request):
+        raise exc
+
+    monkeypatch.setattr(mcp_router._mcp_adapter, "invoke", boom)
+    caplog.set_level(logging.ERROR, logger="app.routers.mcp")
+    request_id = _request_id()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        wallet_id = await _create_funded_agent_wallet(
+            client, f"invoke-err-{uuid.uuid4().hex[:12]}"
+        )
+        response = await _invoke(client, wallet_id, {"X-Request-ID": request_id})
+    assert response.status_code == 403
+    assert response.headers["x-request-id"] == request_id
+    assert response.json()["detail"] == {"error": code}
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "app.routers.mcp" and "mcp_invoke_error" in r.getMessage()
+    ]
+    assert any(
+        f"request_id={request_id}" in line and "class=ValueError" in line
+        for line in lines
+    ), lines
+
+
+@pytest.mark.anyio
+async def test_classified_value_error_detail_is_error_object(
+    clean_database, monkeypatch, caplog
+):
+    marker = _marker()
+    exc = ValueError(f"Tool not found: {marker}")
+
+    async def boom(_request):
+        raise exc
+
+    monkeypatch.setattr(mcp_router._mcp_adapter, "invoke", boom)
+    caplog.set_level(logging.ERROR, logger="app.routers.mcp")
+    request_id = _request_id()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        wallet_id = await _create_funded_agent_wallet(
+            client, f"invoke-err-{uuid.uuid4().hex[:12]}"
+        )
+        response = await _invoke(client, wallet_id, {"X-Request-ID": request_id})
+    assert response.status_code == 404
+    assert marker not in response.text
+    assert response.json()["detail"] == {"error": "Tool not found"}
+    assert response.headers["x-request-id"] == request_id
+    _assert_logged(caplog, exc, marker, request_id)

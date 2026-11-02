@@ -5226,6 +5226,9 @@ def _invoke_public_message(exc: BaseException) -> str:
     text = str(exc)
     if text in REFUSAL_REASON_CODES or text in _INVOKE_PUBLIC_REASONS:
         return text
+    # Match JSON-RPC: a ``code: detail`` refusal still returns the bare code.
+    if is_refusal_reason_code(text):
+        return text.split(":", 1)[0].strip()
     for prefix in ("Tool not found", "Tool not executable", "refund_failed"):
         if text.startswith(prefix):
             return prefix
@@ -5478,7 +5481,13 @@ async def invoke_tool(
                 headers={"X-Request-ID": rid},
             )
         if message in {"wallet_frozen", "wallet_expired"}:
-            raise HTTPException(status_code=403, detail={"error": message})
+            rid = _mcp_request_id(http_request)
+            _invoke_log_error(exc, rid)
+            raise HTTPException(
+                status_code=403,
+                detail={"error": message},
+                headers={"X-Request-ID": rid},
+            )
         rid = _mcp_request_id(http_request)
         public = _invoke_log_error(exc, rid)
         if message.startswith("Tool not found"):
@@ -5488,7 +5497,9 @@ async def invoke_tool(
         else:
             status = 400
         raise HTTPException(
-            status_code=status, detail=public, headers={"X-Request-ID": rid}
+            status_code=status,
+            detail={"error": public},
+            headers={"X-Request-ID": rid},
         )
     except Exception as exc:
         return _internal_error_tool_result(

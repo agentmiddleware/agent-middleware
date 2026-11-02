@@ -517,9 +517,7 @@ def test_integrity_check_reports_entry_classification_failure(
     assert any("could not scan" in problem for problem in report.problems)
 
 
-@pytest.mark.parametrize(
-    "files", [None, {}, [1], [None], [{"path": "file", "bytes": "invalid"}]]
-)
+@pytest.mark.parametrize("files", [None, {}, [1], [None]])
 def test_integrity_check_handles_malformed_manifest_shapes(tmp_path, files):
     bundle = tmp_path / "bundle"
     bundle.mkdir()
@@ -527,6 +525,30 @@ def test_integrity_check_handles_malformed_manifest_shapes(tmp_path, files):
     _manifest(bundle, files)
     report = verify_bundle_integrity(bundle)
     assert not report.ok
+
+
+@pytest.mark.parametrize("bad_bytes", [True, "1", 1.0, 2])
+def test_integrity_check_reports_bad_byte_count_with_matching_hash(
+    tmp_path, bad_bytes
+):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    body = b"abc"  # 3 bytes, so none of the bad values match
+    (bundle / "file").write_bytes(body)
+    _manifest(
+        bundle,
+        [
+            {
+                "path": "file",
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "bytes": bad_bytes,
+            }
+        ],
+    )
+    report = verify_bundle_integrity(bundle)
+    assert not report.ok
+    assert report.changed == []
+    assert any("bytes on disk" in problem for problem in report.problems)
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, OSError, ValueError])

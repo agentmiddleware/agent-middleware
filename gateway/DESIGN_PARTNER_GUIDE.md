@@ -80,18 +80,23 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
 
 - **Authenticated requests:** one bucket per `X-API-Key` value. Two agents
   sharing one key share the 120; two keys get 120 each.
-- **Requests without a key:** one `anonymous` bucket shared by every
-  unauthenticated caller of the deployment. `/health/dependencies` is counted
-  here.
+- **Requests without a key:** one anonymous bucket per client address, so one
+  caller can only spend its own budget, plus an anonymous backstop at 20 times
+  the limit for the whole deployment (`RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER`).
+  Callers behind one shared egress address share that address's bucket.
+  `/health/dependencies` is counted here. With shared Redis counters these
+  buckets are shared across workers and replicas; without `REDIS_URL` each
+  worker or replica keeps its own per-client buckets and its own backstop.
 - **Unaccepted credentials:** a request whose key the deployment does not
   accept — a `401`, the `403 invalid_api_key` an unknown key gets, or any
   request to a route that never checks the key (public discovery, a `404`) —
-  is also charged to one shared per-client bucket at ten times the limit,
-  because the per-key bucket is chosen from a header before the key is
-  verified. Sending a different `X-API-Key` on every request does not hand you
-  a fresh 120. A key the deployment accepts on an authenticated route never
-  touches that bucket, and neither does a permit denial: being refused on
-  scope is normal governed traffic, not a bad credential.
+  is also charged to one per-client bucket, shared by every key that client
+  sends, at ten times the limit, because the per-key bucket is chosen from a
+  header before the key is verified. Sending a different `X-API-Key` on every
+  request does not hand you a fresh 120. A key the deployment accepts on an
+  authenticated route never touches that bucket, and neither does a permit
+  denial: being refused on scope is normal governed traffic, not a bad
+  credential.
 - **Window accounting:** the shared Redis limiter counts fixed 60-second
   buckets; the in-memory limiter counts a rolling 60 seconds. The in-memory
   limiter counts whenever the deployment has no `REDIS_URL`, in any

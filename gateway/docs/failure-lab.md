@@ -197,7 +197,7 @@ the lab refuses to start rather than append to or overwrite that evidence.
   (`make prove-crash-recovery`, [PROOF_MATRIX.md](PROOF_MATRIX.md)).
 - **Concurrency.** One agent, sequential retries. The 15-way identical
   concurrent admission is in `make trust-conformance-live`; budget races are
-  in `tests/test_permits.py` and the `postgres_permit_concurrency` job.
+  in `tests/test_permits.py` and the `postgres-concurrency` and `postgres-proofs` jobs.
 - **Tampering.** Receipts are verified offline here; the edited-copy and
   unknown-key rejections are in `make demo-ambiguous-retry` and
   `make prove-trust-plane`.

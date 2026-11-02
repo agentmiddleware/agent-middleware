@@ -1979,7 +1979,7 @@ class Lab:
             "not_covered_here": {
                 "concurrent_retries_same_key": "make trust-conformance-live (15-way), tests/test_permit_postgres_concurrency.py",
                 "crash_before_and_after_dispatch": "make prove-crash-recovery (tests/test_mcp_postgres_multiprocess.py)",
-                "budget_race": "tests/test_permits.py, postgres_permit_concurrency CI job",
+                "budget_race": "tests/test_permits.py, postgres-concurrency and postgres-proofs CI jobs",
                 "tampered_receipt_or_untrusted_key": "make demo-ambiguous-retry, make prove-trust-plane",
             },
             "artifacts": {

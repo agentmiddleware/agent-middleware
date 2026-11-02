@@ -31,6 +31,7 @@ from .ownership import CallerIdentity
 # callers already import it from this module.
 from .pricing import DEFAULT_PRICING
 from .shadow_ledger import SimulatedChargeResult
+from .wallet_hierarchy import wallet_is_or_descends_from, wallet_strictly_governs
 from .wallet_engine import WalletEngine
 
 settings = get_settings()
@@ -241,22 +242,21 @@ class AgentMoney:
         unrelated wallet. Walks the ``parent_wallet_id`` chain with a depth cap
         so a malformed cycle cannot loop forever.
         """
-        if wallet_id == ancestor_wallet_id:
-            return True
         async with self._session_factory()() as session:
-            current = wallet_id
-            seen: set[str] = set()
-            for _ in range(max_depth):
-                if current in seen:
-                    return False
-                seen.add(current)
-                wallet = await session.get(WalletModel, current)
-                if wallet is None or not wallet.parent_wallet_id:
-                    return False
-                if wallet.parent_wallet_id == ancestor_wallet_id:
-                    return True
-                current = wallet.parent_wallet_id
-        return False
+            return await wallet_is_or_descends_from(
+                session, wallet_id, ancestor_wallet_id, max_depth=max_depth
+            )
+
+    async def wallet_strictly_governs(
+        self, ancestor_wallet_id: str, wallet_id: str
+    ) -> bool:
+        """True only if ``ancestor_wallet_id`` is a strict ancestor of ``wallet_id``.
+
+        The downward-governance rule: fails closed on equal ids, the reverse
+        direction, siblings, unrelated wallets and a malformed chain.
+        """
+        async with self._session_factory()() as session:
+            return await wallet_strictly_governs(session, ancestor_wallet_id, wallet_id)
 
     async def get_swarm_budget(self, parent_wallet_id: str) -> dict:
         return await self._wallet_engine.get_swarm_budget(parent_wallet_id)

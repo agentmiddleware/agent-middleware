@@ -21,7 +21,7 @@ Run locally (auto-provisions agent key)::
 
 Run against production (once CI_SMOKE_AGENT_KEY is set in CI)::
 
-    API_URL=https://api.thisisatest.tech \\
+    API_URL=https://api.agentmiddleware.dev \\
         python scripts/constant_test_loop.py
 """
 

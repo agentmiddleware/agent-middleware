@@ -338,6 +338,13 @@ class Settings(BaseSettings):
             )
         return value
 
+    # --- Audit chain verification bound ---
+    # Upper bound on audit events one verify_audit_chain call may load and
+    # walk, per wallet chain. A longer chain yields an explicit partial
+    # verdict (complete=false plus a next_after_seq cursor) instead of an
+    # unbounded read. Callers may ask for less via `limit`, never more.
+    AUDIT_VERIFY_MAX_EVENTS: int = Field(default=1000, ge=1, le=10000)
+
     # --- Public MCP endpoint (POST /mcp/public) ---
     # Unauthenticated, read-only Streamable HTTP surface for MCP clients
     # that cannot hold an API key (public plugin runtimes such as ChatGPT
@@ -457,6 +464,8 @@ class Settings(BaseSettings):
     # Authenticated routes use the API key. The unauthenticated public MCP
     # route uses a canonical client IP plus a deployment-wide backstop.
     RATE_LIMIT_PER_MINUTE: int = 120
+    # Deployment-wide anonymous ceiling, as a multiple of RATE_LIMIT_PER_MINUTE.
+    RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER: int = Field(default=20, ge=1)
 
     # --- LLM / AI Agent Intelligence ---
     # Provider: openai, azure, anthropic, ollama

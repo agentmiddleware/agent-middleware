@@ -52,7 +52,7 @@ def test_server_has_one_streamable_http_remote_with_api_key():
 
     # The advertised remote is the standard MCP surface. It is on by default
     # (ENABLE_STANDARD_MCP_ENDPOINT=True) and always requires an API key.
-    assert remote["url"] == "https://api.thisisatest.tech/mcp"
+    assert remote["url"] == "https://api.agentmiddleware.dev/mcp"
     assert remote["headers"] == [
         {
             "name": "X-API-Key",

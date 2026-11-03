@@ -861,9 +861,9 @@ class ReceiptService:
                 try:
                     await target_session.flush()
                 except IntegrityError as exc:
-                    existing = await existing_response(target_session)
-                    if existing is not None:
-                        return existing
+                    # Do not query target_session: SQLite leaves it in
+                    # pending-rollback after a failed flush. Adopt via a
+                    # fresh session (winner may already be committed).
                     factory = get_session_factory()
                     async with factory() as recovery_session:
                         return await _recover_integrity(recovery_session, exc)

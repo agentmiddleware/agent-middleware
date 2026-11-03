@@ -54,7 +54,9 @@ def b64(data: bytes) -> str:
 
 
 def canonical_json(payload: object) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    from jcs import dumps_text
+
+    return dumps_text(payload)
 
 
 def signing_key() -> Ed25519PrivateKey:
@@ -296,10 +298,10 @@ def _synthetic_cases(
 
     lied = dict(payload)
     lied["payload_hash"] = "0" * 64
-    # Numbers Python renders one way and other languages another (1.0, 0.0,
-    # 4e-05, integers above 2^53): the gateway signs such payloads inside
-    # constraints_evaluated.jev_risk_guard, so one vector carries them and
-    # must still verify without any re-serialization.
+    # RFC 8785 number forms (ES Number::toString): 1.0→1, 0.0→0, 4e-05→0.00004.
+    # ``big`` is the exact IEEE-754 value 2**53 as a float (Appendix B Note 1
+    # rejects the integer 9007199254740993 as outside the safe-integer range).
+    # Verification must still not re-serialize the signed bytes.
     float_payload = _with_hash(
         dict(
             payload,
@@ -308,7 +310,7 @@ def _synthetic_cases(
                     "latency_ms": 0.0,
                     "injected_instructions": 1.0,
                     "tiny": 4e-05,
-                    "big": 9007199254740993,
+                    "big": 9007199254740992.0,
                 }
             },
         )
@@ -508,7 +510,7 @@ def _p256_cases(base_bundle: dict) -> list[dict]:
         ]
     }
     return [
-        {"name": "p256.valid", "bundle": bundle, "keys": keys, "expect": "unsupported"},
+        {"name": "p256.genuine_unsupported", "bundle": bundle, "keys": keys, "expect": "unsupported"},
         {
             "name": "p256.tampered_payload",
             "bundle": dict(bundle, signing_input=tamper_outcome(signing_input)),

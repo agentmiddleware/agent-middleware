@@ -33,10 +33,12 @@ from app.replay.policy_replay import (
     network_sealed,
     replay_calls,
 )
+from app.services.jcs import CanonicalizationError
 from app.services.signing_keys import (
     SigningKeyError,
     canonical_json,
     get_signing_key_service,
+    legacy_canonical_json,
 )
 from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
 
@@ -554,6 +556,95 @@ def test_replay_insufficient_funds_with_policy_reason_stays_denied(tmp_path):
     assert claims["new_decision"] == "deny"
     assert claims["new_reason"] == "recorded_denial:tool_not_allowed"
     assert claims["change"] == "unchanged"
+
+
+def _golden_payload(name: str = "denial_constraints.json") -> dict:
+    """Payload object from an existing receipt-signing golden (recorded only)."""
+    record = json.loads((GOLDEN_DIR / name).read_text())
+    return json.loads(record["signing_input"])
+
+
+def test_load_recorded_calls_survives_jcs_error_via_legacy(tmp_path, monkeypatch):
+    """JCS CanonicalizationError must not abort before legacy is tried.
+
+    Recorded golden payload + serializer stub (forced JCS raise); no invented
+    marker/cost/tool fields.
+    """
+    import app.replay.policy_replay as policy_replay
+
+    payload = _golden_payload("denial_constraints.json")
+    legacy = legacy_canonical_json(payload)
+    path = tmp_path / "legacy-after-jcs-error.json"
+    path.write_text(json.dumps({"signing_input": legacy}))
+
+    def _boom(_payload):
+        raise CanonicalizationError("forced JCS reject")
+
+    monkeypatch.setattr(policy_replay, "canonical_json", _boom)
+    calls = load_recorded_calls(path)
+    assert len(calls) == 1
+    assert calls[0].signing_input == legacy
+
+
+def test_load_recorded_calls_accepts_when_serializers_diverge(tmp_path, monkeypatch):
+    """Both successful dual-path arms stay live when serializers diverge.
+
+    ASCII recorded goldens make ``legacy == jcs``, so stub the serializers to
+    emit distinct strings over the same golden payload (no invented fields).
+    """
+    import app.replay.policy_replay as policy_replay
+
+    payload = _golden_payload("denial_constraints.json")
+    jcs_bytes = canonical_json(payload) + "\n"
+    legacy_bytes = legacy_canonical_json(payload)
+    assert jcs_bytes != legacy_bytes
+    monkeypatch.setattr(policy_replay, "canonical_json", lambda _p: jcs_bytes)
+    monkeypatch.setattr(policy_replay, "legacy_canonical_json", lambda _p: legacy_bytes)
+
+    path_j = tmp_path / "jcs-divergent.json"
+    path_j.write_text(json.dumps({"signing_input": jcs_bytes}))
+    assert load_recorded_calls(path_j)[0].signing_input == jcs_bytes
+
+    path_l = tmp_path / "legacy-divergent.json"
+    path_l.write_text(json.dumps({"signing_input": legacy_bytes}))
+    assert load_recorded_calls(path_l)[0].signing_input == legacy_bytes
+
+
+def test_load_recorded_calls_accepts_legacy_pre_jcs_signing_input(tmp_path):
+    """Pre-cutover signing_input (legacy serializer) still loads for replay."""
+    payload = _golden_payload("denial_constraints.json")
+    legacy = legacy_canonical_json(payload)
+    jcs = canonical_json(payload)
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps({"signing_input": legacy}))
+    calls = load_recorded_calls(path)
+    assert len(calls) == 1
+    assert calls[0].signing_input == legacy
+    if legacy != jcs:
+        path_j = tmp_path / "jcs-divergent.json"
+        path_j.write_text(json.dumps({"signing_input": jcs}))
+        assert load_recorded_calls(path_j)[0].signing_input == jcs
+
+
+def test_load_recorded_calls_accepts_jcs_signing_input(tmp_path):
+    payload = _golden_payload("denial_constraints.json")
+    jcs = canonical_json(payload)
+    path = tmp_path / "jcs.json"
+    path.write_text(json.dumps({"signing_input": jcs}))
+    calls = load_recorded_calls(path)
+    assert len(calls) == 1
+    assert calls[0].signing_input == jcs
+
+
+def test_load_recorded_calls_rejects_non_matching_signing_input(tmp_path):
+    payload = _golden_payload("denial_constraints.json")
+    # Spaced JSON parses to the same object but matches neither serializer.
+    spaced = json.dumps(payload, separators=(", ", ": "))
+    assert spaced not in (canonical_json(payload), legacy_canonical_json(payload))
+    path = tmp_path / "forged.json"
+    path.write_text(json.dumps({"signing_input": spaced}))
+    with pytest.raises(ReplayError, match="not canonical gateway JSON"):
+        load_recorded_calls(path)
 
 
 def test_load_recorded_calls_rejects_unknown_outcome(tmp_path):

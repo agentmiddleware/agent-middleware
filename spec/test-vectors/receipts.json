@@ -614,8 +614,8 @@
         "kid": "sk_golden_0001",
         "alg": "Ed25519",
         "canonicalization": "awi-canonical-json/1",
-        "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"constraints_evaluated\":{\"jev_risk_guard\":{\"big\":9007199254740993,\"injected_instructions\":1.0,\"latency_ms\":0.0,\"tiny\":4e-05}},\"counterparty\":\"partner.example\",\"created_at\":\"2026-09-16T12:30:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"1e558b080489328b6279f7a0be3e2c7cb54361827ca1794f508662018c9d2a8b\",\"permit_digest\":\"d9b3c6d71c4ad21500425f018e7393200cd53bcfb1e9e9b520d549839181d62e\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"sequence\":0,\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-subject\"}",
-        "signature": "cC3zmFl7MYwctezFTub9XY1l7f3h9dUv8O9RVC1nqiIwoxtYE5affAFC62pwZ+MUYzvOSmM/r4TL8xUquwyODw=="
+        "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"aud_golden_0001\",\"constraints_evaluated\":{\"jev_risk_guard\":{\"big\":9007199254740992,\"injected_instructions\":1,\"latency_ms\":0,\"tiny\":0.00004}},\"counterparty\":\"partner.example\",\"created_at\":\"2026-09-16T12:30:00+00:00\",\"credits_authorized\":\"2.5\",\"credits_charged\":\"2.5\",\"key_id\":\"key_golden_0001\",\"kid\":\"sk_golden_0001\",\"ledger_entry_id\":\"led_golden_0001\",\"outcome\":\"success\",\"payload_hash\":\"918734f3d43031f663a01a76d0682899d8d9f2cfbc0cb07b349b911277d7f714\",\"permit_digest\":\"d9b3c6d71c4ad21500425f018e7393200cd53bcfb1e9e9b520d549839181d62e\",\"permit_id\":\"pmt_golden_0001\",\"receipt_id\":\"rcpt_golden_0001\",\"request_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"response_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"sequence\":0,\"tool\":\"golden-path-echo\",\"wallet_id\":\"agt-golden-subject\"}",
+        "signature": "EfkqkKhI6X+KohKlM6xWy3c0CYbXC83SZ1cw4RfhaQm19xUHRCTq5Da9n7fTtPyWT9xJJl1AEZZCqFgNHNQPBg=="
       },
       "expect": "verified"
     },
@@ -829,7 +829,7 @@
       "expect": "malformed"
     },
     {
-      "name": "p256.valid",
+      "name": "p256.genuine_unsupported",
       "bundle": {
         "receipt_id": "rcpt_golden_0001",
         "kid": "sk_p256_test",

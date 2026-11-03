@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -20,9 +21,11 @@ from app.db.models import IdempotencyRecordModel, PermitModel, ReceiptModel
 from app.schemas.trust import ActionPermitFields, ReceiptResponse
 from app.services.jev_guard_metadata import load_jev_guard_metadata
 from app.services.pricing import credit_amount_fits_storage
+from app.services.jcs import CanonicalizationError
 from app.services.signing_keys import (
     canonical_json,
     get_signing_key_service,
+    legacy_canonical_json,
     sha256_hex,
 )
 
@@ -248,7 +251,17 @@ class ReceiptService:
             except json.JSONDecodeError:
                 pass
         payload.update(_action_binding(model))
-        payload["payload_hash"] = sha256_hex(payload)
+        # Prefer JCS for the embedded hash. Historical constraints may not be
+        # JCS-canonicalizable (e.g. non-exact ints); fall back to the pre-cutover
+        # hash so dual-path verify can still try legacy candidates instead of
+        # raising (HTTP 500) before signing_message_candidates runs.
+        try:
+            payload["payload_hash"] = sha256_hex(payload)
+        except (CanonicalizationError, TypeError, ValueError):
+            body = {k: v for k, v in payload.items() if k != "payload_hash"}
+            payload["payload_hash"] = hashlib.sha256(
+                legacy_canonical_json(body).encode("utf-8")
+            ).hexdigest()
         return payload
 
     @staticmethod
@@ -348,9 +361,13 @@ class ReceiptService:
         }
         if _action_binding(model) != (action_binding or {}):
             raise ReceiptError("receipt_action_binding_conflict")
-        if canonical_json(
-            _loads_dict(model.constraints_evaluated_json)
-        ) != canonical_json(constraints_evaluated or {}):
+        try:
+            constraints_match = canonical_json(
+                _loads_dict(model.constraints_evaluated_json)
+            ) == canonical_json(constraints_evaluated or {})
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            raise ReceiptError("receipt_idempotency_conflict") from exc
+        if not constraints_match:
             raise ReceiptError("receipt_idempotency_conflict")
         for name, value in expected.items():
             stored = getattr(model, name)
@@ -547,7 +564,11 @@ class ReceiptService:
             effective_request_hash = request_hash.lower()
         else:
             assert request_payload is not None
-            effective_request_hash = sha256_hex(request_payload)
+            try:
+                effective_request_hash = sha256_hex(request_payload)
+            except (CanonicalizationError, TypeError, ValueError) as exc:
+                # Request payloads for new receipts must be JCS-canonicalizable.
+                raise ReceiptError("receipt_canonicalization_invalid") from exc
         response_hash: str | None
         if response_hash_override is not None:
             if dispatch_attempt_id is None or response_payload is None:
@@ -569,9 +590,15 @@ class ReceiptService:
         else:
             # Preserve the historical receipt hash for all callers that do not
             # opt into the linked dispatch result's UTF-8 canonical bytes.
-            response_hash = (
-                sha256_hex(response_payload) if response_payload is not None else None
-            )
+            try:
+                response_hash = (
+                    sha256_hex(response_payload)
+                    if response_payload is not None
+                    else None
+                )
+            except (CanonicalizationError, TypeError, ValueError) as exc:
+                # Response payloads for new receipts must be JCS-canonicalizable.
+                raise ReceiptError("receipt_canonicalization_invalid") from exc
 
         action_binding = await self.action_binding_for_permit(
             permit_id, session=session
@@ -753,19 +780,25 @@ class ReceiptService:
             payload["constraints_evaluated"] = constraints_evaluated
         payload.update(action_binding)
         signing_keys = get_signing_key_service()
-        if prepared_signing_key_id is None:
-            signature, signature_key_id, _ = await signing_keys.sign_payload(payload)
-        else:
-            if target_session is None:
-                raise ReceiptError("receipt_prepared_signing_key_requires_session")
-            await signing_keys.validate_prepared_signing_key(
-                prepared_signing_key_id,
-                session=target_session,
-            )
-            signature, signature_key_id, _ = signing_keys.sign_payload_with_key_id(
-                payload,
-                prepared_signing_key_id,
-            )
+        try:
+            if prepared_signing_key_id is None:
+                signature, signature_key_id, _ = await signing_keys.sign_payload(
+                    payload
+                )
+            else:
+                if target_session is None:
+                    raise ReceiptError("receipt_prepared_signing_key_requires_session")
+                await signing_keys.validate_prepared_signing_key(
+                    prepared_signing_key_id,
+                    session=target_session,
+                )
+                signature, signature_key_id, _ = signing_keys.sign_payload_with_key_id(
+                    payload,
+                    prepared_signing_key_id,
+                )
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            # New signatures are JCS-only; non-I-JSON values must not 500.
+            raise ReceiptError("receipt_canonicalization_invalid") from exc
 
         def build_model() -> ReceiptModel:
             """A fresh ORM instance for this receipt's already-fixed identity.
@@ -1084,13 +1117,14 @@ class ReceiptService:
         """
         signing_keys = get_signing_key_service()
         current_payload = self._verification_payload(model, include_linkage=True)
-        if await signing_keys.verify_payload(
+        matched = await signing_keys.matching_canonical_json(
             current_payload,
             signature=model.signature,
             key_id=model.signature_key_id,
             session=session,
-        ):
-            return canonical_json(current_payload)
+        )
+        if matched is not None:
+            return matched
 
         if not await self._has_unambiguous_historical_idempotency_link(
             model,
@@ -1098,14 +1132,12 @@ class ReceiptService:
         ):
             return None
         legacy_payload = self._verification_payload(model, include_linkage=False)
-        if await signing_keys.verify_payload(
+        return await signing_keys.matching_canonical_json(
             legacy_payload,
             signature=model.signature,
             key_id=model.signature_key_id,
             session=session,
-        ):
-            return canonical_json(legacy_payload)
-        return None
+        )
 
     async def signing_input(self, receipt_id: str) -> str | None:
         """Load a receipt and return the canonical bytes its signature covers."""

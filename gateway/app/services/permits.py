@@ -37,7 +37,14 @@ from app.services.ownership import (
     require_permit_party,
 )
 from app.services.wallet_hierarchy import wallet_strictly_governs
-from app.services.signing_keys import get_signing_key_service, sha256_hex
+import hashlib
+
+from app.services.jcs import CanonicalizationError
+from app.services.signing_keys import (
+    get_signing_key_service,
+    legacy_canonical_json,
+    sha256_hex,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -522,9 +529,13 @@ class PermitService:
         # Sign the same dict verify reconstructs. Building it twice let a
         # field added on one path only keep verifying in tests that never
         # round-tripped a freshly minted permit.
-        signature, key_id, _ = await get_signing_key_service().sign_payload(
-            self._unsigned_payload(model)
-        )
+        try:
+            signature, key_id, _ = await get_signing_key_service().sign_payload(
+                self._unsigned_payload(model)
+            )
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            # New signatures are JCS-only; non-I-JSON values must not 500.
+            raise PermitError("permit_canonicalization_invalid") from exc
         model.signature = signature
         model.key_id = key_id
         async with factory() as session:
@@ -2264,7 +2275,15 @@ class PermitService:
         payload = dict(PermitService._unsigned_payload(model))
         payload["alg"] = "Ed25519"
         payload["kid"] = model.key_id
-        payload["payload_hash"] = sha256_hex(payload)
+        # Same soft embed as receipts: JCS-rejected historical fields must not
+        # abort rebuild before legacy verify candidates run.
+        try:
+            payload["payload_hash"] = sha256_hex(payload)
+        except (CanonicalizationError, TypeError, ValueError):
+            body = {k: v for k, v in payload.items() if k != "payload_hash"}
+            payload["payload_hash"] = hashlib.sha256(
+                legacy_canonical_json(body).encode("utf-8")
+            ).hexdigest()
         return payload
 
     async def verify_signature(

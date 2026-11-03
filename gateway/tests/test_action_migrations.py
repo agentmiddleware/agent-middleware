@@ -29,7 +29,15 @@ FIELDS = (
     "action_public_tool_id",
     "action_upstream_binding_hash",
 )
-RECEIPT_PROVENANCE_FIELDS = ("enforcement_mode", "gateway_build")
+RECEIPT_PROVENANCE_FIELDS = (
+    "enforcement_mode",
+    "gateway_build",
+    "permit_digest",
+    "approval_digest",
+    "counterparty",
+    "sequence",
+    "prev_receipt_digest",
+)
 ACTION_REVISION = "042_permit_action_binding"
 SCRUB_REVISION = "041_scrub_content_owner_keys"
 CONTENT_TABLES = ("content_pipelines", "content_campaigns")

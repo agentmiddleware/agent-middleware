@@ -44,7 +44,7 @@ from app.schemas.trust import (
     ReceiptEvidenceResponse,
     ReceiptResponse,
 )
-from app.services.audit_chain import verify_audit_chain
+from app.services.audit_chain import verify_audit_event_link
 from app.services.permits import get_permit_service, permit_model_to_response
 from app.services.receipts import get_receipt_service
 
@@ -539,7 +539,11 @@ async def build_receipt_evidence(
                 )
             )
 
-            chain = await verify_audit_chain(wallet_id=receipt.wallet_id)
+            # Bounded: verify this receipt's own audit event and its link to
+            # the immediate predecessor. The whole-chain walk is not run here
+            # (it reads more rows as the wallet's history grows); POST
+            # /v1/audit/verify-chain walks the chain in pages.
+            chain = await verify_audit_event_link(audit_event)
             audit_chain_payload = AuditChainVerifyResponse(**asdict(chain))
             checks.append(
                 _check(
@@ -549,6 +553,8 @@ async def build_receipt_evidence(
                     details={
                         "checked_events": chain.checked_events,
                         "broken_event_id": chain.broken_event_id,
+                        "scope": "receipt_event_link",
+                        "chain_walk": "not_run",
                     },
                 )
             )
@@ -678,6 +684,13 @@ def build_evidence_bundle(evidence: ReceiptEvidenceResponse) -> EvidenceBundleRe
             "dispatch_linkage",
         ),
     }
+    # audit_chain covers the receipt's own audit event and its link to the
+    # immediate predecessor, not the whole wallet chain. Say so in the flat
+    # artifact, where a consumer reads it, not only in the nested details.
+    audit_check = checks_by_name.get("audit_chain")
+    audit_scope = audit_check.details.get("scope") if audit_check else None
+    if audit_scope:
+        verification["audit_chain_scope"] = str(audit_scope)
 
     return EvidenceBundleResponse(
         receipt_id=evidence.receipt_id,

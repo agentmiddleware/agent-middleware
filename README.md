@@ -11,6 +11,8 @@ published to PyPI or npm.
 
 Use the [hosted demo](https://github.com/agentmiddleware/amw-demo). Get a demo key at the [demo key page](https://www.agentmiddleware.dev/demo-key/). The example also needs the associated wallet ID.
 
+Connecting an MCP client to the hosted endpoint `https://api.agentmiddleware.dev/mcp`? [Get an API key](https://www.agentmiddleware.dev/demo-key/) and send it as the `X-API-Key` header.
+
 ```bash
 git clone https://github.com/agentmiddleware/amw-demo.git
 cd amw-demo

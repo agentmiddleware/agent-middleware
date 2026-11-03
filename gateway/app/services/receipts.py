@@ -564,7 +564,11 @@ class ReceiptService:
             effective_request_hash = request_hash.lower()
         else:
             assert request_payload is not None
-            effective_request_hash = sha256_hex(request_payload)
+            try:
+                effective_request_hash = sha256_hex(request_payload)
+            except (CanonicalizationError, TypeError, ValueError) as exc:
+                # Request payloads for new receipts must be JCS-canonicalizable.
+                raise ReceiptError("receipt_canonicalization_invalid") from exc
         response_hash: str | None
         if response_hash_override is not None:
             if dispatch_attempt_id is None or response_payload is None:
@@ -586,9 +590,15 @@ class ReceiptService:
         else:
             # Preserve the historical receipt hash for all callers that do not
             # opt into the linked dispatch result's UTF-8 canonical bytes.
-            response_hash = (
-                sha256_hex(response_payload) if response_payload is not None else None
-            )
+            try:
+                response_hash = (
+                    sha256_hex(response_payload)
+                    if response_payload is not None
+                    else None
+                )
+            except (CanonicalizationError, TypeError, ValueError) as exc:
+                # Response payloads for new receipts must be JCS-canonicalizable.
+                raise ReceiptError("receipt_canonicalization_invalid") from exc
 
         action_binding = await self.action_binding_for_permit(
             permit_id, session=session

@@ -803,6 +803,75 @@ async def test_create_receipt_maps_jcs_sign_reject_to_domain_error(
 
 
 @pytest.mark.anyio
+async def test_create_receipt_maps_jcs_reject_request_hash_to_domain_error(
+    client,
+    clean_database,
+):
+    """Out-of-range request ints must raise ReceiptError, not CanonicalizationError."""
+    # First integer above the JCS/I-JSON exact safe range (±(2**53 - 1)).
+    unsafe = 2**53 + 1
+    service = get_receipt_service()
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-jcs-req-tool",
+        idem_key="jcs-req-hash-reject-permit",
+    )
+    with pytest.raises(ReceiptError, match="receipt_canonicalization_invalid"):
+        await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool="receipt-jcs-req-tool",
+            request_payload={"n": unsafe},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal("1"),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id="idem_jcs_req_hash_reject",
+        )
+
+
+@pytest.mark.anyio
+async def test_create_receipt_maps_jcs_reject_response_hash_to_domain_error(
+    client,
+    clean_database,
+):
+    """Out-of-range response ints must raise ReceiptError, not CanonicalizationError."""
+    unsafe = 2**53 + 1
+    service = get_receipt_service()
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-jcs-resp-tool",
+        idem_key="jcs-resp-hash-reject-permit",
+    )
+    with pytest.raises(ReceiptError, match="receipt_canonicalization_invalid"):
+        await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool="receipt-jcs-resp-tool",
+            request_payload={"probe": "jcs-resp-hash"},
+            response_payload={"n": unsafe},
+            ledger_entry_id=None,
+            credits_authorized=Decimal("1"),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id="idem_jcs_resp_hash_reject",
+        )
+
+
+@pytest.mark.anyio
 async def test_create_receipt_binds_counterparty_on_failed_unrefunded(
     client,
     clean_database,

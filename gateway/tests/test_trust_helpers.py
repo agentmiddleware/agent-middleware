@@ -24,17 +24,24 @@ _SPONSOR_FUNDING = _SCHEMA_FUNDING * 2
 async def provision_agent_wallet(client: AsyncClient) -> dict[str, Any]:
     """Provision a unique agent wallet with structural asserts only.
 
-    Identifiers are per-call UUIDs (no fixed labels). Credit funding follows
-    the billing schema's auto_refill_amount default rather than invented
-    scenario constants; callers that need amounts read them from live
-    responses (wallet balance / permit max_credits).
+    Identifiers are opaque per-call uuid4 hex values (no invented names,
+    emails, or addresses). Credit funding follows the billing schema's
+    auto_refill_amount default rather than invented scenario constants;
+    callers that need amounts read them from live responses (wallet
+    balance / permit max_credits). Optional API-key fields use schema
+    defaults (key_name / expires_in_days omitted).
     """
-    token = uuid.uuid4().hex
+    # Opaque ids only — no sponsor-/agent-/key- prefixes or example.com.
+    sponsor_name = uuid.uuid4().hex
+    agent_id = uuid.uuid4().hex
+    # email is required by CreateSponsorWalletRequest; both labels are
+    # opaque uuid hex (no invented public domain).
+    email = f"{uuid.uuid4().hex}@{uuid.uuid4().hex}"
     sponsor_resp = await client.post(
         "/v1/billing/wallets/sponsor",
         json={
-            "sponsor_name": f"sponsor-{token}",
-            "email": f"{token}@example.com",
+            "sponsor_name": sponsor_name,
+            "email": email,
             "initial_credits": _SPONSOR_FUNDING,
             "require_kyc": False,
         },
@@ -49,7 +56,7 @@ async def provision_agent_wallet(client: AsyncClient) -> dict[str, Any]:
         "/v1/billing/wallets/agent",
         json={
             "sponsor_wallet_id": sponsor_wallet_id,
-            "agent_id": f"agent-{token}",
+            "agent_id": agent_id,
             "budget_credits": _SCHEMA_FUNDING,
         },
         headers=BOOTSTRAP_HEADERS,
@@ -60,13 +67,10 @@ async def provision_agent_wallet(client: AsyncClient) -> dict[str, Any]:
     assert isinstance(agent_wallet_id, str) and agent_wallet_id
     assert float(agent_body["balance"]) > 0
 
+    # Omit optional key_name / expires_in_days — schema defaults apply.
     key_resp = await client.post(
         "/v1/api-keys",
-        json={
-            "wallet_id": agent_wallet_id,
-            "key_name": f"key-{token}",
-            "expires_in_days": 30,
-        },
+        json={"wallet_id": agent_wallet_id},
         headers=BOOTSTRAP_HEADERS,
     )
     assert key_resp.status_code == 201

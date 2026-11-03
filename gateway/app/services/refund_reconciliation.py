@@ -294,6 +294,9 @@ class RefundReconciliationService:
                 try:
                     async with session.begin():
                         record = await validated_checkpoint(session, lock=True)
+                        # Capture before create_receipt: SQLite IntegrityError adopt
+                        # rolls back this begin() and expires the ORM record.
+                        record_id = record.record_id
                         receipt = await get_receipt_service().create_receipt(
                             permit_id=permit_id,
                             wallet_id=wallet_id,
@@ -307,7 +310,7 @@ class RefundReconciliationService:
                             outcome="failed_unrefunded",
                             audit_event_id=audit_event_id,
                             reason_code="refund_failed",
-                            idempotency_record_id=record.record_id,
+                            idempotency_record_id=record_id,
                             dispatch_attempt_id=dispatch_attempt_id,
                             approval_id=approval_id,
                             response_hash_override=response_hash_override,
@@ -318,7 +321,7 @@ class RefundReconciliationService:
                         # SQLite IntegrityError adopt rolls back this begin().
                         # Exit the context and finalize in a fresh transaction.
                         if not session.in_transaction():
-                            raise _AdoptedAfterCallerRollback(receipt, record.record_id)
+                            raise _AdoptedAfterCallerRollback(receipt, record_id)
                         reconciliation = finalize_record(record, receipt)
                         await session.flush()
                         return receipt, reconciliation

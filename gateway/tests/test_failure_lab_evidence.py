@@ -528,12 +528,12 @@ def test_integrity_check_handles_malformed_manifest_shapes(tmp_path, files):
 
 
 @pytest.mark.parametrize("bad_bytes", [True, "1", 1.0, 2])
-def test_integrity_check_reports_bad_byte_count_with_matching_hash(
-    tmp_path, bad_bytes
-):
+def test_integrity_check_reports_bad_byte_count_with_matching_hash(tmp_path, bad_bytes):
     bundle = tmp_path / "bundle"
     bundle.mkdir()
-    body = b"abc"  # 3 bytes, so none of the bad values match
+    # 1-byte body so True/"1"/1.0 are not rejected by size alone; locks the
+    # isinstance(expected_size, bool) and int-only guards in evidence.py.
+    body = b"x"
     (bundle / "file").write_bytes(body)
     _manifest(
         bundle,
@@ -547,6 +547,7 @@ def test_integrity_check_reports_bad_byte_count_with_matching_hash(
     )
     report = verify_bundle_integrity(bundle)
     assert not report.ok
+    assert report.checked == 1
     assert report.changed == []
     assert any("bytes on disk" in problem for problem in report.problems)
 

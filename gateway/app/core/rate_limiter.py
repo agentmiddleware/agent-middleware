@@ -113,8 +113,9 @@ def rate_limit_discovery() -> dict[str, Any]:
     """Describe the limit ``RateLimitMiddleware`` actually enforces.
 
     One budget per 60-second window, keyed by the ``X-API-Key`` header value.
-    Requests without a key are charged to a per-client anonymous bucket, plus a
-    deployment-wide anonymous backstop. There is no burst
+    Requests without a key are charged to a per-client anonymous bucket, plus
+    an anonymous backstop that is deployment-wide only while the counters are
+    shared (``counter_scope`` is ``shared_redis``). There is no burst
     allowance and no per-partner override; ``RATE_LIMIT_PER_MINUTE`` is the
     only knob, so this payload is derived from it rather than hardcoded. A
     burst of 40 requests will not 429: the 121st counted request in a 60-second
@@ -122,11 +123,22 @@ def rate_limit_discovery() -> dict[str, Any]:
 
     The budget and the window length are published; the counting algorithm is
     not, because it is not the same on both backends. The shared Redis limiter
-    counts fixed 60-second buckets, and the in-memory fallback — reached only
-    where a Redis outage does not fail closed, i.e. never in a production-like
-    environment — counts a rolling 60 seconds, which is strictly tighter.
-    ``window_accounting`` names that difference rather than letting a reader
-    infer one algorithm from ``window_seconds``.
+    counts fixed 60-second buckets, and the in-memory limiter counts a rolling
+    60 seconds, which is strictly tighter. ``window_accounting`` names that
+    difference rather than letting a reader infer one algorithm from
+    ``window_seconds``.
+
+    The configured counting backend is published as ``counter_scope``:
+    ``shared_redis`` when ``REDIS_URL`` is set, otherwise ``per_process``. It
+    reports configuration, not live state: with ``REDIS_URL`` set but
+    unreachable outside a production-like environment the limiter counts in
+    memory while the field still says ``shared_redis``. Without ``REDIS_URL``
+    every worker and replica keeps its own counters in any environment, so each
+    limit is multiplied by the process count. Only a production-like deployment
+    that sets ``REDIS_URL`` refuses to fall back to memory when Redis fails. A
+    production-like deployment without ``REDIS_URL`` is reported as degraded on
+    ``/health/dependencies`` (``runtime_degradation``, reason
+    ``rate_limiter_redis_not_configured``) and logged once at startup.
 
     Requests whose credentials the app does not accept — a ``401``, the
     ``403`` an unknown API key is answered with, or any request to a route
@@ -140,6 +152,7 @@ def rate_limit_discovery() -> dict[str, Any]:
         "requests_per_minute": cfg.RATE_LIMIT_PER_MINUTE,
         "window_seconds": 60,
         "window_accounting": "fixed_window_shared_rolling_window_in_memory",
+        "counter_scope": ("shared_redis" if cfg.REDIS_URL.strip() else "per_process"),
         "scope": "per_api_key",
         "unauthenticated_scope": "per_client_anonymous_bucket",
         "unauthenticated_global_multiplier": (

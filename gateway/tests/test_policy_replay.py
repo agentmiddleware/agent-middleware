@@ -33,6 +33,7 @@ from app.replay.policy_replay import (
     network_sealed,
     replay_calls,
 )
+from app.services.jcs import CanonicalizationError
 from app.services.signing_keys import (
     SigningKeyError,
     canonical_json,
@@ -555,6 +556,19 @@ def test_replay_insufficient_funds_with_policy_reason_stays_denied(tmp_path):
     assert claims["new_decision"] == "deny"
     assert claims["new_reason"] == "recorded_denial:tool_not_allowed"
     assert claims["change"] == "unchanged"
+
+
+def test_load_recorded_calls_survives_jcs_error_via_legacy(tmp_path):
+    """JCS CanonicalizationError must not abort before legacy is tried."""
+    payload = _record_payload(marker=2**53 + 1)
+    legacy = legacy_canonical_json(payload)
+    with pytest.raises(CanonicalizationError):
+        canonical_json(payload)
+    path = tmp_path / "legacy-large-int.json"
+    path.write_text(json.dumps({"signing_input": legacy}))
+    calls = load_recorded_calls(path)
+    assert len(calls) == 1
+    assert calls[0].signing_input == legacy
 
 
 def test_load_recorded_calls_accepts_legacy_pre_jcs_signing_input(tmp_path):

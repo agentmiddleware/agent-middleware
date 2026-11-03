@@ -270,11 +270,19 @@ def _record_to_call(source: str, record: Any) -> RecordedCall:
             f"{source}: recorded receipt field simulation must be a boolean"
         )
     # Accept JCS (post-cutover) or legacy pre-JCS bytes; gateway verify already
-    # dual-path. Reject anything that matches neither serializer.
-    if signing_input not in (
-        canonical_json(payload),
-        legacy_canonical_json(payload),
-    ):
+    # dual-path. Catch JCS failures so historical values (non-exact ints, NaN,
+    # lone surrogates) still try the legacy serializer.
+    from app.services.jcs import CanonicalizationError
+
+    matched = False
+    for serializer in (canonical_json, legacy_canonical_json):
+        try:
+            if serializer(payload) == signing_input:
+                matched = True
+                break
+        except (CanonicalizationError, TypeError, ValueError):
+            continue
+    if not matched:
         raise ReplayError(f"{source}: signing_input is not canonical gateway JSON")
     signature = record.get("signature") or record.get("signature_b64_over_test_seed")
     return RecordedCall(

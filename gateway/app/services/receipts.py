@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import uuid
@@ -20,9 +21,11 @@ from app.db.models import IdempotencyRecordModel, PermitModel, ReceiptModel
 from app.schemas.trust import ActionPermitFields, ReceiptResponse
 from app.services.jev_guard_metadata import load_jev_guard_metadata
 from app.services.pricing import credit_amount_fits_storage
+from app.services.jcs import CanonicalizationError
 from app.services.signing_keys import (
     canonical_json,
     get_signing_key_service,
+    legacy_canonical_json,
     sha256_hex,
 )
 
@@ -165,7 +168,17 @@ class ReceiptService:
             except json.JSONDecodeError:
                 pass
         payload.update(_action_binding(model))
-        payload["payload_hash"] = sha256_hex(payload)
+        # Prefer JCS for the embedded hash. Historical constraints may not be
+        # JCS-canonicalizable (e.g. non-exact ints); fall back to the pre-cutover
+        # hash so dual-path verify can still try legacy candidates instead of
+        # raising (HTTP 500) before signing_message_candidates runs.
+        try:
+            payload["payload_hash"] = sha256_hex(payload)
+        except (CanonicalizationError, TypeError, ValueError):
+            body = {k: v for k, v in payload.items() if k != "payload_hash"}
+            payload["payload_hash"] = hashlib.sha256(
+                legacy_canonical_json(body).encode("utf-8")
+            ).hexdigest()
         return payload
 
     @staticmethod

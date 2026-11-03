@@ -209,6 +209,14 @@ test("deeply nested payload without payload_hash still verifies", () => {
   assert.equal(statusOf(seal(body)), "verified");
 });
 
+test("canonicalJson rejects lone surrogates like Python/RFC 8785", () => {
+  assert.throws(() => canonicalJson("\uD800"), /lone Unicode surrogate|RFC 8785/);
+  assert.throws(() => canonicalJson({ k: "\uD800" }), /lone Unicode surrogate|RFC 8785/);
+  assert.throws(() => canonicalJson({ ["\uD800"]: 1 }), /lone Unicode surrogate|RFC 8785/);
+  // Paired surrogates (emoji) remain valid.
+  assert.equal(canonicalJson({ k: "\uD83D\uDE00" }), '{"k":"😀"}');
+});
+
 test("lone surrogate in a signed value is malformed", () => {
   const signingInput = '{"kid":"key-1","note":"\\ud800","receipt_id":"rcpt-1"}';
   const signature = sign(

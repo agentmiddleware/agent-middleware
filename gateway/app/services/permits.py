@@ -37,7 +37,14 @@ from app.services.ownership import (
     require_permit_party,
 )
 from app.services.wallet_hierarchy import wallet_strictly_governs
-from app.services.signing_keys import get_signing_key_service, sha256_hex
+import hashlib
+
+from app.services.jcs import CanonicalizationError
+from app.services.signing_keys import (
+    get_signing_key_service,
+    legacy_canonical_json,
+    sha256_hex,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2264,7 +2271,15 @@ class PermitService:
         payload = dict(PermitService._unsigned_payload(model))
         payload["alg"] = "Ed25519"
         payload["kid"] = model.key_id
-        payload["payload_hash"] = sha256_hex(payload)
+        # Same soft embed as receipts: JCS-rejected historical fields must not
+        # abort rebuild before legacy verify candidates run.
+        try:
+            payload["payload_hash"] = sha256_hex(payload)
+        except (CanonicalizationError, TypeError, ValueError):
+            body = {k: v for k, v in payload.items() if k != "payload_hash"}
+            payload["payload_hash"] = hashlib.sha256(
+                legacy_canonical_json(body).encode("utf-8")
+            ).hexdigest()
         return payload
 
     async def verify_signature(

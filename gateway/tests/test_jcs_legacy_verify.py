@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+
+import pytest
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -140,3 +143,99 @@ def test_jcs_rebuild_error_still_tries_legacy():
     assert messages, "expected at least one legacy candidate"
     legacy = legacy_canonical_json(payload).encode()
     assert legacy in messages
+
+
+def test_receipt_verification_payload_survives_jcs_rejected_constraints():
+    """Service-level: JCS-only sha256_hex must not abort receipt verify rebuild.
+
+    A historical constraints_evaluated value with a non-exact int (outside the
+    IEEE-754 exact range) is rejected by JCS. Reconstructing the verification
+    payload must fall through to the legacy serializer so verify does not 500.
+    """
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from app.db.models import ReceiptModel
+    from app.services.jcs import CanonicalizationError
+    from app.services.receipts import ReceiptService
+    from app.services.signing_keys import sha256_hex
+
+    non_exact = 9007199254740993  # 2**53 + 1; JCS rejects, legacy accepts
+    try:
+        sha256_hex({"n": non_exact})
+        raise AssertionError("expected JCS to reject non-exact int")
+    except CanonicalizationError:
+        pass
+
+    model = ReceiptModel(
+        receipt_id="rcpt_jcs_fallback_0001",
+        idempotency_record_id=None,
+        dispatch_attempt_id=None,
+        permit_id="pmt_jcs_fallback_0001",
+        wallet_id="agt-jcs-fallback-0001",
+        key_id="key_jcs_fallback_0001",
+        tool="jcs-fallback-tool",
+        request_hash="a" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        constraints_evaluated_json=json.dumps({"n": non_exact}),
+        created_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        signature="dGVzdA==",
+        signature_key_id="sk_jcs_fallback_0001",
+    )
+    payload = ReceiptService._verification_payload(model, include_linkage=True)
+    assert payload["constraints_evaluated"]["n"] == non_exact
+    assert len(payload["payload_hash"]) == 64
+    messages = signing_message_candidates(payload)
+    assert messages, "expected at least one legacy candidate after JCS rejection"
+    legacy = legacy_canonical_json(payload).encode()
+    assert legacy in messages
+
+
+@pytest.mark.anyio
+async def test_verify_model_does_not_raise_on_jcs_rejected_constraints(monkeypatch):
+    """verify_model must not surface CanonicalizationError as an HTTP 500."""
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from app.db.models import ReceiptModel
+    from app.services.receipts import ReceiptService
+    from app.services.signing_keys import get_signing_key_service
+
+    non_exact = 9007199254740993
+    model = ReceiptModel(
+        receipt_id="rcpt_jcs_verify_0001",
+        idempotency_record_id=None,
+        dispatch_attempt_id=None,
+        permit_id="pmt_jcs_verify_0001",
+        wallet_id="agt-jcs-verify-0001",
+        key_id="key_jcs_verify_0001",
+        tool="jcs-verify-tool",
+        request_hash="c" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        constraints_evaluated_json=json.dumps({"n": non_exact}),
+        created_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        signature="dGVzdA==",
+        signature_key_id="sk_jcs_verify_0001",
+    )
+
+    async def _ok(payload, **_kwargs):
+        # Rebuild already happened; payload must be usable for candidates.
+        assert signing_message_candidates(payload)
+        return True
+
+    monkeypatch.setattr(get_signing_key_service(), "verify_payload", _ok)
+    assert await ReceiptService().verify_model(model) is True

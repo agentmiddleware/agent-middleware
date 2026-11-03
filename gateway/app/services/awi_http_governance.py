@@ -8,13 +8,16 @@ headers as governed MCP tools, then meter and receipt the attempt.
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from types import FunctionType
+from typing import Any, Literal
 
 from fastapi import Header, HTTPException, status
 
@@ -38,6 +41,7 @@ from app.services.idempotency import (
 from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from app.services.receipts import get_receipt_service
+from app.services.signing_keys import canonical_json, sha256_hex
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +80,100 @@ class AwiHttpGovernedContext:
     dispatch_started: bool = False
     finalization_started: bool = False
     finalized: bool = False
+
+
+@dataclass(frozen=True)
+class AwiStatusQuery:
+    """Read-only request identity, without raw action arguments."""
+
+    tool_name: str
+    permit_id: str
+    idempotency_key: str
+    wallet_id: str
+    endpoint: str
+    record_id: str | None
+    request_hash: str
+
+
+@dataclass(frozen=True)
+class AwiStatusAnswer:
+    """Authoritative effect status. Non-dispatch must rule out any later effect.
+
+    Delivered retains the charge but cannot turn a failed HTTP response into
+    success. Unknown (or None) leaves the existing uncertain outcome intact.
+    """
+
+    effect_status: Literal["unknown", "not_dispatched", "delivered"]
+
+
+AwiStatusLookup = Callable[[AwiStatusQuery], Awaitable[AwiStatusAnswer | None]]
+STATUS_LOOKUP_TIMEOUT_SECONDS = 5.0
+_REGISTERED_AWI_STATUS_LOOKUP: AwiStatusLookup | None = None
+
+
+def register_awi_status_lookup(lookup: AwiStatusLookup) -> None:
+    """Install a process-wide, read-only async lookup; none is installed by default.
+
+    Never dispatch or retry an action here. Synchronous functions (including
+    marked coroutine functions) are rejected because waiting cannot bound them.
+    Registering again replaces the lookup.
+    """
+    target: Any = lookup
+    for _ in range(16):
+        if isinstance(target, functools.partial):
+            target = target.func
+        elif inspect.ismethod(target):
+            target = target.__func__
+        elif isinstance(target, FunctionType) or isinstance(target, type):
+            break
+        elif callable(target):
+            target = type(target).__call__
+        else:
+            break
+    if not (
+        isinstance(target, FunctionType)
+        and target.__code__.co_flags & inspect.CO_COROUTINE
+    ):
+        raise TypeError("status lookup must be an async callable")
+    global _REGISTERED_AWI_STATUS_LOOKUP
+    _REGISTERED_AWI_STATUS_LOOKUP = lookup
+
+
+async def _awi_uncertain_outcome(ctx: AwiHttpGovernedContext) -> str:
+    lookup = _REGISTERED_AWI_STATUS_LOOKUP
+    if lookup is not None:
+        try:
+            query = AwiStatusQuery(
+                tool_name=ctx.tool_name,
+                permit_id=ctx.permit_id,
+                idempotency_key=ctx.idempotency_key,
+                wallet_id=ctx.wallet_id,
+                endpoint=ctx.endpoint,
+                record_id=ctx.record_id,
+                request_hash=sha256_hex(
+                    canonical_json(
+                        _request_identity(
+                            ctx.wallet_id,
+                            ctx.permit_id,
+                            ctx.tool_name,
+                            ctx.request_payload,
+                        )
+                    )
+                ),
+            )
+            answer = await asyncio.wait_for(
+                lookup(query), timeout=STATUS_LOOKUP_TIMEOUT_SECONDS
+            )
+        except Exception:
+            # Provider failures must not change money movement or expose data.
+            answer = None
+        if (
+            isinstance(answer, AwiStatusAnswer)
+            and answer.effect_status == "not_dispatched"
+        ):
+            await _refund_undispatched(ctx)
+            return "failed_refunded"
+    return "delivery_uncertain"
 
 
 def _credits_for(tool_name: str) -> Decimal:
@@ -524,8 +622,8 @@ async def complete_awi_http_governed(
             outcome = "failed_refunded"
         else:
             # Zero completed commands and thrown exceptions do not prove that
-            # the first command had no effect. Keep the debit and reservation.
-            outcome = "delivery_uncertain"
+            # the first command had no effect. Only lookup proof can refund.
+            outcome = await _awi_uncertain_outcome(ctx)
     return await _finalize_awi_http(
         ctx,
         response_payload=response_payload,
@@ -569,7 +667,7 @@ async def raise_awi_http_error(
             status_code=503, detail={"error": "awi_finalization_incomplete"}
         )
     if ctx.dispatch_started:
-        outcome = "delivery_uncertain"
+        outcome = await _awi_uncertain_outcome(ctx)
     elif ctx.ledger_entry_id:
         await _refund_undispatched(ctx)
         outcome = "failed_refunded"

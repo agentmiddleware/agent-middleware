@@ -39,11 +39,15 @@ After a successful downgrade, only pre-056-shaped receipts remain.
 
 If you must roll back past 056:
 
-1. Take a backup that still has the five columns (or keep the pre-downgrade
-   snapshot).
+1. Take a backup that still has the five columns (needed later if you must
+   recover cleared signed receipts). Keep a separate pre-056 backup as the
+   Step 2 restore point.
 2. Clear or archive every receipt that carries non-NULL digest/chain values,
-   then run the 056 downgrade; or restore the backup instead of downgrading.
+   then run the 056 downgrade; or restore the pre-056 backup instead of
+   downgrading. Restoring the Step 1 (post-056) backup leaves the five
+   columns in place and a 055-packaged image will not start against that
+   schema.
 3. To move forward again, deploy a 056-capable image and upgrade to head.
    New receipts can re-populate digests; previously signed post-056 rows that
-   were cleared are not reconstructed automatically -- restore them from the
+   were cleared are not reconstructed automatically. Restore them from the
    backup if verifiers still need those exact signed fields.

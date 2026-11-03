@@ -145,18 +145,33 @@ def signing_message_candidates(payload: dict[str, Any]) -> list[bytes]:
 
     Prefer current JCS bytes; fall back to the pre-JCS ``json.dumps`` form so
     historical float / non-ASCII signatures keep verifying after the cutover.
+
+    When ``payload_hash`` is present, each candidate rebuilds that hash with the
+    same serializer that emits the message. ``ReceiptService`` /
+    ``PermitService`` ``_verification_payload`` always recompute the hash with
+    the current JCS helper; without a per-layout rebuild, the legacy candidate
+    would carry a JCS hash and never match a pre-cutover signature.
     """
     from app.services.jcs import CanonicalizationError
 
+    def _hash_with(serializer: Any, body: dict[str, Any]) -> str:
+        return hashlib.sha256(serializer(body).encode("utf-8")).hexdigest()
+
+    def _candidate(serializer: Any) -> bytes | None:
+        try:
+            if "payload_hash" not in payload:
+                return serializer(payload).encode("utf-8")
+            rebuilt = {k: v for k, v in payload.items() if k != "payload_hash"}
+            rebuilt["payload_hash"] = _hash_with(serializer, rebuilt)
+            return serializer(rebuilt).encode("utf-8")
+        except (CanonicalizationError, TypeError, ValueError):
+            return None
+
     candidates: list[bytes] = []
-    try:
-        candidates.append(canonical_json(payload).encode("utf-8"))
-    except (CanonicalizationError, TypeError, ValueError):
-        pass
-    try:
-        candidates.append(legacy_canonical_json(payload).encode("utf-8"))
-    except (TypeError, ValueError):
-        pass
+    for serializer in (canonical_json, legacy_canonical_json):
+        message = _candidate(serializer)
+        if message is not None:
+            candidates.append(message)
     seen: set[bytes] = set()
     unique: list[bytes] = []
     for message in candidates:

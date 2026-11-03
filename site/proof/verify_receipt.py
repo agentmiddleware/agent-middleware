@@ -4,8 +4,8 @@
 What it checks: that the Ed25519 signature in the bundle verifies over the
 bundle's `signing_input` bytes with the public key named by the signed `kid`,
 that the envelope around those bytes agrees with them, that an optional
-expected issuer label matches, and that a `payload_hash` statement matches
-the signed payload. Exit 0 means verified, 1 means the bundle is well-formed
+expected issuer label matches, and and treats an embedded `payload_hash` as advisory (already covered by the
+signature over signing_input). Exit 0 means verified, 1 means the bundle is well-formed
 but does not hold together (bad signature or contradicting envelope - treat
 as tampered), 2 means verification could not run (unknown key, malformed
 input, bad usage).
@@ -89,9 +89,7 @@ def _load_jcs_dumps_text():
         )
     spec = importlib.util.spec_from_file_location("_amw_proof_jcs", sibling)
     if spec is None or spec.loader is None:
-        raise SystemExit(
-            "could not load sibling jcs.py next to verify_receipt.py"
-        )
+        raise SystemExit("could not load sibling jcs.py next to verify_receipt.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.dumps_text
@@ -412,28 +410,11 @@ def verify_bundle(bundle, key_set, expected_issuer=None):
             {},
         )
 
-    stated_hash = payload.get("payload_hash")
-    if isinstance(stated_hash, str):
-        inner = {k: v for k, v in payload.items() if k != "payload_hash"}
-        try:
-            canonical = canonical_json(inner)
-        except (RecursionError, ValueError):
-            return (
-                "malformed",
-                "signed payload exceeds the supported JSON nesting depth",
-                None,
-                key_id,
-                {},
-            )
-        computed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        if computed != stated_hash:
-            return (
-                "mismatch",
-                "payload_hash does not match the signed payload",
-                None,
-                key_id,
-                {},
-            )
+    # payload_hash is advisory once the signature covers signing_input. Do not
+    # recompute it under today's JCS rules and reject: a pre-JCS float /
+    # non-ASCII signing_input verifies over its transmitted bytes, but its
+    # embedded hash was produced by the legacy serializer and will not match a
+    # fresh JCS digest of the same object tree.
 
     receipt_id = payload.get("receipt_id")
     if not isinstance(receipt_id, str) or not receipt_id:

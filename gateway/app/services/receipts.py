@@ -89,6 +89,31 @@ def receipt_enforcement_mode() -> str | None:
     return "permissive"
 
 
+async def permit_digest_for_permit_id(
+    permit_id: str,
+    *,
+    session: AsyncSession | None = None,
+) -> str | None:
+    """SHA-256 of the permit's exact signing_input UTF-8 bytes, when rebuildable."""
+    from app.services.permits import PermitService
+
+    async def _compute(target: AsyncSession) -> str | None:
+        model = await target.get(PermitModel, permit_id)
+        if model is None:
+            return None
+        try:
+            payload = PermitService._verification_payload(model)
+        except ValueError:
+            return None
+        return sha256_hex(canonical_json(payload))
+
+    if session is not None:
+        return await _compute(session)
+    factory = get_session_factory()
+    async with factory() as owned:
+        return await _compute(owned)
+
+
 def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
     return ReceiptResponse(
         **_action_binding(model),
@@ -110,6 +135,11 @@ def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
         gateway_build=model.gateway_build,
         audit_event_id=model.audit_event_id,
         approval_id=model.approval_id,
+        permit_digest=model.permit_digest,
+        approval_digest=model.approval_digest,
+        counterparty=model.counterparty,
+        sequence=model.sequence,
+        prev_receipt_digest=model.prev_receipt_digest,
         constraints_evaluated=_loads_dict(model.constraints_evaluated_json),
         created_at=model.created_at,
         signature=model.signature,
@@ -156,6 +186,18 @@ class ReceiptService:
         # remains part of both current and constrained legacy signatures.
         if model.approval_id is not None:
             payload["approval_id"] = model.approval_id
+        # Digest/chain fields (056): signed only when set so pre-056 receipts
+        # keep verifying. sequence 0 omits prev_receipt_digest.
+        if model.permit_digest is not None:
+            payload["permit_digest"] = model.permit_digest
+        if model.approval_digest is not None:
+            payload["approval_digest"] = model.approval_digest
+        if model.counterparty is not None:
+            payload["counterparty"] = model.counterparty
+        if model.sequence is not None:
+            payload["sequence"] = model.sequence
+        if model.prev_receipt_digest is not None:
+            payload["prev_receipt_digest"] = model.prev_receipt_digest
         # Permit schema v2: constraints_evaluated signed when present
         if model.constraints_evaluated_json is not None:
             try:
@@ -232,6 +274,11 @@ class ReceiptService:
         reason_code: str | None,
         audit_event_id: str | None,
         approval_id: str | None,
+        permit_digest: str | None = None,
+        approval_digest: str | None = None,
+        counterparty: str | None = None,
+        sequence: int | None = None,
+        prev_receipt_digest: str | None = None,
         constraints_evaluated: dict[str, Any] | None = None,
         action_binding: dict[str, Any] | None = None,
     ) -> None:
@@ -252,6 +299,11 @@ class ReceiptService:
             "reason_code": reason_code,
             "audit_event_id": audit_event_id,
             "approval_id": approval_id,
+            "permit_digest": permit_digest,
+            "approval_digest": approval_digest,
+            "counterparty": counterparty,
+            "sequence": sequence,
+            "prev_receipt_digest": prev_receipt_digest,
         }
         if _action_binding(model) != (action_binding or {}):
             raise ReceiptError("receipt_action_binding_conflict")
@@ -339,6 +391,11 @@ class ReceiptService:
         response_hash_override: str | None = None,
         session: AsyncSession | None = None,
         approval_id: str | None = None,
+        permit_digest: str | None = None,
+        approval_digest: str | None = None,
+        counterparty: str | None = None,
+        sequence: int | None = None,
+        prev_receipt_digest: str | None = None,
         constraints_evaluated: dict[str, Any] | None = None,
         prepared_signing_key_id: str | None = None,
     ) -> ReceiptResponse:
@@ -402,6 +459,48 @@ class ReceiptService:
             permit_id, session=session
         )
 
+        # Resolve digest/chain fields before signing. permit_digest is computed
+        # from the live permit when the caller did not pass one; sequence
+        # defaults to 0 for new receipts (callers that chain pass a higher
+        # value and the previous digest). prev_receipt_digest is omitted at 0.
+        effective_permit_digest = permit_digest
+        if effective_permit_digest is None:
+            effective_permit_digest = await permit_digest_for_permit_id(
+                permit_id, session=session
+            )
+        effective_sequence = 0 if sequence is None else sequence
+        if effective_sequence < 0:
+            raise ReceiptError("receipt_sequence_invalid")
+        if effective_sequence == 0:
+            effective_prev_receipt_digest = None
+        else:
+            effective_prev_receipt_digest = prev_receipt_digest
+            if effective_prev_receipt_digest is None:
+                raise ReceiptError("receipt_prev_digest_required")
+            if len(effective_prev_receipt_digest) != 64:
+                raise ReceiptError("receipt_prev_digest_invalid")
+            try:
+                int(effective_prev_receipt_digest, 16)
+            except ValueError as exc:
+                raise ReceiptError("receipt_prev_digest_invalid") from exc
+            effective_prev_receipt_digest = effective_prev_receipt_digest.lower()
+        if effective_permit_digest is not None:
+            if len(effective_permit_digest) != 64:
+                raise ReceiptError("receipt_permit_digest_invalid")
+            try:
+                int(effective_permit_digest, 16)
+            except ValueError as exc:
+                raise ReceiptError("receipt_permit_digest_invalid") from exc
+            effective_permit_digest = effective_permit_digest.lower()
+        if approval_digest is not None:
+            if len(approval_digest) != 64:
+                raise ReceiptError("receipt_approval_digest_invalid")
+            try:
+                int(approval_digest, 16)
+            except ValueError as exc:
+                raise ReceiptError("receipt_approval_digest_invalid") from exc
+            approval_digest = approval_digest.lower()
+
         async def existing_response(
             target_session: AsyncSession,
         ) -> ReceiptResponse | None:
@@ -438,6 +537,11 @@ class ReceiptService:
                 reason_code=reason_code,
                 audit_event_id=audit_event_id,
                 approval_id=approval_id,
+                permit_digest=effective_permit_digest,
+                approval_digest=approval_digest,
+                counterparty=counterparty,
+                sequence=effective_sequence,
+                prev_receipt_digest=effective_prev_receipt_digest,
                 constraints_evaluated=replay_constraints,
                 action_binding=action_binding,
             )
@@ -490,6 +594,15 @@ class ReceiptService:
         # field existed keep verifying (verify_receipt mirrors this).
         if approval_id is not None:
             payload["approval_id"] = approval_id
+        if effective_permit_digest is not None:
+            payload["permit_digest"] = effective_permit_digest
+        if approval_digest is not None:
+            payload["approval_digest"] = approval_digest
+        if counterparty is not None:
+            payload["counterparty"] = counterparty
+        payload["sequence"] = effective_sequence
+        if effective_prev_receipt_digest is not None:
+            payload["prev_receipt_digest"] = effective_prev_receipt_digest
         if constraints_evaluated:
             payload["constraints_evaluated"] = constraints_evaluated
         payload.update(action_binding)
@@ -538,6 +651,11 @@ class ReceiptService:
                 gateway_build=gateway_build,
                 audit_event_id=audit_event_id,
                 approval_id=approval_id,
+                permit_digest=effective_permit_digest,
+                approval_digest=approval_digest,
+                counterparty=counterparty,
+                sequence=effective_sequence,
+                prev_receipt_digest=effective_prev_receipt_digest,
                 constraints_evaluated_json=json.dumps(constraints_evaluated)
                 if constraints_evaluated
                 else None,

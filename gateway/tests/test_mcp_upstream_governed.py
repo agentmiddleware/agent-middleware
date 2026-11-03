@@ -1669,6 +1669,7 @@ async def test_unicode_returned_error_keeps_linked_evidence_if_refund_fails(
         )
         assert persisted.attempt.approval_id == approval_id
         assert persisted.receipt.approval_id == approval_id
+        assert persisted.receipt.counterparty == "partner.example"
         assert persisted.attempt.response_hash is not None
         valid, reason, _ = await get_receipt_service().verify_receipt(
             persisted.receipt.receipt_id
@@ -2432,6 +2433,7 @@ async def test_confirmed_upstream_failures_refund_and_replay_without_redispatch(
         receipt = first.json()["error"]["data"]["receipt"]
         assert receipt["outcome"] == "failed_refunded"
         assert receipt["credits_charged"] == "0"
+        assert receipt["counterparty"] == "partner.example"
         assert executor.dispatch_count == expected_dispatch_count
         assert len(executor.calls) == 1
 

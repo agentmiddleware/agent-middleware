@@ -28,6 +28,20 @@ from app.services.signing_keys import (
 
 
 _REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
+_SHA256_HEX_PATTERN = re.compile(r"[0-9a-fA-F]{64}\Z")
+# Additive 056 fields: pre-056 rows store NULL. Idempotent retries may compute
+# a live permit_digest (or leave sequence unset) while the adopted row still
+# has NULL; treat historical omission as a match and only conflict when the
+# stored value was signed and differs.
+_ADDITIVE_PROVENANCE_FIELDS = frozenset(
+    {
+        "permit_digest",
+        "approval_digest",
+        "counterparty",
+        "sequence",
+        "prev_receipt_digest",
+    }
+)
 _RECEIPT_OUTCOMES = frozenset(
     {
         "success",
@@ -89,6 +103,58 @@ def receipt_enforcement_mode() -> str | None:
     return "permissive"
 
 
+async def permit_digest_for_permit_id(
+    permit_id: str,
+    *,
+    session: AsyncSession | None = None,
+) -> str | None:
+    """SHA-256 of the permit's exact signing_input UTF-8 bytes, when rebuildable."""
+    from app.services.permits import PermitService
+
+    async def _compute(target: AsyncSession) -> str | None:
+        model = await target.get(PermitModel, permit_id)
+        if model is None:
+            return None
+        try:
+            payload = PermitService._verification_payload(model)
+        except ValueError:
+            return None
+        return sha256_hex(canonical_json(payload))
+
+    if session is not None:
+        return await _compute(session)
+    factory = get_session_factory()
+    async with factory() as owned:
+        return await _compute(owned)
+
+
+async def receipt_digest_for_model(
+    model: ReceiptModel,
+    *,
+    session: AsyncSession | None = None,
+) -> str | None:
+    """SHA-256 of a receipt's exact signing_input UTF-8 bytes, when verifiable."""
+    signing_input = await ReceiptService().signing_input_for_model(
+        model, session=session
+    )
+    if signing_input is None:
+        return None
+    return sha256_hex(signing_input)
+
+
+def _is_receipt_sequence_conflict(exc: IntegrityError) -> bool:
+    """True when the DB rejected a duplicate opted-in (permit_id, sequence)."""
+    message = str(getattr(exc, "orig", exc)).lower()
+    if "uq_receipts_permit_sequence" in message:
+        return True
+    # SQLite: UNIQUE constraint failed: receipts.permit_id, receipts.sequence
+    return (
+        "permit_id" in message
+        and "sequence" in message
+        and ("unique" in message or "duplicate" in message)
+    )
+
+
 def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
     return ReceiptResponse(
         **_action_binding(model),
@@ -110,6 +176,11 @@ def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
         gateway_build=model.gateway_build,
         audit_event_id=model.audit_event_id,
         approval_id=model.approval_id,
+        permit_digest=model.permit_digest,
+        approval_digest=model.approval_digest,
+        counterparty=model.counterparty,
+        sequence=model.sequence,
+        prev_receipt_digest=model.prev_receipt_digest,
         constraints_evaluated=_loads_dict(model.constraints_evaluated_json),
         created_at=model.created_at,
         signature=model.signature,
@@ -156,6 +227,18 @@ class ReceiptService:
         # remains part of both current and constrained legacy signatures.
         if model.approval_id is not None:
             payload["approval_id"] = model.approval_id
+        # Digest/chain fields (056): signed only when set so pre-056 receipts
+        # keep verifying. sequence 0 (when set) omits prev_receipt_digest.
+        if model.permit_digest is not None:
+            payload["permit_digest"] = model.permit_digest
+        if model.approval_digest is not None:
+            payload["approval_digest"] = model.approval_digest
+        if model.counterparty is not None:
+            payload["counterparty"] = model.counterparty
+        if model.sequence is not None:
+            payload["sequence"] = model.sequence
+        if model.prev_receipt_digest is not None:
+            payload["prev_receipt_digest"] = model.prev_receipt_digest
         # Permit schema v2: constraints_evaluated signed when present
         if model.constraints_evaluated_json is not None:
             try:
@@ -232,6 +315,11 @@ class ReceiptService:
         reason_code: str | None,
         audit_event_id: str | None,
         approval_id: str | None,
+        permit_digest: str | None = None,
+        approval_digest: str | None = None,
+        counterparty: str | None = None,
+        sequence: int | None = None,
+        prev_receipt_digest: str | None = None,
         constraints_evaluated: dict[str, Any] | None = None,
         action_binding: dict[str, Any] | None = None,
     ) -> None:
@@ -252,6 +340,11 @@ class ReceiptService:
             "reason_code": reason_code,
             "audit_event_id": audit_event_id,
             "approval_id": approval_id,
+            "permit_digest": permit_digest,
+            "approval_digest": approval_digest,
+            "counterparty": counterparty,
+            "sequence": sequence,
+            "prev_receipt_digest": prev_receipt_digest,
         }
         if _action_binding(model) != (action_binding or {}):
             raise ReceiptError("receipt_action_binding_conflict")
@@ -259,8 +352,14 @@ class ReceiptService:
             _loads_dict(model.constraints_evaluated_json)
         ) != canonical_json(constraints_evaluated or {}):
             raise ReceiptError("receipt_idempotency_conflict")
-        if any(getattr(model, name) != value for name, value in expected.items()):
-            raise ReceiptError("receipt_idempotency_conflict")
+        for name, value in expected.items():
+            stored = getattr(model, name)
+            if name in _ADDITIVE_PROVENANCE_FIELDS and stored is None:
+                # Pre-056 omission: adopt the existing receipt even when this
+                # retry would freshly compute or omit the additive field.
+                continue
+            if stored != value:
+                raise ReceiptError("receipt_idempotency_conflict")
 
     @staticmethod
     async def _get_by_idempotency_record(
@@ -318,6 +417,77 @@ class ReceiptService:
                 return {**(constraints_evaluated or {}), "jev_risk_guard": jev}
         return constraints_evaluated
 
+    async def _assert_opted_in_chain(
+        self,
+        session: AsyncSession,
+        *,
+        permit_id: str,
+        sequence: int | None,
+        prev_receipt_digest: str | None,
+        idempotency_record_id: str | None = None,
+    ) -> ReceiptModel | None:
+        """Bind opted-in sequence/prev to the predecessor under this permit.
+
+        Application SELECT rejects an already-visible duplicate sequence as a
+        fast path. Migration 057 / ``uq_receipts_permit_sequence`` is the
+        concurrent-write safety net (IntegrityError -> adopt same
+        ``idempotency_record_id`` when present, else ``receipt_sequence_conflict``).
+        When the visible row is the same ``idempotency_record_id``, return that
+        model so the caller can adopt instead of raising. For ``sequence > 0``,
+        the predecessor at ``sequence - 1`` must exist, verify, and hash to
+        ``prev_receipt_digest``.
+        """
+        if sequence is None:
+            return None
+        conflict = (
+            await session.execute(
+                select(ReceiptModel)
+                .where(
+                    cast(ColumnElement[bool], ReceiptModel.permit_id == permit_id),
+                    cast(ColumnElement[bool], ReceiptModel.sequence == sequence),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if conflict is not None:
+            if (
+                idempotency_record_id is not None
+                and conflict.idempotency_record_id == idempotency_record_id
+            ):
+                return conflict
+            raise ReceiptError("receipt_sequence_conflict")
+        if sequence == 0:
+            return None
+        if prev_receipt_digest is None:
+            raise ReceiptError("receipt_prev_digest_required")
+        predecessors = (
+            (
+                await session.execute(
+                    select(ReceiptModel)
+                    .where(
+                        cast(ColumnElement[bool], ReceiptModel.permit_id == permit_id),
+                        cast(
+                            ColumnElement[bool],
+                            ReceiptModel.sequence == sequence - 1,
+                        ),
+                    )
+                    .limit(2)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(predecessors) != 1:
+            raise ReceiptError("receipt_prev_not_found")
+        predecessor = predecessors[0]
+        actual = await receipt_digest_for_model(predecessor, session=session)
+        if actual is None:
+            raise ReceiptError("receipt_prev_unverified")
+        if actual != prev_receipt_digest:
+            raise ReceiptError("receipt_prev_digest_mismatch")
+
+        return None
+
     async def create_receipt(
         self,
         *,
@@ -339,6 +509,11 @@ class ReceiptService:
         response_hash_override: str | None = None,
         session: AsyncSession | None = None,
         approval_id: str | None = None,
+        permit_digest: str | None = None,
+        approval_digest: str | None = None,
+        counterparty: str | None = None,
+        sequence: int | None = None,
+        prev_receipt_digest: str | None = None,
         constraints_evaluated: dict[str, Any] | None = None,
         prepared_signing_key_id: str | None = None,
     ) -> ReceiptResponse:
@@ -402,6 +577,48 @@ class ReceiptService:
             permit_id, session=session
         )
 
+        # Resolve digest/chain fields before signing. permit_digest is computed
+        # from the live permit when the caller did not pass one; a caller-supplied
+        # value must match that artifact digest. sequence and prev_receipt_digest
+        # stay unset until a caller opts into the per-permit chain (no silent
+        # sequence=0); when sequence is 0, prev is omitted. Opted-in sequence
+        # values are uniqueness-checked and (for sequence > 0) bound to the
+        # predecessor under the same permit.
+        live_permit_digest = await permit_digest_for_permit_id(
+            permit_id, session=session
+        )
+        effective_permit_digest: str | None = live_permit_digest
+        if permit_digest is not None:
+            if _SHA256_HEX_PATTERN.fullmatch(permit_digest) is None:
+                raise ReceiptError("receipt_permit_digest_invalid")
+            supplied_permit_digest = permit_digest.lower()
+            if (
+                live_permit_digest is None
+                or supplied_permit_digest != live_permit_digest
+            ):
+                raise ReceiptError("receipt_permit_digest_mismatch")
+            effective_permit_digest = live_permit_digest
+        effective_sequence = sequence
+        if effective_sequence is not None and effective_sequence < 0:
+            raise ReceiptError("receipt_sequence_invalid")
+        if effective_sequence is None or effective_sequence == 0:
+            effective_prev_receipt_digest = None
+        else:
+            effective_prev_receipt_digest = prev_receipt_digest
+            if effective_prev_receipt_digest is None:
+                raise ReceiptError("receipt_prev_digest_required")
+            if _SHA256_HEX_PATTERN.fullmatch(effective_prev_receipt_digest) is None:
+                raise ReceiptError("receipt_prev_digest_invalid")
+            effective_prev_receipt_digest = effective_prev_receipt_digest.lower()
+        if effective_permit_digest is not None:
+            if _SHA256_HEX_PATTERN.fullmatch(effective_permit_digest) is None:
+                raise ReceiptError("receipt_permit_digest_invalid")
+            effective_permit_digest = effective_permit_digest.lower()
+        if approval_digest is not None:
+            if _SHA256_HEX_PATTERN.fullmatch(approval_digest) is None:
+                raise ReceiptError("receipt_approval_digest_invalid")
+            approval_digest = approval_digest.lower()
+
         async def existing_response(
             target_session: AsyncSession,
         ) -> ReceiptResponse | None:
@@ -438,6 +655,11 @@ class ReceiptService:
                 reason_code=reason_code,
                 audit_event_id=audit_event_id,
                 approval_id=approval_id,
+                permit_digest=effective_permit_digest,
+                approval_digest=approval_digest,
+                counterparty=counterparty,
+                sequence=effective_sequence,
+                prev_receipt_digest=effective_prev_receipt_digest,
                 constraints_evaluated=replay_constraints,
                 action_binding=action_binding,
             )
@@ -454,6 +676,33 @@ class ReceiptService:
                 existing = await existing_response(target_session)
             if existing is not None:
                 return existing
+
+        async def _run_chain_assert(
+            target: AsyncSession,
+        ) -> ReceiptResponse | None:
+            conflict = await self._assert_opted_in_chain(
+                target,
+                permit_id=permit_id,
+                sequence=effective_sequence,
+                prev_receipt_digest=effective_prev_receipt_digest,
+                idempotency_record_id=idempotency_record_id,
+            )
+            if conflict is not None:
+                existing = await existing_response(target)
+                if existing is not None:
+                    return existing
+                raise ReceiptError("receipt_sequence_conflict")
+            return None
+
+        if target_session is not None:
+            early = await _run_chain_assert(target_session)
+            if early is not None:
+                return early
+        else:
+            async with get_session_factory()() as chain_session:
+                early = await _run_chain_assert(chain_session)
+            if early is not None:
+                return early
 
         created_at = utc_now()
         receipt_id = f"rcpt-{uuid.uuid4().hex[:16]}"
@@ -490,6 +739,16 @@ class ReceiptService:
         # field existed keep verifying (verify_receipt mirrors this).
         if approval_id is not None:
             payload["approval_id"] = approval_id
+        if effective_permit_digest is not None:
+            payload["permit_digest"] = effective_permit_digest
+        if approval_digest is not None:
+            payload["approval_digest"] = approval_digest
+        if counterparty is not None:
+            payload["counterparty"] = counterparty
+        if effective_sequence is not None:
+            payload["sequence"] = effective_sequence
+        if effective_prev_receipt_digest is not None:
+            payload["prev_receipt_digest"] = effective_prev_receipt_digest
         if constraints_evaluated:
             payload["constraints_evaluated"] = constraints_evaluated
         payload.update(action_binding)
@@ -538,6 +797,11 @@ class ReceiptService:
                 gateway_build=gateway_build,
                 audit_event_id=audit_event_id,
                 approval_id=approval_id,
+                permit_digest=effective_permit_digest,
+                approval_digest=approval_digest,
+                counterparty=counterparty,
+                sequence=effective_sequence,
+                prev_receipt_digest=effective_prev_receipt_digest,
                 constraints_evaluated_json=json.dumps(constraints_evaluated)
                 if constraints_evaluated
                 else None,
@@ -546,21 +810,70 @@ class ReceiptService:
                 signature_key_id=signature_key_id,
             )
 
+        async def _recover_integrity(
+            recovery_session: AsyncSession, exc: IntegrityError
+        ) -> ReceiptResponse:
+            """Adopt same idempotency row before classifying a sequence conflict.
+
+            A concurrent retry of the same invoke can lose on
+            ``uq_receipts_permit_sequence`` even when the winner already stored
+            this receipt under the same ``idempotency_record_id``. Prefer adopt;
+            only raise ``receipt_sequence_conflict`` when nothing to adopt.
+            """
+            existing = await existing_response(recovery_session)
+            if existing is not None:
+                return existing
+            if _is_receipt_sequence_conflict(exc):
+                raise ReceiptError("receipt_sequence_conflict") from exc
+            raise
+
         if target_session is not None:
+            conflict = await self._assert_opted_in_chain(
+                target_session,
+                permit_id=permit_id,
+                sequence=effective_sequence,
+                prev_receipt_digest=effective_prev_receipt_digest,
+                idempotency_record_id=idempotency_record_id,
+            )
+            if conflict is not None:
+                existing = await existing_response(target_session)
+                if existing is not None:
+                    return existing
+                raise ReceiptError("receipt_sequence_conflict")
             model = build_model()
             if idempotency_record_id is None:
                 target_session.add(model)
-                await target_session.flush()
+                try:
+                    await target_session.flush()
+                except IntegrityError as exc:
+                    if _is_receipt_sequence_conflict(exc):
+                        raise ReceiptError("receipt_sequence_conflict") from exc
+                    raise
                 return receipt_model_to_response(model)
             bind = target_session.get_bind()
             if bind.dialect.name == "sqlite":
-                # Python's sqlite driver can treat a SAVEPOINT as the outermost
-                # transaction when no write has started yet; releasing it then
-                # survives a later caller rollback. Keep caller-owned SQLite
-                # work in the actual outer transaction. PostgreSQL below uses
-                # a savepoint for unique-key race recovery.
+                # Caller-owned SQLite cannot isolate the insert with a SAVEPOINT
+                # unless the engine emits an explicit BEGIN (pysqlite otherwise
+                # treats SAVEPOINT as outermost and RELEASE makes the write
+                # durable across a later caller rollback). Flush in the outer
+                # txn instead. On IntegrityError the connection is pending-
+                # rollback: adopt via a fresh session (winner may already be
+                # committed), then roll the caller session back so it is usable
+                # again. Callers that wrap create_receipt in session.begin()
+                # and still need to write afterward (create_pending) must detect
+                # ``not session.in_transaction()`` and open a new transaction
+                # for finalization.
                 target_session.add(model)
-                await target_session.flush()
+                try:
+                    await target_session.flush()
+                except IntegrityError as exc:
+                    try:
+                        factory = get_session_factory()
+                        async with factory() as recovery_session:
+                            adopted = await _recover_integrity(recovery_session, exc)
+                    finally:
+                        await target_session.rollback()
+                    return adopted
                 return receipt_model_to_response(model)
             try:
                 # Isolate a unique-key race to a savepoint so the caller's
@@ -568,11 +881,8 @@ class ReceiptService:
                 async with target_session.begin_nested():
                     target_session.add(model)
                     await target_session.flush()
-            except IntegrityError:
-                existing = await existing_response(target_session)
-                if existing is None:
-                    raise
-                return existing
+            except IntegrityError as exc:
+                return await _recover_integrity(target_session, exc)
             return receipt_model_to_response(model)
 
         factory = get_session_factory()
@@ -586,16 +896,28 @@ class ReceiptService:
             acknowledgement was lost is found here by the next attempt rather
             than colliding with itself.
             """
-            attempt_model = build_model()
             async with factory() as owned_session:
                 existing = await existing_response(owned_session)
                 if existing is not None:
                     return existing
+                conflict = await self._assert_opted_in_chain(
+                    owned_session,
+                    permit_id=permit_id,
+                    sequence=effective_sequence,
+                    prev_receipt_digest=effective_prev_receipt_digest,
+                    idempotency_record_id=idempotency_record_id,
+                )
+                if conflict is not None:
+                    existing = await existing_response(owned_session)
+                    if existing is not None:
+                        return existing
+                    raise ReceiptError("receipt_sequence_conflict")
+                attempt_model = build_model()
                 owned_session.add(attempt_model)
                 try:
                     await owned_session.commit()
                     await owned_session.refresh(attempt_model)
-                except Exception:
+                except Exception as exc:
                     # A driver can lose the commit acknowledgement after the row
                     # is durable. Roll back local state, then recover through the
                     # unique idempotency link before deciding this really failed.
@@ -610,6 +932,10 @@ class ReceiptService:
                             existing = await existing_response(recovery_session)
                         if existing is not None:
                             return existing
+                    if isinstance(
+                        exc, IntegrityError
+                    ) and _is_receipt_sequence_conflict(exc):
+                        raise ReceiptError("receipt_sequence_conflict") from exc
                     raise
             return receipt_model_to_response(attempt_model)
 

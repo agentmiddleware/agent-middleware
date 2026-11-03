@@ -4,6 +4,15 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ## [Unreleased]
 
+- Receipts: additive signed fields `permit_digest`, `approval_digest`,
+  `counterparty`, `sequence` (per-permit, from 0 when a caller opts in; left
+  unset otherwise), and `prev_receipt_digest` (omitted at sequence 0). Digests
+  are lowercase hex SHA-256 of the exact
+  signed artifact `signing_input` UTF-8 bytes. Sample receipts are re-dated
+  inside `pmt_golden_0001`'s validity window and use its subject wallet.
+  Migration 056 adds the columns. Item 5 from the Provared review (P-256 /
+  RFC 8785 float acceptance) is out of scope here.
+
 - Changed: the AutoGen (`autogen-agent-middleware`) and CrewAI (`crewai-agent-middleware`) integrations now default `base_url` to `https://api.agentmiddleware.dev` instead of `https://api.thisisatest.tech`. Pass `base_url` explicitly to keep the old host.
 - Partner bootstrap CLI (breaking): `gateway/scripts/partner_api_key_bootstrap.py`
   never prints the minted agent API key. Operators must pass `--key-file`

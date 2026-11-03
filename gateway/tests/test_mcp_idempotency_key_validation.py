@@ -801,6 +801,6 @@ async def test_rest_invoke_changed_excluded_argument_conflicts(
         headers=headers,
     )
     assert changed.status_code == 409, changed.text
-    assert changed.json()["detail"]["error"] == "idempotency_key_reused"
-    assert "request_id" in changed.json()["detail"]
+    assert changed.json()["detail"] == {"error": "idempotency_key_reused"}
+    assert changed.headers["X-Request-ID"]
     assert counted_tool.effects == ["one"]

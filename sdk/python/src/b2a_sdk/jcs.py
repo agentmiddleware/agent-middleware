@@ -132,9 +132,8 @@ def dump(obj: Any, sink: IO[bytes]) -> None:
             try:
                 as_float = float(obj)
             except OverflowError as exc:
-                raise CanonicalizationError(
-                    f"{obj} outside JSON safe-integer range"
-                ) from exc
+                msg = f"{obj} outside JSON safe-integer range"
+                raise CanonicalizationError(msg) from exc
             if as_float != obj or math.isnan(as_float) or math.isinf(as_float):
                 raise CanonicalizationError(f"{obj} outside JSON safe-integer range")
             _serialize_float(as_float, sink)

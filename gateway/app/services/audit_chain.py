@@ -98,11 +98,14 @@ def _payload_matching_stored_hash(
     body that omits it. A rewritten sequence on a new signature matches
     neither, which is what makes the number tamper-evident.
     """
+    stored = event.payload_hash
+    if not stored:
+        return None
     current = _event_audit_payload(event, seq=event.seq)
-    if payload_hash_matches(current, event.payload_hash):
+    if payload_hash_matches(current, stored):
         return current
     legacy = _event_audit_payload(event, seq=None)
-    if payload_hash_matches(legacy, event.payload_hash):
+    if payload_hash_matches(legacy, stored):
         return legacy
     return None
 

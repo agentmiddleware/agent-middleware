@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 from io import BytesIO
-from typing import IO, Any, Mapping
+from typing import IO, Any
 
 _INT_MAX = 2**53 - 1
 _INT_MIN = -(2**53) + 1

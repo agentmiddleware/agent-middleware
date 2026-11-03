@@ -412,8 +412,8 @@ test("canonical JSON sorts nested keys with no whitespace", () => {
 });
 
 test("canonical JSON escapes non-ASCII including astral characters", () => {
-  assert.equal(canonicalJson({ k: "café" }), '{"k":"caf\\u00e9"}');
-  assert.equal(canonicalJson({ k: "😀" }), '{"k":"\\ud83d\\ude00"}');
+  assert.equal(canonicalJson({ k: "café" }), '{"k":"café"}');
+  assert.equal(canonicalJson({ k: "😀" }), '{"k":"😀"}');
   assert.equal(
     canonicalJson({ z: 1, [CANONICALIZATION]: 2 }),
     '{"awi-canonical-json/1":2,"z":1}',
@@ -512,7 +512,10 @@ test("integer above 2^53 is returned as the signed digits", () => {
 });
 
 test("float-bearing payload signed Python-style verifies", () => {
-  // The gateway signs floats Python renders as 1.0/0.0. seal() would print
+  // Historical Python json.dumps lexemes (1.0/0.0). Under RFC 8785 the
+  // gateway emits ES forms (1/0); verification must still accept the signed
+  // bytes verbatim either way. This case keeps the pre-JCS lexemes to prove
+  // no re-serialization.
   // them as 1/0, so the signed bytes are built as a string instead.
   const innerJson =
     '{"constraints_evaluated":{"jev_risk_guard":{"injected_instructions":1.0,"latency_ms":0.0}},"kid":"key-1","receipt_id":"rcpt-1"}';

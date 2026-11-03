@@ -64,13 +64,10 @@ REJECTED = ("invalid", "mismatch")
 
 
 def canonical_json(payload):
-    """Sorted-key compact JSON, the byte layout the gateway signs.
+    """RFC 8785 (JCS) compact JSON, the byte layout the gateway signs."""
+    from jcs import dumps_text
 
-    This is not RFC 8785 JCS: Python sorts by Unicode code point and escapes
-    non-ASCII text, while JCS uses UTF-16 key order and UTF-8 output. Number
-    serialization can also differ.
-    """
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return dumps_text(payload)
 
 
 def _b64decode(value, urlsafe=False):

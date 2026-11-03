@@ -70,31 +70,33 @@ def canonical_json(
     ensure_ascii: bool = True,
     allow_nan: bool = True,
 ) -> str:
-    """Serialize a payload into stable JSON before hashing or signing."""
+    """Serialize a payload into RFC 8785 (JCS) JSON before hashing or signing.
+
+    ``Decimal`` and ``datetime`` values are mapped to strings first (RFC 8785
+    Appendix D/E style), then the JSON-native tree is emitted with strict JCS
+    rules: ECMAScript number serialization, UTF-16BE key order, UTF-8 strings.
+    ``ensure_ascii`` and ``allow_nan`` are retained for call-site compatibility;
+    JCS always emits UTF-8 and always rejects NaN/Infinity.
+    """
+    from app.services.jcs import dumps_text
+
+    del ensure_ascii, allow_nan  # JCS has fixed rules; kwargs kept for API compat.
 
     def normalize(value: Any) -> Any:
         if isinstance(value, Decimal):
             normalized = value.normalize()
-            if normalized == normalized.to_integral():
-                return format(normalized, "f")
             return format(normalized, "f")
         if isinstance(value, datetime):
             if value.tzinfo is None:
                 value = value.replace(tzinfo=timezone.utc)
             return value.astimezone(timezone.utc).isoformat()
         if isinstance(value, dict):
-            return {str(k): normalize(v) for k, v in sorted(value.items())}
+            return {str(k): normalize(v) for k, v in value.items()}
         if isinstance(value, list):
             return [normalize(v) for v in value]
         return value
 
-    return json.dumps(
-        normalize(payload),
-        separators=(",", ":"),
-        sort_keys=True,
-        ensure_ascii=ensure_ascii,
-        allow_nan=allow_nan,
-    )
+    return dumps_text(normalize(payload))
 
 
 def sha256_hex(payload: dict[str, Any] | str | bytes) -> str:

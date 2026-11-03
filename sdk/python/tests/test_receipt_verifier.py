@@ -44,9 +44,10 @@ def test_canonical_json_sorts_every_level_without_whitespace():
     assert encoded == '{"a":{"c":3,"d":2},"b":1}'
 
 
-def test_canonical_json_escapes_non_ascii():
-    """ensure_ascii is part of the contract; a UTF-8 verifier would diverge."""
-    assert canonical_json({"k": "café"}) == '{"k":"caf\\u00e9"}'
+def test_canonical_json_emits_utf8_per_rfc8785():
+    """RFC 8785 emits UTF-8 string contents (not \\u escapes for non-ASCII)."""
+    assert canonical_json({"k": "café"}) == '{"k":"café"}'
+
 
 
 def test_key_set_reads_raw_and_jwk_forms():

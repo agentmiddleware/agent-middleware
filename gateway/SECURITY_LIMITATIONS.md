@@ -327,14 +327,24 @@ missing control.
     the proxy's address, and the per-address buckets above (anonymous,
     readiness and this one) become one deployment-wide bucket for all of them.
     To count real client addresses, set `FORWARDED_ALLOW_IPS` to the exact
-    address or addresses of your ingress, so uvicorn reads the client from
-    `X-Forwarded-For` only on connections from it. Do not set it to `*`
-    unless the application is reachable only through that ingress: otherwise
-    any caller can send its own `X-Forwarded-For` and receive a fresh bucket
-    per request. Railway is handled separately through `X-Real-IP` as
-    described above; this document does not assume any other platform sets
-    that header. The gateway does not refuse to start without a trusted-proxy
-    setting. Whether it should is a maintainer decision.
+    address or addresses of your ingress, or to a CIDR range that covers it
+    (uvicorn accepts both, comma separated). Uvicorn then reads the client
+    from `X-Forwarded-For` only on connections from those addresses, and it
+    takes the right-most entry that is not itself a trusted address, which is
+    the address the ingress observed. **Do not set it to `*`.** With `*`
+    uvicorn trusts every connection and takes the left-most
+    `X-Forwarded-For` entry. A caller controls that entry whenever the ingress
+    appends to the header instead of replacing it, so any caller can send its
+    own value and receive a fresh bucket per request. That holds even when the
+    application is reachable only through the ingress.
+    `FORWARDED_ALLOW_IPS` must be set in the process environment of the
+    container that runs uvicorn. The gateway does not read it from `.env`, so
+    putting it there has no effect. **No setting is needed on Railway.** There
+    the gateway reads the single canonical `X-Real-IP` value, as described
+    above, under Railway's platform marker. The setting applies to other
+    ingress. This document does not assume any other platform sets `X-Real-IP`.
+    The gateway does not refuse to start without a trusted-proxy setting.
+    Whether it should is a maintainer decision.
 - **Counted responses** — including `401`s — carry `X-RateLimit-Limit`,
   `X-RateLimit-Remaining`, and `X-RateLimit-Reset`. Remaining dropping from
   119 toward 80 with no `429` means the budget has not been reached.

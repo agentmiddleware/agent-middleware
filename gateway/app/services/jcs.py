@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import math
 import re
-from io import BytesIO
 from collections.abc import Mapping
+from io import BytesIO
 from typing import IO, Any
 
 _INT_MAX = 2**53 - 1

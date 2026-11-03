@@ -37,6 +37,7 @@ from app.services.signing_keys import (
     SigningKeyError,
     canonical_json,
     get_signing_key_service,
+    legacy_canonical_json,
 )
 from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
 
@@ -554,6 +555,45 @@ def test_replay_insufficient_funds_with_policy_reason_stays_denied(tmp_path):
     assert claims["new_decision"] == "deny"
     assert claims["new_reason"] == "recorded_denial:tool_not_allowed"
     assert claims["change"] == "unchanged"
+
+
+def test_load_recorded_calls_accepts_legacy_pre_jcs_signing_input(tmp_path):
+    """Pre-cutover signing_input (legacy serializer) still loads for replay."""
+    payload = _record_payload(credits_authorized=1.5, tool="café-tool")
+    legacy = legacy_canonical_json(payload)
+    jcs = canonical_json(payload)
+    assert legacy != jcs  # structural: serializers diverge on float/non-ASCII
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps({"signing_input": legacy}))
+    calls = load_recorded_calls(path)
+    assert len(calls) == 1
+    assert calls[0].signing_input == legacy
+
+
+def test_load_recorded_calls_accepts_jcs_signing_input(tmp_path):
+    payload = _record_payload(credits_authorized=1.5, tool="café-tool")
+    jcs = canonical_json(payload)
+    path = tmp_path / "jcs.json"
+    path.write_text(json.dumps({"signing_input": jcs}))
+    calls = load_recorded_calls(path)
+    assert len(calls) == 1
+    assert calls[0].signing_input == jcs
+
+
+def test_load_recorded_calls_rejects_non_matching_signing_input(tmp_path):
+    payload = _record_payload(credits_authorized=1.5, tool="café-tool")
+    # Hand-shaped bytes match neither JCS nor legacy.
+    forged = '{"outcome":"success","tool":"café-tool"}'
+    assert forged not in (canonical_json(payload), legacy_canonical_json(payload))
+    path = tmp_path / "forged.json"
+    # Must still be valid JSON object of the payload shape for earlier checks;
+    # mutate after building a valid envelope by altering only signing_input bytes
+    # that parse to the same object but are not canonical (spaces).
+    spaced = json.dumps(payload, separators=(", ", ": "))
+    assert spaced not in (canonical_json(payload), legacy_canonical_json(payload))
+    path.write_text(json.dumps({"signing_input": spaced}))
+    with pytest.raises(ReplayError, match="not canonical gateway JSON"):
+        load_recorded_calls(path)
 
 
 def test_load_recorded_calls_rejects_unknown_outcome(tmp_path):

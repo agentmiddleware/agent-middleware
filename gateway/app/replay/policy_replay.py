@@ -43,6 +43,7 @@ from app.services.signing_keys import (
     SigningKeyService,
     canonical_json,
     get_signing_key_service,
+    legacy_canonical_json,
     sha256_hex,
 )
 
@@ -268,7 +269,12 @@ def _record_to_call(source: str, record: Any) -> RecordedCall:
         raise ReplayError(
             f"{source}: recorded receipt field simulation must be a boolean"
         )
-    if canonical_json(payload) != signing_input:
+    # Accept JCS (post-cutover) or legacy pre-JCS bytes; gateway verify already
+    # dual-path. Reject anything that matches neither serializer.
+    if signing_input not in (
+        canonical_json(payload),
+        legacy_canonical_json(payload),
+    ):
         raise ReplayError(f"{source}: signing_input is not canonical gateway JSON")
     signature = record.get("signature") or record.get("signature_b64_over_test_seed")
     return RecordedCall(

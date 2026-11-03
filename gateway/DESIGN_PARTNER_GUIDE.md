@@ -84,6 +84,9 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
   caller can only spend its own budget, plus an anonymous backstop at 20 times
   the limit for the whole deployment (`RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER`).
   Callers behind one shared egress address share that address's bucket.
+  Behind a reverse proxy or load balancer that is not on loopback, set
+  `FORWARDED_ALLOW_IPS` to its address so the gateway sees real client
+  addresses; otherwise all callers share the proxy's address.
   `/health/dependencies` is counted here. With shared Redis counters these
   buckets are shared across workers and replicas; without `REDIS_URL` each
   worker or replica keeps its own per-client buckets and its own backstop.
@@ -96,7 +99,10 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
   request does not hand you a fresh 120. A key the deployment accepts on an
   authenticated route never touches that bucket, and neither does a permit
   denial: being refused on scope is normal governed traffic, not a bad
-  credential.
+  credential. A key listed in the operator's `VALID_API_KEYS` also skips this
+  per-address bucket, so other callers behind the same address cannot lock it
+  out. Database-backed keys do not: behind a shared address they can still
+  receive this `429` while other callers send invalid keys.
 - **Window accounting:** the shared Redis limiter counts fixed 60-second
   buckets; the in-memory limiter counts a rolling 60 seconds. The in-memory
   limiter counts whenever the deployment has no `REDIS_URL`, in any

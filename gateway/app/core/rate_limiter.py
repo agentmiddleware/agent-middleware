@@ -23,6 +23,7 @@ from .auth import (
     CREDENTIAL_ACCEPTANCE,
     CREDENTIAL_REJECTED_HEADER,
     CredentialAcceptance,
+    _constant_time_equal,
     _parse_bearer_authorization,
 )
 from .config import get_settings
@@ -198,6 +199,39 @@ def _presented_rate_identity(request: Request) -> str | None:
     except JWTError:
         return f"invalid-jwt:{token}"
     return f"jwt:{payload.key_id}"
+
+
+def _presents_configured_env_key(request: Request) -> bool:
+    """True when the request authenticates with a ``VALID_API_KEYS`` entry.
+
+    This mirrors the env-key branch of ``app.core.auth._resolve_auth_context``
+    so the pre-auth reservation is skipped only for a credential that branch
+    accepts: the same parsing (split on comma, strip, drop empties), the same
+    precondition checks that run before it (no Authorization header, not a
+    ``Bearer `` value, at least 8 characters, not JWT-shaped), and the same
+    exact comparison. Each side is hashed to a fixed length first, and every
+    configured key is compared without an early exit, so neither a match nor
+    its position is visible in timing. A blank or missing header never matches,
+    including against an empty configured entry. Database keys, JWTs and
+    enterprise bearers are not recognized here; they keep the reservation.
+    """
+    if request.headers.get("authorization") is not None:
+        return False
+    presented = request.headers.get(settings.API_KEY_HEADER, "").strip()
+    if len(presented) < 8 or presented.startswith("Bearer "):
+        return False
+    if presented.count(".") == 2 and len(presented) > 50:
+        return False
+    configured = [
+        key.strip() for key in get_settings().VALID_API_KEYS.split(",") if key.strip()
+    ]
+    presented_digest = hashlib.sha256(presented.encode("utf-8")).digest()
+    matched = False
+    for key in configured:
+        key_digest = hashlib.sha256(key.encode("utf-8")).digest()
+        if _constant_time_equal(presented_digest.hex(), key_digest.hex()):
+            matched = True
+    return matched
 
 
 def _routing_path(request: Request) -> str:
@@ -767,7 +801,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # a 404) never refuses an invented key either. Rotation buys nothing
         # past the bucket, and a request whose credentials the app accepts
         # leaves it exactly as it found it.
-        preauth_bucket = None if keyless_route else self._preauth_bucket(request)
+        # A configured env key is recognized before authentication, so it never
+        # draws on the per-address bucket that other callers behind a shared
+        # address can exhaust. Its per-key bucket below still applies.
+        preauth_bucket = (
+            None
+            if keyless_route or _presents_configured_env_key(request)
+            else self._preauth_bucket(request)
+        )
         preauth_reserved = False
         preauth_in_memory = False
         keep_reservation = False

@@ -255,7 +255,9 @@ missing control.
   anonymous callers get 429 until the window resets, and callers with a key
   are unaffected. Callers that share an egress
   address (a corporate NAT or proxy) still share one per-client anonymous
-  bucket.
+  bucket. Behind a reverse proxy or load balancer, every caller shares the
+  proxy's address until `FORWARDED_ALLOW_IPS` names it; see the forwarded
+  address contract under unaccepted credentials below.
 - **Readiness:** `/health/ready` has its own per-client and route-wide
   budgets and ignores credential headers, so traffic on other routes, anonymous
   or keyed, cannot consume the readiness budget. Readiness requests themselves
@@ -299,9 +301,40 @@ missing control.
   - A request whose credentials the app accepts leaves the bucket exactly as
     it found it. Client identity is the ingress peer address (Railway's
     `X-Real-IP` only where the platform marker is present, per the public-MCP
-    rule above), so callers sharing one egress address share that bucket — and
+    rule above), so callers sharing one egress address share that bucket, and
     callers spread across many source addresses get one such bucket each. A
     distributed flood is still the edge's job.
+  - **A key listed in `VALID_API_KEYS` skips this bucket.** It is recognized
+    before authentication with the same parsing and exact comparison the auth
+    layer uses (comma separated, whitespace stripped, blank entries dropped,
+    at least 8 characters, no `Authorization` header, not JWT shaped). Such a
+    key is never answered with the per-address `429` because other callers
+    behind the same address sent invalid keys. Its own per-key bucket still
+    applies. The decision is made from the current settings on every request,
+    so a key removed from `VALID_API_KEYS` is charged again on its next
+    request. **Database-backed keys, JWTs and enterprise bearers are not
+    recognized before authentication and still share the per-address bucket.**
+    That is the common production case, so behind a shared address a valid
+    database-backed key can still receive this `429` while other callers send
+    invalid keys. Closing that needs a positive cache of accepted keys, which
+    widens the security model and is a maintainer decision.
+  - **Forwarded address contract.** The client address is the connection peer
+    as the ASGI server reports it. `docker_entrypoint.sh` starts uvicorn
+    without `--forwarded-allow-ips`, so uvicorn trusts forwarding headers only
+    from `127.0.0.1` and `::1` (its default, or the `FORWARDED_ALLOW_IPS`
+    environment variable when set). Behind a reverse proxy, load balancer or
+    Kubernetes ingress that is not on loopback, every caller therefore shares
+    the proxy's address, and the per-address buckets above (anonymous,
+    readiness and this one) become one deployment-wide bucket for all of them.
+    To count real client addresses, set `FORWARDED_ALLOW_IPS` to the exact
+    address or addresses of your ingress, so uvicorn reads the client from
+    `X-Forwarded-For` only on connections from it. Do not set it to `*`
+    unless the application is reachable only through that ingress: otherwise
+    any caller can send its own `X-Forwarded-For` and receive a fresh bucket
+    per request. Railway is handled separately through `X-Real-IP` as
+    described above; this document does not assume any other platform sets
+    that header. The gateway does not refuse to start without a trusted-proxy
+    setting. Whether it should is a maintainer decision.
 - **Counted responses** — including `401`s — carry `X-RateLimit-Limit`,
   `X-RateLimit-Remaining`, and `X-RateLimit-Reset`. Remaining dropping from
   119 toward 80 with no `429` means the budget has not been reached.

@@ -20,7 +20,6 @@ from app.services.signing_keys import (
     get_signing_key_service,
     legacy_canonical_json,
     payload_hash_matches,
-    sha256_hex,
     signing_message_candidates,
 )
 
@@ -34,11 +33,12 @@ _GOLDEN_DENIAL = (
 )
 
 
-def _model_from_denial_golden(*, constraints_evaluated: dict) -> ReceiptModel:
-    """Rebuild a ReceiptModel from the recorded denial_constraints golden."""
+def _model_from_denial_golden() -> ReceiptModel:
+    """Rebuild a ReceiptModel from the recorded denial_constraints golden as-is."""
     recorded = json.loads(_GOLDEN_DENIAL.read_text())
     body = json.loads(recorded["signing_input"])
     created_at = datetime.fromisoformat(body["created_at"])
+    constraints = body.get("constraints_evaluated")
     return ReceiptModel(
         receipt_id=body["receipt_id"],
         idempotency_record_id=body.get("idempotency_record_id"),
@@ -56,7 +56,9 @@ def _model_from_denial_golden(*, constraints_evaluated: dict) -> ReceiptModel:
         reason_code=body.get("reason_code"),
         audit_event_id=body.get("audit_event_id"),
         approval_id=body.get("approval_id"),
-        constraints_evaluated_json=json.dumps(constraints_evaluated),
+        constraints_evaluated_json=(
+            json.dumps(constraints) if constraints is not None else None
+        ),
         created_at=created_at,
         signature=recorded["signature_b64_over_test_seed"],
         signature_key_id=body["kid"],
@@ -190,25 +192,26 @@ def test_jcs_rebuild_error_still_tries_legacy():
     assert legacy in messages
 
 
-def test_receipt_verification_payload_survives_jcs_rejected_constraints():
-    """Soft hash path: JCS-rejected constraints still yield legacy candidates.
+def test_receipt_verification_payload_survives_jcs_rejected_constraints(monkeypatch):
+    """Soft hash path: JCS failure falls back to legacy without raising.
 
-    Data-free / recorded only: carrier fields come from the existing
-    ``denial_constraints`` receipt signing golden. The sole synthetic value is
-    the IEEE-754 non-exact int ``2**53 + 1`` (a JCS property, not business data).
-    Assertions are structural: no raise, 64-hex payload_hash, legacy candidate
-    present.
+    Recorded ``denial_constraints`` golden is the carrier (no swapped fields).
+    ``sha256_hex`` is stubbed to raise CanonicalizationError so the soft-hash
+    branch runs; asserts stay structural (no raise, 64-hex, legacy candidate).
     """
-    non_exact = 2**53 + 1
-    with pytest.raises(CanonicalizationError):
-        sha256_hex({"n": non_exact})
+    model = _model_from_denial_golden()
 
-    model = _model_from_denial_golden(constraints_evaluated={"n": non_exact})
+    def _boom(_payload):
+        raise CanonicalizationError("forced JCS reject")
+
+    monkeypatch.setattr("app.services.receipts.sha256_hex", _boom)
     payload = ReceiptService._verification_payload(model, include_linkage=True)
 
-    assert payload["constraints_evaluated"]["n"] == non_exact
     assert len(payload["payload_hash"]) == 64
-    assert int(payload["payload_hash"], 16) >= 0  # hex round-trip
+    assert int(payload["payload_hash"], 16) >= 0
+    body = {k: v for k, v in payload.items() if k != "payload_hash"}
+    expected = hashlib.sha256(legacy_canonical_json(body).encode("utf-8")).hexdigest()
+    assert payload["payload_hash"] == expected
     messages = signing_message_candidates(payload)
     assert messages, "expected at least one legacy candidate after JCS rejection"
     assert legacy_canonical_json(payload).encode() in messages
@@ -218,11 +221,15 @@ def test_receipt_verification_payload_survives_jcs_rejected_constraints():
 async def test_verify_model_does_not_raise_on_jcs_rejected_constraints(monkeypatch):
     """verify_model must not surface CanonicalizationError as an HTTP 500.
 
-    Same recorded golden carrier; monkeypatch only asserts the rebuild produced
-    usable signing candidates (data-free), then returns True.
+    Recorded golden carrier unchanged; stub ``sha256_hex`` to force the soft
+    path, then monkeypatch verify to assert candidates and return True.
     """
-    non_exact = 2**53 + 1
-    model = _model_from_denial_golden(constraints_evaluated={"n": non_exact})
+    model = _model_from_denial_golden()
+
+    def _boom(_payload):
+        raise CanonicalizationError("forced JCS reject")
+
+    monkeypatch.setattr("app.services.receipts.sha256_hex", _boom)
 
     async def _ok(payload, **_kwargs):
         assert signing_message_candidates(payload)

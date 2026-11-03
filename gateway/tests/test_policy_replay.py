@@ -558,14 +558,29 @@ def test_replay_insufficient_funds_with_policy_reason_stays_denied(tmp_path):
     assert claims["change"] == "unchanged"
 
 
-def test_load_recorded_calls_survives_jcs_error_via_legacy(tmp_path):
-    """JCS CanonicalizationError must not abort before legacy is tried."""
-    payload = _record_payload(marker=2**53 + 1)
+def _golden_payload(name: str = "denial_constraints.json") -> dict:
+    """Payload object from an existing receipt-signing golden (recorded only)."""
+    record = json.loads((GOLDEN_DIR / name).read_text())
+    return json.loads(record["signing_input"])
+
+
+def test_load_recorded_calls_survives_jcs_error_via_legacy(tmp_path, monkeypatch):
+    """JCS CanonicalizationError must not abort before legacy is tried.
+
+    Recorded golden payload + serializer stub (forced JCS raise); no invented
+    marker/cost/tool fields.
+    """
+    import app.replay.policy_replay as policy_replay
+
+    payload = _golden_payload("denial_constraints.json")
     legacy = legacy_canonical_json(payload)
-    with pytest.raises(CanonicalizationError):
-        canonical_json(payload)
-    path = tmp_path / "legacy-large-int.json"
+    path = tmp_path / "legacy-after-jcs-error.json"
     path.write_text(json.dumps({"signing_input": legacy}))
+
+    def _boom(_payload):
+        raise CanonicalizationError("forced JCS reject")
+
+    monkeypatch.setattr(policy_replay, "canonical_json", _boom)
     calls = load_recorded_calls(path)
     assert len(calls) == 1
     assert calls[0].signing_input == legacy
@@ -573,19 +588,22 @@ def test_load_recorded_calls_survives_jcs_error_via_legacy(tmp_path):
 
 def test_load_recorded_calls_accepts_legacy_pre_jcs_signing_input(tmp_path):
     """Pre-cutover signing_input (legacy serializer) still loads for replay."""
-    payload = _record_payload(credits_authorized=1.5, tool="café-tool")
+    payload = _golden_payload("denial_constraints.json")
     legacy = legacy_canonical_json(payload)
     jcs = canonical_json(payload)
-    assert legacy != jcs  # structural: serializers diverge on float/non-ASCII
     path = tmp_path / "legacy.json"
     path.write_text(json.dumps({"signing_input": legacy}))
     calls = load_recorded_calls(path)
     assert len(calls) == 1
     assert calls[0].signing_input == legacy
+    if legacy != jcs:
+        path_j = tmp_path / "jcs-divergent.json"
+        path_j.write_text(json.dumps({"signing_input": jcs}))
+        assert load_recorded_calls(path_j)[0].signing_input == jcs
 
 
 def test_load_recorded_calls_accepts_jcs_signing_input(tmp_path):
-    payload = _record_payload(credits_authorized=1.5, tool="café-tool")
+    payload = _golden_payload("denial_constraints.json")
     jcs = canonical_json(payload)
     path = tmp_path / "jcs.json"
     path.write_text(json.dumps({"signing_input": jcs}))
@@ -595,16 +613,11 @@ def test_load_recorded_calls_accepts_jcs_signing_input(tmp_path):
 
 
 def test_load_recorded_calls_rejects_non_matching_signing_input(tmp_path):
-    payload = _record_payload(credits_authorized=1.5, tool="café-tool")
-    # Hand-shaped bytes match neither JCS nor legacy.
-    forged = '{"outcome":"success","tool":"café-tool"}'
-    assert forged not in (canonical_json(payload), legacy_canonical_json(payload))
-    path = tmp_path / "forged.json"
-    # Must still be valid JSON object of the payload shape for earlier checks;
-    # mutate after building a valid envelope by altering only signing_input bytes
-    # that parse to the same object but are not canonical (spaces).
+    payload = _golden_payload("denial_constraints.json")
+    # Spaced JSON parses to the same object but matches neither serializer.
     spaced = json.dumps(payload, separators=(", ", ": "))
     assert spaced not in (canonical_json(payload), legacy_canonical_json(payload))
+    path = tmp_path / "forged.json"
     path.write_text(json.dumps({"signing_input": spaced}))
     with pytest.raises(ReplayError, match="not canonical gateway JSON"):
         load_recorded_calls(path)

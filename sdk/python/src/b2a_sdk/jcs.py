@@ -1,17 +1,18 @@
 """RFC 8785 JSON Canonicalization Scheme (JCS) for receipt signing inputs.
 
-KEEP IN SYNC with the twin module:
+KEEP IN SYNC across these identical copies:
   - gateway/app/services/jcs.py
   - sdk/python/src/b2a_sdk/jcs.py
   - spec/test-vectors/jcs.py
+  - site/proof/jcs.py
 
-Derived from Trail of Bits ``rfc8785`` (Apache-2.0) and Anders Rundgren's
-cyberphone/json-canonicalization reference (Apache-2.0). Numbers follow
-ECMAScript ``Number::toString`` / ECMA-262 §7.1.12.1 as required by
-RFC 8785 §3.2.2.3. Object keys sort by UTF-16BE code units (§3.2.3).
-Strings are UTF-8 with only the RFC 8785 escapes. Integers outside the
-ECMAScript safe-integer range (±(2**53 - 1)) are rejected (Appendix B Note 1).
-NaN / Infinity are rejected.
+Derived from the Trail of Bits RFC 8785 Python package (Apache-2.0) and
+Anders Rundgren's cyberphone/json-canonicalization reference (Apache-2.0).
+Numbers follow ECMAScript Number::toString / ECMA-262 section 7.1.12.1 as
+required by RFC 8785 section 3.2.2.3. Object keys sort by UTF-16BE code
+units (section 3.2.3). Strings are UTF-8 with only the RFC 8785 escapes.
+Integers outside the ECMAScript safe-integer range (±(2**53 - 1)) are
+rejected (Appendix B Note 1). NaN / Infinity are rejected.
 """
 
 from __future__ import annotations

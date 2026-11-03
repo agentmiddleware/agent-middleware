@@ -283,3 +283,22 @@ async def test_forwarded_allow_ips_decides_whether_callers_share_a_bucket(
             headers={"X-API-Key": "invalid-key-fresh", "X-Forwarded-For": "192.0.2.2"},
         )
     assert (second_caller.status_code == 429) is expected_blocked_second
+
+
+@pytest.mark.parametrize(
+    ("presented", "expected", "equal"),
+    [
+        ("configured-key-0001", "configured-key-0001", True),
+        ("configured-key-0001", "configured-key-0002", False),
+        ("configured-key-000", "configured-key-0001", False),
+        ("configured-key-00011", "configured-key-0001", False),
+        ("configured-key-0001", "configured-key-0001\0", False),
+        ("configured-key-0001\0", "configured-key-0001", False),
+        ("café-key-0001", "café-key-0001", True),
+        ("café-key-0001", "cafe-key-0001", False),
+    ],
+)
+def test_equal_padded_matches_exactly(presented, expected, equal) -> None:
+    from app.core.rate_limiter import _equal_padded
+
+    assert _equal_padded(presented, expected) is equal

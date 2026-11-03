@@ -24,7 +24,6 @@ from .auth import (
     CREDENTIAL_ACCEPTANCE,
     CREDENTIAL_REJECTED_HEADER,
     CredentialAcceptance,
-    _constant_time_equal,
     _parse_bearer_authorization,
 )
 from .config import get_settings
@@ -202,20 +201,21 @@ def _presented_rate_identity(request: Request) -> str | None:
     return f"jwt:{payload.key_id}"
 
 
-# Random per process. It only makes the fixed-length values below unpredictable
-# to a caller; nothing is stored or compared across processes.
-_EQUALIZE_KEY = os.urandom(32)
+def _equal_padded(presented: str, expected: str) -> bool:
+    """Compare two keys in constant time over equal-length inputs.
 
-
-def _length_equalized(value: str) -> str:
-    """Return a fixed-length keyed digest of ``value`` for timing-safe compares.
-
-    The compare in ``_presents_configured_env_key`` then sees equal-length
-    inputs whatever the key lengths. This is not credential storage: the value
-    is never persisted, and HMAC with a per-process random key is used so the
-    result cannot be precomputed.
+    Both sides are padded to a common length so ``hmac.compare_digest`` never
+    sees unequal lengths, and the length check is combined with ``&`` so it
+    does not short-circuit. The padding byte could otherwise alias a key that
+    ends in it, which the length check rules out. Nothing is hashed or stored.
     """
-    return hmac.new(_EQUALIZE_KEY, value.encode("utf-8"), hashlib.sha256).hexdigest()
+    left = presented.encode("utf-8")
+    right = expected.encode("utf-8")
+    width = max(len(left), len(right))
+    return bool(
+        hmac.compare_digest(left.ljust(width, b"\0"), right.ljust(width, b"\0"))
+        & (len(left) == len(right))
+    )
 
 
 def _presents_configured_env_key(request: Request) -> bool:
@@ -226,7 +226,7 @@ def _presents_configured_env_key(request: Request) -> bool:
     accepts: the same parsing (split on comma, strip, drop empties), the same
     precondition checks that run before it (no Authorization header, not a
     ``Bearer `` value, at least 8 characters, not JWT-shaped), and the same
-    exact comparison. Each side is hashed to a fixed length first, and every
+    exact comparison. Both sides are padded to one length first, and every
     configured key is compared without an early exit, so neither a match nor
     its position is visible in timing. A blank or missing header never matches,
     including against an empty configured entry. Database keys, JWTs and
@@ -242,10 +242,9 @@ def _presents_configured_env_key(request: Request) -> bool:
     configured = [
         key.strip() for key in get_settings().VALID_API_KEYS.split(",") if key.strip()
     ]
-    presented_digest = _length_equalized(presented)
     matched = False
     for key in configured:
-        if _constant_time_equal(presented_digest, _length_equalized(key)):
+        if _equal_padded(presented, key):
             matched = True
     return matched
 

@@ -15,11 +15,14 @@ from app.schemas.billing import ServiceCategory
 from app.services.idempotency import get_idempotency_service
 from app.services.receipts import ReceiptError, get_receipt_service
 from app.services.service_registry import get_service_registry
+from tests.support.db_gate import collection_mark, require_live_postgres
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
     create_tool_permit,
     provision_agent_wallet,
 )
+
+_RECEIPT_PG_REASON = "requires an opted-in disposable PostgreSQL test database"
 
 
 @pytest.fixture
@@ -739,39 +742,51 @@ async def test_create_receipt_binds_counterparty_on_failed_unrefunded(
 async def test_receipt_chain_integrity_and_permit_digest_binding(
     client, clean_database
 ):
-    """Codex #294: sequence/prev must bind to predecessor; permit_digest to permit."""
+    """sequence/prev bind to predecessor; permit_digest to live permit artifact.
+
+    Digests under test are computed from real signing inputs (live permit digest
+    and the first receipt's signing_input). Wrong digests are derived by
+    hashing those live values again — no hardcoded hex. Amounts come from the
+    issued permit's max_credits; payloads are empty (data-free).
+    """
+    from app.services import receipts as receipts_mod
+    from app.services.signing_keys import sha256_hex
+
     provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-chain-integrity-tool"
     permit = await create_tool_permit(
         client,
         wallet_id=provisioned["agent_wallet_id"],
         key_id=provisioned["key_id"],
-        tool_name="receipt-chain-integrity-tool",
+        tool_name=tool_name,
         idem_key="receipt-chain-integrity-permit",
     )
+    # Amount from the real issued permit (not an invented test constant).
+    authorized = Decimal(str(permit["max_credits"]))
     service = get_receipt_service()
     base = {
         "permit_id": permit["permit_id"],
         "wallet_id": provisioned["agent_wallet_id"],
         "key_id": provisioned["key_id"],
-        "tool": "receipt-chain-integrity-tool",
-        "request_payload": {"attempt": "chain-integrity"},
-        "response_payload": {"ok": True},
+        "tool": tool_name,
+        "request_payload": {},
+        "response_payload": None,
         "ledger_entry_id": None,
-        "credits_authorized": Decimal("1"),
+        "credits_authorized": authorized,
         "credits_charged": Decimal("0"),
         "outcome": "denied",
         "reason_code": "permit_budget_exceeded",
         "audit_event_id": None,
     }
 
-    from app.services import receipts as receipts_mod
-    from app.services.signing_keys import sha256_hex
-
     live_digest = await receipts_mod.permit_digest_for_permit_id(permit["permit_id"])
     assert live_digest is not None and len(live_digest) == 64
+    # Derived mismatch: hash of the live digest is still a 64-hex, never equal.
+    wrong_permit_digest = sha256_hex(live_digest)
+    assert wrong_permit_digest != live_digest
 
     with pytest.raises(ReceiptError, match="receipt_permit_digest_mismatch"):
-        await service.create_receipt(**base, permit_digest="a" * 64)
+        await service.create_receipt(**base, permit_digest=wrong_permit_digest)
 
     bound = await service.create_receipt(**base, permit_digest=live_digest, sequence=0)
     assert bound.permit_digest == live_digest
@@ -783,9 +798,11 @@ async def test_receipt_chain_integrity_and_permit_digest_binding(
     first_input = await service.signing_input(bound.receipt_id)
     assert first_input is not None
     prev_digest = sha256_hex(first_input)
+    wrong_prev = sha256_hex(prev_digest)
+    assert wrong_prev != prev_digest
 
     with pytest.raises(ReceiptError, match="receipt_prev_digest_mismatch"):
-        await service.create_receipt(**base, sequence=1, prev_receipt_digest="b" * 64)
+        await service.create_receipt(**base, sequence=1, prev_receipt_digest=wrong_prev)
     with pytest.raises(ReceiptError, match="receipt_prev_not_found"):
         await service.create_receipt(
             **base, sequence=2, prev_receipt_digest=prev_digest
@@ -796,3 +813,189 @@ async def test_receipt_chain_integrity_and_permit_digest_binding(
     )
     assert second.sequence == 1
     assert second.prev_receipt_digest == prev_digest
+
+
+@pytest.mark.anyio
+async def test_receipt_sequence_unique_constraint_enforced(
+    client, clean_database, monkeypatch
+):
+    """DB unique index rejects duplicate sequence when SELECT check is skipped."""
+    from app.services import receipts as receipts_mod
+    from app.services.receipts import ReceiptService
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-seq-unique-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-seq-unique-permit",
+    )
+    authorized = Decimal(str(permit["max_credits"]))
+    service = get_receipt_service()
+    live_digest = await receipts_mod.permit_digest_for_permit_id(permit["permit_id"])
+    assert live_digest is not None
+
+    async def _skip_select_check(self, session, **_kwargs):
+        # Leave uniqueness to uq_receipts_permit_sequence only.
+        return None
+
+    monkeypatch.setattr(ReceiptService, "_assert_opted_in_chain", _skip_select_check)
+
+    kwargs = dict(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool=tool_name,
+        request_payload={},
+        response_payload=None,
+        ledger_entry_id=None,
+        credits_authorized=authorized,
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        permit_digest=live_digest,
+        sequence=0,
+    )
+    first = await service.create_receipt(**kwargs)
+    assert first.sequence == 0
+    with pytest.raises(ReceiptError, match="receipt_sequence_conflict"):
+        await service.create_receipt(**kwargs)
+
+
+@pytest.mark.anyio
+async def test_concurrent_receipt_sequence_zero_one_wins(client, clean_database):
+    """Two concurrent sequence=0 writers: exactly one wins (SELECT and/or unique)."""
+    import asyncio
+
+    from app.services import receipts as receipts_mod
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-seq-race-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-seq-race-permit",
+    )
+    authorized = Decimal(str(permit["max_credits"]))
+    service = get_receipt_service()
+    live_digest = await receipts_mod.permit_digest_for_permit_id(permit["permit_id"])
+    assert live_digest is not None
+
+    async def _write():
+        return await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool=tool_name,
+            request_payload={},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=authorized,
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            permit_digest=live_digest,
+            sequence=0,
+        )
+
+    results = await asyncio.gather(_write(), _write(), return_exceptions=True)
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    conflicts = [
+        r
+        for r in results
+        if isinstance(r, ReceiptError) and r.reason == "receipt_sequence_conflict"
+    ]
+    assert len(successes) == 1, results
+    assert len(conflicts) == 1, results
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@collection_mark(flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=_RECEIPT_PG_REASON)
+async def test_postgres_parallel_receipt_sequence_zero_one_wins(monkeypatch):
+    """Postgres proof: many concurrent sequence=0 writers; exactly one row survives."""
+    import asyncio
+
+    from app.db import database as database_module
+    from app.services import receipts as receipts_mod
+
+    with monkeypatch.context() as patch:
+        patch.setattr(database_module, "_engine", None)
+        patch.setattr(database_module, "_session_factory", None)
+        engine = database_module.get_engine()
+        try:
+            require_live_postgres(
+                flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=_RECEIPT_PG_REASON
+            )
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                provisioned = await provision_agent_wallet(client)
+                tool_name = "receipt-seq-pg-race-tool"
+                permit = await create_tool_permit(
+                    client,
+                    wallet_id=provisioned["agent_wallet_id"],
+                    key_id=provisioned["key_id"],
+                    tool_name=tool_name,
+                    idem_key="receipt-seq-pg-race-permit",
+                )
+                authorized = Decimal(str(permit["max_credits"]))
+                service = get_receipt_service()
+                live_digest = await receipts_mod.permit_digest_for_permit_id(
+                    permit["permit_id"]
+                )
+                assert live_digest is not None
+
+                async def _write(_index: int):
+                    return await service.create_receipt(
+                        permit_id=permit["permit_id"],
+                        wallet_id=provisioned["agent_wallet_id"],
+                        key_id=provisioned["key_id"],
+                        tool=tool_name,
+                        request_payload={},
+                        response_payload=None,
+                        ledger_entry_id=None,
+                        credits_authorized=authorized,
+                        credits_charged=Decimal("0"),
+                        outcome="denied",
+                        reason_code="permit_budget_exceeded",
+                        audit_event_id=None,
+                        permit_digest=live_digest,
+                        sequence=0,
+                    )
+
+                results = await asyncio.gather(
+                    *(_write(i) for i in range(8)), return_exceptions=True
+                )
+                successes = [r for r in results if not isinstance(r, BaseException)]
+                conflicts = [
+                    r
+                    for r in results
+                    if isinstance(r, ReceiptError)
+                    and r.reason == "receipt_sequence_conflict"
+                ]
+                assert len(successes) == 1, results
+                assert len(conflicts) == len(results) - 1, results
+
+                async with get_session_factory()() as session:
+                    rows = (
+                        (
+                            await session.execute(
+                                select(ReceiptModel).where(
+                                    ReceiptModel.permit_id == permit["permit_id"],
+                                    ReceiptModel.sequence == 0,
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                assert len(rows) == 1
+        finally:
+            if engine is not None:
+                await engine.dispose()

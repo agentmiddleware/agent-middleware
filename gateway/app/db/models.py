@@ -870,6 +870,18 @@ class ReceiptModel(SQLModel, table=True):
     """Signed receipt for a governed MCP invocation attempt."""
 
     __tablename__ = "receipts"
+    __table_args__ = (
+        # Partial unique: multiple NULL sequences (pre-056 / non-chain) allowed.
+        # Migration 057 installs the same index; create_all needs it for SQLite tests.
+        Index(
+            "uq_receipts_permit_sequence",
+            "permit_id",
+            "sequence",
+            unique=True,
+            postgresql_where=text("sequence IS NOT NULL"),
+            sqlite_where=text("sequence IS NOT NULL"),
+        ),
+    )
 
     receipt_id: str = Field(primary_key=True, max_length=64)
     idempotency_record_id: Optional[str] = Field(

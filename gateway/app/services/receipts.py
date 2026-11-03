@@ -142,6 +142,19 @@ async def receipt_digest_for_model(
     return sha256_hex(signing_input)
 
 
+def _is_receipt_sequence_conflict(exc: IntegrityError) -> bool:
+    """True when the DB rejected a duplicate opted-in (permit_id, sequence)."""
+    message = str(getattr(exc, "orig", exc)).lower()
+    if "uq_receipts_permit_sequence" in message:
+        return True
+    # SQLite: UNIQUE constraint failed: receipts.permit_id, receipts.sequence
+    return (
+        "permit_id" in message
+        and "sequence" in message
+        and ("unique" in message or "duplicate" in message)
+    )
+
+
 def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
     return ReceiptResponse(
         **_action_binding(model),
@@ -414,10 +427,11 @@ class ReceiptService:
     ) -> None:
         """Bind opted-in sequence/prev to the predecessor under this permit.
 
-        Uniqueness is enforced in application code (no DB unique on
-        ``(permit_id, sequence)`` yet): a second write with the same sequence
-        is rejected. For ``sequence > 0``, the predecessor at ``sequence - 1``
-        must exist, verify, and hash to ``prev_receipt_digest``.
+        Application SELECT rejects an already-visible duplicate sequence as a
+        fast path. Migration 057 / ``uq_receipts_permit_sequence`` is the
+        concurrent-write safety net (IntegrityError -> receipt_sequence_conflict).
+        For ``sequence > 0``, the predecessor at ``sequence - 1`` must exist,
+        verify, and hash to ``prev_receipt_digest``.
         """
         if sequence is None:
             return
@@ -782,7 +796,12 @@ class ReceiptService:
             model = build_model()
             if idempotency_record_id is None:
                 target_session.add(model)
-                await target_session.flush()
+                try:
+                    await target_session.flush()
+                except IntegrityError as exc:
+                    if _is_receipt_sequence_conflict(exc):
+                        raise ReceiptError("receipt_sequence_conflict") from exc
+                    raise
                 return receipt_model_to_response(model)
             bind = target_session.get_bind()
             if bind.dialect.name == "sqlite":
@@ -792,7 +811,12 @@ class ReceiptService:
                 # work in the actual outer transaction. PostgreSQL below uses
                 # a savepoint for unique-key race recovery.
                 target_session.add(model)
-                await target_session.flush()
+                try:
+                    await target_session.flush()
+                except IntegrityError as exc:
+                    if _is_receipt_sequence_conflict(exc):
+                        raise ReceiptError("receipt_sequence_conflict") from exc
+                    raise
                 return receipt_model_to_response(model)
             try:
                 # Isolate a unique-key race to a savepoint so the caller's
@@ -800,7 +824,9 @@ class ReceiptService:
                 async with target_session.begin_nested():
                     target_session.add(model)
                     await target_session.flush()
-            except IntegrityError:
+            except IntegrityError as exc:
+                if _is_receipt_sequence_conflict(exc):
+                    raise ReceiptError("receipt_sequence_conflict") from exc
                 existing = await existing_response(target_session)
                 if existing is None:
                     raise
@@ -833,7 +859,7 @@ class ReceiptService:
                 try:
                     await owned_session.commit()
                     await owned_session.refresh(attempt_model)
-                except Exception:
+                except Exception as exc:
                     # A driver can lose the commit acknowledgement after the row
                     # is durable. Roll back local state, then recover through the
                     # unique idempotency link before deciding this really failed.
@@ -843,6 +869,10 @@ class ReceiptService:
                         # Recovery uses a fresh session because this connection may
                         # be exactly what lost the commit acknowledgement.
                         pass
+                    if isinstance(
+                        exc, IntegrityError
+                    ) and _is_receipt_sequence_conflict(exc):
+                        raise ReceiptError("receipt_sequence_conflict") from exc
                     if idempotency_record_id is not None:
                         async with factory() as recovery_session:
                             existing = await existing_response(recovery_session)

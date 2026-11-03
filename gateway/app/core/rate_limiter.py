@@ -7,6 +7,7 @@ Returns standard rate limit headers on every response.
 
 import asyncio
 import hashlib
+import hmac
 import ipaddress
 import logging
 import os
@@ -201,6 +202,22 @@ def _presented_rate_identity(request: Request) -> str | None:
     return f"jwt:{payload.key_id}"
 
 
+# Random per process. It only makes the fixed-length values below unpredictable
+# to a caller; nothing is stored or compared across processes.
+_EQUALIZE_KEY = os.urandom(32)
+
+
+def _length_equalized(value: str) -> str:
+    """Return a fixed-length keyed digest of ``value`` for timing-safe compares.
+
+    The compare in ``_presents_configured_env_key`` then sees equal-length
+    inputs whatever the key lengths. This is not credential storage: the value
+    is never persisted, and HMAC with a per-process random key is used so the
+    result cannot be precomputed.
+    """
+    return hmac.new(_EQUALIZE_KEY, value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def _presents_configured_env_key(request: Request) -> bool:
     """True when the request authenticates with a ``VALID_API_KEYS`` entry.
 
@@ -225,11 +242,10 @@ def _presents_configured_env_key(request: Request) -> bool:
     configured = [
         key.strip() for key in get_settings().VALID_API_KEYS.split(",") if key.strip()
     ]
-    presented_digest = hashlib.sha256(presented.encode("utf-8")).digest()
+    presented_digest = _length_equalized(presented)
     matched = False
     for key in configured:
-        key_digest = hashlib.sha256(key.encode("utf-8")).digest()
-        if _constant_time_equal(presented_digest.hex(), key_digest.hex()):
+        if _constant_time_equal(presented_digest, _length_equalized(key)):
             matched = True
     return matched
 

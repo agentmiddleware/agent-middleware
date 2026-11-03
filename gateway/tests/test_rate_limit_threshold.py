@@ -64,7 +64,11 @@ def test_discovery_payload_matches_the_documented_120_default(monkeypatch) -> No
     fake = type(
         "Settings",
         (),
-        {"RATE_LIMIT_PER_MINUTE": 120, "RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER": 20},
+        {
+            "RATE_LIMIT_PER_MINUTE": 120,
+            "RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER": 20,
+            "REDIS_URL": "",
+        },
     )()
     monkeypatch.setattr(rate_limiter_module, "get_settings", lambda: fake)
 
@@ -922,3 +926,38 @@ def test_anonymous_global_multiplier_must_be_positive() -> None:
         with pytest.raises(ValidationError):
             Settings(RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER=bad)
     assert Settings(RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER=1)
+
+
+def test_discovery_counter_scope_is_per_process_without_redis_url(monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "REDIS_URL", "")
+
+    assert rate_limit_discovery()["counter_scope"] == "per_process"
+
+
+def test_discovery_counter_scope_is_shared_redis_with_redis_url(monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "REDIS_URL", "redis://cache:6379/0")
+
+    assert rate_limit_discovery()["counter_scope"] == "shared_redis"
+
+
+def test_discovery_counter_scope_treats_a_blank_redis_url_as_unset(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "REDIS_URL", "   ")
+
+    assert rate_limit_discovery()["counter_scope"] == "per_process"
+
+
+@pytest.mark.anyio
+async def test_readiness_route_wide_budget_limits_a_distributed_flood() -> None:
+    """Many clients together exhaust the readiness route-wide bucket (10x)."""
+    limiter = _anonymous_limiter(3)  # route-wide readiness limit = 30
+    statuses = [
+        await _status_for(limiter, "/health/ready", client=f"198.51.100.{index}")
+        for index in range(1, 32)
+    ]
+
+    assert statuses[:30] == [200] * 30
+    assert statuses[30:] == [429]
+    # Another route is not charged to the readiness route-wide bucket.
+    assert await _status_for(limiter, "/v1/discover", client="198.51.100.200") == 200

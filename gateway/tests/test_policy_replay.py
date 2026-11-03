@@ -586,6 +586,30 @@ def test_load_recorded_calls_survives_jcs_error_via_legacy(tmp_path, monkeypatch
     assert calls[0].signing_input == legacy
 
 
+def test_load_recorded_calls_accepts_when_serializers_diverge(tmp_path, monkeypatch):
+    """Both successful dual-path arms stay live when serializers diverge.
+
+    ASCII recorded goldens make ``legacy == jcs``, so stub the serializers to
+    emit distinct strings over the same golden payload (no invented fields).
+    """
+    import app.replay.policy_replay as policy_replay
+
+    payload = _golden_payload("denial_constraints.json")
+    jcs_bytes = canonical_json(payload) + "\n"
+    legacy_bytes = legacy_canonical_json(payload)
+    assert jcs_bytes != legacy_bytes
+    monkeypatch.setattr(policy_replay, "canonical_json", lambda _p: jcs_bytes)
+    monkeypatch.setattr(policy_replay, "legacy_canonical_json", lambda _p: legacy_bytes)
+
+    path_j = tmp_path / "jcs-divergent.json"
+    path_j.write_text(json.dumps({"signing_input": jcs_bytes}))
+    assert load_recorded_calls(path_j)[0].signing_input == jcs_bytes
+
+    path_l = tmp_path / "legacy-divergent.json"
+    path_l.write_text(json.dumps({"signing_input": legacy_bytes}))
+    assert load_recorded_calls(path_l)[0].signing_input == legacy_bytes
+
+
 def test_load_recorded_calls_accepts_legacy_pre_jcs_signing_input(tmp_path):
     """Pre-cutover signing_input (legacy serializer) still loads for replay."""
     payload = _golden_payload("denial_constraints.json")

@@ -128,6 +128,20 @@ async def permit_digest_for_permit_id(
         return await _compute(owned)
 
 
+async def receipt_digest_for_model(
+    model: ReceiptModel,
+    *,
+    session: AsyncSession | None = None,
+) -> str | None:
+    """SHA-256 of a receipt's exact signing_input UTF-8 bytes, when verifiable."""
+    signing_input = await ReceiptService().signing_input_for_model(
+        model, session=session
+    )
+    if signing_input is None:
+        return None
+    return sha256_hex(signing_input)
+
+
 def receipt_model_to_response(model: ReceiptModel) -> ReceiptResponse:
     return ReceiptResponse(
         **_action_binding(model),
@@ -390,6 +404,65 @@ class ReceiptService:
                 return {**(constraints_evaluated or {}), "jev_risk_guard": jev}
         return constraints_evaluated
 
+    async def _assert_opted_in_chain(
+        self,
+        session: AsyncSession,
+        *,
+        permit_id: str,
+        sequence: int | None,
+        prev_receipt_digest: str | None,
+    ) -> None:
+        """Bind opted-in sequence/prev to the predecessor under this permit.
+
+        Uniqueness is enforced in application code (no DB unique on
+        ``(permit_id, sequence)`` yet): a second write with the same sequence
+        is rejected. For ``sequence > 0``, the predecessor at ``sequence - 1``
+        must exist, verify, and hash to ``prev_receipt_digest``.
+        """
+        if sequence is None:
+            return
+        conflict = (
+            await session.execute(
+                select(ReceiptModel)
+                .where(
+                    cast(ColumnElement[bool], ReceiptModel.permit_id == permit_id),
+                    cast(ColumnElement[bool], ReceiptModel.sequence == sequence),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if conflict is not None:
+            raise ReceiptError("receipt_sequence_conflict")
+        if sequence == 0:
+            return
+        if prev_receipt_digest is None:
+            raise ReceiptError("receipt_prev_digest_required")
+        predecessors = (
+            (
+                await session.execute(
+                    select(ReceiptModel)
+                    .where(
+                        cast(ColumnElement[bool], ReceiptModel.permit_id == permit_id),
+                        cast(
+                            ColumnElement[bool],
+                            ReceiptModel.sequence == sequence - 1,
+                        ),
+                    )
+                    .limit(2)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(predecessors) != 1:
+            raise ReceiptError("receipt_prev_not_found")
+        predecessor = predecessors[0]
+        actual = await receipt_digest_for_model(predecessor, session=session)
+        if actual is None:
+            raise ReceiptError("receipt_prev_unverified")
+        if actual != prev_receipt_digest:
+            raise ReceiptError("receipt_prev_digest_mismatch")
+
     async def create_receipt(
         self,
         *,
@@ -480,14 +553,26 @@ class ReceiptService:
         )
 
         # Resolve digest/chain fields before signing. permit_digest is computed
-        # from the live permit when the caller did not pass one. sequence and
-        # prev_receipt_digest stay unset until a caller opts into the per-permit
-        # chain (no silent sequence=0); when sequence is 0, prev is omitted.
-        effective_permit_digest = permit_digest
-        if effective_permit_digest is None:
-            effective_permit_digest = await permit_digest_for_permit_id(
-                permit_id, session=session
-            )
+        # from the live permit when the caller did not pass one; a caller-supplied
+        # value must match that artifact digest. sequence and prev_receipt_digest
+        # stay unset until a caller opts into the per-permit chain (no silent
+        # sequence=0); when sequence is 0, prev is omitted. Opted-in sequence
+        # values are uniqueness-checked and (for sequence > 0) bound to the
+        # predecessor under the same permit.
+        live_permit_digest = await permit_digest_for_permit_id(
+            permit_id, session=session
+        )
+        effective_permit_digest: str | None = live_permit_digest
+        if permit_digest is not None:
+            if _SHA256_HEX_PATTERN.fullmatch(permit_digest) is None:
+                raise ReceiptError("receipt_permit_digest_invalid")
+            supplied_permit_digest = permit_digest.lower()
+            if (
+                live_permit_digest is None
+                or supplied_permit_digest != live_permit_digest
+            ):
+                raise ReceiptError("receipt_permit_digest_mismatch")
+            effective_permit_digest = live_permit_digest
         effective_sequence = sequence
         if effective_sequence is not None and effective_sequence < 0:
             raise ReceiptError("receipt_sequence_invalid")
@@ -566,6 +651,20 @@ class ReceiptService:
                 existing = await existing_response(target_session)
             if existing is not None:
                 return existing
+
+        async def _run_chain_assert(target: AsyncSession) -> None:
+            await self._assert_opted_in_chain(
+                target,
+                permit_id=permit_id,
+                sequence=effective_sequence,
+                prev_receipt_digest=effective_prev_receipt_digest,
+            )
+
+        if target_session is not None:
+            await _run_chain_assert(target_session)
+        else:
+            async with get_session_factory()() as chain_session:
+                await _run_chain_assert(chain_session)
 
         created_at = utc_now()
         receipt_id = f"rcpt-{uuid.uuid4().hex[:16]}"
@@ -674,6 +773,12 @@ class ReceiptService:
             )
 
         if target_session is not None:
+            await self._assert_opted_in_chain(
+                target_session,
+                permit_id=permit_id,
+                sequence=effective_sequence,
+                prev_receipt_digest=effective_prev_receipt_digest,
+            )
             model = build_model()
             if idempotency_record_id is None:
                 target_session.add(model)
@@ -713,11 +818,17 @@ class ReceiptService:
             acknowledgement was lost is found here by the next attempt rather
             than colliding with itself.
             """
-            attempt_model = build_model()
             async with factory() as owned_session:
                 existing = await existing_response(owned_session)
                 if existing is not None:
                     return existing
+                await self._assert_opted_in_chain(
+                    owned_session,
+                    permit_id=permit_id,
+                    sequence=effective_sequence,
+                    prev_receipt_digest=effective_prev_receipt_digest,
+                )
+                attempt_model = build_model()
                 owned_session.add(attempt_model)
                 try:
                     await owned_session.commit()

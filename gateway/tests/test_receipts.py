@@ -733,3 +733,66 @@ async def test_create_receipt_binds_counterparty_on_failed_unrefunded(
     assert signing_input is not None
     body = json.loads(signing_input)
     assert body["counterparty"] == "partner.example"
+
+
+@pytest.mark.anyio
+async def test_receipt_chain_integrity_and_permit_digest_binding(
+    client, clean_database
+):
+    """Codex #294: sequence/prev must bind to predecessor; permit_digest to permit."""
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-chain-integrity-tool",
+        idem_key="receipt-chain-integrity-permit",
+    )
+    service = get_receipt_service()
+    base = {
+        "permit_id": permit["permit_id"],
+        "wallet_id": provisioned["agent_wallet_id"],
+        "key_id": provisioned["key_id"],
+        "tool": "receipt-chain-integrity-tool",
+        "request_payload": {"attempt": "chain-integrity"},
+        "response_payload": {"ok": True},
+        "ledger_entry_id": None,
+        "credits_authorized": Decimal("1"),
+        "credits_charged": Decimal("0"),
+        "outcome": "denied",
+        "reason_code": "permit_budget_exceeded",
+        "audit_event_id": None,
+    }
+
+    from app.services import receipts as receipts_mod
+    from app.services.signing_keys import sha256_hex
+
+    live_digest = await receipts_mod.permit_digest_for_permit_id(permit["permit_id"])
+    assert live_digest is not None and len(live_digest) == 64
+
+    with pytest.raises(ReceiptError, match="receipt_permit_digest_mismatch"):
+        await service.create_receipt(**base, permit_digest="a" * 64)
+
+    bound = await service.create_receipt(**base, permit_digest=live_digest, sequence=0)
+    assert bound.permit_digest == live_digest
+    assert bound.sequence == 0
+
+    with pytest.raises(ReceiptError, match="receipt_sequence_conflict"):
+        await service.create_receipt(**base, sequence=0)
+
+    first_input = await service.signing_input(bound.receipt_id)
+    assert first_input is not None
+    prev_digest = sha256_hex(first_input)
+
+    with pytest.raises(ReceiptError, match="receipt_prev_digest_mismatch"):
+        await service.create_receipt(**base, sequence=1, prev_receipt_digest="b" * 64)
+    with pytest.raises(ReceiptError, match="receipt_prev_not_found"):
+        await service.create_receipt(
+            **base, sequence=2, prev_receipt_digest=prev_digest
+        )
+
+    second = await service.create_receipt(
+        **base, sequence=1, prev_receipt_digest=prev_digest
+    )
+    assert second.sequence == 1
+    assert second.prev_receipt_digest == prev_digest

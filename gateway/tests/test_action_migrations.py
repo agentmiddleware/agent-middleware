@@ -29,7 +29,15 @@ FIELDS = (
     "action_public_tool_id",
     "action_upstream_binding_hash",
 )
-RECEIPT_PROVENANCE_FIELDS = ("enforcement_mode", "gateway_build")
+RECEIPT_PROVENANCE_FIELDS = (
+    "enforcement_mode",
+    "gateway_build",
+    "permit_digest",
+    "approval_digest",
+    "counterparty",
+    "sequence",
+    "prev_receipt_digest",
+)
 ACTION_REVISION = "042_permit_action_binding"
 SCRUB_REVISION = "041_scrub_content_owner_keys"
 CONTENT_TABLES = ("content_pipelines", "content_campaigns")
@@ -279,7 +287,29 @@ def test_postgres_legacy_roundtrip_and_fail_closed_downgrade():
             {"owner_key": ""},
             {"owner_key": "w"},
         ]
+    # 056 refuses to drop signed digest/chain columns while any remain set.
+    digest = "a" * 64
+    sql(
+        "UPDATE receipts SET permit_digest='"
+        + digest
+        + "', sequence=0 WHERE receipt_id='r'"
+    )
+    result = migrate(url, "055_wallet_product_activation", "downgrade")
+    assert result.returncode != 0 and "056 downgrade refused" in result.stderr
+    assert sql("SELECT version_num FROM alembic_version") == [
+        {"version_num": head_revision}
+    ]
+    assert sql("SELECT permit_digest, sequence FROM receipts WHERE receipt_id='r'") == [
+        {"permit_digest": digest, "sequence": 0}
+    ]
+    sql("UPDATE receipts SET permit_digest=NULL, sequence=NULL WHERE receipt_id='r'")
+    result = migrate(url, "055_wallet_product_activation", "downgrade")
+    assert result.returncode == 0, result.stderr
+    result = migrate(url, "head")
+    assert result.returncode == 0, result.stderr
+
     print(
         "PostgreSQL: 040 -> 041 -> 042 and 041 -> 042; content owners scrubbed; "
-        "legacy permit/receipt bytes retained; every partial authority and owner downgrade blocked"
+        "legacy permit/receipt bytes retained; every partial authority and owner "
+        "downgrade blocked; 056 populated digest/chain downgrade refused"
     )

@@ -1136,7 +1136,6 @@ async def test_existing_success_receipt_rejects_conflicting_signed_permit_snapsh
         )
 
 
-@pytest.mark.anyio
 def test_assert_receipt_match_maps_jcs_reject_to_linkage_conflict():
     """Non-I-JSON constraints must conflict, not raise CanonicalizationError."""
     from types import SimpleNamespace
@@ -1186,6 +1185,7 @@ def test_assert_receipt_match_maps_jcs_reject_to_linkage_conflict():
         )
 
 
+@pytest.mark.anyio
 async def test_existing_receipt_adoption_matches_effective_jev_constraints(
     client: AsyncClient,
     clean_database,

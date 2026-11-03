@@ -175,8 +175,13 @@ def signing_message_candidates(payload: dict[str, Any]) -> list[bytes]:
         if message is not None:
             candidates.append(message)
         if "payload_hash" in payload:
-            rebuilt = {k: v for k, v in payload.items() if k != "payload_hash"}
-            rebuilt["payload_hash"] = _hash_with(serializer, rebuilt)
+            # Rebuild under this serializer; catch errors so a JCS failure
+            # cannot abort before the legacy serializer is tried.
+            try:
+                rebuilt = {k: v for k, v in payload.items() if k != "payload_hash"}
+                rebuilt["payload_hash"] = _hash_with(serializer, rebuilt)
+            except (CanonicalizationError, TypeError, ValueError):
+                continue
             message = _try(serializer, rebuilt)
             if message is not None:
                 candidates.append(message)

@@ -125,3 +125,18 @@ def test_audit_style_preset_payload_hash_verifies_as_is():
             continue
     assert matched is True
     assert message in signing_message_candidates(signed)
+
+
+def test_jcs_rebuild_error_still_tries_legacy():
+    """A JCS CanonicalizationError on rebuild must not skip the legacy path."""
+    # NaN is rejected by JCS but accepted by legacy json.dumps(allow_nan=True).
+    payload = {
+        "v": float("nan"),
+        "payload_hash": "0" * 64,
+        "alg": "Ed25519",
+        "kid": "k1",
+    }
+    messages = signing_message_candidates(payload)
+    assert messages, "expected at least one legacy candidate"
+    legacy = legacy_canonical_json(payload).encode()
+    assert legacy in messages

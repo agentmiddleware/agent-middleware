@@ -1175,6 +1175,126 @@ async def test_sqlite_integrity_recover_rolls_back_caller_session(
         await caller_session.commit()
 
 
+@pytest.mark.anyio
+async def test_sqlite_integrity_recover_inside_begin_finalizes(
+    client, clean_database, monkeypatch
+):
+    """create_pending-style session.begin() must finalize after SQLite adopt.
+
+    create_pending wraps create_receipt in ``async with session.begin():``.
+    SQLite IntegrityError adopt rolls that transaction back; finalization must
+    open a fresh begin() (same pattern as RefundReconciliationService.create_pending).
+    """
+    from app.db.models import IdempotencyRecordModel
+    from app.services.receipts import ReceiptService
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-sqlite-begin-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-sqlite-begin-permit",
+    )
+    service = get_receipt_service()
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-sqlite-begin-invoke",
+        request_payload={},
+    )
+    assert begun.replay is None
+
+    winner = await service.create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool=tool_name,
+        request_payload={},
+        response_payload=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal(str(permit["max_credits"])),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        idempotency_record_id=begun.record_id,
+        sequence=0,
+    )
+
+    async def _skip_chain(self, session, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        ReceiptService, "_assert_opted_in_chain", _skip_chain, raising=True
+    )
+
+    lookups = {"n": 0}
+    real_get = ReceiptService._get_by_idempotency_record
+
+    async def _get_skip_preflight(session, idempotency_record_id):
+        lookups["n"] += 1
+        if lookups["n"] == 1:
+            return None
+        return await real_get(session, idempotency_record_id)
+
+    monkeypatch.setattr(
+        ReceiptService, "_get_by_idempotency_record", staticmethod(_get_skip_preflight)
+    )
+
+    class _AdoptedAfterCallerRollback(Exception):
+        def __init__(self, adopted, record_id: str) -> None:
+            self.adopted = adopted
+            self.record_id = record_id
+
+    factory = get_session_factory()
+    async with factory() as caller_session:
+        try:
+            async with caller_session.begin():
+                record = await caller_session.get(
+                    IdempotencyRecordModel, begun.record_id
+                )
+                assert record is not None
+                adopted = await service.create_receipt(
+                    permit_id=permit["permit_id"],
+                    wallet_id=provisioned["agent_wallet_id"],
+                    key_id=provisioned["key_id"],
+                    tool=tool_name,
+                    request_payload={},
+                    response_payload=None,
+                    ledger_entry_id=None,
+                    credits_authorized=Decimal(str(permit["max_credits"])),
+                    credits_charged=Decimal("0"),
+                    outcome="denied",
+                    reason_code="permit_budget_exceeded",
+                    audit_event_id=None,
+                    idempotency_record_id=begun.record_id,
+                    sequence=0,
+                    session=caller_session,
+                )
+                assert adopted.receipt_id == winner.receipt_id
+                if not caller_session.in_transaction():
+                    raise _AdoptedAfterCallerRollback(adopted, begun.record_id)
+                raise AssertionError("expected SQLite adopt to roll back begin()")
+        except _AdoptedAfterCallerRollback as pending:
+            async with caller_session.begin():
+                record = await caller_session.get(
+                    IdempotencyRecordModel, pending.record_id
+                )
+                assert record is not None
+                record.response_reference = pending.adopted.receipt_id
+                record.status_code = 500
+                caller_session.add(record)
+                await caller_session.flush()
+
+    async with factory() as verify_session:
+        row = await verify_session.get(IdempotencyRecordModel, begun.record_id)
+    assert row is not None
+    assert row.response_reference == winner.receipt_id
+    assert row.status_code == 500
+
+
 @pytest.mark.asyncio(loop_scope="session")
 @collection_mark(flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=_RECEIPT_PG_REASON)
 async def test_postgres_parallel_receipt_sequence_zero_one_wins(monkeypatch):

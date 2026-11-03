@@ -852,21 +852,21 @@ class ReceiptService:
                 return receipt_model_to_response(model)
             bind = target_session.get_bind()
             if bind.dialect.name == "sqlite":
-                # Python's sqlite driver can treat a SAVEPOINT as the outermost
-                # transaction when no write has started yet; releasing it then
-                # survives a later caller rollback. Keep caller-owned SQLite
-                # work in the actual outer transaction. On IntegrityError the
-                # connection is unusable in-txn, so adopt via a fresh session
-                # and roll the caller session back so later finalization
-                # writes/commit are not stuck in pending-rollback.
+                # Caller-owned SQLite cannot isolate the insert with a SAVEPOINT
+                # unless the engine emits an explicit BEGIN (pysqlite otherwise
+                # treats SAVEPOINT as outermost and RELEASE makes the write
+                # durable across a later caller rollback). Flush in the outer
+                # txn instead. On IntegrityError the connection is pending-
+                # rollback: adopt via a fresh session (winner may already be
+                # committed), then roll the caller session back so it is usable
+                # again. Callers that wrap create_receipt in session.begin()
+                # and still need to write afterward (create_pending) must detect
+                # ``not session.in_transaction()`` and open a new transaction
+                # for finalization.
                 target_session.add(model)
                 try:
                     await target_session.flush()
                 except IntegrityError as exc:
-                    # Do not query target_session: SQLite leaves it in
-                    # pending-rollback after a failed flush. Adopt via a
-                    # fresh session (winner may already be committed), then
-                    # always clear the caller's failed transaction.
                     try:
                         factory = get_session_factory()
                         async with factory() as recovery_session:

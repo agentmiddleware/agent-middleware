@@ -1,11 +1,11 @@
 """Unique (permit_id, sequence) for opted-in receipt chains.
 
-Revision ID: 057_receipt_permit_sequence_unique
+Revision ID: 057_receipt_permit_seq_unique
 Revises: 056_receipt_digests_chain
 
 Partial unique index so multiple NULL sequences (pre-056 / non-chain receipts)
 remain allowed. Fail-closed when duplicate non-NULL (permit_id, sequence)
-groups already exist — operators must adjudicate before the invariant can
+groups already exist: operators must adjudicate before the invariant can
 install. Application SELECT checks stay as a fast path; this index closes the
 concurrent-write race.
 """
@@ -15,7 +15,7 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "057_receipt_permit_sequence_unique"
+revision: str = "057_receipt_permit_seq_unique"
 down_revision: Union[str, None] = "056_receipt_digests_chain"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

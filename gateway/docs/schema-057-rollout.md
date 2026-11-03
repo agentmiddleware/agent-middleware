@@ -1,6 +1,6 @@
 # Schema 057: unique opted-in receipt (permit_id, sequence)
 
-Migration `057_receipt_permit_sequence_unique` revises `056_receipt_digests_chain`.
+Migration `057_receipt_permit_seq_unique` revises `056_receipt_digests_chain`.
 It installs the partial unique index `uq_receipts_permit_sequence` on
 `(permit_id, sequence) WHERE sequence IS NOT NULL`.
 

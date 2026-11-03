@@ -1024,6 +1024,107 @@ async def test_concurrent_same_idempotency_adopts_not_sequence_conflict(
     assert len({r.receipt_id for r in successes}) == 1
 
 
+@pytest.mark.anyio
+async def test_sqlite_integrity_recover_rolls_back_caller_session(
+    client, clean_database, monkeypatch
+):
+    """Caller-owned SQLite IntegrityError adopt must leave the session usable.
+
+    After a failed flush the session is pending-rollback. Recovery adopts via a
+    fresh session; the caller's session must be rolled back so a later query or
+    commit does not raise. Forces the IntegrityError path by skipping the SELECT
+    chain preflight and suppressing the first idempotency lookup so insert runs.
+    """
+    from sqlalchemy.exc import PendingRollbackError
+
+    from app.services.receipts import ReceiptService
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-sqlite-rollback-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-sqlite-rollback-permit",
+    )
+    service = get_receipt_service()
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-sqlite-rollback-invoke",
+        request_payload={},
+    )
+    assert begun.replay is None
+
+    winner = await service.create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool=tool_name,
+        request_payload={},
+        response_payload=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal(str(permit["max_credits"])),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        idempotency_record_id=begun.record_id,
+        sequence=0,
+    )
+
+    async def _skip_chain(self, session, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        ReceiptService, "_assert_opted_in_chain", _skip_chain, raising=True
+    )
+
+    lookups = {"n": 0}
+    real_get = ReceiptService._get_by_idempotency_record
+
+    async def _get_skip_preflight(session, idempotency_record_id):
+        lookups["n"] += 1
+        # First lookup is the caller-session preflight; return None so insert runs
+        # and hits uq_receipts_permit_sequence. Later recovery must see the winner.
+        if lookups["n"] == 1:
+            return None
+        return await real_get(session, idempotency_record_id)
+
+    monkeypatch.setattr(
+        ReceiptService, "_get_by_idempotency_record", staticmethod(_get_skip_preflight)
+    )
+
+    factory = get_session_factory()
+    async with factory() as caller_session:
+        adopted = await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool=tool_name,
+            request_payload={},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal(str(permit["max_credits"])),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id=begun.record_id,
+            sequence=0,
+            session=caller_session,
+        )
+        assert adopted.receipt_id == winner.receipt_id
+        try:
+            await caller_session.execute(select(ReceiptModel).limit(1))
+        except PendingRollbackError as exc:  # pragma: no cover - failure path
+            raise AssertionError(
+                "caller session still pending-rollback after IntegrityError adopt"
+            ) from exc
+        await caller_session.commit()
+
+
 @pytest.mark.asyncio(loop_scope="session")
 @collection_mark(flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=_RECEIPT_PG_REASON)
 async def test_postgres_parallel_receipt_sequence_zero_one_wins(monkeypatch):

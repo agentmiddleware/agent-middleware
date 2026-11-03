@@ -856,17 +856,24 @@ class ReceiptService:
                 # transaction when no write has started yet; releasing it then
                 # survives a later caller rollback. Keep caller-owned SQLite
                 # work in the actual outer transaction. On IntegrityError the
-                # connection is unusable in-txn, so adopt via a fresh session.
+                # connection is unusable in-txn, so adopt via a fresh session
+                # and roll the caller session back so later finalization
+                # writes/commit are not stuck in pending-rollback.
                 target_session.add(model)
                 try:
                     await target_session.flush()
                 except IntegrityError as exc:
                     # Do not query target_session: SQLite leaves it in
                     # pending-rollback after a failed flush. Adopt via a
-                    # fresh session (winner may already be committed).
-                    factory = get_session_factory()
-                    async with factory() as recovery_session:
-                        return await _recover_integrity(recovery_session, exc)
+                    # fresh session (winner may already be committed), then
+                    # always clear the caller's failed transaction.
+                    try:
+                        factory = get_session_factory()
+                        async with factory() as recovery_session:
+                            adopted = await _recover_integrity(recovery_session, exc)
+                    finally:
+                        await target_session.rollback()
+                    return adopted
                 return receipt_model_to_response(model)
             try:
                 # Isolate a unique-key race to a savepoint so the caller's

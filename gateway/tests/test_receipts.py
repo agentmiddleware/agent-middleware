@@ -914,6 +914,64 @@ async def test_concurrent_receipt_sequence_zero_one_wins(client, clean_database)
 
 
 @pytest.mark.anyio
+async def test_chain_assert_same_idempotency_returns_for_adopt(
+    client, clean_database
+):
+    """Visible sequence row with same idempotency is returned, not conflict."""
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-seq-chain-adopt-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-seq-chain-adopt-permit",
+    )
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-seq-chain-adopt-invoke",
+        request_payload={},
+    )
+    assert begun.replay is None
+    service = get_receipt_service()
+    first = await service.create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool=tool_name,
+        request_payload={},
+        response_payload=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal(str(permit["max_credits"])),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        idempotency_record_id=begun.record_id,
+        sequence=0,
+    )
+    async with get_session_factory()() as session:
+        same = await service._assert_opted_in_chain(
+            session,
+            permit_id=permit["permit_id"],
+            sequence=0,
+            prev_receipt_digest=None,
+            idempotency_record_id=begun.record_id,
+        )
+        assert same is not None
+        assert same.receipt_id == first.receipt_id
+        with pytest.raises(ReceiptError, match="receipt_sequence_conflict"):
+            await service._assert_opted_in_chain(
+                session,
+                permit_id=permit["permit_id"],
+                sequence=0,
+                prev_receipt_digest=None,
+                idempotency_record_id=None,
+            )
+
+
+@pytest.mark.anyio
 async def test_concurrent_same_idempotency_adopts_not_sequence_conflict(
     client, clean_database
 ):

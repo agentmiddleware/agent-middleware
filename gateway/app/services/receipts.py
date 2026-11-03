@@ -28,6 +28,20 @@ from app.services.signing_keys import (
 
 
 _REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_.:-]{0,127}\Z")
+_SHA256_HEX_PATTERN = re.compile(r"[0-9a-fA-F]{64}\Z")
+# Additive 056 fields: pre-056 rows store NULL. Idempotent retries may compute
+# a live permit_digest (or leave sequence unset) while the adopted row still
+# has NULL; treat historical omission as a match and only conflict when the
+# stored value was signed and differs.
+_ADDITIVE_PROVENANCE_FIELDS = frozenset(
+    {
+        "permit_digest",
+        "approval_digest",
+        "counterparty",
+        "sequence",
+        "prev_receipt_digest",
+    }
+)
 _RECEIPT_OUTCOMES = frozenset(
     {
         "success",
@@ -187,7 +201,7 @@ class ReceiptService:
         if model.approval_id is not None:
             payload["approval_id"] = model.approval_id
         # Digest/chain fields (056): signed only when set so pre-056 receipts
-        # keep verifying. sequence 0 omits prev_receipt_digest.
+        # keep verifying. sequence 0 (when set) omits prev_receipt_digest.
         if model.permit_digest is not None:
             payload["permit_digest"] = model.permit_digest
         if model.approval_digest is not None:
@@ -311,8 +325,14 @@ class ReceiptService:
             _loads_dict(model.constraints_evaluated_json)
         ) != canonical_json(constraints_evaluated or {}):
             raise ReceiptError("receipt_idempotency_conflict")
-        if any(getattr(model, name) != value for name, value in expected.items()):
-            raise ReceiptError("receipt_idempotency_conflict")
+        for name, value in expected.items():
+            stored = getattr(model, name)
+            if name in _ADDITIVE_PROVENANCE_FIELDS and stored is None:
+                # Pre-056 omission: adopt the existing receipt even when this
+                # retry would freshly compute or omit the additive field.
+                continue
+            if stored != value:
+                raise ReceiptError("receipt_idempotency_conflict")
 
     @staticmethod
     async def _get_by_idempotency_record(
@@ -460,45 +480,33 @@ class ReceiptService:
         )
 
         # Resolve digest/chain fields before signing. permit_digest is computed
-        # from the live permit when the caller did not pass one; sequence
-        # defaults to 0 for new receipts (callers that chain pass a higher
-        # value and the previous digest). prev_receipt_digest is omitted at 0.
+        # from the live permit when the caller did not pass one. sequence and
+        # prev_receipt_digest stay unset until a caller opts into the per-permit
+        # chain (no silent sequence=0); when sequence is 0, prev is omitted.
         effective_permit_digest = permit_digest
         if effective_permit_digest is None:
             effective_permit_digest = await permit_digest_for_permit_id(
                 permit_id, session=session
             )
-        effective_sequence = 0 if sequence is None else sequence
-        if effective_sequence < 0:
+        effective_sequence = sequence
+        if effective_sequence is not None and effective_sequence < 0:
             raise ReceiptError("receipt_sequence_invalid")
-        if effective_sequence == 0:
+        if effective_sequence is None or effective_sequence == 0:
             effective_prev_receipt_digest = None
         else:
             effective_prev_receipt_digest = prev_receipt_digest
             if effective_prev_receipt_digest is None:
                 raise ReceiptError("receipt_prev_digest_required")
-            if len(effective_prev_receipt_digest) != 64:
+            if _SHA256_HEX_PATTERN.fullmatch(effective_prev_receipt_digest) is None:
                 raise ReceiptError("receipt_prev_digest_invalid")
-            try:
-                int(effective_prev_receipt_digest, 16)
-            except ValueError as exc:
-                raise ReceiptError("receipt_prev_digest_invalid") from exc
             effective_prev_receipt_digest = effective_prev_receipt_digest.lower()
         if effective_permit_digest is not None:
-            if len(effective_permit_digest) != 64:
+            if _SHA256_HEX_PATTERN.fullmatch(effective_permit_digest) is None:
                 raise ReceiptError("receipt_permit_digest_invalid")
-            try:
-                int(effective_permit_digest, 16)
-            except ValueError as exc:
-                raise ReceiptError("receipt_permit_digest_invalid") from exc
             effective_permit_digest = effective_permit_digest.lower()
         if approval_digest is not None:
-            if len(approval_digest) != 64:
+            if _SHA256_HEX_PATTERN.fullmatch(approval_digest) is None:
                 raise ReceiptError("receipt_approval_digest_invalid")
-            try:
-                int(approval_digest, 16)
-            except ValueError as exc:
-                raise ReceiptError("receipt_approval_digest_invalid") from exc
             approval_digest = approval_digest.lower()
 
         async def existing_response(
@@ -600,7 +608,8 @@ class ReceiptService:
             payload["approval_digest"] = approval_digest
         if counterparty is not None:
             payload["counterparty"] = counterparty
-        payload["sequence"] = effective_sequence
+        if effective_sequence is not None:
+            payload["sequence"] = effective_sequence
         if effective_prev_receipt_digest is not None:
             payload["prev_receipt_digest"] = effective_prev_receipt_digest
         if constraints_evaluated:

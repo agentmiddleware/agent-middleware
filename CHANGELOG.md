@@ -5,8 +5,9 @@ This repository starts with a fresh history. Releases are listed here once tagge
 ## [Unreleased]
 
 - Receipts: additive signed fields `permit_digest`, `approval_digest`,
-  `counterparty`, `sequence` (per-permit, from 0), and `prev_receipt_digest`
-  (omitted at sequence 0). Digests are lowercase hex SHA-256 of the exact
+  `counterparty`, `sequence` (per-permit, from 0 when a caller opts in; left
+  unset otherwise), and `prev_receipt_digest` (omitted at sequence 0). Digests
+  are lowercase hex SHA-256 of the exact
   signed artifact `signing_input` UTF-8 bytes. Sample receipts are re-dated
   inside `pmt_golden_0001`'s validity window and use its subject wallet.
   Migration 056 adds the columns. Item 5 from the Provared review (P-256 /

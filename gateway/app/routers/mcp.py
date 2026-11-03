@@ -3764,6 +3764,7 @@ async def _execute_upstream_after_charge(
             dispatch_attempt_id=terminal.attempt_id,
             response_hash_override=terminal.response_hash,
             approval_id=(approval_check.approval_id if approval_check else None),
+            counterparty=extract_recipient_identity(terminal.upstream_origin),
             constraints_evaluated=_permit_constraints_snapshot(permit_model),
         )
     except ReceiptWriteContendedError as exc:

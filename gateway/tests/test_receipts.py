@@ -550,3 +550,149 @@ async def test_receipt_read_surfaces_require_authentication(
     assert resp.status_code == expected_status, resp.text
     # Auth is enforced before the lookup: no existence disclosure to anon callers.
     assert resp.status_code != 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_receipt_digest_chain_validation_and_pre056_idempotent_replay(
+    client,
+    clean_database,
+    monkeypatch,
+):
+    """Digest/chain gates: hex shape, sequence rules, pre-056 NULL replay.
+
+    Real issues from bot review on #294: invalid digests must not pass a loose
+    int() check; sequence stays unset until opted in; adopting a pre-056 row
+    (NULL provenance, signature without those fields) must not conflict when
+    the retry would freshly compute digests.
+    """
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-digest-chain-tool",
+        idem_key="receipt-digest-chain-permit",
+    )
+    service = get_receipt_service()
+    base = {
+        "permit_id": permit["permit_id"],
+        "wallet_id": provisioned["agent_wallet_id"],
+        "key_id": provisioned["key_id"],
+        "tool": "receipt-digest-chain-tool",
+        "request_payload": {"attempt": "digest-chain"},
+        "response_payload": {"ok": True},
+        "ledger_entry_id": None,
+        "credits_authorized": Decimal("1"),
+        "credits_charged": Decimal("0"),
+        "outcome": "denied",
+        "reason_code": "permit_budget_exceeded",
+        "audit_event_id": None,
+    }
+
+    with pytest.raises(ReceiptError, match="receipt_permit_digest_invalid"):
+        await service.create_receipt(**base, permit_digest="not-64-hex")
+    with pytest.raises(ReceiptError, match="receipt_permit_digest_invalid"):
+        await service.create_receipt(**base, permit_digest="g" * 64)
+    with pytest.raises(ReceiptError, match="receipt_sequence_invalid"):
+        await service.create_receipt(**base, sequence=-1)
+    with pytest.raises(ReceiptError, match="receipt_prev_digest_required"):
+        await service.create_receipt(**base, sequence=1)
+    with pytest.raises(ReceiptError, match="receipt_prev_digest_invalid"):
+        await service.create_receipt(**base, sequence=1, prev_receipt_digest="z" * 64)
+
+    # First write mimics pre-056: no permit_digest available to bind.
+    import app.services.receipts as receipts_mod
+
+    async def _no_permit_digest(permit_id, *, session=None):
+        return None
+
+    monkeypatch.setattr(receipts_mod, "permit_digest_for_permit_id", _no_permit_digest)
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-digest-chain-invoke",
+        request_payload=base["request_payload"],
+    )
+    assert begun.replay is None
+    first = await service.create_receipt(
+        **base,
+        idempotency_record_id=begun.record_id,
+    )
+    assert first.sequence is None
+    assert first.permit_digest is None
+    assert first.prev_receipt_digest is None
+
+    # Retry with live digest computation restored: historical NULL omission
+    # must adopt, not raise receipt_idempotency_conflict.
+    monkeypatch.undo()
+    replay = await service.create_receipt(
+        **base,
+        idempotency_record_id=begun.record_id,
+    )
+    assert replay.receipt_id == first.receipt_id
+    assert replay.permit_digest is None  # adopted row keeps historical omission
+
+    # Explicit sequence 0 still signs as the first link and omits prev.
+    chained = await service.create_receipt(**base, sequence=0)
+    assert chained.sequence == 0
+    assert chained.prev_receipt_digest is None
+    signing_input = await service.signing_input(chained.receipt_id)
+    assert signing_input is not None
+    body = json.loads(signing_input)
+    assert body["sequence"] == 0
+    assert "prev_receipt_digest" not in body
+
+
+def test_assert_idempotent_match_tolerates_null_provenance_only():
+    """Unit gate: stored NULL additive fields match; stored values still bind."""
+    from app.services.receipts import ReceiptService
+
+    model = ReceiptModel(
+        receipt_id="rcpt_unit_1",
+        permit_id="pmt_unit_1",
+        wallet_id="w",
+        key_id="k",
+        tool="t",
+        request_hash="a" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        permit_digest=None,
+        approval_digest=None,
+        counterparty=None,
+        sequence=None,
+        prev_receipt_digest=None,
+        created_at=datetime.now(timezone.utc),
+        signature="sig",
+        signature_key_id="sk",
+        idempotency_record_id="idem_1",
+    )
+    kwargs = dict(
+        idempotency_record_id="idem_1",
+        dispatch_attempt_id=None,
+        permit_id="pmt_unit_1",
+        wallet_id="w",
+        key_id="k",
+        tool="t",
+        request_hash="a" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        permit_digest="b" * 64,
+        sequence=0,
+    )
+    ReceiptService._assert_idempotent_match(model, **kwargs)
+
+    model.permit_digest = "c" * 64
+    with pytest.raises(ReceiptError, match="receipt_idempotency_conflict"):
+        ReceiptService._assert_idempotent_match(model, **kwargs)

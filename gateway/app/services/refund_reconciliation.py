@@ -174,6 +174,7 @@ class RefundReconciliationService:
         approval_id: str | None = None,
         response_payload: dict[str, Any] | None = None,
         response_hash_override: str | None = None,
+        counterparty: str | None = None,
     ) -> tuple[ReceiptResponse, dict[str, Any]]:
         """Atomically insert the signed receipt and durable pending work item."""
 
@@ -273,6 +274,7 @@ class RefundReconciliationService:
                         dispatch_attempt_id=dispatch_attempt_id,
                         approval_id=approval_id,
                         response_hash_override=response_hash_override,
+                        counterparty=counterparty,
                         session=session,
                         prepared_signing_key_id=signing_key.key_id,
                     )

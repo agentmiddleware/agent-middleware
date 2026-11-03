@@ -3871,6 +3871,7 @@ async def _raise_refunded_upstream_failure(
             response_payload=terminal_payload,
             response_hash_override=dispatch_attempt.response_hash,
             approval_id=(approval_check.approval_id if approval_check else None),
+            counterparty=extract_recipient_identity(dispatch_attempt.upstream_origin),
         )
         raise GovernedToolError(
             error,
@@ -4517,6 +4518,7 @@ async def _finalize_unrefunded_failure(
     response_payload: dict[str, Any] | None = None,
     response_hash_override: str | None = None,
     approval_id: str | None = None,
+    counterparty: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Persist the signed failure and its exact-once operator work item.
 
@@ -4553,6 +4555,7 @@ async def _finalize_unrefunded_failure(
             response_payload=response_payload,
             response_hash_override=response_hash_override,
             approval_id=approval_id,
+            counterparty=counterparty,
         )
     except RefundReconciliationContendedError as exc:
         # The receipt and the operator work item were lost together, so nobody

@@ -696,3 +696,40 @@ def test_assert_idempotent_match_tolerates_null_provenance_only():
     model.permit_digest = "c" * 64
     with pytest.raises(ReceiptError, match="receipt_idempotency_conflict"):
         ReceiptService._assert_idempotent_match(model, **kwargs)
+
+
+@pytest.mark.anyio
+async def test_create_receipt_binds_counterparty_on_failed_unrefunded(
+    client,
+    clean_database,
+):
+    """Failure outcomes must still accept and sign the upstream counterparty."""
+    service = get_receipt_service()
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-tool",
+        idem_key="counterparty-unrefunded-permit",
+    )
+    receipt = await service.create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool="receipt-tool",
+        request_payload={"ping": "pong"},
+        response_payload={"error": "refund_failed"},
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("1"),
+        outcome="failed_unrefunded",
+        audit_event_id=None,
+        reason_code="refund_failed",
+        counterparty="partner.example",
+    )
+    assert receipt.counterparty == "partner.example"
+    signing_input = await service.signing_input(receipt.receipt_id)
+    assert signing_input is not None
+    body = json.loads(signing_input)
+    assert body["counterparty"] == "partner.example"

@@ -128,7 +128,7 @@ def dump(obj: Any, sink: IO[bytes]) -> None:
         else:
             as_float = float(obj)
             if as_float != obj or math.isnan(as_float) or math.isinf(as_float):
-                raise CanonicalizationError(f"{obj} exceeds safe integer domain for JSON floats")
+                raise CanonicalizationError(f"{obj} outside JSON safe-integer range")
             _serialize_float(as_float, sink)
     elif isinstance(obj, str):
         _serialize_str(obj, sink)

@@ -49,7 +49,6 @@ def test_canonical_json_emits_utf8_per_rfc8785():
     assert canonical_json({"k": "café"}) == '{"k":"café"}'
 
 
-
 def test_key_set_reads_raw_and_jwk_forms():
     document = {
         "keys": [

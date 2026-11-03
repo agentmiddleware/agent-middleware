@@ -11,7 +11,6 @@ not JSON types, so they are mapped to strings first (RFC 8785 Appendix D/E).
 These fixtures pin both layers.
 """
 
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

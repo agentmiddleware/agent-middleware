@@ -319,7 +319,7 @@ def test_historical_python_float_lexemes_still_verify():
     # Hand-built signing_input keeps historical Python json.dumps lexemes.
     inner = (
         '{"constraints_evaluated":{"jev_risk_guard":{"injected_instructions":1.0,'
-        '"latency_ms":0.0}},"kid":"%s","receipt_id":"rcpt-1"}' % kid
+        '"latency_ms":0.0}},"kid":"' + kid + '","receipt_id":"rcpt-1"}'
     )
     payload_hash = hashlib.sha256(inner.encode("utf-8")).hexdigest()
     signing_input = inner.replace(

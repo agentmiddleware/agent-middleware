@@ -870,9 +870,19 @@ async def test_receipt_sequence_unique_constraint_enforced(
 
 
 @pytest.mark.anyio
-async def test_concurrent_receipt_sequence_zero_one_wins(client, clean_database):
-    """Concurrent sequence=0 writers: exactly one succeeds (structural)."""
+async def test_concurrent_receipt_sequence_zero_one_wins(
+    client, clean_database, monkeypatch
+):
+    """Concurrent sequence=0 writers: exactly one succeeds (structural).
+
+    Barrier arms on ``AsyncSession.commit`` once a ``ReceiptModel`` is pending
+    so both writers pass the SELECT preflight, then race the insert together.
+    """
     import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.models import ReceiptModel
 
     provisioned = await provision_agent_wallet(client)
     tool_name = "receipt-seq-race-tool"
@@ -884,6 +894,19 @@ async def test_concurrent_receipt_sequence_zero_one_wins(client, clean_database)
         idem_key="receipt-seq-race-permit",
     )
     service = get_receipt_service()
+    writers = 2
+    barrier = asyncio.Barrier(writers)
+    reached_insert = 0
+    original_commit = AsyncSession.commit
+
+    async def commit_after_rivals(self, *args, **kwargs):
+        nonlocal reached_insert
+        if any(isinstance(obj, ReceiptModel) for obj in self.new):
+            reached_insert += 1
+            await asyncio.wait_for(barrier.wait(), timeout=5)
+        return await original_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit_after_rivals)
 
     async def write():
         return await service.create_receipt(
@@ -902,7 +925,10 @@ async def test_concurrent_receipt_sequence_zero_one_wins(client, clean_database)
             sequence=0,
         )
 
-    results = await asyncio.gather(write(), write(), return_exceptions=True)
+    results = await asyncio.gather(
+        *(write() for _ in range(writers)), return_exceptions=True
+    )
+    assert reached_insert == writers, reached_insert
     successes = [r for r in results if not isinstance(r, BaseException)]
     conflicts = [
         r
@@ -971,10 +997,18 @@ async def test_chain_assert_same_idempotency_returns_for_adopt(client, clean_dat
 
 @pytest.mark.anyio
 async def test_concurrent_same_idempotency_adopts_not_sequence_conflict(
-    client, clean_database
+    client, clean_database, monkeypatch
 ):
-    """Same idempotency + sequence race: adopt winner; never sequence_conflict."""
+    """Same idempotency + sequence race: adopt winner; never sequence_conflict.
+
+    Barrier on receipt ``commit`` so every writer reaches the insert race
+    (IntegrityError recover / adopt) rather than being turned away by SELECT.
+    """
     import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.models import ReceiptModel
 
     provisioned = await provision_agent_wallet(client)
     tool_name = "receipt-seq-idem-race-tool"
@@ -993,6 +1027,19 @@ async def test_concurrent_same_idempotency_adopts_not_sequence_conflict(
     )
     assert begun.replay is None
     service = get_receipt_service()
+    writers = 3
+    barrier = asyncio.Barrier(writers)
+    reached_insert = 0
+    original_commit = AsyncSession.commit
+
+    async def commit_after_rivals(self, *args, **kwargs):
+        nonlocal reached_insert
+        if any(isinstance(obj, ReceiptModel) for obj in self.new):
+            reached_insert += 1
+            await asyncio.wait_for(barrier.wait(), timeout=5)
+        return await original_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit_after_rivals)
 
     async def write():
         return await service.create_receipt(
@@ -1012,7 +1059,10 @@ async def test_concurrent_same_idempotency_adopts_not_sequence_conflict(
             sequence=0,
         )
 
-    results = await asyncio.gather(write(), write(), write(), return_exceptions=True)
+    results = await asyncio.gather(
+        *(write() for _ in range(writers)), return_exceptions=True
+    )
+    assert reached_insert == writers, reached_insert
     successes = [r for r in results if not isinstance(r, BaseException)]
     conflicts = [
         r

@@ -85,6 +85,7 @@ Verify the published receipt offline, as on /proof/:
     curl -fsSLO https://www.agentmiddleware.dev/proof/receipt.json
     curl -fsSLO https://www.agentmiddleware.dev/proof/trust-keys.json
     curl -fsSLO https://www.agentmiddleware.dev/proof/verify_receipt.py
+    curl -fsSLO https://www.agentmiddleware.dev/proof/jcs.py
     python3 -m pip install cryptography
     python3 verify_receipt.py --bundle receipt.json --keys trust-keys.json \
       --expect-issuer https://api.thisisatest.tech

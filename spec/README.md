@@ -26,11 +26,14 @@ for evaluators in [`INTEROP.md`](INTEROP.md).
 - **Signature:** Ed25519 over the UTF-8 bytes of `signing_input`, exactly as
   transmitted. Verifiers must not re-serialize before verifying.
 - **Canonical JSON (`awi-canonical-json/1`):** RFC 8785 (JCS) over JSON-native
-  values — ECMAScript number serialization, object keys sorted by UTF-16 code
+  values: ECMAScript number serialization, object keys sorted by UTF-16 code
   units, UTF-8 string contents with only the JCS escapes, no insignificant
   whitespace. `Decimal` / `datetime` values are mapped to strings before JCS
-  (Appendix D/E). The profile name is unchanged so existing envelopes stay
-  compatible.
+  (Appendix D/E). The profile name stays `awi-canonical-json/1`; it does not
+  distinguish pre-JCS vs JCS byte layouts. Verifiers that check the transmitted
+  `signing_input` bytes are unaffected. Gateway re-serializing verifiers try
+  JCS first, then the pre-cutover `json.dumps` form, so historical float and
+  non-ASCII signatures keep verifying.
 - **Amounts and timestamps:** credit amounts and timestamps are strings before
   they are signed. Amount strings are fixed point, with no exponent and with
   trailing zeros removed (`2.50` is signed as `2.5`, `10.00` as `10`).

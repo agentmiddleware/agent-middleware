@@ -17,7 +17,11 @@ from app.core.resilience import is_retryable_write_conflict
 from app.core.time import to_naive_utc, utc_now
 from app.db.database import get_session_factory
 from app.db.models import AuditChainHeadModel, ControlPlaneAuditEventModel
-from app.services.signing_keys import get_signing_key_service, sha256_hex
+from app.services.signing_keys import (
+    get_signing_key_service,
+    payload_hash_matches,
+    sha256_hex,
+)
 
 
 def audit_payload(
@@ -95,10 +99,10 @@ def _payload_matching_stored_hash(
     neither, which is what makes the number tamper-evident.
     """
     current = _event_audit_payload(event, seq=event.seq)
-    if event.payload_hash == sha256_hex(current):
+    if payload_hash_matches(current, event.payload_hash):
         return current
     legacy = _event_audit_payload(event, seq=None)
-    if event.payload_hash == sha256_hex(legacy):
+    if payload_hash_matches(legacy, event.payload_hash):
         return legacy
     return None
 

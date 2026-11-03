@@ -132,6 +132,11 @@
                 "@type": "HowToSupply",
                 "name": "verify_receipt.py",
                 "url": "https://www.agentmiddleware.dev/proof/verify_receipt.py"
+              },
+              {
+                "@type": "HowToSupply",
+                "name": "jcs.py",
+                "url": "https://www.agentmiddleware.dev/proof/jcs.py"
               }
             ],
             "step": [
@@ -252,6 +257,14 @@
               aria-label="Download verify_receipt.py: standalone offline verifier"
               >Download verify_receipt.py</a
             >
+            <a
+              class="button button-secondary"
+              href="/proof/jcs.py"
+              download
+              data-analytics-event="proof_click"
+              aria-label="Download jcs.py: RFC 8785 canonicalization helper required by verify_receipt.py"
+              >Download jcs.py</a
+            >
           </article>
         </div>
       </section>
@@ -275,6 +288,7 @@
           <pre tabindex="0"><code>curl -fsSLO https://www.agentmiddleware.dev/proof/receipt.json
 curl -fsSLO https://www.agentmiddleware.dev/proof/trust-keys.json
 curl -fsSLO https://www.agentmiddleware.dev/proof/verify_receipt.py
+curl -fsSLO https://www.agentmiddleware.dev/proof/jcs.py
 python3 -m pip install cryptography
 python3 verify_receipt.py \
   --bundle receipt.json \

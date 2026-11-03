@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, cast
@@ -63,6 +64,26 @@ def validate_signing_key_configuration(settings: Settings | None = None) -> str:
     return "ephemeral"
 
 
+def _normalize_for_canonical(value: Any) -> Any:
+    """Map Decimal/datetime to strings; leave JSON-native types alone.
+
+    Shared by the current JCS serializer so typed pre-map matches RFC 8785
+    Appendix D/E style before JCS emission.
+    """
+    if isinstance(value, Decimal):
+        normalized = value.normalize()
+        return format(normalized, "f")
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, dict):
+        return {str(k): _normalize_for_canonical(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_for_canonical(v) for v in value]
+    return value
+
+
 def canonical_json(
     payload: dict[str, Any],
     *,
@@ -75,11 +96,26 @@ def canonical_json(
     Appendix D/E style), then the JSON-native tree is emitted with strict JCS
     rules: ECMAScript number serialization, UTF-16BE key order, UTF-8 strings.
     ``ensure_ascii`` and ``allow_nan`` are retained for call-site compatibility;
-    JCS always emits UTF-8 and always rejects NaN/Infinity.
+    JCS has fixed rules for both (UTF-8 string contents; NaN/Infinity rejected).
     """
     from app.services.jcs import dumps_text
 
     del ensure_ascii, allow_nan  # JCS has fixed rules; kwargs kept for API compat.
+    return dumps_text(_normalize_for_canonical(payload))
+
+
+def legacy_canonical_json(
+    payload: dict[str, Any],
+    *,
+    ensure_ascii: bool = True,
+    allow_nan: bool = True,
+) -> str:
+    """Pre-JCS serializer used by receipts signed before the RFC 8785 cutover.
+
+    Matches the historical ``json.dumps(..., sort_keys=True, separators=(',',
+    ':'), ensure_ascii=True)`` path so those signatures still verify. New
+    signatures must use :func:`canonical_json` only.
+    """
 
     def normalize(value: Any) -> Any:
         if isinstance(value, Decimal):
@@ -90,15 +126,48 @@ def canonical_json(
                 value = value.replace(tzinfo=timezone.utc)
             return value.astimezone(timezone.utc).isoformat()
         if isinstance(value, dict):
-            return {str(k): normalize(v) for k, v in value.items()}
+            return {str(k): normalize(v) for k, v in sorted(value.items())}
         if isinstance(value, list):
             return [normalize(v) for v in value]
         return value
 
-    return dumps_text(normalize(payload))
+    return json.dumps(
+        normalize(payload),
+        separators=(",", ":"),
+        sort_keys=True,
+        ensure_ascii=ensure_ascii,
+        allow_nan=allow_nan,
+    )
+
+
+def signing_message_candidates(payload: dict[str, Any]) -> list[bytes]:
+    """Return UTF-8 message bytes to try when verifying a receipt signature.
+
+    Prefer current JCS bytes; fall back to the pre-JCS ``json.dumps`` form so
+    historical float / non-ASCII signatures keep verifying after the cutover.
+    """
+    from app.services.jcs import CanonicalizationError
+
+    candidates: list[bytes] = []
+    try:
+        candidates.append(canonical_json(payload).encode("utf-8"))
+    except (CanonicalizationError, TypeError, ValueError):
+        pass
+    try:
+        candidates.append(legacy_canonical_json(payload).encode("utf-8"))
+    except (TypeError, ValueError):
+        pass
+    seen: set[bytes] = set()
+    unique: list[bytes] = []
+    for message in candidates:
+        if message not in seen:
+            seen.add(message)
+            unique.append(message)
+    return unique
 
 
 def sha256_hex(payload: dict[str, Any] | str | bytes) -> str:
+    """Hash with the current JCS serializer (new writes only)."""
     if isinstance(payload, dict):
         data = canonical_json(payload).encode()
     elif isinstance(payload, str):
@@ -106,6 +175,18 @@ def sha256_hex(payload: dict[str, Any] | str | bytes) -> str:
     else:
         data = payload
     return hashlib.sha256(data).hexdigest()
+
+
+def payload_hash_matches(payload: dict[str, Any], expected: str) -> bool:
+    """True if ``expected`` matches JCS or pre-JCS bytes of ``payload``.
+
+    Used when matching a stored ``payload_hash`` that may predate the RFC 8785
+    cutover (floats / non-ASCII differ between the two serializers).
+    """
+    for message in signing_message_candidates(payload):
+        if hashlib.sha256(message).hexdigest() == expected:
+            return True
+    return False
 
 
 class SigningKeyService:
@@ -406,13 +487,50 @@ class SigningKeyService:
             public_key = Ed25519PublicKey.from_public_bytes(
                 base64.b64decode(key.public_key_b64, validate=True)
             )
-            public_key.verify(
-                base64.b64decode(signature, validate=True),
-                canonical_json(payload).encode(),
-            )
-            return True
+            sig = base64.b64decode(signature, validate=True)
+            # Try JCS first, then the pre-cutover json.dumps form. Without the
+            # legacy branch, every receipt whose signed floats / non-ASCII
+            # strings differ under RFC 8785 would fail closed after deploy.
+            for message in signing_message_candidates(payload):
+                try:
+                    public_key.verify(sig, message)
+                    return True
+                except InvalidSignature:
+                    continue
+            return False
         except (binascii.Error, InvalidSignature, ValueError, TypeError):
             return False
+
+    async def matching_canonical_json(
+        self,
+        payload: dict[str, Any],
+        *,
+        signature: str,
+        key_id: str,
+        session: AsyncSession | None = None,
+    ) -> str | None:
+        """Return the canonical text whose bytes verify under ``key_id``.
+
+        Used by receipt export so published signing input matches the bytes the
+        signature actually covers (current JCS or pre-JCS legacy).
+        """
+        key = await self.get_public_key(key_id, session=session)
+        if not key or key.status == "disabled":
+            return None
+        try:
+            public_key = Ed25519PublicKey.from_public_bytes(
+                base64.b64decode(key.public_key_b64, validate=True)
+            )
+            sig = base64.b64decode(signature, validate=True)
+            for message in signing_message_candidates(payload):
+                try:
+                    public_key.verify(sig, message)
+                    return message.decode("utf-8")
+                except InvalidSignature:
+                    continue
+            return None
+        except (binascii.Error, ValueError, TypeError):
+            return None
 
 
 _signing_key_service: SigningKeyService | None = None

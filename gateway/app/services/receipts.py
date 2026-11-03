@@ -758,13 +758,14 @@ class ReceiptService:
         """
         signing_keys = get_signing_key_service()
         current_payload = self._verification_payload(model, include_linkage=True)
-        if await signing_keys.verify_payload(
+        matched = await signing_keys.matching_canonical_json(
             current_payload,
             signature=model.signature,
             key_id=model.signature_key_id,
             session=session,
-        ):
-            return canonical_json(current_payload)
+        )
+        if matched is not None:
+            return matched
 
         if not await self._has_unambiguous_historical_idempotency_link(
             model,
@@ -772,14 +773,12 @@ class ReceiptService:
         ):
             return None
         legacy_payload = self._verification_payload(model, include_linkage=False)
-        if await signing_keys.verify_payload(
+        return await signing_keys.matching_canonical_json(
             legacy_payload,
             signature=model.signature,
             key_id=model.signature_key_id,
             session=session,
-        ):
-            return canonical_json(legacy_payload)
-        return None
+        )
 
     async def signing_input(self, receipt_id: str) -> str | None:
         """Load a receipt and return the canonical bytes its signature covers."""

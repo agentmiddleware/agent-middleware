@@ -303,8 +303,14 @@ def test_float_bearing_payload_verifies_without_reserialization():
     inner = {k: v for k, v in payload.items() if k != "payload_hash"}
     payload["payload_hash"] = hashlib.sha256(canonical_json(inner).encode("utf-8")).hexdigest()
     bundle = _signed_bundle(payload, kid=kid, sign=sign)
-    assert '"latency_ms":0' in bundle["signing_input"]
-    assert '"injected_instructions":1' in bundle["signing_input"]
+    assert (
+        ',"latency_ms":0}' in bundle["signing_input"]
+        or '"latency_ms":0,' in bundle["signing_input"]
+    )
+    assert (
+        '"injected_instructions":1,' in bundle["signing_input"]
+        or '"injected_instructions":1}' in bundle["signing_input"]
+    )
     assert '"latency_ms":0.0' not in bundle["signing_input"]
     assert '"injected_instructions":1.0' not in bundle["signing_input"]
 

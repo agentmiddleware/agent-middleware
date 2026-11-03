@@ -25,10 +25,11 @@ SHA-256 hashes of the request and the tool's response, never the response
 body itself, and it says nothing about whether the tool's output was
 correct.
 
-This script is deliberately standalone: Python 3.9+ standard library plus
-the `cryptography` package only. It imports nothing from the gateway or its
-SDK, and it never makes a network call - the key set must already be on
-disk (pass --keys). Usage:
+This script is deliberately offline: Python 3.9+ standard library plus the
+`cryptography` package, plus the sibling `jcs.py` RFC 8785 helper published
+alongside it on /proof/. It imports nothing from the gateway or its SDK, and
+it never makes a network call - the key set must already be on disk (pass
+--keys). Download both Python files into the same directory. Usage:
 
     python3 -m pip install cryptography
     python3 verify_receipt.py --bundle receipt.json --keys trust-keys.json \
@@ -65,9 +66,35 @@ REJECTED = ("invalid", "mismatch")
 
 def canonical_json(payload):
     """RFC 8785 (JCS) compact JSON, the byte layout the gateway signs."""
-    from jcs import dumps_text
-
+    dumps_text = _load_jcs_dumps_text()
     return dumps_text(payload)
+
+
+def _load_jcs_dumps_text():
+    """Load dumps_text from sibling jcs.py (or an already-importable jcs)."""
+    try:
+        from jcs import dumps_text
+
+        return dumps_text
+    except ImportError:
+        pass
+    import importlib.util
+    from pathlib import Path
+
+    sibling = Path(__file__).resolve().parent / "jcs.py"
+    if not sibling.is_file():
+        raise SystemExit(
+            "missing sibling jcs.py next to verify_receipt.py; download both "
+            "from https://www.agentmiddleware.dev/proof/"
+        )
+    spec = importlib.util.spec_from_file_location("_amw_proof_jcs", sibling)
+    if spec is None or spec.loader is None:
+        raise SystemExit(
+            "could not load sibling jcs.py next to verify_receipt.py"
+        )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.dumps_text
 
 
 def _b64decode(value, urlsafe=False):

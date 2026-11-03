@@ -11,8 +11,10 @@ Anders Rundgren's cyberphone/json-canonicalization reference (Apache-2.0).
 Numbers follow ECMAScript Number::toString / ECMA-262 section 7.1.12.1 as
 required by RFC 8785 section 3.2.2.3. Object keys sort by UTF-16BE code
 units (section 3.2.3). Strings are UTF-8 with only the RFC 8785 escapes.
-Integers outside the ECMAScript safe-integer range (±(2**53 - 1)) are
-rejected (Appendix B Note 1). NaN / Infinity are rejected.
+Integers outside ±(2**53 - 1) are rejected unless they survive an
+IEEE-754 round-trip as a float (so json.loads of an exact power of two such
+as 2**53 still re-canonicalizes). Non-exact ints and NaN / Infinity are
+rejected (Appendix B Note 1).
 """
 
 from __future__ import annotations
@@ -127,7 +129,12 @@ def dump(obj: Any, sink: IO[bytes]) -> None:
         if _INT_MIN <= obj <= _INT_MAX:
             sink.write(str(obj).encode("utf-8"))
         else:
-            as_float = float(obj)
+            try:
+                as_float = float(obj)
+            except OverflowError as exc:
+                raise CanonicalizationError(
+                    f"{obj} outside JSON safe-integer range"
+                ) from exc
             if as_float != obj or math.isnan(as_float) or math.isinf(as_float):
                 raise CanonicalizationError(f"{obj} outside JSON safe-integer range")
             _serialize_float(as_float, sink)

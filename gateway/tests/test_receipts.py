@@ -701,6 +701,107 @@ def test_assert_idempotent_match_tolerates_null_provenance_only():
         ReceiptService._assert_idempotent_match(model, **kwargs)
 
 
+def test_assert_idempotent_match_maps_jcs_reject_to_conflict():
+    """Non-I-JSON constraints must conflict, not raise CanonicalizationError."""
+    from app.services.receipts import ReceiptService
+
+    model = ReceiptModel(
+        receipt_id="rcpt_unit_jcs",
+        permit_id="pmt_unit_jcs",
+        wallet_id="w",
+        key_id="k",
+        tool="t",
+        request_hash="a" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        permit_digest=None,
+        approval_digest=None,
+        counterparty=None,
+        sequence=None,
+        prev_receipt_digest=None,
+        created_at=datetime.now(timezone.utc),
+        signature="sig",
+        signature_key_id="sk",
+        idempotency_record_id="idem_jcs",
+        constraints_evaluated_json='{"n": 9007199254740993}',
+    )
+    kwargs = dict(
+        idempotency_record_id="idem_jcs",
+        dispatch_attempt_id=None,
+        permit_id="pmt_unit_jcs",
+        wallet_id="w",
+        key_id="k",
+        tool="t",
+        request_hash="a" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        constraints_evaluated={"n": 9007199254740993},
+    )
+    with pytest.raises(ReceiptError, match="receipt_idempotency_conflict"):
+        ReceiptService._assert_idempotent_match(model, **kwargs)
+
+
+@pytest.mark.anyio
+async def test_create_receipt_maps_jcs_sign_reject_to_domain_error(
+    client,
+    clean_database,
+    monkeypatch,
+):
+    """Sign-time JCS reject must surface as ReceiptError, not an HTTP 500."""
+    from app.services import receipts as receipts_mod
+    from app.services.jcs import CanonicalizationError
+
+    service = get_receipt_service()
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-jcs-tool",
+        idem_key="jcs-canon-reject-permit",
+    )
+
+    class _Keys:
+        async def sign_payload(self, payload):
+            raise CanonicalizationError("forced JCS reject")
+
+        def sign_payload_with_key_id(self, payload, key_id):
+            raise CanonicalizationError("forced JCS reject")
+
+        async def validate_prepared_signing_key(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(receipts_mod, "get_signing_key_service", lambda: _Keys())
+    with pytest.raises(ReceiptError, match="receipt_canonicalization_invalid"):
+        await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool="receipt-jcs-tool",
+            request_payload={"probe": "jcs-sign-reject"},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal("1"),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id="idem_jcs_sign_reject",
+        )
+
+
 @pytest.mark.anyio
 async def test_create_receipt_binds_counterparty_on_failed_unrefunded(
     client,

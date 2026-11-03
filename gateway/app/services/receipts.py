@@ -361,9 +361,13 @@ class ReceiptService:
         }
         if _action_binding(model) != (action_binding or {}):
             raise ReceiptError("receipt_action_binding_conflict")
-        if canonical_json(
-            _loads_dict(model.constraints_evaluated_json)
-        ) != canonical_json(constraints_evaluated or {}):
+        try:
+            constraints_match = canonical_json(
+                _loads_dict(model.constraints_evaluated_json)
+            ) == canonical_json(constraints_evaluated or {})
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            raise ReceiptError("receipt_idempotency_conflict") from exc
+        if not constraints_match:
             raise ReceiptError("receipt_idempotency_conflict")
         for name, value in expected.items():
             stored = getattr(model, name)
@@ -766,19 +770,25 @@ class ReceiptService:
             payload["constraints_evaluated"] = constraints_evaluated
         payload.update(action_binding)
         signing_keys = get_signing_key_service()
-        if prepared_signing_key_id is None:
-            signature, signature_key_id, _ = await signing_keys.sign_payload(payload)
-        else:
-            if target_session is None:
-                raise ReceiptError("receipt_prepared_signing_key_requires_session")
-            await signing_keys.validate_prepared_signing_key(
-                prepared_signing_key_id,
-                session=target_session,
-            )
-            signature, signature_key_id, _ = signing_keys.sign_payload_with_key_id(
-                payload,
-                prepared_signing_key_id,
-            )
+        try:
+            if prepared_signing_key_id is None:
+                signature, signature_key_id, _ = await signing_keys.sign_payload(
+                    payload
+                )
+            else:
+                if target_session is None:
+                    raise ReceiptError("receipt_prepared_signing_key_requires_session")
+                await signing_keys.validate_prepared_signing_key(
+                    prepared_signing_key_id,
+                    session=target_session,
+                )
+                signature, signature_key_id, _ = signing_keys.sign_payload_with_key_id(
+                    payload,
+                    prepared_signing_key_id,
+                )
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            # New signatures are JCS-only; non-I-JSON values must not 500.
+            raise ReceiptError("receipt_canonicalization_invalid") from exc
 
         def build_model() -> ReceiptModel:
             """A fresh ORM instance for this receipt's already-fixed identity.

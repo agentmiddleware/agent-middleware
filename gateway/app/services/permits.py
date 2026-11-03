@@ -529,9 +529,13 @@ class PermitService:
         # Sign the same dict verify reconstructs. Building it twice let a
         # field added on one path only keep verifying in tests that never
         # round-tripped a freshly minted permit.
-        signature, key_id, _ = await get_signing_key_service().sign_payload(
-            self._unsigned_payload(model)
-        )
+        try:
+            signature, key_id, _ = await get_signing_key_service().sign_payload(
+                self._unsigned_payload(model)
+            )
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            # New signatures are JCS-only; non-I-JSON values must not 500.
+            raise PermitError("permit_canonicalization_invalid") from exc
         model.signature = signature
         model.key_id = key_id
         async with factory() as session:

@@ -913,6 +913,61 @@ async def test_concurrent_receipt_sequence_zero_one_wins(client, clean_database)
     assert len(conflicts) == len(results) - 1, results
 
 
+@pytest.mark.anyio
+async def test_concurrent_same_idempotency_adopts_not_sequence_conflict(
+    client, clean_database
+):
+    """Same idempotency + sequence race: adopt winner; never sequence_conflict."""
+    import asyncio
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-seq-idem-race-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-seq-idem-race-permit",
+    )
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-seq-idem-race-invoke",
+        request_payload={},
+    )
+    assert begun.replay is None
+    service = get_receipt_service()
+
+    async def write():
+        return await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool=tool_name,
+            request_payload={},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal(str(permit["max_credits"])),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id=begun.record_id,
+            sequence=0,
+        )
+
+    results = await asyncio.gather(write(), write(), write(), return_exceptions=True)
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    conflicts = [
+        r
+        for r in results
+        if isinstance(r, ReceiptError) and r.reason == "receipt_sequence_conflict"
+    ]
+    assert not conflicts, results
+    assert len(successes) == len(results), results
+    assert len({r.receipt_id for r in successes}) == 1
+
+
 @pytest.mark.asyncio(loop_scope="session")
 @collection_mark(flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=_RECEIPT_PG_REASON)
 async def test_postgres_parallel_receipt_sequence_zero_one_wins(monkeypatch):

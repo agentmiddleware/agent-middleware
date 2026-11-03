@@ -429,7 +429,8 @@ class ReceiptService:
 
         Application SELECT rejects an already-visible duplicate sequence as a
         fast path. Migration 057 / ``uq_receipts_permit_sequence`` is the
-        concurrent-write safety net (IntegrityError -> receipt_sequence_conflict).
+        concurrent-write safety net (IntegrityError -> adopt same
+        ``idempotency_record_id`` when present, else ``receipt_sequence_conflict``).
         For ``sequence > 0``, the predecessor at ``sequence - 1`` must exist,
         verify, and hash to ``prev_receipt_digest``.
         """
@@ -786,6 +787,23 @@ class ReceiptService:
                 signature_key_id=signature_key_id,
             )
 
+        async def _recover_integrity(
+            recovery_session: AsyncSession, exc: IntegrityError
+        ) -> ReceiptResponse:
+            """Adopt same idempotency row before classifying a sequence conflict.
+
+            A concurrent retry of the same invoke can lose on
+            ``uq_receipts_permit_sequence`` even when the winner already stored
+            this receipt under the same ``idempotency_record_id``. Prefer adopt;
+            only raise ``receipt_sequence_conflict`` when nothing to adopt.
+            """
+            existing = await existing_response(recovery_session)
+            if existing is not None:
+                return existing
+            if _is_receipt_sequence_conflict(exc):
+                raise ReceiptError("receipt_sequence_conflict") from exc
+            raise
+
         if target_session is not None:
             await self._assert_opted_in_chain(
                 target_session,
@@ -814,9 +832,7 @@ class ReceiptService:
                 try:
                     await target_session.flush()
                 except IntegrityError as exc:
-                    if _is_receipt_sequence_conflict(exc):
-                        raise ReceiptError("receipt_sequence_conflict") from exc
-                    raise
+                    return await _recover_integrity(target_session, exc)
                 return receipt_model_to_response(model)
             try:
                 # Isolate a unique-key race to a savepoint so the caller's
@@ -825,12 +841,7 @@ class ReceiptService:
                     target_session.add(model)
                     await target_session.flush()
             except IntegrityError as exc:
-                if _is_receipt_sequence_conflict(exc):
-                    raise ReceiptError("receipt_sequence_conflict") from exc
-                existing = await existing_response(target_session)
-                if existing is None:
-                    raise
-                return existing
+                return await _recover_integrity(target_session, exc)
             return receipt_model_to_response(model)
 
         factory = get_session_factory()
@@ -869,15 +880,15 @@ class ReceiptService:
                         # Recovery uses a fresh session because this connection may
                         # be exactly what lost the commit acknowledgement.
                         pass
-                    if isinstance(
-                        exc, IntegrityError
-                    ) and _is_receipt_sequence_conflict(exc):
-                        raise ReceiptError("receipt_sequence_conflict") from exc
                     if idempotency_record_id is not None:
                         async with factory() as recovery_session:
                             existing = await existing_response(recovery_session)
                         if existing is not None:
                             return existing
+                    if isinstance(
+                        exc, IntegrityError
+                    ) and _is_receipt_sequence_conflict(exc):
+                        raise ReceiptError("receipt_sequence_conflict") from exc
                     raise
             return receipt_model_to_response(attempt_model)
 

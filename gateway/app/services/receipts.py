@@ -850,11 +850,27 @@ class ReceiptService:
                         raise ReceiptError("receipt_sequence_conflict") from exc
                     raise
                 return receipt_model_to_response(model)
+            bind = target_session.get_bind()
+            if bind.dialect.name == "sqlite":
+                # Python's sqlite driver can treat a SAVEPOINT as the outermost
+                # transaction when no write has started yet; releasing it then
+                # survives a later caller rollback. Keep caller-owned SQLite
+                # work in the actual outer transaction. On IntegrityError the
+                # connection is unusable in-txn, so adopt via a fresh session.
+                target_session.add(model)
+                try:
+                    await target_session.flush()
+                except IntegrityError as exc:
+                    existing = await existing_response(target_session)
+                    if existing is not None:
+                        return existing
+                    factory = get_session_factory()
+                    async with factory() as recovery_session:
+                        return await _recover_integrity(recovery_session, exc)
+                return receipt_model_to_response(model)
             try:
                 # Isolate a unique-key race to a savepoint so the caller's
-                # wider finalization transaction remains usable (Postgres and
-                # SQLite). Avoid flushing without a nested transaction: an
-                # IntegrityError leaves the outer session unusable for adopt.
+                # wider finalization transaction remains usable.
                 async with target_session.begin_nested():
                     target_session.add(model)
                     await target_session.flush()

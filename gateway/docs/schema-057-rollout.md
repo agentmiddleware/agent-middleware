@@ -10,7 +10,7 @@ is the concurrent-write safety net so two writers cannot both commit the same
 opted-in `(permit_id, sequence)`.
 
 Upgrade fails closed when duplicate non-NULL `(permit_id, sequence)` groups
-already exist — operators must adjudicate before the invariant can install
+already exist: operators must adjudicate before the invariant can install
 (same posture as migration 027's uniqueness preflight).
 
 ## Compatibility release

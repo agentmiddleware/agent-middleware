@@ -914,9 +914,7 @@ async def test_concurrent_receipt_sequence_zero_one_wins(client, clean_database)
 
 
 @pytest.mark.anyio
-async def test_chain_assert_same_idempotency_returns_for_adopt(
-    client, clean_database
-):
+async def test_chain_assert_same_idempotency_returns_for_adopt(client, clean_database):
     """Visible sequence row with same idempotency is returned, not conflict."""
     provisioned = await provision_agent_wallet(client)
     tool_name = "receipt-seq-chain-adopt-tool"

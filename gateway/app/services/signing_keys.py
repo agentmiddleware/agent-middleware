@@ -141,37 +141,45 @@ def legacy_canonical_json(
 
 
 def signing_message_candidates(payload: dict[str, Any]) -> list[bytes]:
-    """Return UTF-8 message bytes to try when verifying a receipt signature.
+    """Return UTF-8 message bytes to try when verifying a signature.
 
     Prefer current JCS bytes; fall back to the pre-JCS ``json.dumps`` form so
     historical float / non-ASCII signatures keep verifying after the cutover.
 
-    When ``payload_hash`` is present, each candidate rebuilds that hash with the
-    same serializer that emits the message. ``ReceiptService`` /
-    ``PermitService`` ``_verification_payload`` always recompute the hash with
-    the current JCS helper; without a per-layout rebuild, the legacy candidate
-    would carry a JCS hash and never match a pre-cutover signature.
+    Two ``payload_hash`` layouts are tried when that field is present:
+
+    * **as-is** — keep the caller's embedded hash. Audit signing hashes the
+      event body first, then ``sign_payload_with_key_id`` adds ``alg`` / ``kid``
+      without replacing the hash; rebuilding over those fields would break
+      chain verify.
+    * **rebuilt** — recompute the hash under the same serializer that emits
+      the message. ``ReceiptService`` / ``PermitService``
+      ``_verification_payload`` always re-embed a fresh JCS hash; without a
+      per-layout rebuild, the legacy candidate would never match a pre-cutover
+      receipt/permit signature.
     """
     from app.services.jcs import CanonicalizationError
 
     def _hash_with(serializer: Any, body: dict[str, Any]) -> str:
         return hashlib.sha256(serializer(body).encode("utf-8")).hexdigest()
 
-    def _candidate(serializer: Any) -> bytes | None:
+    def _try(serializer: Any, body: dict[str, Any]) -> bytes | None:
         try:
-            if "payload_hash" not in payload:
-                return serializer(payload).encode("utf-8")
-            rebuilt = {k: v for k, v in payload.items() if k != "payload_hash"}
-            rebuilt["payload_hash"] = _hash_with(serializer, rebuilt)
-            return serializer(rebuilt).encode("utf-8")
+            return serializer(body).encode("utf-8")
         except (CanonicalizationError, TypeError, ValueError):
             return None
 
     candidates: list[bytes] = []
     for serializer in (canonical_json, legacy_canonical_json):
-        message = _candidate(serializer)
+        message = _try(serializer, payload)
         if message is not None:
             candidates.append(message)
+        if "payload_hash" in payload:
+            rebuilt = {k: v for k, v in payload.items() if k != "payload_hash"}
+            rebuilt["payload_hash"] = _hash_with(serializer, rebuilt)
+            message = _try(serializer, rebuilt)
+            if message is not None:
+                candidates.append(message)
     seen: set[bytes] = set()
     unique: list[bytes] = []
     for message in candidates:

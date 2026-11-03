@@ -99,3 +99,29 @@ def test_signing_message_candidates_rebuild_legacy_payload_hash():
             continue
     assert matched is True
     assert legacy_message in signing_message_candidates(rebuilt)
+
+
+def test_audit_style_preset_payload_hash_verifies_as_is():
+    """Audit hashes the body first; alg/kid are added without replacing the hash."""
+    body = {"event_id": "e1", "ok": True, "amount": 1.0, "note": "café"}
+    payload_hash = hashlib.sha256(legacy_canonical_json(body).encode()).hexdigest()
+    signed = {
+        **body,
+        "payload_hash": payload_hash,
+        "alg": "Ed25519",
+        "kid": "k1",
+    }
+    private = Ed25519PrivateKey.generate()
+    message = legacy_canonical_json(signed).encode()
+    signature = private.sign(message)
+    public = private.public_key()
+    matched = False
+    for candidate in signing_message_candidates(signed):
+        try:
+            public.verify(signature, candidate)
+            matched = True
+            break
+        except InvalidSignature:
+            continue
+    assert matched is True
+    assert message in signing_message_candidates(signed)

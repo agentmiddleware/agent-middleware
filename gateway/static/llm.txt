@@ -139,7 +139,7 @@ POST /mcp/messages
 ### Rate Limits
 - Default: 120 requests/minute per API key, configurable by the operator.
 - No extra burst allowance. Check `/v1/discover` rate-limit metadata for the current limit.
-- Shared Redis counts fixed 60-second windows; the local in-memory fallback counts a rolling 60 seconds.
+- Shared Redis counts fixed 60-second windows; the in-memory limiter, used whenever `REDIS_URL` is unset, counts a rolling 60 seconds per process.
 
 ### Velocity Monitoring
 Wallets are auto-frozen if spending exceeds:

@@ -104,7 +104,14 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
   credential. A key listed in the operator's `VALID_API_KEYS` also skips this
   per-address bucket, so other callers behind the same address cannot lock it
   out. Database-backed keys do not: behind a shared address they can still
-  receive this `429` while other callers send invalid keys.
+  receive this `429` while other callers send invalid keys. `VALID_API_KEYS`
+  entries are bootstrap admin credentials, and because a configured key is
+  served on an exhausted address while a wrong one gets `429`, a short or
+  guessable value can be confirmed by online guessing at an unbounded rate.
+  Use only high-entropy values generated like `scripts/rotate_api_keys.py`
+  does (`amw_live_` plus `token_urlsafe(32)`). The gateway logs a startup
+  warning with a count when production-like entries are shorter than 32
+  characters.
 - **Window accounting:** the shared Redis limiter counts fixed 60-second
   buckets; the in-memory limiter counts a rolling 60 seconds. The in-memory
   limiter counts whenever the deployment has no `REDIS_URL`, in any

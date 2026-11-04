@@ -11,9 +11,13 @@ from __future__ import annotations
 import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
 
 from app.core.auth import AuthContext, get_auth_context
 from app.core.config import get_settings
+from app.core import rate_limiter as rate_limiter_module
 from app.core.rate_limiter import RateLimitMiddleware
 
 CONFIGURED = "configured-key-0001"
@@ -179,41 +183,6 @@ async def test_removing_the_key_from_settings_charges_it_again(
 
 
 @pytest.mark.anyio
-async def test_key_that_is_not_in_the_env_list_is_unchanged(configured_keys) -> None:
-    """A database or static dev key is not recognized pre-auth: still charged."""
-    limiter = _limited()
-    async with _client(limiter) as http:
-        await _exhaust_address(http, limiter)
-        database_shaped = await http.get(
-            "/v1/wallets", headers={"X-API-Key": "amw_live_0123456789abcdef"}
-        )
-        static_dev = await http.get(
-            "/v1/wallets", headers={"X-API-Key": "amw_dev_0123456789abcdef"}
-        )
-    assert database_shaped.status_code == 429
-    assert static_dev.status_code == 429
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    "headers",
-    [
-        {"Authorization": f"Bearer {CONFIGURED}"},
-        {"Authorization": "Bearer x.y.z", "X-API-Key": CONFIGURED},
-        {"X-API-Key": f"Bearer {CONFIGURED}"},
-        {"X-API-Key": "e" * 30 + "." + "f" * 30 + "." + "g" * 30},
-    ],
-    ids=["bearer", "bearer-plus-key", "bearer-in-key-header", "jwt-shaped"],
-)
-async def test_bearers_and_jwts_are_unchanged(configured_keys, headers) -> None:
-    limiter = _limited()
-    async with _client(limiter) as http:
-        await _exhaust_address(http, limiter)
-        response = await http.get("/v1/wallets", headers=headers)
-    assert response.status_code == 429
-
-
-@pytest.mark.anyio
 @pytest.mark.parametrize(
     "shaped_key",
     ["Bearer configured-key-0003", "e" * 30 + "." + "f" * 30 + "." + "g" * 30],
@@ -302,3 +271,184 @@ def test_equal_padded_matches_exactly(presented, expected, equal) -> None:
     from app.core.rate_limiter import _equal_padded
 
     assert _equal_padded(presented, expected) is equal
+
+
+# ---------------------------------------------------------------------------
+# Tests against a permissive app.
+#
+# The app below answers 200 to any request that reaches it and never calls the
+# auth dependency, so every request's reservation is kept. A request that the
+# limiter refuses is therefore a 429 and one it lets through is a 200, whatever
+# the key is. That makes each "still refused" case below fail if the limiter
+# were to skip the reservation for that value, which the real auth app cannot
+# show for values it would reject anyway.
+# ---------------------------------------------------------------------------
+
+
+def _permissive_limited(limit: int = 2) -> RateLimitMiddleware:
+    async def ok(_request):
+        return PlainTextResponse("ok")
+
+    limiter = RateLimitMiddleware(
+        Starlette(routes=[Route("/v1/wallets", ok)]), requests_per_minute=limit
+    )
+    limiter._redis_url = ""
+    return limiter
+
+
+async def _exhaust_permissive(http: AsyncClient, limiter: RateLimitMiddleware) -> None:
+    for index in range(limiter.preauth_limit):
+        response = await http.get(
+            "/v1/wallets", headers={"X-API-Key": f"invented-key-{index:03d}"}
+        )
+        assert response.status_code == 200
+    over = await http.get("/v1/wallets", headers={"X-API-Key": "invented-key-over"})
+    assert over.status_code == 429
+
+
+@pytest.mark.anyio
+async def test_values_the_limiter_does_not_recognize_are_refused_on_an_exhausted_address(
+    configured_keys,
+) -> None:
+    """Database-shaped, static dev and look-alike keys keep the reservation."""
+    limiter = _permissive_limited()
+    async with _client(limiter) as http:
+        await _exhaust_permissive(http, limiter)
+        refused = {
+            name: (
+                await http.get("/v1/wallets", headers={"X-API-Key": value})
+            ).status_code
+            for name, value in {
+                "database-shaped": "amw_live_0123456789abcdef",
+                "static-dev": "amw_dev_0123456789abcdef",
+                "unknown": "unknown-key-00001",
+            }.items()
+        }
+        allowed = await http.get("/v1/wallets", headers={"X-API-Key": CONFIGURED})
+    assert refused == {"database-shaped": 429, "static-dev": 429, "unknown": 429}
+    assert allowed.status_code == 200
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Authorization": f"Bearer {CONFIGURED}"},
+        {"Authorization": "Bearer x.y.z", "X-API-Key": CONFIGURED},
+        {"Authorization": "", "X-API-Key": CONFIGURED},
+        {"Authorization": "Basic Zm9vOmJhcg==", "X-API-Key": CONFIGURED},
+        {"X-API-Key": f"Bearer {CONFIGURED}"},
+        {"X-API-Key": "e" * 30 + "." + "f" * 30 + "." + "g" * 30},
+    ],
+    ids=[
+        "bearer",
+        "bearer-plus-key",
+        "empty-authorization",
+        "non-bearer-authorization",
+        "bearer-in-key-header",
+        "jwt-shaped",
+    ],
+)
+async def test_bearers_authorization_headers_and_jwts_are_unchanged(
+    configured_keys, headers
+) -> None:
+    limiter = _permissive_limited()
+    async with _client(limiter) as http:
+        await _exhaust_permissive(http, limiter)
+        response = await http.get("/v1/wallets", headers=headers)
+    assert response.status_code == 429
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("configured", ["", " ", ",", " , ,"], ids=repr)
+async def test_empty_valid_api_keys_skips_nothing(configured_keys, configured) -> None:
+    """The default (no keys configured) must never act as match-all."""
+    configured_keys(configured)
+    limiter = _permissive_limited()
+    async with _client(limiter) as http:
+        await _exhaust_permissive(http, limiter)
+        responses = [
+            await http.get("/v1/wallets", headers=headers)
+            for headers in (
+                {},
+                {"X-API-Key": ""},
+                {"X-API-Key": "   "},
+                {"X-API-Key": "any-value-0001"},
+                {"X-API-Key": CONFIGURED},
+            )
+        ]
+    assert [r.status_code for r in responses] == [429] * 5
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("key", "skipped"),
+    [
+        ("abcdefg", False),
+        ("abcdefgh", True),
+        ("a" * 24 + "." + "b" * 12 + "." + "c" * 12, True),
+        ("a" * 24 + "." + "b" * 12 + "." + "c" * 13, False),
+    ],
+    ids=["seven-chars", "eight-chars", "two-dots-fifty", "two-dots-fifty-one"],
+)
+async def test_length_and_jwt_shape_boundaries(configured_keys, key, skipped) -> None:
+    """Auth rejects under 8 characters and routes more than 50 with two dots to JWT."""
+    configured_keys(f"{CONFIGURED},{key}")
+    limiter = _permissive_limited()
+    async with _client(limiter) as http:
+        await _exhaust_permissive(http, limiter)
+        response = await http.get("/v1/wallets", headers={"X-API-Key": key})
+    assert response.status_code == (200 if skipped else 429)
+
+
+@pytest.mark.anyio
+async def test_duplicate_key_headers_use_the_first_value_like_auth(
+    configured_keys,
+) -> None:
+    limiter = _limited()
+    async with _client(limiter) as http:
+        await _exhaust_address(http, limiter)
+        first_valid = await http.get(
+            "/v1/wallets",
+            headers=[("X-API-Key", CONFIGURED), ("X-API-Key", "unknown-key-00001")],
+        )
+        first_invalid = await http.get(
+            "/v1/wallets",
+            headers=[("X-API-Key", "unknown-key-00001"), ("X-API-Key", CONFIGURED)],
+        )
+    assert first_valid.status_code == 200
+    assert first_invalid.status_code == 429
+
+
+@pytest.mark.anyio
+async def test_the_configured_key_header_name_is_honored(
+    configured_keys, monkeypatch
+) -> None:
+    monkeypatch.setattr(rate_limiter_module.settings, "API_KEY_HEADER", "x-custom-key")
+    limiter = _permissive_limited()
+    async with _client(limiter) as http:
+        for index in range(limiter.preauth_limit):
+            await http.get(
+                "/v1/wallets", headers={"X-Custom-Key": f"invented-key-{index:03d}"}
+            )
+        in_custom = await http.get("/v1/wallets", headers={"X-Custom-Key": CONFIGURED})
+        in_default = await http.get("/v1/wallets", headers={"X-API-Key": CONFIGURED})
+    assert in_custom.status_code == 200
+    assert in_default.status_code == 429
+
+
+@pytest.mark.anyio
+async def test_an_undecodable_configured_entry_does_not_break_requests(
+    configured_keys,
+) -> None:
+    """A lone surrogate from the process environment must not raise a 500."""
+    configured_keys(f"\udcffundecodable-entry,{CONFIGURED}")
+    limiter = _permissive_limited()
+    async with _client(limiter) as http:
+        await _exhaust_permissive(http, limiter)
+        unknown = await http.get(
+            "/v1/wallets", headers={"X-API-Key": "unknown-key-0001"}
+        )
+        configured = await http.get("/v1/wallets", headers={"X-API-Key": CONFIGURED})
+    assert unknown.status_code == 429
+    assert configured.status_code == 200

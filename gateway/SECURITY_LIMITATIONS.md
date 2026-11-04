@@ -281,9 +281,10 @@ missing control.
     routes with a fresh budget per invented value. The reservation is handed
     back only when the auth dependency (`get_auth_context`) accepted the
     credentials during the request; every other request that ran keeps it,
-    including one that raised on its way through. That includes a valid key
-    sent to a public route, which is harmless: one key value hits its own
-    per-key limit, a tenth of this bucket, first.
+    including one that raised on its way through. That includes a
+    database-backed key sent to a public route, which is harmless: one key
+    value hits its own per-key limit, a tenth of this bucket, first. A key
+    listed in `VALID_API_KEYS` never takes a reservation at all (see below).
   - **Refused means `401` *or* `403`.** An unknown but well-formed key — what
     a rotating caller actually sends — is answered `403 invalid_api_key`, not
     `401`; both are charged even if another credential on the same request
@@ -310,14 +311,34 @@ missing control.
     at least 8 characters, no `Authorization` header, not JWT shaped). Such a
     key is never answered with the per-address `429` because other callers
     behind the same address sent invalid keys. Its own per-key bucket still
-    applies. The decision is made from the current settings on every request,
-    so a key removed from `VALID_API_KEYS` is charged again on its next
-    request. **Database-backed keys, JWTs and enterprise bearers are not
-    recognized before authentication and still share the per-address bucket.**
-    That is the common production case, so behind a shared address a valid
+    applies. The decision uses the settings the process has loaded, so a key
+    removed from `VALID_API_KEYS` is charged again once every worker has been
+    restarted, as `docs/api-key-rotation.md` describes for rotation.
+    **Database-backed keys, JWTs and enterprise bearers are not recognized
+    before authentication and still share the per-address bucket.** That is
+    the common production case, so behind a shared address a valid
     database-backed key can still receive this `429` while other callers send
     invalid keys. Closing that needs a positive cache of accepted keys, which
     widens the security model and is a maintainer decision.
+  - **`VALID_API_KEYS` entries are bootstrap admin credentials, and the skip
+    makes them guessable online at an unbounded rate from one address.** Once
+    an address has used up this bucket, a wrong key is answered `429` and the
+    exact configured key is not. That difference is a validity oracle: it
+    cannot be removed while a valid key is served on an exhausted address, and
+    the only defence is key entropy. Measured against a real uvicorn it was
+    about 700 to 750 guesses per second on one connection. Before the skip,
+    nothing more was evaluated once the bucket was spent, so one address could
+    learn nothing after 1,200 evaluations per minute at the default limit.
+    Use high-entropy values only, generated the way
+    `scripts/rotate_api_keys.py` does (`amw_live_` followed by
+    `token_urlsafe(32)`, 256 bits). Never use human-chosen, short or numeric
+    values or the demo value `dev-bootstrap-key` on a deployment reachable
+    from the internet. In production-like environments the gateway logs one
+    warning at startup with the count of entries shorter than 32 characters
+    (`bootstrap_keys_short`, never the values, not even a prefix) and still
+    starts. It does not refuse to start: whether it should is a maintainer
+    decision. Skipped requests are not logged or counted, so an active guessing
+    run shows as a stream of `429` responses ending in one `200`.
   - **Forwarded address contract.** The client address is the connection peer
     as the ASGI server reports it. `docker_entrypoint.sh` starts uvicorn
     without `--forwarded-allow-ips`, so uvicorn trusts forwarding headers only

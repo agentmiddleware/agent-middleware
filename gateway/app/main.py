@@ -59,6 +59,7 @@ from .middleware.security_headers import SecurityHeadersMiddleware
 from .core.trust_mode import (
     is_production_like_environment,
     validate_trust_mode_guardrails,
+    warn_if_short_bootstrap_keys,
     warn_if_trust_mode_permissive,
 )
 from .db.database import SchemaInitError, init_db, close_db
@@ -180,6 +181,7 @@ async def lifespan(app: FastAPI):
     validate_trust_mode_guardrails(settings)
     validate_api_key_hashing_config()
     warn_if_trust_mode_permissive(settings)
+    warn_if_short_bootstrap_keys(settings)
     warn_if_rate_limiter_memory_only()
     # Operator-facing posture record. The unauthenticated /health/dependencies
     # payload no longer publishes per-service simulation modes when proof

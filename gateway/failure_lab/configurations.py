@@ -172,6 +172,32 @@ class DirectAgent(Agent):
             headers={"Authorization": f"Bearer {downstream.bearer_token}"},
         )
 
+    def targets_in_process_downstream(self, downstream: DownstreamApp) -> bool:
+        """Whether every request this agent sends goes to ``downstream``'s app.
+
+        Identity, not configuration. A base URL or a setting can be edited
+        without changing where the bytes actually go, so this inspects the
+        transport the client really sends through: it must be an
+        ``ASGITransport`` whose app *is* ``downstream.asgi``, no mount may route
+        any URL elsewhere, and ``downstream`` must carry the lab's own
+        ``SimulatedRefundService``. Any other transport -- a real network one
+        above all, which is what a real refund processor would sit behind --
+        reads as foreign.
+
+        httpx keeps the transport and the mounts on private attributes. They
+        are read with ``getattr`` and checked for their exact types, so an
+        httpx that renamed them would make this refuse, never pass.
+        """
+        transport = getattr(self._client, "_transport", None)
+        mounts = getattr(self._client, "_mounts", None)
+        return (
+            isinstance(mounts, dict)
+            and not mounts
+            and isinstance(transport, httpx.ASGITransport)
+            and transport.app is downstream.asgi
+            and type(downstream.service) is SimulatedRefundService
+        )
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -388,6 +414,50 @@ class Target:
         )
 
 
+class UnsafeTargetError(RuntimeError):
+    """An arm that sends an unauthorized payload faced a target it must not.
+
+    Raised instead of making the call. The scenario runner records it as that
+    configuration's ``ERROR`` result, so the arm reads as not having run --
+    which it did not -- rather than as a measurement.
+    """
+
+
+def require_in_process_downstream(
+    target: Target, *, scenario: str, hazard: str
+) -> None:
+    """Fail closed unless this direct target's requests end in the lab's own tool.
+
+    A direct configuration puts no gateway between the agent and the tool. When
+    an arm there sends a payload nobody authorized, its safety rests entirely
+    on the tool being the lab's simulated one: under ``A_direct_naive`` nothing
+    refuses the payload at all, so the only thing keeping it harmless is that
+    the money is simulated. So such an arm runs against that tool or it does
+    not run. Only a :class:`DirectAgent` itself is admitted: a subclass is
+    refused as well as any other agent class, because a future external
+    adapter is most naturally written as a subclass that reuses
+    ``DirectAgent.submit`` and replaces the client or the method under it.
+
+    The gateway configurations are deliberately not fused this way: there the
+    gateway refuses the payload before dispatch, which is our code and the
+    thing under test, and verifying that refusal in front of a real tool is
+    both safe and worth doing.
+    """
+    agent = target.agent
+    if type(agent) is DirectAgent and agent.targets_in_process_downstream(
+        target.downstream
+    ):
+        return
+    raise UnsafeTargetError(
+        f"{scenario} refused before any call on {target.configuration.value}: "
+        f"{hazard}. This configuration puts no gateway between the agent and the "
+        "tool, so nothing in the path would refuse the call; it is safe only "
+        "because the lab's own simulated refund service is on the other end. "
+        "This target's agent does not end in that service, so the arm did not "
+        "run and no call was made."
+    )
+
+
 @dataclass
 class LabEnvironment:
     """Process-wide handles a run shares across configurations."""
@@ -477,5 +547,7 @@ __all__ = [
     "LabEnvironment",
     "MANDATORY_CONFIGURATIONS",
     "Target",
+    "UnsafeTargetError",
     "configured_target",
+    "require_in_process_downstream",
 ]

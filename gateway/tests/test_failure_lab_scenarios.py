@@ -17,9 +17,21 @@ rot into a set of well-formed classes that no longer run.
 
 from __future__ import annotations
 
+import dataclasses
+
+import httpx
 import pytest
 
-from failure_lab.configurations import ALL_CONFIGURATIONS, LabEnvironment
+from failure_lab.configurations import (
+    ALL_CONFIGURATIONS,
+    Configuration,
+    DirectAgent,
+    LabEnvironment,
+)
+from failure_lab.effect_ledger import EffectLedger
+from failure_lab.faults import FaultInjector
+from failure_lab.gateway import DOWNSTREAM_BASE_URL
+from failure_lab.refund_tool import SimulatedRefundService, build_downstream_app
 from failure_lab.scenarios import (
     FAST_SCENARIO_IDS,
     SCENARIO_CLASSES,
@@ -208,3 +220,167 @@ async def test_a_scenario_runs_end_to_end_and_matches_its_documentation(
         assert entry.crossings, "the fault layer observed no request crossing it"
         assert entry.counters.downstream_executions == 1
         assert entry.counters.gateway_dispatches == 1
+
+
+# --------------------------------------------------------------------------- #
+# The target safety fuse                                                        #
+# --------------------------------------------------------------------------- #
+
+DIRECT_CONFIGURATIONS = (Configuration.DIRECT_NAIVE, Configuration.DIRECT_NATIVE)
+
+
+def _simulated_downstream(tmp_path, name):
+    service = SimulatedRefundService(
+        EffectLedger(tmp_path / f"{name}.db"),
+        native_idempotency=False,
+        configuration=name,
+    )
+    return build_downstream_app(
+        service, FaultInjector(), bearer_token="bearer", control_token="control"
+    )
+
+
+@pytest.mark.anyio
+async def test_the_fuse_admits_only_the_agents_own_simulated_tool(tmp_path):
+    """Identity, not configuration: only the very tool the agent was built for.
+
+    Every refusal case below changes where the client's requests actually go
+    (or what the downstream really is), not some attribute beside them.
+    """
+    own = _simulated_downstream(tmp_path, "own")
+    twin = _simulated_downstream(tmp_path, "twin")
+    agent = DirectAgent(Configuration.DIRECT_NAIVE, own)
+    original = agent._client
+    try:
+        assert agent.targets_in_process_downstream(own)
+        # Same shape, separately built: a configuration match is not enough.
+        assert not agent.targets_in_process_downstream(twin)
+        # The right app, but not the lab's simulated service behind it.
+        assert not agent.targets_in_process_downstream(
+            dataclasses.replace(own, service=object())
+        )
+        # The client itself replaced by one on a real network transport, which
+        # is what a real refund processor would sit behind.
+        agent._client = httpx.AsyncClient(transport=httpx.AsyncHTTPTransport())
+        assert not agent.targets_in_process_downstream(own)
+        await agent._client.aclose()
+        # The right transport, but a mount that routes some URLs elsewhere.
+        agent._client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=own.asgi),
+            mounts={"https://": httpx.AsyncHTTPTransport()},
+        )
+        assert not agent.targets_in_process_downstream(own)
+        await agent._client.aclose()
+    finally:
+        agent._client = original
+        await agent.aclose()
+
+
+@pytest.mark.anyio
+async def test_the_fuse_refuses_a_direct_agent_subclass(tmp_path):
+    """A future adapter is most naturally a DirectAgent subclass. Refuse it.
+
+    This subclass changes nothing at all, so its client is still bound to the
+    lab's own tool -- and it is refused anyway. A real adapter would reuse
+    DirectAgent.submit and swap the client or the method under it, which the
+    transport check alone cannot be trusted to see.
+    """
+    from failure_lab.configurations import (
+        Target,
+        UnsafeTargetError,
+        require_in_process_downstream,
+    )
+
+    class AdapterAgent(DirectAgent):
+        pass
+
+    downstream = _simulated_downstream(tmp_path, "subclass")
+    agent = AdapterAgent(Configuration.DIRECT_NAIVE, downstream)
+    target = Target(
+        configuration=Configuration.DIRECT_NAIVE,
+        ledger=downstream.service.ledger,
+        injector=downstream.injector,
+        downstream=downstream,
+        agent=agent,
+    )
+    try:
+        assert agent.targets_in_process_downstream(downstream)
+        with pytest.raises(UnsafeTargetError, match="refused before any call"):
+            require_in_process_downstream(target, scenario="T02", hazard="probe")
+    finally:
+        await agent.aclose()
+
+
+@pytest.mark.anyio
+async def test_the_fuse_refuses_t02_before_any_call_against_a_foreign_tool(
+    tmp_path, monkeypatch
+):
+    """The property the fuse exists for.
+
+    On a direct configuration nothing stands between T02 and the tool, and
+    under A_direct_naive nothing refuses its 100x payload at all. Repointed at
+    anything but the lab's simulated tool, the arm must not send a single
+    request. The foreign transport records every request it is handed and
+    answers 201, so a fuse that let one through cannot pass quietly.
+    """
+    sent: list[httpx.Request] = []
+
+    def record(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(201, json={"refund_id": "re_real", "replayed": False})
+
+    def foreign_init(self, configuration, downstream):
+        self.configuration = configuration
+        self._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(record),
+            base_url=DOWNSTREAM_BASE_URL,
+            headers={"Authorization": f"Bearer {downstream.bearer_token}"},
+        )
+
+    monkeypatch.setattr(DirectAgent, "__init__", foreign_init)
+    env = LabEnvironment(run_dir=tmp_path, app=object(), admin_api_key="unused")
+
+    result = await get_scenario("T02").run(env, configurations=DIRECT_CONFIGURATIONS)
+
+    assert sent == [], "the fuse let a request leave the agent"
+    assert len(result.configurations) == len(DIRECT_CONFIGURATIONS)
+    for entry in result.configurations:
+        assert entry.verdict == Verdict.ERROR, entry.observation
+        # Named as the fuse, not buried as an opaque ExceptionGroup: the arm
+        # runs inside the downstream's task group, which wraps the refusal.
+        assert entry.observation.startswith("target safety fuse: ")
+        assert "refused before any call" in entry.observation
+        assert "no gateway" in entry.observation
+        ledger = EffectLedger(tmp_path / f"effects-{entry.configuration}-T02.db")
+        assert ledger.execution_count() == 0
+
+
+def test_error_observations_unwrap_groups_and_keep_plain_wording():
+    """A wrapped refusal is named; every other harness error reads as before."""
+    from failure_lab.configurations import UnsafeTargetError
+    from failure_lab.scenarios.base import _error_observation
+
+    assert _error_observation(ValueError("boom")) == "harness error: ValueError: boom"
+    refused = ExceptionGroup("tg", [ExceptionGroup("inner", [UnsafeTargetError("no")])])
+    assert _error_observation(refused) == "target safety fuse: no"
+    mixed = ExceptionGroup("tg", [ValueError("a"), KeyError("b")])
+    assert _error_observation(mixed) == "harness error: ValueError: a; KeyError: 'b'"
+
+
+@pytest.mark.anyio
+async def test_t02_direct_arms_still_measure_and_record_the_fuse(tmp_path):
+    """Against the lab's own tool the fuse is invisible to the measurement.
+
+    It must not change a verdict, and it must show in the evidence rather than
+    only in the source.
+    """
+    scenario = get_scenario("T02")
+    env = LabEnvironment(run_dir=tmp_path, app=object(), admin_api_key="unused")
+
+    result = await scenario.run(env, configurations=DIRECT_CONFIGURATIONS)
+
+    assert len(result.configurations) == len(DIRECT_CONFIGURATIONS)
+    for entry in result.configurations:
+        assert entry.verdict != Verdict.ERROR, entry.error
+        assert Verdict(entry.verdict).value == scenario.expected[entry.configuration]
+        assert "target safety fuse" in entry.extra["target_safety_fuse"]

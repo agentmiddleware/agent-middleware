@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from failure_lab.configurations import ALL_CONFIGURATIONS, Configuration, Target
+from failure_lab.configurations import (
+    ALL_CONFIGURATIONS,
+    Configuration,
+    Target,
+    require_in_process_downstream,
+)
 from failure_lab.identity import OperationIdentity
 from failure_lab.scenarios.base import (
     REFUSED_STATUSES,
@@ -83,6 +88,22 @@ class SameKeyDifferentArguments(Scenario):
                 scenario=self.test_id,
                 configuration=configuration.value,
                 **data,
+            )
+
+        # The direct configurations put no gateway between this arm and the
+        # tool, and under A_direct_naive nothing refuses the 100x payload below
+        # at all. Fuse them to the lab's own simulated tool before any call. The
+        # gateway configurations stay unfused: the gateway's refusal before
+        # dispatch is what they verify.
+        direct = not target.uses_gateway
+        if direct:
+            require_in_process_downstream(
+                target,
+                scenario=self.test_id,
+                hazard=(
+                    f"it resubmits a spent key with amount {_CONFLICTING_AMOUNT} "
+                    f"in place of the {_SETTLED_AMOUNT} that key settled"
+                ),
             )
 
         # One business operation, two payloads. ``refund()`` derives the
@@ -270,6 +291,13 @@ class SameKeyDifferentArguments(Scenario):
                 "wallet ended up once it had run."
             ),
         }
+        if direct:
+            extra["target_safety_fuse"] = (
+                "This configuration sends a payload nobody authorized and has no "
+                "gateway in the path to refuse it. It ran only because the target "
+                "safety fuse confirmed the agent's requests end in the lab's own "
+                "simulated refund service."
+            )
 
         further_effects = executions - executions_after_first
         # Observed at the fault layer, which sits outside the gateway; this is

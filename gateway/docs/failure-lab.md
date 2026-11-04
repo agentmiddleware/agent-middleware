@@ -152,9 +152,10 @@ only. The arms that deliberately cause a *duplicate* of an action the operator
 did authorize (`existing.lost_response` and both agent-restart arms) are not
 fused: a duplicate costs nothing against the simulated rail, and each would
 need its own authorization before this lab was pointed anywhere real. The
-fuse is also local to this script: the larger `failure_lab/` package linked at
-the top of this document carries its own equivalent scenario, and this fuse
-does not cover it.
+fuse is also local to this script. The larger `failure_lab/` package linked at
+the top of this document carries its own equivalent scenario, `T02`, which has
+a fuse of its own of the same kind: see the security posture section of
+[`failure-lab-suite.md`](failure-lab-suite.md).
 
 ## What one run shows
 

@@ -244,9 +244,17 @@ def _simulated_downstream(tmp_path, name):
 async def test_the_fuse_admits_only_the_agents_own_simulated_tool(tmp_path):
     """Identity, not configuration: only the very tool the agent was built for.
 
-    Every refusal case below changes where the client's requests actually go
-    (or what the downstream really is), not some attribute beside them.
+    Each refusal case below changes the transport the client really sends
+    through, or the downstream it is checked against. A matching base URL or
+    setting is never enough.
     """
+
+    class ForwardingTransport(httpx.ASGITransport):
+        """Keeps ``app`` on the lab's tool; a real one would send elsewhere."""
+
+    class ForwardingService(SimulatedRefundService):
+        """A refund service that is not the lab's own, by class."""
+
     own = _simulated_downstream(tmp_path, "own")
     twin = _simulated_downstream(tmp_path, "twin")
     agent = DirectAgent(Configuration.DIRECT_NAIVE, own)
@@ -255,10 +263,24 @@ async def test_the_fuse_admits_only_the_agents_own_simulated_tool(tmp_path):
         assert agent.targets_in_process_downstream(own)
         # Same shape, separately built: a configuration match is not enough.
         assert not agent.targets_in_process_downstream(twin)
-        # The right app, but not the lab's simulated service behind it.
+        # The same app, but a downstream that does not carry the lab's
+        # simulated service, whether something else entirely or a subclass.
         assert not agent.targets_in_process_downstream(
             dataclasses.replace(own, service=object())
         )
+        forwarding = ForwardingService(
+            EffectLedger(tmp_path / "forwarding.db"),
+            native_idempotency=False,
+            configuration="forwarding",
+        )
+        assert not agent.targets_in_process_downstream(
+            dataclasses.replace(own, service=forwarding)
+        )
+        # The right app behind a transport subclass, which can keep ``app``
+        # pointed at the lab's tool and still send the bytes anywhere.
+        agent._client = httpx.AsyncClient(transport=ForwardingTransport(app=own.asgi))
+        assert not agent.targets_in_process_downstream(own)
+        await agent._client.aclose()
         # The client itself replaced by one on a real network transport, which
         # is what a real refund processor would sit behind.
         agent._client = httpx.AsyncClient(transport=httpx.AsyncHTTPTransport())
@@ -384,3 +406,30 @@ async def test_t02_direct_arms_still_measure_and_record_the_fuse(tmp_path):
         assert entry.verdict != Verdict.ERROR, entry.error
         assert Verdict(entry.verdict).value == scenario.expected[entry.configuration]
         assert "target safety fuse" in entry.extra["target_safety_fuse"]
+
+
+GATEWAY_CONFIGURATIONS = (Configuration.GATEWAY_NATIVE, Configuration.GATEWAY_NAIVE)
+
+
+@pytest.mark.anyio
+async def test_t02_gateway_arms_stay_unfused(
+    tmp_path, clean_database, strict_trust_mode
+):
+    """On the gateway arms the gateway's own refusal is what T02 measures.
+
+    A fuse there would turn them into ERROR, since their agent is not a
+    DirectAgent, and silently drop that measurement. So they run unfused, in
+    the deployed trust posture, and match their documented verdicts.
+    """
+    from app.main import app
+
+    scenario = get_scenario("T02")
+    env = LabEnvironment(run_dir=tmp_path, app=app, admin_api_key="test-key")
+
+    result = await scenario.run(env, configurations=GATEWAY_CONFIGURATIONS)
+
+    assert len(result.configurations) == len(GATEWAY_CONFIGURATIONS)
+    for entry in result.configurations:
+        assert entry.verdict != Verdict.ERROR, entry.error
+        assert Verdict(entry.verdict).value == scenario.expected[entry.configuration]
+        assert "target_safety_fuse" not in entry.extra

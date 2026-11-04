@@ -400,8 +400,10 @@ not own.
   any URL elsewhere, and that downstream must carry the lab's own
   ``SimulatedRefundService``. Only a ``DirectAgent`` itself passes; a subclass
   or any other agent class is refused, because an external adapter would most
-  naturally be written as one. Otherwise it raises ``UnsafeTargetError``: the
-  configuration is recorded as `ERROR`, named as the fuse, and nothing is
+  naturally be written as one. The transport and the service are held to the
+  same exact class, since a subclass of either can keep the right app and
+  still send the bytes elsewhere. Otherwise it raises ``UnsafeTargetError``:
+  the configuration is recorded as `ERROR`, named as the fuse, and nothing is
   sent. The gateway configurations are deliberately not fused: the gateway's
   refusal before dispatch is what they verify.
 - Deterministic cleanup: run directories are removed on exit, including on

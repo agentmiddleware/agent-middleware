@@ -186,14 +186,17 @@ class DirectAgent(Agent):
 
         httpx keeps the transport and the mounts on private attributes. They
         are read with ``getattr`` and checked for their exact types, so an
-        httpx that renamed them would make this refuse, never pass.
+        httpx that renamed them would make this refuse, never pass. Exact
+        types, not ``isinstance``: a transport subclass can keep ``app``
+        pointed at the lab's tool and send the bytes anywhere, the same reason
+        a ``DirectAgent`` subclass is refused.
         """
         transport = getattr(self._client, "_transport", None)
         mounts = getattr(self._client, "_mounts", None)
         return (
-            isinstance(mounts, dict)
+            type(mounts) is dict
             and not mounts
-            and isinstance(transport, httpx.ASGITransport)
+            and type(transport) is httpx.ASGITransport
             and transport.app is downstream.asgi
             and type(downstream.service) is SimulatedRefundService
         )

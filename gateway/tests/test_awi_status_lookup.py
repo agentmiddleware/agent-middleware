@@ -102,6 +102,52 @@ async def test_awi_status_outcomes(monkeypatch, error_path, answer_kind):
             query.wallet_id = "different"
 
 
+@pytest.mark.anyio
+async def test_awi_status_lookup_suppressing_cancellation(monkeypatch):
+    ctx = awi.AwiHttpGovernedContext(
+        auth=SimpleNamespace(),
+        wallet_id="test-wallet",
+        permit_id="test-permit",
+        idempotency_key="test-key",
+        tool_name="awi_execute",
+        credits=Decimal("3"),
+        permit=SimpleNamespace(),
+        endpoint="POST /v1/awi/execute",
+        record_id="test-record",
+        request_payload={"commands": []},
+        ledger_entry_id="test-charge",
+        credits_charged=Decimal("3"),
+        dispatch_started=True,
+    )
+    release = asyncio.Event()
+    tasks = []
+
+    async def lookup(query):
+        tasks.append(asyncio.current_task())
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        return awi.AwiStatusAnswer(effect_status="not_dispatched")
+
+    monkeypatch.setattr(awi, "_REGISTERED_AWI_STATUS_LOOKUP", None)
+    monkeypatch.setattr(awi, "STATUS_LOOKUP_TIMEOUT_SECONDS", 0.001)
+    awi.register_awi_status_lookup(lookup)
+    money = SimpleNamespace(refund_charge=AsyncMock())
+    permits = SimpleNamespace(release_budget=AsyncMock())
+    monkeypatch.setattr(awi, "get_agent_money", lambda: money)
+    monkeypatch.setattr(awi, "get_permit_service", lambda: permits)
+    try:
+        outcome = await asyncio.wait_for(awi._awi_uncertain_outcome(ctx), timeout=0.1)
+        assert outcome == "delivery_uncertain"
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    money.refund_charge.assert_not_awaited()
+    permits.release_budget.assert_not_awaited()
+    assert ctx.credits_charged == Decimal("3")
+
+
 @pytest.mark.parametrize(
     "register",
     [

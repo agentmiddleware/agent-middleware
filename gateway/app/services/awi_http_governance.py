@@ -161,9 +161,20 @@ async def _awi_uncertain_outcome(ctx: AwiHttpGovernedContext) -> str:
                     )
                 ),
             )
-            answer = await asyncio.wait_for(
-                lookup(query), timeout=STATUS_LOOKUP_TIMEOUT_SECONDS
+            task = asyncio.ensure_future(lookup(query))
+            done, _ = await asyncio.wait(
+                {task}, timeout=STATUS_LOOKUP_TIMEOUT_SECONDS
             )
+            if done:
+                answer = task.result()
+            else:
+                task.cancel()
+                task.add_done_callback(
+                    lambda finished: (
+                        None if finished.cancelled() else finished.exception()
+                    )
+                )
+                answer = None
         except Exception:
             # Provider failures must not change money movement or expose data.
             answer = None

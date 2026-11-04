@@ -206,11 +206,16 @@ What the code does, checked against `app/services/signing_keys.py`:
 - `retire_key_metadata` sets a row to `status="retired"` and stamps
   `retired_at`. `list_public_keys` still publishes retired rows (only
   `disabled` rows are left out), so receipts signed under them keep verifying.
-- `ensure_active_key` runs before every receipt, audit event, permit and quote
-  signature. When the row for the process's configured `TRUST_SIGNING_KEY_ID`
+- `ensure_active_key` runs before receipt, audit event, permit and quote
+  signing. When the row for the process's configured `TRUST_SIGNING_KEY_ID`
   is `retired`, it sets the row back to `active`, resets `activated_at` and
   clears `retired_at`, then signs. Only `disabled` is terminal: that row
   refuses with `signing_key_disabled`.
+- The prepared-key path does not reactivate. `validate_prepared_signing_key`
+  (used when a caller signs under a key it resolved earlier, such as the
+  receipt write in the pending-refund path) refuses a key that is not
+  `active` or has `retired_at` set, with `signing_key_not_active`. That is the
+  existing behavior when a rotation lands in the middle of a call.
 - So a replica that still runs the old key id and key material, and signs
   anything, silently un-retires the old row. Retirement holds only while no
   process configured with the old id signs. The spec wording

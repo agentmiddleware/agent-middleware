@@ -317,10 +317,19 @@ missing control.
     class is exempt from it.
     To count real client addresses, set `FORWARDED_ALLOW_IPS` to the exact
     address or addresses of your ingress, or to a CIDR range that covers it
-    (uvicorn accepts both, comma separated). Uvicorn then reads the client
-    from `X-Forwarded-For` only on connections from those addresses, and it
-    takes the right-most entry that is not itself a trusted address, which is
-    the address the ingress observed. **Do not set it to `*`.** With `*`
+    (uvicorn accepts both, comma separated). Use the narrowest CIDR that
+    covers only your ingress peers. A catch-all range (`0.0.0.0/0` or
+    `::/0`) trusts every peer of that address family, and for entries of that
+    family uvicorn then takes the left-most one, exactly as it does for `*`,
+    so do not use one. Uvicorn reads the client from `X-Forwarded-For` only on
+    connections from the trusted addresses, and it takes the right-most entry
+    that is not itself a trusted address. **That entry is the address the
+    ingress observed only if the ingress overwrites `X-Forwarded-For` with the
+    client address it saw, or appends that address to the inbound chain.** An
+    ingress that forwards the inbound header unchanged lets the caller choose
+    the address even when `FORWARDED_ALLOW_IPS` names that exact ingress, so do
+    not trust such an ingress for address-based limiting. **Do not set it to
+    `*`.** With `*`
     uvicorn trusts every connection and takes the left-most
     `X-Forwarded-For` entry. A caller controls that entry whenever the ingress
     appends to the header instead of replacing it, so any caller can send its

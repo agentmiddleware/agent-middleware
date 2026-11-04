@@ -75,6 +75,15 @@ def test_forwarded_allow_ips_is_read_from_the_process_environment(
             "192.0.2.1, 198.51.100.9, 203.0.113.51",
             "198.51.100.9",
         ),
+        # A catch-all CIDR behaves like "*" for entries of its address family:
+        # every entry is trusted, so the left-most one wins and a caller controls it.
+        ("0.0.0.0/0", "203.0.113.50", "192.0.2.1, 198.51.100.9", "192.0.2.1"),
+        ("::/0", "2001:db8::50", "2001:db8::1, 2001:db8::9", "2001:db8::1"),
+        # An ingress that forwards the inbound header unchanged, without adding the
+        # address it observed, lets the caller choose the client even when the
+        # ingress is named exactly. Two callers get two different addresses.
+        ("203.0.113.50", "203.0.113.50", "192.0.2.1", "192.0.2.1"),
+        ("203.0.113.50", "203.0.113.50", "192.0.2.2", "192.0.2.2"),
         # "*": the left-most entry wins, and a caller controls it.
         ("*", "203.0.113.50", "192.0.2.1, 198.51.100.9", "192.0.2.1"),
         ("*", "198.51.100.1", "192.0.2.1", "192.0.2.1"),

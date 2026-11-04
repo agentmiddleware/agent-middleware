@@ -87,8 +87,10 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
   On Railway no setting is needed: the gateway reads the platform's
   `X-Real-IP`. Behind any other reverse proxy or load balancer that is not on
   loopback, set `FORWARDED_ALLOW_IPS` in the container environment to its exact
-  address or a CIDR range (never `*`) so the gateway sees real client
-  addresses; otherwise all callers share the proxy's address.
+  address or the narrowest CIDR range covering it (never `*`, `0.0.0.0/0` or
+  `::/0`) so the gateway sees real client addresses; otherwise all callers
+  share the proxy's address. The proxy must overwrite `X-Forwarded-For` with
+  the client address it saw, or append that address to the inbound chain.
   `/health/dependencies` is counted here. With shared Redis counters these
   buckets are shared across workers and replicas; without `REDIS_URL` each
   worker or replica keeps its own per-client buckets and its own backstop.

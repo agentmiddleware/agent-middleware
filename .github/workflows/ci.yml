@@ -321,7 +321,7 @@ jobs:
           python-version: "3.12"
           enable-cache: false
       - name: Test framework integrations
-        run: uv run --no-project --isolated --python 3.12 --with pytest==9.1.1 --with-editable './sdk/python[verify]' python -m pytest integrations/framework_integrations/tests -q -rs
+        run: uv run --no-project --isolated --python 3.12 --with pytest==9.1.1 --with pytest-timeout --with langgraph==1.2.19 --with langchain-core==1.7.5 --with-requirements gateway/requirements.txt --with-editable './sdk/python[verify]' python -m pytest integrations/framework_integrations/tests examples/tests/test_langgraph_permit_example.py -q -rs
 
   postgres-concurrency:
     # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:

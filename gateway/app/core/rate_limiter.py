@@ -7,7 +7,6 @@ Returns standard rate limit headers on every response.
 
 import asyncio
 import hashlib
-import hmac
 import ipaddress
 import logging
 import os
@@ -199,59 +198,6 @@ def _presented_rate_identity(request: Request) -> str | None:
     except JWTError:
         return f"invalid-jwt:{token}"
     return f"jwt:{payload.key_id}"
-
-
-def _equal_padded(presented: str, expected: str) -> bool:
-    """Compare two keys in constant time over equal-length inputs.
-
-    Both sides are padded to a common length so ``hmac.compare_digest`` never
-    sees unequal lengths, and the length check is combined with ``&`` so it
-    does not short-circuit. The padding byte could otherwise alias a key that
-    ends in it, which the length check rules out. Nothing is hashed or stored.
-    """
-    try:
-        left = presented.encode("utf-8")
-        right = expected.encode("utf-8")
-    except UnicodeEncodeError:
-        # A configured entry with undecodable bytes (lone surrogates from the
-        # process environment) can never equal a presented header value.
-        return False
-    width = max(len(left), len(right))
-    return bool(
-        hmac.compare_digest(left.ljust(width, b"\0"), right.ljust(width, b"\0"))
-        & (len(left) == len(right))
-    )
-
-
-def _presents_configured_env_key(request: Request) -> bool:
-    """True when the request authenticates with a ``VALID_API_KEYS`` entry.
-
-    This mirrors the env-key branch of ``app.core.auth._resolve_auth_context``
-    so the pre-auth reservation is skipped only for a credential that branch
-    accepts: the same parsing (split on comma, strip, drop empties), the same
-    precondition checks that run before it (no Authorization header, not a
-    ``Bearer `` value, at least 8 characters, not JWT-shaped), and the same
-    exact comparison. Both sides are padded to one length first, and every
-    configured key is compared without an early exit, so neither a match nor
-    its position is visible in timing. A blank or missing header never matches,
-    including against an empty configured entry. Database keys, JWTs and
-    enterprise bearers are not recognized here; they keep the reservation.
-    """
-    if request.headers.get("authorization") is not None:
-        return False
-    presented = request.headers.get(settings.API_KEY_HEADER, "").strip()
-    if len(presented) < 8 or presented.startswith("Bearer "):
-        return False
-    if presented.count(".") == 2 and len(presented) > 50:
-        return False
-    configured = [
-        key.strip() for key in get_settings().VALID_API_KEYS.split(",") if key.strip()
-    ]
-    matched = False
-    for key in configured:
-        if _equal_padded(presented, key):
-            matched = True
-    return matched
 
 
 def _routing_path(request: Request) -> str:
@@ -815,25 +761,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # would otherwise be handed a fresh 120-request budget each time — an
         # unbounded amount of traffic from one client. One shared per-client
         # bucket bounds that instead: every request reserves from it before
-        # running (except one presenting a configured env key, below), and
-        # hands the reservation back only if get_auth_context
+        # running, and hands the reservation back only if get_auth_context
         # accepted the credentials. Keying that on acceptance rather than on
         # refusal matters: a route that never authenticates (a public route,
         # a 404) never refuses an invented key either. Rotation buys nothing
         # past the bucket, and a request whose credentials the app accepts
         # leaves it exactly as it found it.
-        # A configured env key is recognized before authentication, so it never
-        # draws on the per-address bucket that other callers behind a shared
-        # address can exhaust. Its per-key bucket below still applies. This is
-        # also why a wrong key is answered 429 and the right one is not once an
-        # address is exhausted: see "A key listed in VALID_API_KEYS" in
-        # SECURITY_LIMITATIONS.md for the validity oracle and the key strength
-        # it requires.
-        preauth_bucket = (
-            None
-            if keyless_route or _presents_configured_env_key(request)
-            else self._preauth_bucket(request)
-        )
+        preauth_bucket = None if keyless_route else self._preauth_bucket(request)
         preauth_reserved = False
         preauth_in_memory = False
         keep_reservation = False

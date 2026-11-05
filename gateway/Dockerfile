@@ -1,4 +1,4 @@
-FROM python:3.12-slim AS build-metadata
+FROM python:3.15-slim AS build-metadata
 
 # The release archive may carry a gitignored stamp at its context root.
 # Copying the context lets the writer validate that optional input without a
@@ -17,7 +17,7 @@ RUN mkdir /stamp \
        BUILD_SHA_PATH=/stamp/.build_commit_sha \
        python /context/gateway/scripts/write_build_commit_sha.py
 
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 WORKDIR /app
 

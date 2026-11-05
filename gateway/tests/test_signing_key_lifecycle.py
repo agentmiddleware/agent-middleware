@@ -590,3 +590,38 @@ async def test_unknown_key_status_refuses_without_rewriting_the_row(clean_databa
     assert after.status == "suspended"
     assert after.activated_at == before.activated_at
     assert after.retired_at == before.retired_at
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", ["retired", "disabled"])
+async def test_active_key_route_answers_503_when_the_configured_key_cannot_sign(
+    client, clean_database, status
+):
+    """``GET /v1/signing-keys/active`` names the refusal instead of a 500.
+
+    The other key routes keep serving: a retired key's metadata is still
+    readable by id and still published in the key set.
+    """
+    key = await get_signing_key_service().ensure_active_key()
+    async with get_session_factory()() as session:
+        row = await session.get(SigningKeyModel, key.key_id)
+        assert row is not None
+        row.status = status
+        session.add(row)
+        await session.commit()
+
+    resp = await client.get("/v1/signing-keys/active", headers=BOOTSTRAP_HEADERS)
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"]["error"] == "signing_key_unavailable"
+    assert status not in resp.text  # the reason stays server side
+    assert (await _key_row(key.key_id)).status == status
+
+    by_id = await client.get(
+        f"/v1/signing-keys/{key.key_id}", headers=BOOTSTRAP_HEADERS
+    )
+    assert by_id.status_code == 200, by_id.text
+    if status == "retired":
+        key_set = await client.get("/.well-known/trust-keys.json")
+        assert key_set.status_code == 200, key_set.text
+        assert key.key_id in {k["kid"] for k in key_set.json()["keys"]}

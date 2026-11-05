@@ -255,8 +255,10 @@ How an operator can tell a replica is stale:
   `signing_key_retired`, `signing_key_disabled` or
   `signing_key_id_public_key_mismatch`, and readiness answers 503. A load
   balancer that gates on readiness stops sending traffic to that replica.
-- Its governed calls are refused with `signing_key_unavailable`, and the
-  server log carries the underlying reason.
+- Its governed calls are refused with `signing_key_unavailable`, and so is
+  `GET /v1/signing-keys/active` (HTTP 503); the server log carries the
+  underlying reason. `GET /v1/signing-keys/{key_id}` and
+  `/.well-known/trust-keys.json` keep serving the published keys.
 
 What a governed call does when the key cannot sign: the governed MCP
 transports (`/mcp/messages`, `/mcp/tools/{tool}/invoke` and `/mcp`) and the

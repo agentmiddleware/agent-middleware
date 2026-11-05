@@ -136,10 +136,9 @@ async def test_foreign_wallet_refusal_replays_identically(
     )
 
     _assert_refusal_envelope(first, "wallet_access_denied")
-    assert first.json()["detail"] == {
-        "error": "wallet_access_denied",
-        "request_id": "sel475-fixed-request-id",
-    }
+    # The request id travels in the X-Request-ID header, not the body.
+    assert first.json()["detail"] == {"error": "wallet_access_denied"}
+    assert first.headers["X-Request-ID"] == "sel475-fixed-request-id"
     # Same status, same headers that matter, same bytes.
     assert replay.status_code == first.status_code
     assert replay.headers["content-type"] == first.headers["content-type"]

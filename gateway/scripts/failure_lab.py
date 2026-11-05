@@ -129,6 +129,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Compatibility flag: the lab always asserts its expectations.",
     )
+    parser.add_argument(
+        "--self-check-guards",
+        action="store_true",
+        help=(
+            "Check the target safety fuse against transports it must and must "
+            "not admit, then exit. Runs no scenarios, makes no calls, and "
+            "causes no effects."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -337,6 +346,11 @@ class LossyTransport(httpx.AsyncBaseTransport):
         self._hop = hop
         self._injector = injector
 
+    @property
+    def inner(self) -> httpx.AsyncBaseTransport:
+        """The transport this one wraps. Read by the target safety fuse."""
+        return self._inner
+
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.method != "POST":
             return await self._inner.handle_async_request(request)
@@ -522,6 +536,75 @@ class PaymentRail:
 
 
 # --------------------------------------------------------------------------- #
+# Target safety fuse                                                            #
+# --------------------------------------------------------------------------- #
+
+
+class UnsafeTargetError(RuntimeError):
+    """An arm that sends an unauthorized payload faced a target it must not.
+
+    Raised instead of making the call. ``main`` exits 2 on this, which is
+    deliberately distinct from the 1 it exits when an expectation merely broke:
+    a safety refusal is not a failed measurement.
+    """
+
+
+# No legitimate chain wraps the leaf transport more than this.
+_MAX_TRANSPORT_WRAPPERS = 4
+
+
+def _terminates_in_asgi_app(transport: httpx.AsyncBaseTransport, app: object) -> bool:
+    """Whether ``transport`` ends in an ``ASGITransport`` bound to ``app``.
+
+    Identity, not configuration. A URL constant, an environment variable, or a
+    settings field can all be edited without changing where the bytes actually
+    go, so the fuse walks the object graph the request will travel through and
+    compares the leaf's app by ``is``. A real network transport anywhere at the
+    leaf reads as foreign, which is the case that matters: it is what a real
+    partner tool would sit behind.
+    """
+    hops = 0
+    while isinstance(transport, LossyTransport):
+        transport = transport.inner
+        hops += 1
+        if hops > _MAX_TRANSPORT_WRAPPERS:
+            return False
+    return isinstance(transport, ASGITransport) and transport.app is app
+
+
+def require_in_process_rail(
+    caller: DirectCaller,
+    rail: PaymentRail,
+    *,
+    scenario: str,
+    hazard: str,
+) -> None:
+    """Fail closed unless this caller's bytes end in the lab's own rail.
+
+    One arm deliberately sends a payload the operator never authorized, with
+    no gateway in the path to refuse it. Its safety rests entirely on the
+    downstream refusing the call — a property this lab implements for its own
+    simulated rail (``PaymentRail.execute``) and cannot assume of anyone
+    else's tool. So that arm runs against that rail or it does not run.
+
+    The gateway's own conflict arm is deliberately **not** fused this way: it
+    is protected by the gateway refusing a reused key before dispatch, which
+    is our code and the thing under test, and verifying that refusal in front
+    of a real tool is both safe and worth doing.
+    """
+    if caller.targets_in_process_rail(rail):
+        return
+    raise UnsafeTargetError(
+        f"{scenario} refused before any call: {hazard}. This arm puts no gateway "
+        "between itself and the tool, so nothing in the path would refuse the "
+        "call; it is safe only because the lab's own in-process rail implements "
+        "that refusal. This run's caller does not terminate in that rail, so the "
+        "arm did not run and no call was made. Run this arm against the "
+        "simulated rail, or remove it from the run."
+    )
+
+
+# --------------------------------------------------------------------------- #
 # The agent and the two ways it can reach the rail                              #
 # --------------------------------------------------------------------------- #
 
@@ -595,15 +678,20 @@ class DirectCaller:
     """The agent speaks MCP straight to the rail. Nothing sits in between."""
 
     def __init__(self, rail: PaymentRail, injector: FaultInjector, events: EventLog):
+        self._transport = LossyTransport(
+            ASGITransport(app=rail.asgi_app),
+            hop=HOP_AGENT_DOWNSTREAM,
+            injector=injector,
+        )
         self._client = httpx.AsyncClient(
-            transport=LossyTransport(
-                ASGITransport(app=rail.asgi_app),
-                hop=HOP_AGENT_DOWNSTREAM,
-                injector=injector,
-            ),
+            transport=self._transport,
             follow_redirects=False,
         )
         self._events = events
+
+    def targets_in_process_rail(self, rail: PaymentRail) -> bool:
+        """Whether this caller's requests end in ``rail``'s own ASGI app."""
+        return _terminates_in_asgi_app(self._transport, rail.asgi_app)
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -849,6 +937,11 @@ class Gateway:
             _env_file=None,
             ENVIRONMENT="local",
             MCP_UPSTREAM_ENABLED=True,
+            # Pinned, not left to the default: `Settings` reads unset fields
+            # from the process environment, so an exported
+            # MCP_UPSTREAM_MULTI_TOOL_ENABLED would otherwise put this lab in
+            # multi-tool mode, which its one-tool design does not support.
+            MCP_UPSTREAM_MULTI_TOOL_ENABLED=False,
             MCP_UPSTREAM_URL=UPSTREAM_URL,
             MCP_UPSTREAM_TOOL_NAME=UPSTREAM_TOOL,
             MCP_UPSTREAM_PUBLIC_TOOL_ID=PUBLIC_TOOL,
@@ -857,9 +950,21 @@ class Gateway:
             MCP_UPSTREAM_CONNECT_TIMEOUT_SECONDS=CONNECT_TIMEOUT_SECONDS,
             MCP_UPSTREAM_CALL_TIMEOUT_SECONDS=CALL_TIMEOUT_SECONDS,
         )
-        self.service = await register_configured_upstream_mcp(
+        registered = await register_configured_upstream_mcp(
             settings=settings, http_client=self._upstream_client
         )
+        # The lab configures one upstream tool by name and pins
+        # MCP_UPSTREAM_MULTI_TOOL_ENABLED to False above, so registration returns
+        # that single service rather than a list. Narrow it here instead of
+        # widening self.service: a list would mean this configuration changed, and
+        # the reads below would quietly address the wrong shape.
+        if not isinstance(registered, dict):
+            raise RuntimeError(
+                "the failure lab registers a single upstream tool, so "
+                "register_configured_upstream_mcp must return one service; got "
+                f"{type(registered).__name__}"
+            )
+        self.service = registered
         self.configuration = {
             "public_tool_id": PUBLIC_TOOL,
             "upstream_tool_name": UPSTREAM_TOOL,
@@ -1334,6 +1439,17 @@ class Lab:
         key = agent.key_for(invoice)
         caller = DirectCaller(self.rail, self.injector, self.events)
         try:
+            # This arm reuses a spent key with a 38x larger amount and has no
+            # gateway in the path to refuse it. Fuse it to our own rail first.
+            require_in_process_rail(
+                caller,
+                self.rail,
+                scenario=scenario,
+                hazard=(
+                    f"it reuses a spent key with ${CONFLICT_AMOUNT_USD} in place "
+                    f"of the ${AMOUNT_USD} that key was issued for"
+                ),
+            )
             first = await caller.call(
                 number=1, arguments=self._arguments(invoice), idempotency_key=key
             )
@@ -1368,6 +1484,12 @@ class Lab:
             "downstream_idempotency_conflict",
         )
         m.check("downstream effects", m.downstream_effects, 1)
+        m.notes.append(
+            "This arm sends a payload the operator never authorized and has no "
+            "gateway in the path to refuse it. It ran only because the target "
+            "safety fuse confirmed the call terminates in the lab's own "
+            "in-process rail, which implements that refusal."
+        )
         return self._finish(m)
 
     # -- gateway configurations ---------------------------------------------- #
@@ -1760,8 +1882,12 @@ class Lab:
         line(f"  run dir:  {self.run_dir}")
 
         async with self.rail.lifespan():
-            await self.gateway.start()
+            # Startup is inside the boundary: it acquires the database and the
+            # upstream client before it can fail, and `stop` is null-safe, so a
+            # partial start still gets cleaned up.
             try:
+                await self.gateway.start()
+
                 banner("1. The existing integration")
                 await self.existing_control()
                 await self.existing_lost_response()
@@ -1979,7 +2105,7 @@ class Lab:
             "not_covered_here": {
                 "concurrent_retries_same_key": "make trust-conformance-live (15-way), tests/test_permit_postgres_concurrency.py",
                 "crash_before_and_after_dispatch": "make prove-crash-recovery (tests/test_mcp_postgres_multiprocess.py)",
-                "budget_race": "tests/test_permits.py, postgres_permit_concurrency CI job",
+                "budget_race": "tests/test_permits.py, postgres-concurrency and postgres-proofs CI jobs",
                 "tampered_receipt_or_untrusted_key": "make demo-ambiguous-retry, make prove-trust-plane",
             },
             "artifacts": {
@@ -2222,10 +2348,121 @@ async def run_lab(*, json_output: bool, latency_samples: int) -> dict[str, Any]:
     return summary
 
 
+def _fuse_probe_app() -> Any:
+    """A correctly shaped ASGI app, freshly built so each call differs by identity.
+
+    The fuse must decide from the object graph alone, so this app must never be
+    dispatched: being called at all would mean a request got through. Typed
+    ``Any`` because a bare ``object()`` is not an ASGI app to mypy.
+    """
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        raise AssertionError("the fuse probe app must never be dispatched")
+
+    return app
+
+
+def run_guard_self_check() -> int:
+    """Exercise the target safety fuse on transport chains it must judge.
+
+    Runs no scenarios and makes no calls: it builds chains and asks the fuse
+    about them. Printed with ``print`` rather than ``line`` so the result
+    appears whether or not the transcript is enabled.
+    """
+    events = EventLog(RUN_DIR / "guard-self-check.jsonl")
+    try:
+        injector = FaultInjector(events)
+        rail = PaymentRail(
+            effects_path=RUN_DIR / "guard-self-check-effects.jsonl", events=events
+        )
+        rail_app = rail.asgi_app
+        other_app = _fuse_probe_app()
+
+        def lossy(inner: httpx.AsyncBaseTransport) -> LossyTransport:
+            return LossyTransport(inner, hop=HOP_AGENT_DOWNSTREAM, injector=injector)
+
+        cases: list[tuple[str, httpx.AsyncBaseTransport, bool]] = [
+            (
+                "lossy(ASGITransport(app=rail_app))",
+                lossy(ASGITransport(app=rail_app)),
+                True,
+            ),
+            ("ASGITransport(app=rail_app)", ASGITransport(app=rail_app), True),
+            (
+                "lossy(ASGITransport(app=other_app))",
+                lossy(ASGITransport(app=other_app)),
+                False,
+            ),
+            (
+                "lossy(httpx.AsyncHTTPTransport())",
+                lossy(httpx.AsyncHTTPTransport()),
+                False,
+            ),
+            ("httpx.AsyncHTTPTransport()", httpx.AsyncHTTPTransport(), False),
+            (
+                "lossy(lossy(httpx.AsyncHTTPTransport()))",
+                lossy(lossy(httpx.AsyncHTTPTransport())),
+                False,
+            ),
+            (
+                "lossy(lossy(ASGITransport(app=rail_app)))",
+                lossy(lossy(ASGITransport(app=rail_app))),
+                True,
+            ),
+            (
+                "lossy x4 over ASGITransport(app=rail_app)",
+                lossy(lossy(lossy(lossy(ASGITransport(app=rail_app))))),
+                True,
+            ),
+            (
+                "lossy x5 over ASGITransport(app=rail_app)",
+                lossy(lossy(lossy(lossy(lossy(ASGITransport(app=rail_app)))))),
+                False,
+            ),
+        ]
+
+        print("failure-lab: target safety fuse self-check")
+        print("  no scenarios run, no calls made, no effects caused.")
+        broken = 0
+        for label, transport, expected in cases:
+            observed = _terminates_in_asgi_app(transport, rail_app)
+            held = observed is expected
+            if not held:
+                broken += 1
+            verdict = "pass" if held else "FAIL"
+            print(f"  {verdict}  {label} -> {observed} (expected {expected})")
+        if broken:
+            print(
+                f"failure-lab: {broken} of {len(cases)} fuse cases broke; the "
+                "target safety fuse does not hold."
+            )
+            return 1
+        print(f"failure-lab: all {len(cases)} fuse cases hold.")
+        return 0
+    finally:
+        events.close()
+
+
 def main() -> None:
-    summary = asyncio.run(
-        run_lab(json_output=ARGS.json, latency_samples=ARGS.latency_samples)
-    )
+    if ARGS.self_check_guards:
+        sys.exit(run_guard_self_check())
+    try:
+        summary = asyncio.run(
+            run_lab(json_output=ARGS.json, latency_samples=ARGS.latency_samples)
+        )
+    except BaseException as exc:
+        # The refusal is raised inside the MCP server's task group, so it
+        # arrives here wrapped in a BaseExceptionGroup. Unwrap it, or the
+        # operator gets a traceback and the distinct exit code is lost.
+        refused = [
+            member
+            for member in _flatten_exceptions(exc)
+            if isinstance(member, UnsafeTargetError)
+        ]
+        if not refused:
+            raise
+        print(f"failure-lab: {refused[0]}", file=sys.stderr)
+        sys.exit(2)
     if not summary["ok"]:
         failed = [
             f"{item['scenario']}: {check['check']} (observed {check['observed']!r}, "

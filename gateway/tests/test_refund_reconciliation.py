@@ -834,3 +834,95 @@ async def test_operator_refund_release_cannot_erase_a_concurrent_reservation(
     # refund. An absolute write of the recomputed 0 would erase that 1 and
     # hand the permit a credit of headroom it never actually had returned.
     assert permit_after.spent_credits == Decimal("1")
+
+
+@requires_sqlite_row_lock_noop
+@pytest.mark.anyio
+async def test_create_pending_sqlite_adopt_after_rollback_preserves_record_id(
+    client,
+    clean_database,
+    monkeypatch,
+):
+    """create_pending must not read record.record_id after SQLite adopt rollback.
+
+    IntegrityError adopt rolls the caller begin() back and expires the ORM
+    record. Capture the id before create_receipt; reading it afterward crashes
+    the recovery path that finalizes the idempotency record.
+    """
+    case = await _create_unrefunded_failure(client)
+    original_receipt_id = case["receipt"]["receipt_id"]
+    ledger_entry_id = case["receipt"]["ledger_entry_id"]
+    wallet_id = case["provisioned"]["agent_wallet_id"]
+    permit_id = case["permit"]["permit_id"]
+    key_id = case["provisioned"]["key_id"]
+    idempotency_key = "operator-reconcile-invoke"
+
+    factory = get_session_factory()
+    async with factory() as session:
+        record = (
+            await session.execute(
+                select(IdempotencyRecordModel).where(
+                    IdempotencyRecordModel.response_reference == original_receipt_id
+                )
+            )
+        ).scalar_one()
+        assert record.ledger_entry_id == ledger_entry_id
+        endpoint = record.endpoint
+        record_id = record.record_id
+        # Leave the winner receipt so the re-insert hits the unique
+        # idempotency_record_id constraint and takes the SQLite adopt path.
+        # status_code is NOT NULL; checkpoint only needs response fields clear.
+        record.response_reference = None
+        record.response_json = None
+        session.add(record)
+        await session.commit()
+
+    # Skip create_receipt preflight so the insert hits the unique key.
+    lookups = {"n": 0}
+    real_get = ReceiptService._get_by_idempotency_record
+
+    async def _get_skip_preflight(session, idempotency_record_id):
+        lookups["n"] += 1
+        if lookups["n"] == 1:
+            return None
+        return await real_get(session, idempotency_record_id)
+
+    monkeypatch.setattr(
+        ReceiptService, "_get_by_idempotency_record", staticmethod(_get_skip_preflight)
+    )
+
+    # Adopt recovery re-checks evidence; this test only cares that the
+    # create_pending recovery path survives the expired-ORM record_id read.
+    monkeypatch.setattr(
+        ReceiptService,
+        "_assert_idempotent_match",
+        lambda *args, **kwargs: None,
+        raising=True,
+    )
+
+    service = RefundReconciliationService()
+    receipt, reconciliation = await service.create_pending(
+        wallet_id=wallet_id,
+        endpoint=endpoint,
+        idempotency_key=idempotency_key,
+        permit_id=permit_id,
+        key_id=key_id,
+        tool_name="operator-reconcile-refund-tool",
+        request_payload=case["request"],
+        ledger_entry_id=ledger_entry_id,
+        credits_authorized=Decimal("2"),
+        credits_charged=Decimal("2"),
+        audit_event_id=None,
+        reason="refund_failed",
+    )
+
+    assert receipt.receipt_id == original_receipt_id
+    assert reconciliation["status"] == "pending"
+    assert lookups["n"] >= 1
+
+    async with factory() as session:
+        row = await session.get(IdempotencyRecordModel, record_id)
+    assert row is not None
+    assert row.response_reference == original_receipt_id
+    assert row.status_code == 500
+    assert row.response_json is not None

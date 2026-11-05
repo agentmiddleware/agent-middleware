@@ -28,6 +28,13 @@ remain unchanged.
 
 ### Receipt verifier
 
+- `canonical_json` now emits RFC 8785 (JCS): UTF-8 string contents (not
+  `\uXXXX` escapes) and ECMAScript number serialization (so `1.0` becomes
+  `1`). Unsupported values raise `b2a_sdk.jcs.CanonicalizationError` (a
+  `ValueError` subclass) instead of `TypeError`; catch `ValueError` or
+  import `CanonicalizationError` from `b2a_sdk.jcs`. Offline verify still
+  checks the transmitted `signing_input` bytes and does not re-serialize.
+
 - `verify_permit_bundle()` checks the signed permit's required fields and
   rejects a signed receipt as permit evidence. `VerificationResult.permit_id`
   reports the signed permit id without changing existing positional arguments.

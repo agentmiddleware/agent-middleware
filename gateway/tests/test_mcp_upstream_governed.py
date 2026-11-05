@@ -1468,10 +1468,8 @@ async def test_prepare_commit_uncertain_preserves_owner_state_and_public_contrac
                 },
             )
             assert uncertain.status_code == 409
-            assert uncertain.json()["detail"] == {
-                "error": "idempotency_in_progress",
-                "request_id": "prepare-uncertain-fixed-req",
-            }
+            assert uncertain.json()["detail"] == {"error": "idempotency_in_progress"}
+            assert uncertain.headers["X-Request-ID"] == "prepare-uncertain-fixed-req"
         assert committed_attempt_id is not None
         assert executor.calls == []
 
@@ -1671,6 +1669,7 @@ async def test_unicode_returned_error_keeps_linked_evidence_if_refund_fails(
         )
         assert persisted.attempt.approval_id == approval_id
         assert persisted.receipt.approval_id == approval_id
+        assert persisted.receipt.counterparty == "partner.example"
         assert persisted.attempt.response_hash is not None
         valid, reason, _ = await get_receipt_service().verify_receipt(
             persisted.receipt.receipt_id
@@ -1986,8 +1985,8 @@ async def test_precanonical_alternate_transport_identity_fails_closed(
                 headers=provisioned["agent_headers"],
             )
             assert response.status_code == 409
-            assert response.json()["detail"]["error"] == "idempotency_key_reused"
-            assert "request_id" in response.json()["detail"]
+            assert response.json()["detail"] == {"error": "idempotency_key_reused"}
+            assert response.headers["X-Request-ID"]
 
         assert executor.dispatch_count == 0
         assert await _wallet_debit_and_canonical_counts(
@@ -2434,6 +2433,7 @@ async def test_confirmed_upstream_failures_refund_and_replay_without_redispatch(
         receipt = first.json()["error"]["data"]["receipt"]
         assert receipt["outcome"] == "failed_refunded"
         assert receipt["credits_charged"] == "0"
+        assert receipt["counterparty"] == "partner.example"
         assert executor.dispatch_count == expected_dispatch_count
         assert len(executor.calls) == 1
 

@@ -151,18 +151,14 @@ class VerificationResult:
 def canonical_json(payload: Any) -> str:
     """Serialize already-decoded JSON the way the trust plane signs it.
 
-    The rules are: keys sorted at every level, no insignificant whitespace,
-    and non-ASCII escaped. Signed payloads may carry JSON numbers (floats,
-    exponents, large integers), whose rendering differs between languages,
-    so this helper is for *signing* new payloads only. Verification never
-    re-serializes the signed bytes: the signature covers them verbatim.
+    Emission follows RFC 8785 (JCS): ECMAScript number serialization, UTF-16BE
+    key order, UTF-8 strings with only the JCS escapes, no insignificant
+    whitespace. This helper is for *signing* new payloads only. Verification
+    never re-serializes the signed bytes: the signature covers them verbatim.
     """
-    return json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
+    from b2a_sdk.jcs import dumps_text
+
+    return dumps_text(payload)
 
 
 def _b64decode(value: str, *, urlsafe: bool = False) -> bytes | None:
@@ -604,7 +600,7 @@ def _verify_signed_bundle(
     # above already covers signing_input verbatim, payload_hash included, so
     # any edit to the signed bytes is INVALID. Re-serializing the parsed
     # payload would reject genuine receipts: JSON numbers do not round-trip
-    # across languages (the gateway signs floats such as 1.0 and 4e-05, and
+    # across languages (the gateway signs floats such as 1 and 0.00004 under JCS, and
     # integers above 2^53 lose precision in some parsers).
     object_id = payload.get(id_field)
     if not isinstance(object_id, str) or not object_id:

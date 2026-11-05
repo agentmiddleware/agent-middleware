@@ -41,7 +41,7 @@ test("permit id mismatch reports the signed permit id in permitId", () => {
   assert.equal(result.receiptId, undefined);
 });
 
-test("float-bearing vector keeps the signed integer above 2^53", () => {
+test("float-bearing vector carries RFC 8785 number forms", () => {
   const floatCase = receiptCases.find((c: { name: string }) => c.name === "synthetic.float_payload_verifies");
   const result = verifyBundle(floatCase.bundle, keys);
   assert.equal(result.status, "verified");
@@ -50,14 +50,15 @@ test("float-bearing vector keeps the signed integer above 2^53", () => {
       jev_risk_guard: { big: unknown; latency_ms: unknown; injected_instructions: unknown; tiny: unknown };
     }
   ).jev_risk_guard;
-  assert.equal(guard.big, "9007199254740993");
+  // 2**53 is exactly representable, so the claim is a JS number (not a digit string).
+  assert.equal(guard.big, 9007199254740992);
   assert.equal(guard.latency_ms, 0);
   assert.equal(guard.injected_instructions, 1);
-  assert.equal(guard.tiny, 4e-05);
+  assert.equal(guard.tiny, 0.00004);
 });
 
 test("canonical JSON sorts keys and escapes non-ASCII", () => {
-  assert.equal(canonicalJson({ b: 1, a: ["é", null] }), '{"a":["\\u00e9",null],"b":1}');
+  assert.equal(canonicalJson({ b: 1, a: ["é", null] }), '{"a":["é",null],"b":1}');
 });
 
 test("a caller-supplied key of the wrong length is malformed, not invalid", () => {

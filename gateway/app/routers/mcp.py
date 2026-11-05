@@ -2472,6 +2472,7 @@ async def _execute_registered_tool_inner(
                 outcome="denied",
                 status_code=403,
                 approval_id=(approval_check.approval_id if approval_check else None),
+                counterparty=extract_recipient_identity(upstream_origin),
             )
             raise ToolPermissionDenied(
                 "permit_recipient_domain_mismatch",
@@ -3013,6 +3014,11 @@ async def _execute_registered_tool_inner(
                     else None
                 ),
                 approval_id=(approval_check.approval_id if approval_check else None),
+                counterparty=(
+                    extract_recipient_identity(dispatch_attempt.upstream_origin)
+                    if dispatch_attempt is not None
+                    else None
+                ),
             )
             raise GovernedToolError(
                 denial_reason,
@@ -3764,6 +3770,7 @@ async def _execute_upstream_after_charge(
             dispatch_attempt_id=terminal.attempt_id,
             response_hash_override=terminal.response_hash,
             approval_id=(approval_check.approval_id if approval_check else None),
+            counterparty=extract_recipient_identity(terminal.upstream_origin),
             constraints_evaluated=_permit_constraints_snapshot(permit_model),
         )
     except ReceiptWriteContendedError as exc:
@@ -3864,6 +3871,7 @@ async def _raise_refunded_upstream_failure(
             response_payload=terminal_payload,
             response_hash_override=dispatch_attempt.response_hash,
             approval_id=(approval_check.approval_id if approval_check else None),
+            counterparty=extract_recipient_identity(dispatch_attempt.upstream_origin),
         )
         raise GovernedToolError(
             error,
@@ -3950,6 +3958,7 @@ async def _raise_refunded_upstream_failure(
         response_hash_override=dispatch_attempt.response_hash,
         response_extra_data=response_extra_data,
         approval_id=(approval_check.approval_id if approval_check else None),
+        counterparty=extract_recipient_identity(dispatch_attempt.upstream_origin),
     )
     raise GovernedToolError(
         reason,
@@ -4028,6 +4037,7 @@ async def _raise_charged_upstream_failure(
             idempotency_record_id=dispatch_attempt.idempotency_record_id,
             dispatch_attempt_id=dispatch_attempt.attempt_id,
             approval_id=(approval_check.approval_id if approval_check else None),
+            counterparty=extract_recipient_identity(dispatch_attempt.upstream_origin),
             constraints_evaluated=_permit_constraints_snapshot(permit_model),
         )
     except ReceiptWriteContendedError as exc:
@@ -4364,6 +4374,7 @@ async def _finalize_governed_denial(
     response_hash_override: str | None = None,
     response_extra_data: dict[str, Any] | None = None,
     approval_id: str | None = None,
+    counterparty: str | None = None,
 ) -> dict[str, Any]:
     """Sign a non-success governed receipt and record the idempotent outcome.
 
@@ -4430,6 +4441,7 @@ async def _finalize_governed_denial(
             dispatch_attempt_id=dispatch_attempt_id,
             response_hash_override=response_hash_override,
             approval_id=approval_id,
+            counterparty=counterparty,
             constraints_evaluated=(
                 _permit_constraints_snapshot(permit_model)
                 if dispatch_attempt_id is not None
@@ -4506,6 +4518,7 @@ async def _finalize_unrefunded_failure(
     response_payload: dict[str, Any] | None = None,
     response_hash_override: str | None = None,
     approval_id: str | None = None,
+    counterparty: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Persist the signed failure and its exact-once operator work item.
 
@@ -4542,6 +4555,7 @@ async def _finalize_unrefunded_failure(
             response_payload=response_payload,
             response_hash_override=response_hash_override,
             approval_id=approval_id,
+            counterparty=counterparty,
         )
     except RefundReconciliationContendedError as exc:
         # The receipt and the operator work item were lost together, so nobody

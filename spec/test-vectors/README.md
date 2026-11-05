@@ -3,7 +3,7 @@
 - `keys.json`: public half of the fixed receipt and permit test seed. Test use only.
 - `receipts.json`: receipt bundles from the gateway's golden fixtures, their
   tampered variants, and the existing lifecycle, envelope, advisory hash,
-  float, P-256, and malformed cases.
+  float (RFC 8785 number forms), genuine-but-unsupported P-256, and malformed cases.
 - `rotation.json`: the existing rotated receipt case, with both active public
   keys supplied for that case. The default receipt corpus keeps its single-key
   shape used by the gateway fixture tests.

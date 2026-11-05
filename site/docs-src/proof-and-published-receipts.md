@@ -17,6 +17,7 @@ Download the Receipt, matching public key snapshot, and standalone verifier. The
 curl -fsSLO https://www.agentmiddleware.dev/proof/receipt.json
 curl -fsSLO https://www.agentmiddleware.dev/proof/trust-keys.json
 curl -fsSLO https://www.agentmiddleware.dev/proof/verify_receipt.py
+curl -fsSLO https://www.agentmiddleware.dev/proof/jcs.py
 python3 -m pip install cryptography
 python3 verify_receipt.py \
   --bundle receipt.json \

@@ -174,6 +174,7 @@ class RefundReconciliationService:
         approval_id: str | None = None,
         response_payload: dict[str, Any] | None = None,
         response_hash_override: str | None = None,
+        counterparty: str | None = None,
     ) -> tuple[ReceiptResponse, dict[str, Any]]:
         """Atomically insert the signed receipt and durable pending work item."""
 
@@ -253,29 +254,20 @@ class RefundReconciliationService:
             """
             signing_key = await get_signing_key_service().ensure_active_key()
             async with factory() as session:
-                async with session.begin():
-                    record = await validated_checkpoint(session, lock=True)
 
-                    receipt = await get_receipt_service().create_receipt(
-                        permit_id=permit_id,
-                        wallet_id=wallet_id,
-                        key_id=key_id,
-                        tool=tool_name,
-                        request_payload=request_payload,
-                        response_payload=response_payload or {"error": reason},
-                        ledger_entry_id=ledger_entry_id,
-                        credits_authorized=credits_authorized,
-                        credits_charged=credits_charged,
-                        outcome="failed_unrefunded",
-                        audit_event_id=audit_event_id,
-                        reason_code="refund_failed",
-                        idempotency_record_id=record.record_id,
-                        dispatch_attempt_id=dispatch_attempt_id,
-                        approval_id=approval_id,
-                        response_hash_override=response_hash_override,
-                        session=session,
-                        prepared_signing_key_id=signing_key.key_id,
-                    )
+                class _AdoptedAfterCallerRollback(Exception):
+                    """SQLite IntegrityError adopt rolled back session.begin()."""
+
+                    def __init__(
+                        self, adopted: ReceiptResponse, record_id: str
+                    ) -> None:
+                        super().__init__(adopted.receipt_id)
+                        self.adopted = adopted
+                        self.record_id = record_id
+
+                def finalize_record(
+                    record: IdempotencyRecordModel, receipt: ReceiptResponse
+                ) -> dict[str, Any]:
                     reconciliation = build_pending_refund_reconciliation(
                         receipt_id=receipt.receipt_id,
                         wallet_id=wallet_id,
@@ -297,8 +289,52 @@ class RefundReconciliationService:
                     )
                     record.status_code = 500
                     session.add(record)
-                    await session.flush()
-                return receipt, reconciliation
+                    return reconciliation
+
+                try:
+                    async with session.begin():
+                        record = await validated_checkpoint(session, lock=True)
+                        # Capture before create_receipt: SQLite IntegrityError adopt
+                        # rolls back this begin() and expires the ORM record.
+                        record_id = record.record_id
+                        receipt = await get_receipt_service().create_receipt(
+                            permit_id=permit_id,
+                            wallet_id=wallet_id,
+                            key_id=key_id,
+                            tool=tool_name,
+                            request_payload=request_payload,
+                            response_payload=response_payload or {"error": reason},
+                            ledger_entry_id=ledger_entry_id,
+                            credits_authorized=credits_authorized,
+                            credits_charged=credits_charged,
+                            outcome="failed_unrefunded",
+                            audit_event_id=audit_event_id,
+                            reason_code="refund_failed",
+                            idempotency_record_id=record_id,
+                            dispatch_attempt_id=dispatch_attempt_id,
+                            approval_id=approval_id,
+                            response_hash_override=response_hash_override,
+                            counterparty=counterparty,
+                            session=session,
+                            prepared_signing_key_id=signing_key.key_id,
+                        )
+                        # SQLite IntegrityError adopt rolls back this begin().
+                        # Exit the context and finalize in a fresh transaction.
+                        if not session.in_transaction():
+                            raise _AdoptedAfterCallerRollback(receipt, record_id)
+                        reconciliation = finalize_record(record, receipt)
+                        await session.flush()
+                        return receipt, reconciliation
+                except _AdoptedAfterCallerRollback as pending:
+                    async with session.begin():
+                        record = await validated_checkpoint(session, lock=True)
+                        if record.record_id != pending.record_id:
+                            raise RefundReconciliationError(
+                                "refund_reconciliation_checkpoint_invalid"
+                            )
+                        reconciliation = finalize_record(record, pending.adopted)
+                        await session.flush()
+                        return pending.adopted, reconciliation
 
         def retired_under_the_attempt(exc: BaseException) -> bool:
             """Whether ``create_receipt`` refused the key this attempt prepared.

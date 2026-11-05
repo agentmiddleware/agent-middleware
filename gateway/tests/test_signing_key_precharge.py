@@ -379,3 +379,59 @@ async def test_a_replica_left_on_a_retired_key_refuses_before_the_charge(
     assert await _debits(wallet_id) == debits_before
     assert echo_tool["count"] == 0
     assert (await _key_row(case["key_id"])).status == "retired"
+
+
+@pytest.mark.anyio
+async def test_billing_charge_refuses_before_the_debit_and_the_key_stays_retryable(
+    client: AsyncClient, clean_database: None
+) -> None:
+    """``POST /v1/billing/charge`` debits, then signs its governance audit event.
+
+    With a key that cannot sign it used to debit and then fail: HTTP 500, one
+    debit, no audit event, and a retry of the same key answered
+    ``idempotency_in_progress``. It now refuses first.
+    """
+    ctx = await provision_agent_wallet(client)
+    wallet_id = ctx["agent_wallet_id"]
+    key = await get_signing_key_service().ensure_active_key()
+    url = (
+        f"/v1/billing/charge?wallet_id={wallet_id}"
+        "&service=agent_comms&units=2&request_path=POST+/v1/agent-comms/send"
+    )
+    headers = {**ctx["agent_headers"], "Idempotency-Key": "signing-precharge-billing"}
+    debits_before = await _debits(wallet_id)
+    await _set_key_status(key.key_id, "disabled")
+
+    refused = await client.post(url, headers=headers)
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["error"] == "signing_key_unavailable"
+    assert await _debits(wallet_id) == debits_before
+
+    await _set_key_status(key.key_id, "active")
+    again = await client.post(url, headers=headers)
+    assert again.status_code == 200, again.text
+    assert await _debits(wallet_id) == debits_before + 1
+
+
+@pytest.mark.anyio
+async def test_the_refusal_logs_its_underlying_reason_once(
+    clean_database: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Callers answer with the canned reason; the cause is in the server log."""
+    service = get_signing_key_service()
+    key = await service.ensure_active_key()
+    await _set_key_status(key.key_id, "disabled")
+
+    with caplog.at_level("WARNING", logger="app.services.signing_keys"):
+        with pytest.raises(SigningKeyUnavailableError):
+            await service.assert_ready_to_sign()
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.services.signing_keys"
+    ]
+    assert len(lines) == 1, lines
+    assert "cause=signing_key_disabled" in lines[0]
+    assert key.key_id in lines[0]

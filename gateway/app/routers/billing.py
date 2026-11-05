@@ -42,6 +42,10 @@ from ..services.idempotency import (
     get_idempotency_service,
 )
 from ..services.policies import evaluate_wallet_policy
+from ..services.signing_keys import (
+    SigningKeyUnavailableError,
+    get_signing_key_service,
+)
 from ..services.velocity_monitor import WalletFrozenError
 from ..services.wallet_engine import CrossTenantTransferError, WalletExpiredError
 from ..services.stripe_integration import get_stripe_integration
@@ -683,6 +687,19 @@ async def charge_wallet(
                 "message": str(WalletNotFoundError(wallet_id)),
             },
         )
+
+    # Refuse before anything is begun or debited when this replica's signing
+    # key cannot sign: the charge's governance audit event is signed after the
+    # debit, and finding out there would leave a debit with no audit event and
+    # the idempotency key stuck in progress. Nothing is recorded here, so the
+    # caller may retry the same key on a replica whose key can sign.
+    try:
+        await get_signing_key_service().assert_ready_to_sign()
+    except SigningKeyUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": exc.reason},
+        ) from exc
 
     # Idempotency is opt-in via the Idempotency-Key header: a client that
     # retries a charge (e.g. after a timeout) with the same key gets the

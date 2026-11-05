@@ -93,6 +93,18 @@ Building a deliberately weak baseline and beating it would prove nothing. B is
 built the way a competent engineer would build it, and when B handles a
 scenario the report says so.
 
+**A and B are fused to the lab's own tool.** With no gateway in the path, A
+executes what it is sent: `T02` expects it to pay a refund 100 times the
+authorized amount under a spent key, which is the measurement. That is only
+harmless because the tool is `SimulatedRefundService`, in this process. So
+`configured_target` refuses to yield an A or B target unless the agent's
+requests can only reach that target's own in-process app, compared by object
+identity rather than by URL or settings, and unless that app wraps the
+simulated service it just built. The check runs before the tool starts, so a
+refusal sends nothing and shows in the report as a harness error naming
+`UnsafeTargetError`. C and D are not fused here, because the gateway's own
+refusal is what they measure. `tests/test_failure_lab_target_fuse.py` pins it.
+
 ---
 
 ## 3. The result

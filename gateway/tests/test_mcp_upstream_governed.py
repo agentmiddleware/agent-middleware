@@ -26,6 +26,7 @@ from app.db.models import (
     McpDispatchAttemptModel,
     PermitModel,
     ReceiptModel,
+    SigningKeyModel,
     WalletModel,
 )
 from app.main import app
@@ -40,6 +41,7 @@ from app.services.mcp_dispatch_attempts import (
     DispatchPrepareCommitUncertainError,
     DispatchPrepareRolledBackError,
     McpDispatchAttemptService,
+    get_mcp_dispatch_attempt_service,
 )
 from app.services.mcp_dispatch_reconciliation import (
     McpDispatchReconciliationService,
@@ -49,7 +51,8 @@ from app.services.permits import get_permit_service
 from app.services.quotes import get_quote_service
 from app.services.receipts import ReceiptService, get_receipt_service
 from app.services.service_registry import get_service_registry
-from app.services.signing_keys import sha256_hex
+from app.services.refund_reconciliation import get_refund_reconciliation_service
+from app.services.signing_keys import get_signing_key_service, sha256_hex
 from app.core.config import Settings
 from app.services.upstream_mcp import (
     DiscoveredUpstreamTool,
@@ -3329,3 +3332,236 @@ def test_register_upstream_read_only_is_operator_declared(read_only):
         assert registry.get_local(tool_name)["read_only"] is read_only
     finally:
         registry.unregister_local(tool_name)
+
+
+async def _set_signing_key_status(key_id: str, status: str) -> None:
+    async with get_session_factory()() as session:
+        row = await session.get(SigningKeyModel, key_id)
+        assert row is not None
+        row.status = status
+        session.add(row)
+        await session.commit()
+
+
+async def _wallet_state(wallet_id: str) -> tuple[Decimal, int]:
+    async with get_session_factory()() as session:
+        wallet = await session.get(WalletModel, wallet_id)
+        assert wallet is not None
+        refunds = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(LedgerEntryModel)
+                .where(
+                    LedgerEntryModel.wallet_id == wallet_id,
+                    LedgerEntryModel.action == "refund",
+                )
+            )
+            or 0
+        )
+        return Decimal(str(wallet.balance)), refunds
+
+
+async def _backdate_attempt(attempt_id: str) -> None:
+    async with get_session_factory()() as session:
+        attempt = await session.get(McpDispatchAttemptModel, attempt_id)
+        assert attempt is not None
+        attempt.updated_at = utc_now() - timedelta(minutes=10)
+        session.add(attempt)
+        await session.commit()
+
+
+async def _upstream_refund_failure_with_key_lost(
+    client: AsyncClient, *, suffix: str, prior_success: bool
+) -> dict[str, Any]:
+    """A real upstream call that errors, whose refund fails, and whose replica
+    loses its signing key just after the terminal audit event is written.
+
+    The refund-failed path then records the pending refund without a receipt
+    (issue #280). Faults are injected at class or module level only: the
+    refund store fails, and the signing key row is disabled.
+    """
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    tool_name = f"partner-upstream-unsigned-{suffix}"
+    executor = FakeUpstreamExecutor("success")
+    _register_upstream(tool_name, executor)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        max_credits=10,
+        idem_key=f"partner-upstream-unsigned-{suffix}-permit",
+    )
+    if prior_success:
+        ok = await client.post(
+            "/mcp/messages",
+            json=_call_body(
+                tool_name=tool_name,
+                wallet_id=wallet_id,
+                permit_id=permit["permit_id"],
+                idempotency_key=f"partner-upstream-unsigned-{suffix}-ok",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert ok.status_code == 200 and "error" not in ok.json(), ok.text
+    executor.mode = "returned_error"
+    signing_key = await get_signing_key_service().ensure_active_key()
+    balance_before, refunds_before = await _wallet_state(wallet_id)
+    real_audit = mcp_router._audit_mcp_invocation
+
+    async def audit_then_lose_key(**kwargs: Any) -> Any:
+        event = await real_audit(**kwargs)
+        if str(kwargs.get("error") or "").startswith("refund_failed"):
+            await _set_signing_key_status(signing_key.key_id, "disabled")
+        return event
+
+    async def failing_refund(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("refund unavailable")
+
+    idempotency_key = f"partner-upstream-unsigned-{suffix}-1"
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(mcp_router, "_audit_mcp_invocation", audit_then_lose_key)
+        patched.setattr(
+            "app.services.agent_money.AgentMoney.refund_charge", failing_refund
+        )
+        response = await client.post(
+            "/mcp/messages",
+            json=_call_body(
+                tool_name=tool_name,
+                wallet_id=wallet_id,
+                permit_id=permit["permit_id"],
+                idempotency_key=idempotency_key,
+            ),
+            headers=provisioned["agent_headers"],
+        )
+    error = response.json()["error"]
+    reconciliation = error["data"]["refund_reconciliation"]
+    assert reconciliation["status"] == "pending", error
+    assert reconciliation["receipt_status"] == "unsigned", error
+    async with get_session_factory()() as session:
+        attempt = (
+            await session.execute(
+                select(McpDispatchAttemptModel)
+                .join(
+                    IdempotencyRecordModel,
+                    IdempotencyRecordModel.record_id
+                    == McpDispatchAttemptModel.idempotency_record_id,
+                )
+                .where(IdempotencyRecordModel.idempotency_key == idempotency_key)
+            )
+        ).scalar_one()
+    assert attempt.state == "returned_error"
+    return {
+        "wallet_id": wallet_id,
+        "tool_name": tool_name,
+        "permit_id": permit["permit_id"],
+        "attempt_id": attempt.attempt_id,
+        "key_id": signing_key.key_id,
+        "balance_before": balance_before,
+        "refunds_before": refunds_before,
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("prior_success", [False, True])
+async def test_dispatch_reconciler_leaves_an_unsigned_pending_refund_to_its_owner(
+    client: AsyncClient, clean_database: None, prior_success: bool
+) -> None:
+    """One owner for the debt: the unsigned item, not the dispatch reconciler.
+
+    Before the fix the reconciler compensated the returned_error attempt (it
+    has no receipt yet), refunding the charge, and the unsigned signer then
+    wrote a failed_unrefunded receipt for money already returned; the operator
+    retry either failed forever (budget conflict) or, with an earlier paid
+    call on the same permit, released that call's budget too, so the permit
+    under-counted. Now the reconciler skips the attempt like it skips a signed
+    failed_unrefunded receipt, and the refund happens exactly once, through
+    the operator retry.
+    """
+    case = await _upstream_refund_failure_with_key_lost(
+        client, suffix=f"owner-{prior_success}", prior_success=prior_success
+    )
+    try:
+        await _backdate_attempt(case["attempt_id"])
+        await get_mcp_dispatch_reconciliation_service().reconcile(idle_seconds=300)
+
+        # The reconciler did not touch the money it does not own.
+        assert await _wallet_state(case["wallet_id"]) == (
+            case["balance_before"] - Decimal("2"),
+            case["refunds_before"],
+        )
+
+        await _set_signing_key_status(case["key_id"], "active")
+        service = get_refund_reconciliation_service()
+        assert await service.sign_unsigned_pending() == (1, 0)
+        await _backdate_attempt(case["attempt_id"])
+        await get_mcp_dispatch_reconciliation_service().reconcile(idle_seconds=300)
+
+        async with get_session_factory()() as session:
+            receipt = (
+                await session.execute(
+                    select(ReceiptModel).where(
+                        ReceiptModel.dispatch_attempt_id == case["attempt_id"]
+                    )
+                )
+            ).scalar_one()
+        assert receipt.outcome == "failed_unrefunded"
+
+        item, already = await service.retry(receipt.receipt_id)
+        assert item.status == "resolved" and already is False
+        assert await _wallet_state(case["wallet_id"]) == (
+            case["balance_before"],
+            case["refunds_before"] + 1,
+        )
+        permit = await get_permit_service().get_permit(case["permit_id"])
+        assert permit is not None
+        # Only the paid earlier call (if any) still counts against the permit.
+        assert permit.spent_credits == (Decimal("2") if prior_success else 0)
+    finally:
+        get_service_registry().unregister_local(case["tool_name"])
+
+
+@pytest.mark.anyio
+async def test_unsigned_item_is_never_signed_after_a_refund_landed_elsewhere(
+    client: AsyncClient, clean_database: None
+) -> None:
+    """Defense in depth for a refund that already landed by another path.
+
+    Stages the state the reconciler produced before it learned to skip these
+    items (its own compensation step, called directly): the charge is
+    refunded while the unsigned item still lists it as owed. Signing must
+    refuse, leaving no failed_unrefunded receipt claiming a debt that is gone.
+    """
+    case = await _upstream_refund_failure_with_key_lost(
+        client, suffix="landed-elsewhere", prior_success=False
+    )
+    try:
+        reconciler = get_mcp_dispatch_reconciliation_service()
+        attempt = await get_mcp_dispatch_attempt_service().get_context(
+            case["attempt_id"]
+        )
+        assert attempt is not None
+        await reconciler._compensate_returned_error(attempt.attempt)
+        assert await _wallet_state(case["wallet_id"]) == (
+            case["balance_before"],
+            case["refunds_before"] + 1,
+        )
+        await _set_signing_key_status(case["key_id"], "active")
+
+        assert await get_refund_reconciliation_service().sign_unsigned_pending() == (
+            0,
+            1,
+        )
+        async with get_session_factory()() as session:
+            receipts = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(ReceiptModel)
+                    .where(ReceiptModel.dispatch_attempt_id == case["attempt_id"])
+                )
+                or 0
+            )
+        assert receipts == 0
+    finally:
+        get_service_registry().unregister_local(case["tool_name"])

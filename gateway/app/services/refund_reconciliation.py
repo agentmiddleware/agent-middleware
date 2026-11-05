@@ -455,6 +455,33 @@ class RefundReconciliationService:
             )
             return None, reconciliation
 
+    @staticmethod
+    async def _charge_already_refunded(ledger_entry_id: str) -> bool:
+        """Whether any refund ledger row already answers this charge."""
+        factory = get_session_factory()
+        async with factory() as session:
+            refund = (
+                await session.execute(
+                    select(cast(Any, LedgerEntryModel.entry_id))
+                    .where(
+                        cast(
+                            ColumnElement[bool],
+                            LedgerEntryModel.correlation_id == ledger_entry_id,
+                        ),
+                        cast(
+                            ColumnElement[bool],
+                            LedgerEntryModel.action == "refund",
+                        ),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if refund is not None:
+                return True
+            return (
+                await session.get(LedgerEntryModel, f"refund-{ledger_entry_id}")
+            ) is not None
+
     async def _record_unsigned_pending(
         self,
         *,
@@ -563,6 +590,22 @@ class RefundReconciliationService:
             if marker is None:
                 continue
             inputs = dict(marker["inputs"])
+            if await self._charge_already_refunded(inputs["ledger_entry_id"]):
+                # The money already came back by another path (for example a
+                # dispatch reconciler pass that ran before it learned to leave
+                # these items alone). A failed_unrefunded receipt would then
+                # claim a debt that no longer exists, and the operator retry
+                # would release the permit budget a second time. Leave it for
+                # an operator, loudly.
+                logger.error(
+                    "refund_reconciliation_unsigned_already_refunded",
+                    extra={
+                        "record_id": record.record_id,
+                        "ledger_entry_id": inputs["ledger_entry_id"],
+                    },
+                )
+                still_unsigned += 1
+                continue
             if sha256_hex(inputs["response_payload"]) != marker.get("response_hash"):
                 # The stored payload no longer hashes to what the caller's
                 # response was; signing it would sign a different response.

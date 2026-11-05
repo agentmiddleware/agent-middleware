@@ -20,6 +20,7 @@ from app.db.models import (
     HumanApprovalModel,
     IdempotencyRecordModel,
     LedgerEntryModel,
+    McpDispatchAttemptModel,
     PermitModel,
     ReceiptModel,
     WalletModel,
@@ -456,8 +457,23 @@ class RefundReconciliationService:
             return None, reconciliation
 
     @staticmethod
-    async def _charge_already_refunded(ledger_entry_id: str) -> bool:
-        """Whether any refund ledger row already answers this charge."""
+    async def _refund_landed_and_budget_released(inputs: dict[str, Any]) -> bool:
+        """Whether this charge was refunded *and* its reservation released.
+
+        Only that combination makes the unsigned item wrong to sign. A refund
+        row with the reservation still held is the lost acknowledgement case:
+        the live path refunded the charge, then failed to checkpoint it on the
+        dispatch attempt (``mark_debit_refunded``), and went down the
+        refund-failed path. Nothing else releases that reservation (the
+        dispatch sweep skips an attempt whose refund was never checkpointed
+        while its debit stands), so the item is signed as usual and the
+        operator retry, finding the refund row, releases the reservation once
+        without refunding again.
+
+        The reservation counts as released when the dispatch attempt says so.
+        Without a dispatch attempt nothing but the operator retry releases it.
+        """
+        ledger_entry_id = inputs["ledger_entry_id"]
         factory = get_session_factory()
         async with factory() as session:
             refund = (
@@ -476,11 +492,26 @@ class RefundReconciliationService:
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            if refund is not None:
-                return True
-            return (
-                await session.get(LedgerEntryModel, f"refund-{ledger_entry_id}")
-            ) is not None
+            if (
+                refund is None
+                and (await session.get(LedgerEntryModel, f"refund-{ledger_entry_id}"))
+                is None
+            ):
+                return False
+            attempt_id = inputs.get("dispatch_attempt_id")
+            if not attempt_id:
+                return False
+            attempt = await session.get(McpDispatchAttemptModel, attempt_id)
+            released = attempt is not None and attempt.budget_released_at is not None
+            if not released:
+                logger.warning(
+                    "refund_reconciliation_unsigned_refund_unacknowledged",
+                    extra={
+                        "ledger_entry_id": ledger_entry_id,
+                        "dispatch_attempt_id": attempt_id,
+                    },
+                )
+            return released
 
     async def _record_unsigned_pending(
         self,
@@ -590,13 +621,14 @@ class RefundReconciliationService:
             if marker is None:
                 continue
             inputs = dict(marker["inputs"])
-            if await self._charge_already_refunded(inputs["ledger_entry_id"]):
-                # The money already came back by another path (for example a
-                # dispatch reconciler pass that ran before it learned to leave
-                # these items alone). A failed_unrefunded receipt would then
-                # claim a debt that no longer exists, and the operator retry
-                # would release the permit budget a second time. Leave it for
-                # an operator, loudly.
+            if await self._refund_landed_and_budget_released(inputs):
+                # The money already came back and the permit reservation was
+                # already given back, by another path (for example a dispatch
+                # reconciler pass that ran before it learned to leave these
+                # items alone). A failed_unrefunded receipt would then claim a
+                # debt that no longer exists, and the operator retry would
+                # release the permit budget a second time. Leave it for an
+                # operator, loudly.
                 logger.error(
                     "refund_reconciliation_unsigned_already_refunded",
                     extra={

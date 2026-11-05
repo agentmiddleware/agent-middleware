@@ -3371,14 +3371,21 @@ async def _backdate_attempt(attempt_id: str) -> None:
 
 
 async def _upstream_refund_failure_with_key_lost(
-    client: AsyncClient, *, suffix: str, prior_success: bool
+    client: AsyncClient,
+    *,
+    suffix: str,
+    prior_success: bool,
+    lost_ack: bool = False,
 ) -> dict[str, Any]:
     """A real upstream call that errors, whose refund fails, and whose replica
     loses its signing key just after the terminal audit event is written.
 
     The refund-failed path then records the pending refund without a receipt
     (issue #280). Faults are injected at class or module level only: the
-    refund store fails, and the signing key row is disabled.
+    refund store fails, and the signing key row is disabled. With
+    ``lost_ack`` the refund itself lands and only its checkpoint on the
+    dispatch attempt (``mark_debit_refunded``) fails, so the live path takes
+    the refund-failed branch with the money already back.
     """
     provisioned = await provision_agent_wallet(client)
     wallet_id = provisioned["agent_wallet_id"]
@@ -3419,12 +3426,20 @@ async def _upstream_refund_failure_with_key_lost(
     async def failing_refund(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("refund unavailable")
 
+    async def failing_ack(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("refund checkpoint unavailable")
+
     idempotency_key = f"partner-upstream-unsigned-{suffix}-1"
     with pytest.MonkeyPatch.context() as patched:
         patched.setattr(mcp_router, "_audit_mcp_invocation", audit_then_lose_key)
-        patched.setattr(
-            "app.services.agent_money.AgentMoney.refund_charge", failing_refund
-        )
+        if lost_ack:
+            patched.setattr(
+                McpDispatchAttemptService, "mark_debit_refunded", failing_ack
+            )
+        else:
+            patched.setattr(
+                "app.services.agent_money.AgentMoney.refund_charge", failing_refund
+            )
         response = await client.post(
             "/mcp/messages",
             json=_call_body(
@@ -3563,5 +3578,80 @@ async def test_unsigned_item_is_never_signed_after_a_refund_landed_elsewhere(
                 or 0
             )
         assert receipts == 0
+    finally:
+        get_service_registry().unregister_local(case["tool_name"])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("prior_success", [False, True])
+async def test_unsigned_item_whose_refund_landed_unacknowledged_is_signed_and_released_once(
+    client: AsyncClient, clean_database: None, prior_success: bool
+) -> None:
+    """The lost acknowledgement case: refund landed, reservation still held.
+
+    The live path refunds the charge, then fails to checkpoint the refund on
+    the dispatch attempt, so it records a pending refund (unsigned, because
+    the key is lost too). Nothing else releases that reservation: the
+    dispatch sweep skips an attempt whose refund was never checkpointed while
+    its debit stands. The signer must therefore not refuse this item just
+    because a refund row exists. Signed, the operator retry finds the refund
+    row, refunds nothing more, and releases the reservation exactly once.
+    """
+    case = await _upstream_refund_failure_with_key_lost(
+        client,
+        suffix=f"lost-ack-{prior_success}",
+        prior_success=prior_success,
+        lost_ack=True,
+    )
+    try:
+        # The money is already back, and the reservation is still held.
+        assert await _wallet_state(case["wallet_id"]) == (
+            case["balance_before"],
+            case["refunds_before"] + 1,
+        )
+        permit = await get_permit_service().get_permit(case["permit_id"])
+        assert permit is not None
+        held = Decimal("4") if prior_success else Decimal("2")
+        assert permit.spent_credits == held
+
+        # The dispatch sweep does not release it.
+        await _backdate_attempt(case["attempt_id"])
+        await get_mcp_dispatch_reconciliation_service().reconcile(idle_seconds=300)
+        permit = await get_permit_service().get_permit(case["permit_id"])
+        assert permit is not None
+        assert permit.spent_credits == held
+
+        await _set_signing_key_status(case["key_id"], "active")
+        service = get_refund_reconciliation_service()
+        assert await service.sign_unsigned_pending() == (1, 0)
+        async with get_session_factory()() as session:
+            receipt = (
+                await session.execute(
+                    select(ReceiptModel).where(
+                        ReceiptModel.dispatch_attempt_id == case["attempt_id"]
+                    )
+                )
+            ).scalar_one()
+        assert receipt.outcome == "failed_unrefunded"
+
+        item, already = await service.retry(receipt.receipt_id)
+        assert item.status == "resolved" and already is False
+        # No second refund, and the reservation is released once.
+        assert await _wallet_state(case["wallet_id"]) == (
+            case["balance_before"],
+            case["refunds_before"] + 1,
+        )
+        permit = await get_permit_service().get_permit(case["permit_id"])
+        assert permit is not None
+        assert permit.spent_credits == (Decimal("2") if prior_success else 0)
+
+        # Neither a second retry nor a later sweep releases it again.
+        _item, already = await service.retry(receipt.receipt_id)
+        assert already is True
+        await _backdate_attempt(case["attempt_id"])
+        await get_mcp_dispatch_reconciliation_service().reconcile(idle_seconds=300)
+        permit = await get_permit_service().get_permit(case["permit_id"])
+        assert permit is not None
+        assert permit.spent_credits == (Decimal("2") if prior_success else 0)
     finally:
         get_service_registry().unregister_local(case["tool_name"])

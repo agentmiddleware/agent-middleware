@@ -212,7 +212,8 @@ What the code does, checked against `app/services/signing_keys.py`:
   `get_active_key` (`app/routers/keys.py`). It never rewrites an existing row.
   When the row for the process's configured `TRUST_SIGNING_KEY_ID` is
   `retired` (or `active` with `retired_at` set) it refuses with
-  `signing_key_retired`; a `disabled` row refuses with `signing_key_disabled`.
+  `signing_key_retired`; a `disabled` row refuses with `signing_key_disabled`;
+  any other status refuses with `signing_key_status_invalid`.
   A key id with no row yet is inserted as `active` (first bootstrap). This is
   what the spec wording (`spec/key-set-v0.1.md`) means by a retired key no
   longer signing new objects.

@@ -563,3 +563,30 @@ async def test_rotation_survives_a_second_instance_on_the_old_key_id(
     assert by_kid[old_key_id]["status"] == "retired"
     assert by_kid[old_key_id]["retired_at"] is not None
     assert by_kid[new_key_id]["status"] == "active"
+
+
+@pytest.mark.anyio
+async def test_unknown_key_status_refuses_without_rewriting_the_row(clean_database):
+    """A status that is not active, retired or disabled refuses to sign.
+
+    Its reason is ``signing_key_status_invalid``, deliberately not
+    ``signing_key_not_active``: that one is the refund path's restart signal,
+    and an unknown status would only repeat on every restart.
+    """
+    service = _same_identity(get_signing_key_service())
+    key = await service.ensure_active_key()
+    async with get_session_factory()() as session:
+        row = await session.get(SigningKeyModel, key.key_id)
+        assert row is not None
+        row.status = "suspended"
+        session.add(row)
+        await session.commit()
+    before = await _key_row(key.key_id)
+
+    with pytest.raises(SigningKeyError, match="^signing_key_status_invalid$"):
+        await service.sign_payload({"purpose": "must-not-sign"})
+
+    after = await _key_row(key.key_id)
+    assert after.status == "suspended"
+    assert after.activated_at == before.activated_at
+    assert after.retired_at == before.retired_at

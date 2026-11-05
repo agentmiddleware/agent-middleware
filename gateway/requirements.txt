@@ -42,7 +42,7 @@ aiosqlite>=0.22.1      # Async SQLite driver for testing
 # ruff is pinned in requirements-dev.txt, not here, so the runtime image does
 # not install the linter. mypy stays an exact pin so this file cannot float
 # the type checker ahead of CI (MYPY_VERSION in .github/workflows/ci.yml).
-pytest>=9.1.1
+pytest>=9.2.0
 pytest-asyncio>=1.4.0
 pytest-cov>=7.1.0
 mypy==2.4.0            # Type checking. Must match requirements-dev.txt and MYPY_VERSION

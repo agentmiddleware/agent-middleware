@@ -189,12 +189,17 @@ def _client_routes_only_to(client: httpx.AsyncClient, app: object) -> bool:
     foreign rather than being walked. The type is matched exactly: a subclass
     could keep the right ``app`` and still send its requests somewhere else.
     Mounted transports route some URLs elsewhere, so any mount reads as
-    foreign too. Both attributes are httpx internals; read with a default, a
-    rename makes this return ``False`` and the lab refuse, which is the safe
+    foreign too. Every attribute read here is read with a default: the
+    client's transport and mounts are httpx internals, and the transport's
+    ``app`` is read the same way, so a rename makes this return ``False`` and
+    the lab refuse with :class:`UnsafeTargetError`, which is the safe
     direction.
     """
     transport = getattr(client, "_transport", None)
-    if type(transport) is not httpx.ASGITransport or transport.app is not app:
+    if (
+        type(transport) is not httpx.ASGITransport
+        or getattr(transport, "app", None) is not app
+    ):
         return False
     mounts = getattr(client, "_mounts", None)
     if mounts is None:

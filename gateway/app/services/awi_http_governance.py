@@ -162,7 +162,7 @@ async def _awi_uncertain_outcome(ctx: AwiHttpGovernedContext) -> str:
                 ),
             )
             task = asyncio.ensure_future(lookup(query))
-            done = set()
+            done: set[asyncio.Future[Any]] = set()
             try:
                 done, _ = await asyncio.wait(
                     {task}, timeout=STATUS_LOOKUP_TIMEOUT_SECONDS

@@ -31,7 +31,7 @@ happened. It says so in a signed receipt rather than guessing or resending.
   happens once depends on the tool honoring the forwarded key.
 - A receipt signs hashes of the request and response, not raw tool content,
   and cannot prove a remote effect happened.
-- This is not exactly once delivery.
+- This is not exactly-once delivery.
 
 Payment APIs such as Stripe already support idempotency keys themselves. A
 correctly built direct integration that persists its key across the retry is
@@ -49,9 +49,9 @@ the remote side effect idempotent.
 These run locally with stubs. No money moves and no provider is called.
 
 - [examples/retry-safe-refund/](../examples/retry-safe-refund/): a payout
-  against an in memory stub. The response is dropped, the retry with the same
-  key returns the original receipt, and the script asserts one provider
-  dispatch and rejection of a changed payout under the same key.
+  against an in-memory stub. The response is dropped, the retry with the same
+  key returns the original receipt, and the script asserts one simulated
+  local dispatch of the stub function and rejection of a changed payout under the same key.
 - `make failure-lab` in `gateway/`: the lost response scenario across three
   integrations of a simulated payment rail. See
   [failure-lab.md](../gateway/docs/failure-lab.md) and

@@ -37,7 +37,7 @@ Each claim points at where it is stated or implemented in this repository.
 
 ## What we explicitly do not claim
 
-- **Not exactly once.** We do not claim exactly once delivery or exactly once
+- **Not exactly once.** We do not claim exactly-once delivery or exactly-once
   execution. Say "a retry with the same key returns the same receipt". Remote
   effects depend on the tool honoring the forwarded key.
 - **Receipts do not prove remote effects.** Receipts sign hashes of request and
@@ -45,7 +45,7 @@ Each claim points at where it is stated or implemented in this repository.
   happened, and the absence of a receipt is not evidence that no action
   occurred.
 - **No independent trust root.** Verification keys come from the same origin
-  that issues receipts. There is no external transparency log or out of band
+  that issues receipts. There is no external transparency log or out-of-band
   key pinning.
 - **No settlement.** AMW does not settle payments, move money, or run a
   dispute workflow. Credits are internal metering units, not money. The
@@ -67,9 +67,10 @@ Each claim points at where it is stated or implemented in this repository.
   `Idempotency-Key`), but they are proof surfaces. They are mounted only when
   `ENABLE_PROOF_SURFACES` is true, which defaults to false
   ([gateway/app/core/config.py](../gateway/app/core/config.py)) and must stay
-  false in production like environments. Do not treat them as part of the
+  false in production-like environments. Do not treat them as part of the
   default product.
-- **Not on PyPI.** The `agent-middleware` 0.5.0 package is not published yet:
+- **Not on PyPI.** The Python SDK package `amw-sdk` 0.5.0
+  (`sdk/python/pyproject.toml`) is not published yet:
   TODO(T-01). Install from source.
 - **Demo key permit fields not shipped.** `permit_id`, a permit level
   `expires_at`, and `demo_tool` in the demo key response: TODO(T-00).
@@ -85,7 +86,7 @@ Each claim points at where it is stated or implemented in this repository.
 | proves the refund happened | the receipt signs hashes of the request and response the gateway saw |
 | settles payments | meters tool calls in credits, which are not money |
 | compliant, certified, standard | (do not say) |
-| production ready, used by customers | pre release, looking for design partners |
+| production ready, used by customers | pre-release, looking for design partners |
 
 The full list of known limits is in
 [gateway/SECURITY_LIMITATIONS.md](../gateway/SECURITY_LIMITATIONS.md).

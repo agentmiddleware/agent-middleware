@@ -1,7 +1,11 @@
 # Demo script
 
-Every endpoint and command below exists in this repository. Code locations are
-given so a judge can check. Expected values come from code defaults in this
+Every gateway endpoint below exists in this repository, and so does every
+command except the hosted client commands in step 3. Those (`git clone` of
+amw-demo, `pip install -e .`, and `python examples/permit_echo_retry.py`) come
+from the separate [amw-demo](https://github.com/agentmiddleware/amw-demo)
+repository and are not in this repository. Code locations are given so a judge
+can check. Expected values come from code defaults in this
 repository, and the file is cited for each one. This kit states no
 observations of the hosted gateway at `https://api.agentmiddleware.dev`. A
 deployment can override defaults, so run the curl shown in each step to
@@ -33,11 +37,20 @@ curl -s https://api.agentmiddleware.dev/health/dependencies
 
 ```bash
 export API_URL=https://api.agentmiddleware.dev
-DEMO_JSON=$(curl -s -X POST "$API_URL/v1/demo/keys" \
+DEMO_RESP=$(curl -s -w '\n%{http_code}' -X POST "$API_URL/v1/demo/keys" \
   -H "Content-Type: application/json" -d '{"utm_source":"competition-kit"}')
-export AMW_API_KEY=$(echo "$DEMO_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_key"])')
-export AMW_WALLET_ID=$(echo "$DEMO_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["wallet_id"])')
+DEMO_STATUS=${DEMO_RESP##*$'\n'}
+DEMO_JSON=${DEMO_RESP%$'\n'*}
+if [ "$DEMO_STATUS" = "201" ]; then
+  export AMW_API_KEY=$(echo "$DEMO_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_key"])')
+  export AMW_WALLET_ID=$(echo "$DEMO_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["wallet_id"])')
+else
+  echo "demo key request returned HTTP $DEMO_STATUS (404: demo tenant not enabled; 429: rate limited, see Retry-After). Keys not exported." >&2
+fi
 ```
+
+The status check runs before parsing, so a 404 or 429 stops with a message
+instead of a Python `KeyError` and empty variables.
 
 - Route: `POST /v1/demo/keys` in `gateway/app/routers/demo_keys.py`. Anonymous,
   returns 201 when the demo tenant is enabled and 404 when it is not
@@ -60,7 +73,7 @@ export AMW_WALLET_ID=$(echo "$DEMO_JSON" | python3 -c 'import json,sys; print(js
   that default and, in `dispatch`, sets `X-RateLimit-Limit` to that limit on
   the response, the response should include `X-RateLimit-Limit: 120`.
 - To confirm these on the hosted gateway, run the `POST /v1/demo/keys` curl
-  by itself with `-i` added (not inside the `DEMO_JSON=$(...)` assignment,
+  by itself with `-i` added (not inside the `DEMO_RESP=$(...)` assignment,
   where the headers would break the JSON parsing), on a private screen, and
   read the status line, `tenant`, `budget_credits`, and the
   `X-RateLimit-Limit` header. This mints a new key and prints it, so do not
@@ -69,7 +82,7 @@ export AMW_WALLET_ID=$(echo "$DEMO_JSON" | python3 -c 'import json,sys; print(js
   `gateway/app/routers/demo_keys.py`, a 429 carries `Retry-After`.
 
 TODO(T-00): `permit_id`, a permit level `expires_at`, and `demo_tool` in the
-demo key response are not shipped. The response schema today has a key level
+demo key response are not shipped. The response schema today has a key-level
 `expires_at` field, which may be null; it is not a permit expiry. Do not demo
 those fields until T-00 lands.
 
@@ -93,7 +106,8 @@ curl -s -X POST "$API_URL/mcp" -H "X-API-Key: $AMW_API_KEY" \
 
 The hosted client lives in the separate
 [amw-demo](https://github.com/agentmiddleware/amw-demo) repository, as
-described in the [repository README](../README.md):
+described in the [repository README](../README.md). The commands below, and
+`examples/permit_echo_retry.py`, come from that repository, not this one:
 
 ```bash
 git clone https://github.com/agentmiddleware/amw-demo.git
@@ -137,9 +151,10 @@ PROVISION_JSON=$(curl -s -X POST "$API_URL/v1/dev-keys/self-provision" \
   -H "Content-Type: application/json" -d '{"agent_id": "quickstart"}')
 export AGENT_API_KEY=$(echo "$PROVISION_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_key"])')
 
-wc -l data/dogfood_partner_notes.jsonl   # note the count (file may not exist yet)
+NOTES=data/dogfood_partner_notes.jsonl
+if [ -f "$NOTES" ]; then wc -l < "$NOTES"; else echo 0; fi   # note the count (0 if the file does not exist yet)
 uv run --with "mcp>=1.29,<2" python ../examples/mcp-client/call_with_retry.py
-wc -l data/dogfood_partner_notes.jsonl   # count went up by one for two calls
+if [ -f "$NOTES" ]; then wc -l < "$NOTES"; else echo 0; fi   # count went up by one for two calls
 ```
 
 - `POST /v1/dev-keys/self-provision`: `gateway/app/routers/dev_keys.py`. Local
@@ -147,7 +162,7 @@ wc -l data/dogfood_partner_notes.jsonl   # count went up by one for two calls
   provisioning enabled.
 - `examples/mcp-client/call_with_retry.py` calls the tool twice with the same
   `Idempotency-Key` and prints `first receipt:` and `retry receipt:` lines. It
-  exits non zero if the receipt IDs differ or either call errors.
+  exits non-zero if the receipt IDs differ or either call errors.
 - What to point at: both lines show the same receipt ID, and the notes file
   grew by one line for the pair of calls.
 
@@ -205,7 +220,7 @@ make failure-lab           # response lost after the action completed
 From the repository root:
 
 ```bash
-bash examples/retry-safe-refund/run.sh   # payout retry against an in memory stub
+bash examples/retry-safe-refund/run.sh   # payout retry against an in-memory stub
 ```
 
 These use local stubs and throwaway databases. No money moves and no provider
@@ -214,6 +229,6 @@ from them.
 
 ## Install path
 
-Use `git clone` as above. TODO(T-01): the `agent-middleware` 0.5.0 package is
-not published to PyPI yet. Do not tell judges to `pip install
-agent-middleware`.
+Use `git clone` as above. TODO(T-01): the Python SDK package `amw-sdk`
+0.5.0 (`sdk/python/pyproject.toml`) is not published to PyPI yet. Do not tell
+judges to `pip install amw-sdk`.

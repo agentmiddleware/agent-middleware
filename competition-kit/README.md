@@ -1,7 +1,7 @@
 # Agent Middleware competition kit
 
 This kit is for judges and evaluators. It explains what Agent Middleware (AMW)
-is, gives a 5 minute path to see it work, and states plainly what is built,
+is, gives a 5-minute path to see it work, and states plainly what is built,
 what is planned, and what we do not claim.
 
 ## What AMW is
@@ -14,9 +14,9 @@ From the [repository README](../README.md):
 > offline.
 
 The "at most once per request key" wording refers to gateway dispatch and
-debit. It is not exactly once delivery. See [CLAIMS.md](CLAIMS.md).
+debit. It is not exactly-once delivery. See [CLAIMS.md](CLAIMS.md).
 
-Status, also from the README: pre revenue, pre release, solo maintained. There
+Status, also from the README: pre-revenue, pre-release, solo maintained. There
 are no paying customers or production deployments to point to.
 
 ### Concepts
@@ -31,7 +31,7 @@ are no paying customers or production deployments to point to.
   raw tool content.
 - **Credits:** internal metering units, not money.
 
-## 5 minute judge path
+## 5-minute judge path
 
 1. **Read the problem (1 minute).** [DUPLICATE-COST.md](DUPLICATE-COST.md)
    explains the failure AMW targets: an agent retries a paid tool call after a
@@ -53,8 +53,8 @@ are no paying customers or production deployments to point to.
    and 4.
 5. **Read what we claim and do not claim (1 minute).** [CLAIMS.md](CLAIMS.md).
 
-Install path today is `git clone`. The `agent-middleware` 0.5.0 package is not
-on PyPI yet: TODO(T-01).
+Install path today is `git clone`. The Python SDK package `amw-sdk` 0.5.0
+(`sdk/python/pyproject.toml`) is not on PyPI yet: TODO(T-01).
 
 ## Kit contents
 
@@ -73,6 +73,6 @@ on PyPI yet: TODO(T-01).
 - [gateway/docs/failure-lab.md](../gateway/docs/failure-lab.md): the lost
   response failure lab, including a native idempotency baseline.
 - [examples/retry-safe-refund/](../examples/retry-safe-refund/): local payout
-  retry demo against an in memory stub.
+  retry demo against an in-memory stub.
 - [verifier/](../verifier/): offline receipt verification.
 - [spec/](../spec/): draft permit, receipt, and key formats.

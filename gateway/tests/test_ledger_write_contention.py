@@ -923,68 +923,81 @@ async def test_a_fault_after_the_charge_keeps_the_record_and_the_quote(
 
 @pytest.mark.anyio
 async def test_abandon_never_deletes_a_record_with_a_response_or_a_ledger_entry(
-    client: AsyncClient, clean_database: None
+    client: AsyncClient, clean_database: None, governed_tool, monkeypatch
 ) -> None:
-    """Negative: the backstop every pre-charge release relies on."""
+    """Negative: the backstop every pre-charge release relies on.
+
+    Both records come from the real governed path. The answered one is an
+    insufficient-funds denial: a stored response and no debit. The charged one
+    is a call whose debit committed and whose response then failed to persist:
+    a ledger entry and no response. Each is refused on its own evidence.
+    """
+    from tests.test_permit_reservation_unwind import _set_balance
+
+    tool_name, runs = governed_tool
     idem = get_idempotency_service()
-    wallet = (await provision_agent_wallet(client))["agent_wallet_id"]
-    endpoint = "/mcp/messages"
+    ctx = await provision_agent_wallet(client)
+    wallet = ctx["agent_wallet_id"]
+    permit = await create_tool_permit(
+        client,
+        wallet_id=wallet,
+        key_id=ctx["key_id"],
+        tool_name=tool_name,
+        max_credits=50,
+        idem_key="guard-permit",
+    )
 
-    from app.services.agent_money import get_agent_money
+    await _set_balance(wallet, "1")
+    denied = await client.post(
+        "/mcp/messages",
+        json=_call_body(
+            tool_name=tool_name,
+            wallet_id=wallet,
+            permit_id=permit["permit_id"],
+            idempotency_key="guard-answered",
+        ),
+        headers=ctx["agent_headers"],
+    )
+    assert denied.json()["error"]["message"] == "insufficient_funds", denied.text
+    await _set_balance(wallet, "1000")
 
-    charged = await idem.begin_with_record(
-        wallet_id=wallet,
-        endpoint=endpoint,
-        idempotency_key="guard-charged",
-        request_payload={"n": 1},
+    async def response_lost(**_kwargs: Any) -> None:
+        raise RuntimeError("checkpoint lost")
+
+    monkeypatch.setattr(idem, "complete", response_lost)
+    charged_call = await client.post(
+        "/mcp/messages",
+        json=_call_body(
+            tool_name=tool_name,
+            wallet_id=wallet,
+            permit_id=permit["permit_id"],
+            idempotency_key="guard-charged",
+        ),
+        headers=ctx["agent_headers"],
     )
-    # A real debit on the provisioned wallet, keyed by the record like the
-    # governed path keys it, so the checkpoint names an entry that exists.
-    entry = await get_agent_money().charge(
-        wallet_id=wallet,
-        service_category=ServiceCategory.AGENT_COMMS,
-        units=Decimal(str(TOOL_COST)),
-        request_path=endpoint,
-        description="abandon guard debit",
-        operation_key=charged.record_id,
-        caller=CallerIdentity.for_wallet(wallet),
-    )
-    assert getattr(entry, "entry_id", None), entry
-    await idem.mark_charged(
-        wallet_id=wallet,
-        endpoint=endpoint,
-        idempotency_key="guard-charged",
-        ledger_entry_id=entry.entry_id,
-    )
-    answered = await idem.begin_with_record(
-        wallet_id=wallet,
-        endpoint=endpoint,
-        idempotency_key="guard-answered",
-        request_payload={"n": 2},
-    )
-    await idem.complete(
-        wallet_id=wallet,
-        endpoint=endpoint,
-        idempotency_key="guard-answered",
-        response_reference=None,
-        response_json={"ok": True},
-    )
-    for key, begun in (("guard-charged", charged), ("guard-answered", answered)):
+    monkeypatch.undo()
+    assert charged_call.json()["error"]["message"] == "internal_error"
+    assert runs["count"] == 1
+
+    answered = await _record(ctx, "guard-answered")
+    charged = await _record(ctx, "guard-charged")
+    assert answered is not None and charged is not None
+    # Each record carries exactly one of the two pieces of evidence.
+    assert answered.response_json is not None
+    assert not answered.ledger_entry_id
+    assert charged.response_json is None
+    assert charged.ledger_entry_id
+    for key, record in (("guard-answered", answered), ("guard-charged", charged)):
         assert (
             await idem.abandon(
                 wallet_id=wallet,
-                endpoint=endpoint,
+                endpoint=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
                 idempotency_key=key,
-                expected_record_id=begun.record_id,
+                expected_record_id=record.record_id,
             )
             is False
         )
-        assert (
-            await idem.get_record(
-                wallet_id=wallet, endpoint=endpoint, idempotency_key=key
-            )
-            is not None
-        )
+        assert await _record(ctx, key) is not None
 
 
 @pytest.mark.anyio

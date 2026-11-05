@@ -258,15 +258,17 @@ How an operator can tell a replica is stale:
   to `active`.
 
 What a governed call does when the key cannot sign: the governed MCP
-transports (`/mcp/messages`, `/mcp/tools/{tool}/invoke` and `/mcp`) and the
-AWI HTTP routes run `SigningKeyService.assert_ready_to_sign` before they
-reserve budget or charge. If the configured key is disabled, bound to other
-key material, or otherwise cannot sign, the call is refused with
-`signing_key_unavailable` (JSON-RPC `-32005`, HTTP 409 on the REST invoke
-route, HTTP 503 on the AWI routes) and nothing is recorded, so the caller can
-retry the same idempotency key on a replica whose key can sign. A rotation
-that lands after that check and before the call finishes is not covered by
-it.
+transports (`/mcp/messages`, `/mcp/tools/{tool}/invoke` and `/mcp`), the AWI
+HTTP routes and `POST /v1/billing/charge` run
+`SigningKeyService.assert_ready_to_sign` before they reserve budget or charge.
+If the configured key is disabled, bound to other key material, or otherwise
+cannot sign, the call is refused with `signing_key_unavailable` (JSON-RPC
+`-32005`, HTTP 409 on the REST invoke route, HTTP 503 on the AWI routes and on
+the billing charge route) and nothing is recorded, so the caller can retry the
+same idempotency key on a replica whose key can sign. The underlying reason is
+logged once, as a `signing_key_unavailable cause=...` warning from
+`app.services.signing_keys`. A rotation that lands after that check and before
+the call finishes is not covered by it.
 
 Why a retired key still signs: making a retired key refuse to sign
 (`signing_key_retired`) would stop the reactivation, but the pending-refund

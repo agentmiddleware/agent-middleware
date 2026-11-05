@@ -343,3 +343,37 @@ async def test_standard_mcp_refuses_before_the_mint_and_the_charge(
     assert again.status_code == 200, again.text
     assert "error" not in again.json(), again.text
     assert echo_tool["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_billing_charge_refuses_before_the_debit_and_the_key_stays_retryable(
+    client: AsyncClient, clean_database: None
+) -> None:
+    """``POST /v1/billing/charge`` debits, then signs its governance audit event.
+
+    With a key that cannot sign it used to debit and then fail: HTTP 500, one
+    debit, no audit event, and a retry of the same key answered
+    ``idempotency_in_progress``. It now refuses first.
+    """
+    ctx = await provision_agent_wallet(client)
+    wallet_id = ctx["agent_wallet_id"]
+    key = await get_signing_key_service().ensure_active_key()
+    url = (
+        f"/v1/billing/charge?wallet_id={wallet_id}"
+        "&service=agent_comms&units=2&request_path=POST+/v1/agent-comms/send"
+    )
+    headers = {**ctx["agent_headers"], "Idempotency-Key": "signing-precharge-billing"}
+    debits_before = await _debits(wallet_id)
+    await _set_key_status(key.key_id, "disabled")
+
+    refused = await client.post(url, headers=headers)
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["error"] == "signing_key_unavailable"
+    assert await _debits(wallet_id) == debits_before
+
+    await _set_key_status(key.key_id, "active")
+    again = await client.post(url, headers=headers)
+    assert again.status_code == 200, again.text
+    assert await _debits(wallet_id) == debits_before + 1
+

@@ -45,12 +45,15 @@ if [ "$DEMO_STATUS" = "201" ]; then
   export AMW_API_KEY=$(echo "$DEMO_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_key"])')
   export AMW_WALLET_ID=$(echo "$DEMO_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["wallet_id"])')
 else
-  echo "demo key request returned HTTP $DEMO_STATUS (404: demo tenant not enabled; 429: rate limited, see Retry-After). Keys not exported." >&2
+  unset AMW_API_KEY AMW_WALLET_ID
+  echo "demo key request returned HTTP $DEMO_STATUS (404: demo tenant not enabled; 429: rate limited, see Retry-After). Keys not exported. Do not continue to Step 3." >&2
+  false
 fi
 ```
 
-The status check runs before parsing, so a 404 or 429 stops with a message
-instead of a Python `KeyError` and empty variables.
+The status check runs before parsing. On a 404 or 429 it clears any earlier
+`AMW_API_KEY` and `AMW_WALLET_ID`, prints a message, and returns a non-zero
+status instead of a Python `KeyError`. Stop there and do not run Step 3.
 
 - Route: `POST /v1/demo/keys` in `gateway/app/routers/demo_keys.py`. Anonymous,
   returns 201 when the demo tenant is enabled and 404 when it is not

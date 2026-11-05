@@ -77,7 +77,7 @@ REQUIRED_EDGES = {
     "synthetic.short_raw_key_uses_jwk": "verified",
     "synthetic.unsupported_alg": "unsupported",
     "synthetic.unsupported_canonicalization": "unsupported",
-    "p256.valid": "unsupported",
+    "p256.genuine_unsupported": "unsupported",
     "p256.tampered_payload": "invalid",
     "synthetic.malformed_signature": "malformed",
     "synthetic.malformed_signature_length": "malformed",
@@ -197,7 +197,8 @@ def test_outcome_tamper_only_prefixes_the_signed_outcome(generated):
     for name, case in by_name.items():
         if not name.endswith(".tampered_payload"):
             continue
-        valid = by_name[name.replace(".tampered_payload", ".valid")]
+        stem = name[: -len(".tampered_payload")]
+        valid = by_name.get(f"{stem}.valid") or by_name[f"{stem}.genuine_unsupported"]
         original = valid["bundle"]["signing_input"]
         tampered = case["bundle"]["signing_input"]
         assert tampered == module.tamper_outcome(original)

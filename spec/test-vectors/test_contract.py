@@ -28,7 +28,7 @@ REQUIRED_CASES = {
     "synthetic.float_payload_verifies": "verified",
     "synthetic.unsupported_alg": "unsupported",
     "synthetic.unsupported_canonicalization": "unsupported",
-    "p256.valid": "unsupported",
+    "p256.genuine_unsupported": "unsupported",
     "p256.tampered_payload": "invalid",
     "synthetic.envelope_kid_mismatch": "mismatch",
     "synthetic.envelope_alg_mismatch": "mismatch",
@@ -123,10 +123,13 @@ def test_signed_payload_hash_is_advisory_not_a_recheck():
 
 
 def test_float_payload_verifies_without_reserialization():
-    """The float vector must really carry renderings other languages mangle."""
+    """The float vector carries RFC 8785 / ES Number::toString lexemes."""
     case = _by_name(_load_cases())["synthetic.float_payload_verifies"]
     raw = case["bundle"]["signing_input"]
-    assert '"latency_ms":0.0' in raw
-    assert '"injected_instructions":1.0' in raw
-    assert '"tiny":4e-05' in raw
-    assert '"big":9007199254740993' in raw
+    assert '"latency_ms":0' in raw
+    assert '"injected_instructions":1' in raw
+    assert '"tiny":0.00004' in raw
+    assert '"big":9007199254740992' in raw
+    # Old Python json.dumps lexemes must not appear.
+    assert '"latency_ms":0.0' not in raw
+    assert '"injected_instructions":1.0' not in raw

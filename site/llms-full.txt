@@ -80,7 +80,7 @@ trusted channel before relying on issuer identity.
 ## Check it today, no access needed
 
 The standalone verifier is published next to the receipt, so no repository
-access is needed: download receipt.json, trust-keys.json, and verify_receipt.py
+access is needed: download receipt.json, trust-keys.json, verify_receipt.py, and jcs.py
 from https://www.agentmiddleware.dev/proof/, run `python3 -m pip install
 cryptography`, then `python3 verify_receipt.py --bundle receipt.json --keys
 trust-keys.json --expect-issuer https://api.thisisatest.tech`. Keyless live

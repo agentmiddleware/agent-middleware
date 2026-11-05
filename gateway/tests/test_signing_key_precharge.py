@@ -435,3 +435,44 @@ async def test_the_refusal_logs_its_underlying_reason_once(
     assert len(lines) == 1, lines
     assert "cause=signing_key_disabled" in lines[0]
     assert key.key_id in lines[0]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("edit", "error"),
+    [
+        ({"retired_at_from_activated": True}, "signing_key_retired"),
+        ({"status": "suspended"}, "signing_key_status_invalid"),
+    ],
+)
+async def test_health_agrees_with_signing_on_edge_rows(
+    client: AsyncClient, clean_database: None, edit: dict[str, Any], error: str
+) -> None:
+    """Readiness reports down exactly where ``ensure_active_key`` refuses.
+
+    An active row with ``retired_at`` set, and a status that is none of
+    active, retired or disabled, both refuse to sign; health used to report
+    both ``up`` because it only matched the status names.
+    """
+    service = get_signing_key_service()
+    key = await service.ensure_active_key()
+    async with get_session_factory()() as session:
+        row = await session.get(SigningKeyModel, key.key_id)
+        assert row is not None
+        if edit.get("retired_at_from_activated"):
+            row.retired_at = row.activated_at
+        if "status" in edit:
+            row.status = edit["status"]
+        session.add(row)
+        await session.commit()
+
+    with pytest.raises(SigningKeyUnavailableError) as raised:
+        await service.assert_ready_to_sign()
+    assert raised.value.cause == error
+
+    report = await gather_dependency_report()
+    assert report["dependencies"]["signing_key"]["status"] == "down"
+    assert report["dependencies"]["signing_key"]["error"] == error
+    ready = await client.get("/health/ready")
+    assert ready.status_code == 503, ready.text
+    assert ready.json()["checks"]["signing_key"]["error"] == error

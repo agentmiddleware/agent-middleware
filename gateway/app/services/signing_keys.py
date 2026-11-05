@@ -404,6 +404,27 @@ class SigningKeyService:
         self._assert_public_key_mapping(key, public_key_b64)
         return key.status
 
+    async def configured_key_problem(self) -> str | None:
+        """Why the configured key cannot sign, by the same rule signing uses.
+
+        Read-only: applies ``_assert_public_key_mapping`` and
+        ``_assert_configured_key_can_sign`` to the stored row and returns the
+        refusal reason, or ``None`` when the key can sign (or has no row yet,
+        which the first signature creates). Readiness uses this so it can
+        never report ``up`` for a key that ``ensure_active_key`` refuses.
+        """
+
+        public_key_b64 = self._public_key_b64()
+        key = await self.get_public_key(self._key_id)
+        if key is None:
+            return None
+        try:
+            self._assert_public_key_mapping(key, public_key_b64)
+            self._assert_configured_key_can_sign(key)
+        except SigningKeyError as exc:
+            return str(exc)
+        return None
+
     async def get_active_key(self) -> SigningKeyModel:
         """Return the current active public metadata, creating it if needed."""
 

@@ -480,47 +480,32 @@ async def _check_signing_key() -> dict[str, Any]:
     return {"status": "up", "state": "loaded"}
 
 
-# Key row states that mean this replica cannot be trusted to sign. A missing
-# row is fine (the first signature creates it); an active row is fine.
-_UNUSABLE_KEY_ROW_STATUSES: dict[str, str] = {
-    "retired": "signing_key_retired",
-    "disabled": "signing_key_disabled",
-}
-
-
 async def _configured_key_row_problem() -> str | None:
     """Read the configured key's row and name why it cannot sign, if it cannot.
 
-    Read-only: it never creates or reactivates the row, so a health probe can
-    not undo a retirement. A replica still configured with a retired or
-    disabled key id, or with key material that does not match its row, is
-    reported down, which takes it out of a readiness-gated rotation before it
-    reaches the charge. A row lookup that fails (for example the database is
-    down) is left to the postgres check rather than reported twice here.
+    Uses ``SigningKeyService.configured_key_problem``, the same rule
+    ``ensure_active_key`` signs by, so readiness and signing cannot disagree:
+    a retired row (or an active row with ``retired_at`` set), a disabled row,
+    an unknown status, or a row bound to other key material is reported down.
+    Read-only: it never creates or rewrites the row. A row lookup that fails
+    (for example the database is down) is left to the postgres check rather
+    than reported twice here.
     """
 
     try:
-        status = await get_signing_key_service().configured_key_status()
-    except SigningKeyError as exc:
-        if str(exc) == "signing_key_id_public_key_mismatch":
-            return "signing_key_id_public_key_mismatch"
-        return None
+        return await get_signing_key_service().configured_key_problem()
     except Exception:
         logger.debug("signing key row check raised", exc_info=True)
         return None
-    if status is None:
-        return None
-    return _UNUSABLE_KEY_ROW_STATUSES.get(status)
 
 
 async def check_signing_key_readiness() -> dict[str, Any]:
     """``/health/ready`` entry for the signing key, shared with the full report.
 
     Down when this replica's configured key cannot sign: invalid or missing key
-    material, or a key row that is retired, disabled or bound to other key
-    material. A load balancer that gates on readiness then stops sending
-    governed calls to a replica that would refuse them, or, while a retired
-    row can still be reactivated, would sign under a key the operator retired.
+    material, or a key row that is retired, disabled, in an unknown status or
+    bound to other key material. A load balancer that gates on readiness then
+    stops sending governed calls to a replica that would refuse them.
     """
     return await _run_check("signing_key", _check_signing_key)
 

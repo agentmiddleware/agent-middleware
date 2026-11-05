@@ -272,11 +272,27 @@ can retry the same idempotency key on a replica whose key can sign. The
 underlying reason is logged once, as a `signing_key_unavailable cause=...`
 warning from `app.services.signing_keys`.
 
-A rotation that lands after that check and before the call finishes is
-handled on the refund-failed path: if the `failed_unrefunded` receipt cannot be
-signed, the pending refund is recorded without a receipt and a replica whose
-key can sign signs it later (see "Refunds are written at most once" in
-[failure semantics](failure-semantics.md)). The analysis is in
+A key retired (or disabled) after that check and before the call finishes is
+only partly covered:
+
+- Success path: the tool ran and the wallet was charged, but the audit event
+  or receipt cannot be signed. The caller gets `-32603` `internal_error`, the
+  debit stands with no receipt, and a retry of the same key answers
+  `idempotency_in_progress` until `reconcile_stuck_records` flags the record
+  for manual review. A disabled key already behaves this way; a retired one
+  now does too. The rollout order above (retire the old row only after no
+  replica runs the old id) is what keeps this from happening.
+- Refund-failed path, local tools: if the `failed_unrefunded` receipt cannot
+  be signed, the pending refund is recorded without a receipt and a replica
+  whose key can sign signs it later (see "Refunds are written at most once"
+  in [failure semantics](failure-semantics.md)).
+- Refund-failed path, upstream (remote MCP) tools: the same holds when the
+  terminal audit event was written before the key was lost. If the key was
+  lost before that audit event, nothing is recorded by the call; the dispatch
+  attempt row remains and the dispatch reconciler rebuilds the evidence from
+  a replica whose key can sign.
+
+The analysis is in
 [issue 280](https://github.com/agentmiddleware/agent-middleware/issues/280).
 
 This is documented as a known limitation in `SECURITY_LIMITATIONS.md` and

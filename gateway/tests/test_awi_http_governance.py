@@ -16,7 +16,8 @@ from app.main import app
 from app.services import awi_rag_engine as awi_rag_engine_module
 from app.services.awi_rag_engine import AWIRAGEngine
 from app.services.idempotency import MAX_CLIENT_IDEMPOTENCY_KEY_LENGTH
-from app.services.signing_keys import get_signing_key_service
+from app.services import signing_keys as signing_keys_module
+from app.services.signing_keys import SigningKeyService, get_signing_key_service
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
     create_tool_permit,
@@ -811,7 +812,7 @@ async def _wallet_debits(wallet_id: str) -> int:
 
 @pytest.mark.anyio
 async def test_rag_query_refuses_before_reserving_when_the_key_cannot_sign(
-    client, clean_database, monkeypatch
+    client, clean_database
 ):
     """An unusable signing key refuses before the reservation and the charge.
 
@@ -831,9 +832,13 @@ async def test_rag_query_refuses_before_reserving_when_the_key_cannot_sign(
         max_credits=50,
         idem_key="permit-awi-signing-precharge",
     )
-    service = get_signing_key_service()
-    await service.ensure_active_key()
-    real_private_key = service._private_key
+    real_service = get_signing_key_service()
+    await real_service.ensure_active_key()
+    # A replica whose key id is bound to other key material: a fresh service
+    # instance installed as the module's service, never a patched singleton.
+    misconfigured = SigningKeyService()
+    misconfigured._key_id = real_service._key_id
+    misconfigured._private_key = Ed25519PrivateKey.generate()
     headers = {
         **provisioned["agent_headers"],
         "X-Wallet-Id": wallet_id,
@@ -841,17 +846,17 @@ async def test_rag_query_refuses_before_reserving_when_the_key_cannot_sign(
         "Idempotency-Key": "awi-http-signing-precharge-1",
     }
     debits_before = await _wallet_debits(wallet_id)
-    monkeypatch.setattr(service, "_private_key", Ed25519PrivateKey.generate())
-
-    refused = await client.post(
-        "/v1/awi/rag/query", json=RAG_QUERY_PAYLOAD, headers=headers
-    )
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(signing_keys_module, "_signing_key_service", misconfigured)
+        refused = await client.post(
+            "/v1/awi/rag/query", json=RAG_QUERY_PAYLOAD, headers=headers
+        )
 
     assert refused.status_code == 503, refused.text
     assert refused.json()["detail"]["error"] == "signing_key_unavailable"
     assert await _wallet_debits(wallet_id) == debits_before
 
-    monkeypatch.setattr(service, "_private_key", real_private_key)
+    # The module's own service is back in place: the key can sign again.
     again = await client.post(
         "/v1/awi/rag/query", json=RAG_QUERY_PAYLOAD, headers=headers
     )

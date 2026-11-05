@@ -335,9 +335,11 @@ missing control.
     appends to the header instead of replacing it, so any caller can send its
     own value and receive a fresh bucket per request. That holds even when the
     application is reachable only through the ingress.
-    `FORWARDED_ALLOW_IPS` must be set in the process environment of the
-    container that runs uvicorn. The gateway does not read it from `.env`, so
-    putting it there has no effect. **No setting is needed on Railway.** There
+    On the standard container launch path, set `FORWARDED_ALLOW_IPS` in the
+    process environment of the container that runs uvicorn. If a command
+    override passes uvicorn's `--forwarded-allow-ips` option instead, that
+    option takes precedence over the environment variable. The gateway does
+    not read it from `.env`, so putting it there has no effect. **No setting is needed on Railway.** There
     the gateway reads the single canonical `X-Real-IP` value, as described
     above, under Railway's platform marker. The setting applies to other
     ingress. This document does not assume any other platform sets `X-Real-IP`.

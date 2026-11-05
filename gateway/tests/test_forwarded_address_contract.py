@@ -44,12 +44,25 @@ def test_uvicorn_default_trusts_loopback_only(monkeypatch) -> None:
 def test_forwarded_allow_ips_is_read_from_the_process_environment(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "203.0.113.0/24")
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/24")
 
     async def app(scope, receive, send):
         return None
 
-    assert uvicorn.Config(app).forwarded_allow_ips == "203.0.113.0/24"
+    assert uvicorn.Config(app).forwarded_allow_ips == "10.0.0.0/24"
+
+
+def test_an_explicit_forwarded_allow_ips_option_beats_the_environment(
+    monkeypatch,
+) -> None:
+    """A command override can pass --forwarded-allow-ips; it wins over the variable."""
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/24")
+
+    async def app(scope, receive, send):
+        return None
+
+    config = uvicorn.Config(app, forwarded_allow_ips="10.0.0.50")
+    assert config.forwarded_allow_ips == "10.0.0.50"
 
 
 @pytest.mark.anyio
@@ -57,36 +70,36 @@ def test_forwarded_allow_ips_is_read_from_the_process_environment(
     ("trusted", "peer", "forwarded_for", "expected"),
     [
         # Default: a loopback peer is trusted, any other peer is ignored.
-        ("127.0.0.1,::1", "127.0.0.1", "192.0.2.7", "192.0.2.7"),
-        ("127.0.0.1,::1", "203.0.113.50", "192.0.2.7", "203.0.113.50"),
+        ("127.0.0.1,::1", "127.0.0.1", "172.16.0.7", "172.16.0.7"),
+        ("127.0.0.1,::1", "10.0.0.50", "172.16.0.7", "10.0.0.50"),
         # An exact ingress address: its X-Forwarded-For is used.
-        ("203.0.113.50", "203.0.113.50", "192.0.2.7", "192.0.2.7"),
-        ("203.0.113.50", "198.51.100.1", "192.0.2.7", "198.51.100.1"),
+        ("10.0.0.50", "10.0.0.50", "172.16.0.7", "172.16.0.7"),
+        ("10.0.0.50", "172.16.1.1", "172.16.0.7", "172.16.1.1"),
         # A CIDR covering the ingress works.
-        ("203.0.113.0/24", "203.0.113.77", "192.0.2.7", "192.0.2.7"),
-        ("203.0.113.0/24", "198.51.100.1", "192.0.2.7", "198.51.100.1"),
+        ("10.0.0.0/24", "10.0.0.77", "172.16.0.7", "172.16.0.7"),
+        ("10.0.0.0/24", "172.16.1.1", "172.16.0.7", "172.16.1.1"),
         # Exact list: a caller-supplied left-most entry is ignored; the ingress
         # appended the real client, which is the right-most untrusted entry.
-        ("203.0.113.50", "203.0.113.50", "192.0.2.1, 198.51.100.9", "198.51.100.9"),
+        ("10.0.0.50", "10.0.0.50", "172.16.0.1, 172.16.1.9", "172.16.1.9"),
         # Multiple trusted hops are skipped from the right.
         (
-            "203.0.113.50,203.0.113.51",
-            "203.0.113.50",
-            "192.0.2.1, 198.51.100.9, 203.0.113.51",
-            "198.51.100.9",
+            "10.0.0.50,10.0.0.51",
+            "10.0.0.50",
+            "172.16.0.1, 172.16.1.9, 10.0.0.51",
+            "172.16.1.9",
         ),
         # A catch-all CIDR behaves like "*" for entries of its address family:
         # every entry is trusted, so the left-most one wins and a caller controls it.
-        ("0.0.0.0/0", "203.0.113.50", "192.0.2.1, 198.51.100.9", "192.0.2.1"),
-        ("::/0", "2001:db8::50", "2001:db8::1, 2001:db8::9", "2001:db8::1"),
+        ("0.0.0.0/0", "10.0.0.50", "172.16.0.1, 172.16.1.9", "172.16.0.1"),
+        ("::/0", "fd00::50", "fd00::1, fd00::9", "fd00::1"),
         # An ingress that forwards the inbound header unchanged, without adding the
         # address it observed, lets the caller choose the client even when the
         # ingress is named exactly. Two callers get two different addresses.
-        ("203.0.113.50", "203.0.113.50", "192.0.2.1", "192.0.2.1"),
-        ("203.0.113.50", "203.0.113.50", "192.0.2.2", "192.0.2.2"),
+        ("10.0.0.50", "10.0.0.50", "172.16.0.1", "172.16.0.1"),
+        ("10.0.0.50", "10.0.0.50", "172.16.0.2", "172.16.0.2"),
         # "*": the left-most entry wins, and a caller controls it.
-        ("*", "203.0.113.50", "192.0.2.1, 198.51.100.9", "192.0.2.1"),
-        ("*", "198.51.100.1", "192.0.2.1", "192.0.2.1"),
+        ("*", "10.0.0.50", "172.16.0.1, 172.16.1.9", "172.16.0.1"),
+        ("*", "172.16.1.1", "172.16.0.1", "172.16.0.1"),
     ],
 )
 async def test_which_forwarded_entry_becomes_the_client_address(

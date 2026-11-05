@@ -62,15 +62,50 @@ function b64(value: unknown, urlsafe = false): Buffer | null {
   return Buffer.from(value, "base64");
 }
 
-/** Keys sorted at every level, no whitespace, non-ASCII escaped as \uXXXX. */
+/** Reject lone UTF-16 surrogates (RFC 8785 §3.2.2.2); Python JCS does the same. */
+function assertNoLoneSurrogate(text: string): void {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new TypeError("lone Unicode surrogate is not valid under RFC 8785");
+      }
+      i += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      throw new TypeError("lone Unicode surrogate is not valid under RFC 8785");
+    }
+  }
+}
+
+/** RFC 8785 (JCS): keys sorted (UTF-16 code units), no whitespace, UTF-8 strings, ES numbers. */
 export function canonicalJson(value: unknown): string {
   const ser = (v: unknown): string => {
     if (v === null || typeof v !== "object") {
-      return JSON.stringify(v).replace(/[\u007f-\uffff]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+      // JSON.stringify matches ECMAScript Number::toString for finite numbers
+      // and emits UTF-8 string contents with only the required escapes.
+      if (typeof v === "number" && !Number.isFinite(v)) {
+        throw new TypeError("NaN/Infinity are not valid JSON numbers under RFC 8785");
+      }
+      if (typeof v === "string") {
+        assertNoLoneSurrogate(v);
+      }
+      return JSON.stringify(v);
     }
     if (Array.isArray(v)) return "[" + v.map(ser).join(",") + "]";
     const obj = v as Record<string, unknown>;
-    return "{" + Object.keys(obj).sort().map((k) => ser(k) + ":" + ser(obj[k])).join(",") + "}";
+    // UTF-16 code unit order matches JS string comparison for BMP+surrogate keys.
+    return (
+      "{" +
+      Object.keys(obj)
+        .sort()
+        .map((k) => {
+          assertNoLoneSurrogate(k);
+          return JSON.stringify(k) + ":" + ser(obj[k]);
+        })
+        .join(",") +
+      "}"
+    );
   };
   return ser(value);
 }

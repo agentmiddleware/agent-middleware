@@ -327,6 +327,16 @@ class ReceiptResponse(ActionPermitFields):
     audit_event_id: str | None
     # Human approval that authorized this invoke, when the permit required one.
     approval_id: str | None = None
+    # SHA-256 of the signed permit's signing_input; set with permit_id from 056.
+    permit_digest: str | None = None
+    # SHA-256 of the signed approval's signing_input, when one was verified.
+    approval_digest: str | None = None
+    # Other party of the call (hostname/domain) for recipient_domain checks.
+    counterparty: str | None = None
+    # Per-permit sequence starting at 0. None on pre-056 receipts.
+    sequence: int | None = None
+    # Prior receipt signing_input digest under the same permit; omitted at 0.
+    prev_receipt_digest: str | None = None
     # Permit schema v2: snapshot of constraints evaluated at invoke time
     constraints_evaluated: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime

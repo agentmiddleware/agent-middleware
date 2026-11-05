@@ -27,6 +27,7 @@ from app.services.permits import register_permit_upstream_status_lookup
         "not_dispatched",
         "delivered",
         "raises",
+        "cancelled",
         "timeout",
         "malformed",
     ],
@@ -51,6 +52,9 @@ async def test_awi_status_outcomes(monkeypatch, error_path, answer_kind):
 
     async def lookup(query):
         queries.append(query)
+        if answer_kind == "cancelled":
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
         if answer_kind == "raises":
             raise RuntimeError("provider unavailable")
         if answer_kind == "timeout":
@@ -146,6 +150,54 @@ async def test_awi_status_lookup_suppressing_cancellation(monkeypatch):
     money.refund_charge.assert_not_awaited()
     permits.release_budget.assert_not_awaited()
     assert ctx.credits_charged == Decimal("3")
+
+
+@pytest.mark.anyio
+async def test_awi_status_lookup_outer_cancellation(monkeypatch):
+    ctx = SimpleNamespace(
+        tool_name="awi_execute",
+        permit_id="test-permit",
+        idempotency_key="test-key",
+        wallet_id="test-wallet",
+        endpoint="POST /v1/awi/execute",
+        record_id="test-record",
+        request_payload={},
+    )
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    tasks = []
+
+    async def lookup(query):
+        tasks.append(asyncio.current_task())
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        raise RuntimeError("late provider failure")
+
+    monkeypatch.setattr(awi, "_REGISTERED_AWI_STATUS_LOOKUP", lookup)
+    monkeypatch.setattr(awi, "STATUS_LOOKUP_TIMEOUT_SECONDS", 60)
+    caller = asyncio.create_task(awi._awi_uncertain_outcome(ctx))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        await asyncio.wait_for(cancelled.wait(), timeout=1)
+        # The provider can outlive cancellation, but its late failure must be
+        # consumed by the completion callback.
+        release.set()
+        await asyncio.wait(tasks, timeout=1)
+        await asyncio.sleep(0)
+        assert tasks[0].done()
+        assert not tasks[0]._log_traceback
+    finally:
+        caller.cancel()
+        release.set()
+        await asyncio.gather(caller, *tasks, return_exceptions=True)
 
 
 @pytest.mark.parametrize(

@@ -162,17 +162,23 @@ async def _awi_uncertain_outcome(ctx: AwiHttpGovernedContext) -> str:
                 ),
             )
             task = asyncio.ensure_future(lookup(query))
-            done, _ = await asyncio.wait({task}, timeout=STATUS_LOOKUP_TIMEOUT_SECONDS)
-            if done:
-                answer = task.result()
-            else:
-                task.cancel()
-                task.add_done_callback(
-                    lambda finished: (
-                        None if finished.cancelled() else finished.exception()
-                    )
+            done = set()
+            try:
+                done, _ = await asyncio.wait(
+                    {task}, timeout=STATUS_LOOKUP_TIMEOUT_SECONDS
                 )
-                answer = None
+            finally:
+                if not done:
+                    # Also clean up when the outer caller is cancelled. Do not
+                    # await a provider that might suppress cancellation.
+                    task.cancel()
+                    task.add_done_callback(
+                        lambda finished: (
+                            None if finished.cancelled() else finished.exception()
+                        )
+                    )
+            # A cancelled child is an unknown result, not caller cancellation.
+            answer = task.result() if done and not task.cancelled() else None
         except Exception:
             # Provider failures must not change money movement or expose data.
             answer = None

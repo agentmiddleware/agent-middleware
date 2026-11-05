@@ -343,3 +343,39 @@ async def test_standard_mcp_refuses_before_the_mint_and_the_charge(
     assert again.status_code == 200, again.text
     assert "error" not in again.json(), again.text
     assert echo_tool["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_a_replica_left_on_a_retired_key_refuses_before_the_charge(
+    client: AsyncClient, clean_database: None, echo_tool
+) -> None:
+    """After a rotation, a replica still on the old key id charges nothing.
+
+    A retired key refuses to sign (``signing_key_retired``), and the entry
+    check turns that into the same retryable ``signing_key_unavailable``
+    before any reservation or debit, so the caller retries on a redeployed
+    replica instead of paying for a call this one cannot receipt.
+    """
+    case = await _setup(client, suffix="retired")
+    ctx = case["ctx"]
+    wallet_id = ctx["agent_wallet_id"]
+    body = _jsonrpc_body(
+        wallet_id=wallet_id,
+        permit_id=case["permit"]["permit_id"],
+        key="signing-precharge-retired",
+    )
+    debits_before = await _debits(wallet_id)
+    await get_signing_key_service().retire_key_metadata(case["key_id"])
+
+    with pytest.raises(SigningKeyUnavailableError) as raised:
+        await get_signing_key_service().assert_ready_to_sign()
+    assert raised.value.cause == "signing_key_retired"
+
+    resp = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+
+    error = resp.json()["error"]
+    assert error["code"] == -32005, error
+    assert error["message"] == "signing_key_unavailable", error
+    assert await _debits(wallet_id) == debits_before
+    assert echo_tool["count"] == 0
+    assert (await _key_row(case["key_id"])).status == "retired"

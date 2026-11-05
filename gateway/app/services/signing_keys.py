@@ -293,6 +293,31 @@ class SigningKeyService:
         if key.status == "disabled":
             raise SigningKeyError("signing_key_disabled")
 
+    @staticmethod
+    def _assert_configured_key_can_sign(key: SigningKeyModel) -> None:
+        """Refuse a configured key that may no longer sign new objects.
+
+        ``disabled`` is terminal for signing and verification. ``retired``
+        means the key stopped signing new objects at a rotation
+        (``spec/key-set-v0.1.md``); its row stays published so older
+        signatures keep verifying. Neither is ever flipped back to ``active``
+        by a signer: a replica still configured with a retired key id refuses
+        with ``signing_key_retired`` until it is redeployed with the new key id
+        and key material. Only ``rotate_active_key_metadata`` reactivates a
+        row, and only the explicit target of a rotation.
+        """
+
+        SigningKeyService._assert_key_not_disabled(key)
+        if key.status == "retired" or (
+            key.status == "active" and key.retired_at is not None
+        ):
+            raise SigningKeyError("signing_key_retired")
+        if key.status != "active":
+            # Not "signing_key_not_active": that reason is the refund path's
+            # restart signal for a rotation landing mid-attempt, and an unknown
+            # status would only repeat on every restart.
+            raise SigningKeyError("signing_key_status_invalid")
+
     async def ensure_active_key(self) -> SigningKeyModel:
         factory = get_session_factory()
         public_key_b64 = self._public_key_b64()
@@ -303,26 +328,21 @@ class SigningKeyService:
                 )
             )
             key = result.scalar_one_or_none()
-            # Read-mostly fast path: when the active key already matches, do no
-            # write. This keeps the common (per-signature) call free of write
-            # contention and the first-time insert race below.
+            # An existing row is only ever read here, never rewritten: an
+            # active key signs with no write, and a retired, disabled or
+            # mismatched one refuses. Only a key id with no row yet is
+            # inserted, as active (the first-time bootstrap below).
             if key:
                 self._assert_public_key_mapping(key, public_key_b64)
-                self._assert_key_not_disabled(key)
-                if key.status == "active" and key.retired_at is None:
-                    return key
-                key.status = "active"
-                key.activated_at = utc_now()
-                key.retired_at = None
-                session.add(key)
-            else:
-                key = SigningKeyModel(
-                    key_id=self._key_id,
-                    public_key_b64=public_key_b64,
-                    status="active",
-                    activated_at=utc_now(),
-                )
-                session.add(key)
+                self._assert_configured_key_can_sign(key)
+                return key
+            key = SigningKeyModel(
+                key_id=self._key_id,
+                public_key_b64=public_key_b64,
+                status="active",
+                activated_at=utc_now(),
+            )
+            session.add(key)
             try:
                 await session.commit()
             except IntegrityError:
@@ -339,7 +359,7 @@ class SigningKeyService:
                     )
                 ).scalar_one()
                 self._assert_public_key_mapping(key, public_key_b64)
-                self._assert_key_not_disabled(key)
+                self._assert_configured_key_can_sign(key)
             return key
 
     async def assert_ready_to_sign(self) -> None:

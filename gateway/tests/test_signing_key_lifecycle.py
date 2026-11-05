@@ -422,3 +422,144 @@ async def test_signing_key_by_id_requires_authentication(
     # confirm or deny the id's existence to an anonymous caller.
     resp = await client.get("/v1/signing-keys/key-does-not-exist", headers=headers)
     assert resp.status_code == expected_status, resp.text
+
+
+def _same_identity(service: SigningKeyService) -> SigningKeyService:
+    """A second service instance with the same key id and key material.
+
+    Stands in for another replica, or a restart, still configured with the
+    key ``service`` was configured with.
+    """
+    service._public_key_b64()  # settle an ephemeral key's own id first
+    other = SigningKeyService()
+    other._private_key = service._private_key
+    other._key_id = service._key_id
+    return other
+
+
+async def _key_row(key_id: str) -> SigningKeyModel:
+    async with get_session_factory()() as session:
+        row = await session.get(SigningKeyModel, key_id)
+        assert row is not None
+        return row
+
+
+@pytest.mark.anyio
+async def test_retired_configured_key_refuses_to_sign_and_stays_retired(
+    clean_database,
+):
+    """A retired key is not flipped back to active by a signer (issue #280).
+
+    Before the fix, ``ensure_active_key`` on any process still configured with
+    the retired key id set the row back to ``active`` (resetting
+    ``activated_at`` and clearing ``retired_at``) and signed.
+    """
+    service = _same_identity(get_signing_key_service())
+    await service.sign_payload({"purpose": "before-retirement"})
+    key_id = service._key_id
+    retired = await service.retire_key_metadata(key_id)
+
+    with pytest.raises(SigningKeyError, match="^signing_key_retired$"):
+        await service.sign_payload({"purpose": "must-not-sign"})
+    with pytest.raises(SigningKeyError, match="^signing_key_retired$"):
+        await service.ensure_active_key()
+
+    row = await _key_row(key_id)
+    assert row.status == "retired"
+    assert row.retired_at == retired.retired_at
+    assert row.activated_at == retired.activated_at
+
+
+@pytest.mark.anyio
+async def test_active_row_with_retired_at_set_also_refuses(clean_database):
+    service = _same_identity(get_signing_key_service())
+    key = await service.ensure_active_key()
+    async with get_session_factory()() as session:
+        row = await session.get(SigningKeyModel, key.key_id)
+        assert row is not None
+        row.retired_at = row.activated_at
+        session.add(row)
+        await session.commit()
+
+    with pytest.raises(SigningKeyError, match="^signing_key_retired$"):
+        await service.ensure_active_key()
+    row = await _key_row(key.key_id)
+    assert row.status == "active"
+    assert row.retired_at is not None
+
+
+@pytest.mark.anyio
+async def test_fresh_key_id_still_bootstraps_and_signs(clean_database):
+    service = SigningKeyService()
+    signature, key_id, payload_hash = await service.sign_payload(
+        {"purpose": "fresh-bootstrap"}
+    )
+
+    row = await _key_row(key_id)
+    assert row.status == "active"
+    assert row.retired_at is None
+    assert await service.verify_payload(
+        {
+            "purpose": "fresh-bootstrap",
+            "alg": "Ed25519",
+            "kid": key_id,
+            "payload_hash": payload_hash,
+        },
+        signature=signature,
+        key_id=key_id,
+    )
+
+
+@pytest.mark.anyio
+async def test_rotation_survives_a_second_instance_on_the_old_key_id(
+    client, clean_database
+):
+    """Rotation to a new id holds against a replica still on the old id.
+
+    The rotating instance moves to the new key id. A second instance built with
+    the old key id and material (another replica, or a restart before its
+    redeploy) refuses to sign, the old row stays retired, the new row stays
+    active, and the published key set still lists the old key as retired so
+    receipts signed under it remain verifiable.
+    """
+    rotating = _same_identity(get_signing_key_service())
+    old_signature, old_key_id, old_hash = await rotating.sign_payload(
+        {"purpose": "before-rotation"}
+    )
+    stale = _same_identity(rotating)
+    new_key_id = f"{old_key_id}-next"
+
+    rotated = await rotating.rotate_active_key_metadata(new_key_id)
+    assert rotated.key_id == new_key_id
+    _sig, signed_kid, _hash = await rotating.sign_payload({"purpose": "after"})
+    assert signed_kid == new_key_id
+
+    with pytest.raises(SigningKeyError, match="^signing_key_retired$"):
+        await stale.sign_payload({"purpose": "must-not-sign"})
+
+    old_row = await _key_row(old_key_id)
+    new_row = await _key_row(new_key_id)
+    assert old_row.status == "retired"
+    assert old_row.retired_at is not None
+    assert new_row.status == "active"
+
+    published = {key.key_id: key.status for key in await stale.list_public_keys()}
+    assert published[old_key_id] == "retired"
+    assert published[new_key_id] == "active"
+    assert await stale.verify_payload(
+        {
+            "purpose": "before-rotation",
+            "alg": "Ed25519",
+            "kid": old_key_id,
+            "payload_hash": old_hash,
+        },
+        signature=old_signature,
+        key_id=old_key_id,
+    )
+
+    resp = await client.get("/.well-known/trust-keys.json")
+    assert resp.status_code == 200, resp.text
+    by_kid = {key["kid"]: key for key in resp.json()["keys"]}
+    assert by_kid[old_key_id]["status"] == "retired"
+    assert by_kid[old_key_id]["retired_at"] is not None
+    assert by_kid[new_key_id]["status"] == "active"

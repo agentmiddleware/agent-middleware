@@ -45,6 +45,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
@@ -65,9 +66,13 @@ from app.routers.mcp import (
 )
 from app.schemas.billing import ServiceCategory
 from app.services import refund_reconciliation as reconciliation_module
-from app.services.refund_reconciliation import RefundReconciliationContendedError
+from app.services.refund_reconciliation import (
+    RefundReconciliationContendedError,
+    get_refund_reconciliation_service,
+)
 from app.services.receipts import ReceiptWriteContendedError
 from app.services.service_registry import get_service_registry
+from app.services.signing_keys import get_signing_key_service
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
 
 TOOL_COST = 2.0
@@ -123,9 +128,12 @@ async def _retire_active_keys() -> int:
     """Retire every published signing key, as a concurrent rotation would.
 
     Written directly rather than through ``rotate_active_key_metadata`` so the
-    process-wide service keeps its key id: ``ensure_active_key`` then finds its
-    own key retired and re-activates it, which is the restart's job to do and
-    what the tests below watch for. Nothing restores the table afterwards --
+    process-wide service keeps its key id: it is then a replica left on a
+    retired key, and ``ensure_active_key`` refuses it with
+    ``signing_key_retired`` instead of re-activating it (issue #280). What the
+    tests below watch for is that the pending refund is still recorded, without
+    a receipt, and signed once the key is restored. Nothing restores the table
+    afterwards --
     ``clean_database`` deletes ``signing_keys`` at the start of every test that
     asks for it, so a retired key never outlives the test that retired it.
     """
@@ -156,11 +164,16 @@ class _KeyRetiredAfterResolution:
     """
 
     def __init__(
-        self, real: Any, state: dict[str, int], retirements: int | None
+        self,
+        real: Any,
+        state: dict[str, int],
+        retirements: int | None,
+        rotate: bool = False,
     ) -> None:
         self._real = real
         self._state = state
         self._retirements = retirements
+        self._rotate = rotate
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
@@ -169,20 +182,34 @@ class _KeyRetiredAfterResolution:
         key = await self._real.ensure_active_key()
         self._state["resolved"] += 1
         if self._retirements is None or self._state["retired"] < self._retirements:
-            self._state["retired"] += await _retire_active_keys()
+            if self._rotate:
+                # A real rotation to a fresh key id: the resolved key is
+                # retired and the process signs under the new id from the next
+                # resolution on, as the replica that rotated would.
+                await self._real.rotate_active_key_metadata(
+                    f"{key.key_id}-rotated-{self._state['resolved']}"
+                )
+                self._state["retired"] += 1
+            else:
+                self._state["retired"] += await _retire_active_keys()
         return key
 
 
 def _retire_key_after_resolution(
-    monkeypatch, *, retirements: int | None
+    monkeypatch, *, retirements: int | None, rotate: bool = False
 ) -> dict[str, int]:
     """Retire the signing key inside ``create_pending``'s attempt, after resolution."""
     real_get_signing_key_service = reconciliation_module.get_signing_key_service
     state = {"resolved": 0, "retired": 0}
+    # A rotation moves the process-wide service to a new key id; put it back
+    # when the test ends so later tests sign under the key they expect.
+    real_service = real_get_signing_key_service()
+    real_service._public_key_b64()  # settle an ephemeral key's own id first
+    monkeypatch.setattr(real_service, "_key_id", real_service._key_id)
 
     def patched_get_signing_key_service():
         return _KeyRetiredAfterResolution(
-            real_get_signing_key_service(), state, retirements
+            real_get_signing_key_service(), state, retirements, rotate
         )
 
     monkeypatch.setattr(
@@ -328,6 +355,46 @@ async def _count_receipts() -> int:
         )
 
 
+def _redeploy_with_new_key(monkeypatch) -> str:
+    """Give the process-wide signing service a new key id and key material.
+
+    This is what restoring a replica left on a retired key looks like: it is
+    redeployed with the key the rotation moved to. The monkeypatch puts the
+    old identity back when the test ends.
+    """
+    service = get_signing_key_service()
+    service._public_key_b64()
+    new_key_id = f"{service._key_id}-redeployed"
+    monkeypatch.setattr(service, "_private_key", Ed25519PrivateKey.generate())
+    monkeypatch.setattr(service, "_key_id", new_key_id)
+    return new_key_id
+
+
+async def _assert_unsigned_pending(resp: Any) -> None:
+    """The caller is told the debt is pending, with no receipt yet."""
+    assert resp.status_code == 200, resp.text
+    error = resp.json()["error"]
+    # Not the unclassified answer, and not a stale-key reason on the wire.
+    assert error["message"] != INTERNAL_ERROR_MESSAGE, error
+    assert "signing_key" not in str(error), error
+    assert "receipt" not in error["data"] or not error["data"]["receipt"], error
+    reconciliation = error["data"]["refund_reconciliation"]
+    assert reconciliation["status"] == "pending", reconciliation
+    assert reconciliation["receipt_id"] is None, reconciliation
+    assert reconciliation["receipt_status"] == "unsigned", reconciliation
+
+
+async def _sign_after_redeploy(monkeypatch) -> tuple[str, list[dict[str, Any]]]:
+    """Redeploy with the new key, run the signer, and return the signed items."""
+    new_key_id = _redeploy_with_new_key(monkeypatch)
+    (
+        signed,
+        still_unsigned,
+    ) = await get_refund_reconciliation_service().sign_unsigned_pending()
+    assert (signed, still_unsigned) == (1, 0)
+    return new_key_id, await _work_items()
+
+
 async def _work_items() -> list[dict[str, Any]]:
     """Every durable pending-refund work item currently recorded."""
     async with get_session_factory()() as session:
@@ -405,19 +472,19 @@ async def test_a_contended_pending_refund_is_restarted_until_it_lands(
 
 
 @pytest.mark.anyio
-async def test_a_key_retired_between_attempts_does_not_strand_the_restart(
+async def test_a_key_retired_between_attempts_records_the_refund_unsigned(
     client: AsyncClient, clean_database: None, exploding_tool
 ) -> None:
-    """The restart resolves the active signing key per attempt, not once.
+    """A key retired between attempts no longer comes back, and no debt is lost.
 
-    A key resolved before the loop can retire during it. ``create_receipt``
-    revalidates a prepared key under a row lock and rejects a retired one with
-    ``signing_key_not_active`` -- a ``SigningKeyError``, which is not an
-    ``OperationalError``. So a stale key would not be retried by
-    ``run_with_write_conflict_retry``, would never reach ``on_exhausted``, and
-    would arrive at routers that have no handler for it: the unclassified
-    ``internal_error``, with the receipt and the work item both lost, which is
-    the exact failure this module exists to remove.
+    This test used to pin the opposite: the restart's next resolution found
+    the process's own key retired and quietly re-activated it, so the refund
+    record landed signed under a key the operator had retired. A retired key
+    now refuses (``signing_key_retired``, issue #280), so the restart cannot
+    sign. What it must still never do is lose the debt or answer
+    ``internal_error``: the pending work item is recorded without a receipt,
+    and once the replica is redeployed with the new key the receipt is signed
+    under that key while the old one stays retired.
 
     Rotation is forced between attempts rather than raced, so the ordering is
     the test's rather than the scheduler's: the key is retired at the moment
@@ -431,6 +498,7 @@ async def test_a_key_retired_between_attempts_does_not_strand_the_restart(
         permit_id=case["permit"]["permit_id"],
         idempotency_key="refund-contention-rotate",
     )
+    old_key_id = (await get_signing_key_service().ensure_active_key()).key_id
 
     with pytest.MonkeyPatch.context() as monkeypatch:
         state = _lose_reconciliation_commits(
@@ -445,49 +513,48 @@ async def test_a_key_retired_between_attempts_does_not_strand_the_restart(
 
     # The rotation actually happened, so the assertions below are load-bearing.
     assert state["retired"] >= 1, state
-    assert state["commits"] == 2, state
-
-    assert resp.status_code == 200, resp.text
-    error = resp.json()["error"]
-    # A recorded pending refund and an unclassified failure share the -32603
-    # code, so the code alone cannot tell them apart. What separates them is
-    # that this one names the real reason and carries the evidence, where the
-    # stale-key failure would have answered an opaque internal_error with a
-    # bare correlation id and nothing written.
-    assert error["message"] != INTERNAL_ERROR_MESSAGE, error
-    assert "signing_key_not_active" not in str(error), error
-    data = error["data"]
-    assert data["receipt"]["outcome"] == "failed_unrefunded", data
-    assert data["refund_reconciliation"]["status"] == "pending", data
-
-    # The debt is recorded exactly once, signed under a key that was active
-    # when the attempt that landed ran.
-    assert await _count_receipts() == 1
+    await _assert_unsigned_pending(resp)
+    assert await _count_receipts() == 0
     items = await _work_items()
     assert len(items) == 1, items
     assert items[0]["status"] == "pending", items[0]
     assert runs["count"] == 1
 
+    async with get_session_factory()() as session:
+        old_key = await session.get(SigningKeyModel, old_key_id)
+        assert old_key is not None
+        assert old_key.status == "retired"
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        new_key_id, items = await _sign_after_redeploy(monkeypatch)
+
+    assert await _count_receipts() == 1
+    assert len(items) == 1, items
+    assert items[0]["status"] == "pending", items[0]
+    async with get_session_factory()() as session:
+        receipt = await session.get(ReceiptModel, items[0]["receipt_id"])
+        assert receipt is not None
+        assert receipt.outcome == "failed_unrefunded"
+        assert receipt.signature_key_id == new_key_id
+        old_key = await session.get(SigningKeyModel, old_key_id)
+        assert old_key is not None
+        assert old_key.status == "retired"
+
 
 @pytest.mark.anyio
-async def test_a_key_retired_inside_an_attempt_restarts_it(
+async def test_a_key_retired_inside_an_attempt_records_the_refund_unsigned(
     client: AsyncClient, clean_database: None, exploding_tool
 ) -> None:
-    """A rotation landing mid-attempt is a restart, not an internal error.
+    """A rotation landing mid-attempt is a restart, and the restart refuses.
 
-    The test above stages the rotation between attempts, where resolving the
-    key per attempt is enough. This one stages it inside an attempt: after
-    ``ensure_active_key`` has handed back an active key and before
-    ``create_receipt`` locks that key's row. The lock finds it retired and
-    rejects it with ``signing_key_not_active`` -- a ``SigningKeyError``, not an
-    ``OperationalError``, so on its own ``run_with_write_conflict_retry`` let
-    it straight through, past ``on_exhausted``, into the router's unclassified
-    branch. The caller got ``internal_error`` with nothing written: the tool
-    had run, the money was owed, and the idempotency record stayed in progress
-    so even a retry answered ``-32005`` rather than recording the debt.
-
-    Fails against the version without the restart hook with that exact
-    exception in the captured log, and ``internal_error`` in the response.
+    The test above stages the rotation between attempts. This one stages it
+    inside an attempt: after ``ensure_active_key`` has handed back an active
+    key and before ``create_receipt`` locks that key's row. The lock finds it
+    retired and rejects it with ``signing_key_not_active``, which is still a
+    restart. The restart used to re-activate the retired key and land on a
+    second resolution; it now meets ``signing_key_retired`` (issue #280), so
+    instead of a receipt under a retired key the pending item is recorded
+    without one. It is never ``internal_error`` with nothing written.
     """
     _tool_name, runs = exploding_tool
     case = await _setup(client, idem_suffix="mid-attempt")
@@ -507,31 +574,26 @@ async def test_a_key_retired_inside_an_attempt_restarts_it(
                 "/mcp/messages", json=body, headers=ctx["agent_headers"]
             )
 
-    # The staging worked: the key the first attempt held was retired under it.
-    assert state["retired"] >= 1, state
+    # The staging worked: the key the first attempt held was retired under it,
+    # and the restart's resolution refused rather than re-activating it.
+    assert state["retired"] == 1, state
+    assert state["resolved"] == 1, state
 
-    assert resp.status_code == 200, resp.text
-    error = resp.json()["error"]
-    assert error["message"] != INTERNAL_ERROR_MESSAGE, error
-    assert "signing_key_not_active" not in str(error), error
-    data = error["data"]
-    assert data["receipt"]["outcome"] == "failed_unrefunded", data
-    assert data["refund_reconciliation"]["status"] == "pending", data
-
-    # The restart resolved the key again instead of replaying the retired one,
-    # and it landed on that second resolution.
-    assert state["resolved"] == 2, state
-
-    assert await _count_receipts() == 1
+    await _assert_unsigned_pending(resp)
+    assert await _count_receipts() == 0
     items = await _work_items()
     assert len(items) == 1, items
     assert items[0]["status"] == "pending", items[0]
-    assert items[0]["receipt_id"] == data["receipt"]["receipt_id"], items[0]
     assert runs["count"] == 1
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _new_key_id, items = await _sign_after_redeploy(monkeypatch)
+    assert await _count_receipts() == 1
+    assert items[0]["receipt_id"] is not None, items
 
 
 @pytest.mark.anyio
-async def test_a_key_retired_under_every_attempt_exhausts_like_contention(
+async def test_a_key_rotated_under_every_attempt_exhausts_like_contention(
     client: AsyncClient, clean_database: None, exploding_tool
 ) -> None:
     """The restart on a stale key spends the same budget and ends the same way.
@@ -541,6 +603,11 @@ async def test_a_key_retired_under_every_attempt_exhausts_like_contention(
     contended write already gives: nothing durable, named non-retryably. This
     pins the hook to the existing budget and the existing exhausted
     classification rather than a channel of its own.
+
+    Each attempt now has to meet a real rotation to a fresh key id, which the
+    process then signs under: retiring the same key in place would make the
+    next resolution refuse (``signing_key_retired``) and record the refund
+    unsigned, as the two tests above pin, rather than reach the budget.
     """
     _tool_name, runs = exploding_tool
     case = await _setup(client, idem_suffix="always-stale")
@@ -552,7 +619,7 @@ async def test_a_key_retired_under_every_attempt_exhausts_like_contention(
     )
 
     with pytest.MonkeyPatch.context() as monkeypatch:
-        state = _retire_key_after_resolution(monkeypatch, retirements=None)
+        state = _retire_key_after_resolution(monkeypatch, retirements=None, rotate=True)
         with patch(
             "app.services.agent_money.AgentMoney.refund_charge", _failing_refund
         ):

@@ -120,6 +120,24 @@ def test_stale_tip_failure_reports_branch_and_fails_scan():
     assert "branch: commit lookup failed (lookup failed)" in stderr.getvalue()
 
 
+@pytest.mark.parametrize(
+    "branch,encoded",
+    [("port/api-829", "port%2Fapi-829"), ("feature/a+b", "feature%2Fa%2Bb")],
+)
+def test_protection_paths_encode_branch_segment(branch, encoded):
+    with (
+        patch.object(settings, "gh_api", return_value={}) as api,
+        redirect_stdout(StringIO()),
+    ):
+        assert settings.check_branch_protection("repo", branch, True, []) == 0
+
+    path = f"repos/repo/branches/{encoded}/protection"
+    assert [(call.args[0], call.args[1]) for call in api.call_args_list] == [
+        ("GET", path),
+        ("PUT", path),
+    ]
+
+
 def test_protection_put_preserves_review_settings():
     rule = {
         "required_status_checks": {"strict": True, "contexts": []},

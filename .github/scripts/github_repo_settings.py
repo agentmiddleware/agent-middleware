@@ -37,6 +37,7 @@ import re
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import quote
 
 DEFAULT_REPO = "agentmiddleware/agent-middleware"
 
@@ -187,7 +188,9 @@ def check_branch_protection(
 ) -> int:
     print(f"\n== Branch protection: {repo}@{branch}")
     try:
-        rule = gh_api("GET", f"repos/{repo}/branches/{branch}/protection")
+        rule = gh_api(
+            "GET", f"repos/{repo}/branches/{quote(branch, safe='')}/protection"
+        )
     except GhError as exc:
         if exc.status != 404 and "not protected" not in str(exc).lower():
             raise
@@ -267,7 +270,9 @@ def check_branch_protection(
         **passthrough,
     }
     if apply:
-        gh_api("PUT", f"repos/{repo}/branches/{branch}/protection", body)
+        gh_api(
+            "PUT", f"repos/{repo}/branches/{quote(branch, safe='')}/protection", body
+        )
         print("  applied")
         return 0
     print("  would PUT:")

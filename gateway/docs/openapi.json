@@ -3369,8 +3369,8 @@
         "tags": [
           "MCP"
         ],
-        "summary": "Mcp Json-Rpc Messages",
-        "description": "Legacy project JSON-RPC endpoint, kept for existing clients and the local proof scripts. It does not implement the standard MCP initialization lifecycle. Check `/.well-known/agent.json` before assuming the standard MCP Streamable HTTP endpoint at POST /mcp is available; both transports run the same governed permit→meter→receipt path when enabled.",
+        "summary": "Deprecated: legacy MCP JSON-RPC messages (use POST /mcp)",
+        "description": "Deprecated in favor of the standard MCP Streamable HTTP endpoint at POST /mcp. Legacy project JSON-RPC endpoint, kept for existing clients and the local proof scripts. It does not implement the standard MCP initialization lifecycle. Check `/.well-known/agent.json` before assuming the standard MCP Streamable HTTP endpoint at POST /mcp is available; both transports run the same governed permit→meter→receipt path when enabled.",
         "operationId": "MCP_JSON_RPC_Messages_mcp_messages_post",
         "deprecated": true,
         "security": [
@@ -7544,6 +7544,37 @@
           "note": {
             "type": "string",
             "title": "Note"
+          },
+          "permit_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Id",
+            "description": "Short-lived permit scoped to demo_tool only, or null when demo_tool is not in the demo allowlist."
+          },
+          "permit_expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Expires At",
+            "description": "Expiry of permit_id (ISO 8601, UTC)."
+          },
+          "demo_tool": {
+            "type": "string",
+            "title": "Demo Tool",
+            "description": "The only tool permit_id authorizes.",
+            "default": "partner.echo"
           }
         },
         "type": "object",

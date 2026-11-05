@@ -113,7 +113,13 @@ async def test_issued_key_shape_wallets_and_hash(
         "budget_credits",
         "base_url",
         "note",
+        "permit_id",
+        "permit_expires_at",
+        "demo_tool",
     }
+    assert body["permit_id"] is None
+    assert body["permit_expires_at"] is None
+    assert body["demo_tool"] == "partner.echo"
     assert body["api_key"].startswith("b2a_")
     assert body["key_prefix"] == body["api_key"][:8]
     assert body["tenant"] == "demo"

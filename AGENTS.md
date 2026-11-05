@@ -33,7 +33,7 @@ while IFS= read -r project; do
   uv run --directory "$project" --no-project --isolated --with "ruff==${RUFF_VERSION}" ruff check .
   uv run --directory "$project" --no-project --isolated --with "ruff==${RUFF_VERSION}" ruff format --check .
 done < <(python3 .github/scripts/detect_projects.py | sed -n 's/^python=//p' | python3 -c 'import json, sys; print(*json.load(sys.stdin), sep="\n")')
-uv run --directory gateway --no-project --isolated --python 3.12 --with-requirements requirements.txt --with-editable '../sdk/python[verify]' --with 'mypy==2.4.0' mypy app/
+uv run --directory gateway --no-project --isolated --python 3.12 --with-requirements requirements.txt --with-editable '../sdk/python[verify]' --with 'mypy==2.4.1' mypy app/
 uv run --no-project --isolated --python 3.12 --with-editable './sdk/python[verify]' python verifier/check_vectors.py
 ```
 
@@ -50,7 +50,8 @@ uv build sdk/python --out-dir /tmp/amw-build
 ### Maintainer rules
 
 - Do not use em dashes or en dashes in user facing copy.
-- Use real data only. Do not create synthetic data.
+- Use real data only. Do not create synthetic data in product code, shipped fixtures, docs, examples, or user facing copy: no invented customers, wallets, keys, receipts, ledger entries, metrics, or claims.
+- Tests may supply their own inputs and inject faults. Tool arguments, client chosen idempotency keys, fault messages, and reserved documentation addresses (RFC 5737, RFC 3849) are not synthetic data. Anything the product records, such as a wallet, debit, ledger entry id, receipt, record id, stored response, or signature, must come from the product and not be written by hand.
 - Do not force push.
 - Do not use admin merge.
 - Never touch the archived `agent-middleware-api` repository.

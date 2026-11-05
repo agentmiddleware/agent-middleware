@@ -110,10 +110,18 @@ def echo_tools():
         registry.unregister_local("partner.other")
 
 
+# Permits minted by POST /v1/demo/keys itself; these tests count only the
+# permits a call auto-mints.
+_ISSUED_PERMIT_IDS: set[str] = set()
+
+
 async def _demo_key(client: AsyncClient) -> dict:
     response = await client.post("/v1/demo/keys", json={})
     assert response.status_code == 201, response.text
-    return response.json()
+    body = response.json()
+    if body["permit_id"]:
+        _ISSUED_PERMIT_IDS.add(body["permit_id"])
+    return body
 
 
 def _request_body(
@@ -205,7 +213,7 @@ async def _permits_for(wallet_id: str) -> list[PermitModel]:
         rows = await session.execute(
             select(PermitModel).where(PermitModel.subject_wallet_id == wallet_id)
         )
-        return list(rows.scalars())
+        return [p for p in rows.scalars() if p.permit_id not in _ISSUED_PERMIT_IDS]
 
 
 @pytest.mark.anyio

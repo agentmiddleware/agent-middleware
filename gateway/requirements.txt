@@ -43,6 +43,6 @@ aiosqlite>=0.22.1      # Async SQLite driver for testing
 # not install the linter. mypy stays an exact pin so this file cannot float
 # the type checker ahead of CI (MYPY_VERSION in .github/workflows/ci.yml).
 pytest>=9.2.0
-pytest-asyncio>=1.4.0
+pytest-asyncio>=1.4.1
 pytest-cov>=7.1.0
-mypy==2.4.0            # Type checking. Must match requirements-dev.txt and MYPY_VERSION
+mypy==2.4.1            # Type checking. Must match requirements-dev.txt and MYPY_VERSION

@@ -42,6 +42,7 @@ from failure_lab.configurations import (
     Configuration,
     LabEnvironment,
     Target,
+    UnsafeTargetError,
     configured_target,
 )
 from failure_lab.identity import OperationIdentity, new_business_operation_id
@@ -284,6 +285,31 @@ class ScenarioResult:
         }
 
 
+def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
+    """The exceptions inside any nesting of ``ExceptionGroup``."""
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for inner in exc.exceptions for leaf in _leaf_exceptions(inner)]
+    return [exc]
+
+
+def _error_observation(exc: BaseException) -> str:
+    """The observation for a configuration that raised instead of returning.
+
+    The downstream runs inside the MCP session manager's task group, so an
+    exception from a scenario arrives wrapped in an ``ExceptionGroup`` whose
+    own message says nothing. Report what is inside it, and name a target
+    safety refusal as what it is: the arm declined to run, which is not a
+    harness fault.
+    """
+    leaves = _leaf_exceptions(exc)
+    for leaf in leaves:
+        if isinstance(leaf, UnsafeTargetError):
+            return f"target safety fuse: {leaf}"
+    return "harness error: " + "; ".join(
+        f"{type(leaf).__name__}: {leaf}" for leaf in leaves
+    )
+
+
 class Scenario:
     """Base class. Subclasses implement :meth:`run_configuration`."""
 
@@ -367,7 +393,7 @@ class Scenario:
                     label=CONFIGURATION_LABELS[configuration],
                     verdict=Verdict.ERROR,
                     expectation=self.expected.get(configuration.value, ""),
-                    observation=f"harness error: {type(exc).__name__}: {exc}",
+                    observation=_error_observation(exc),
                     counters=Counters(),
                     error="".join(traceback.format_exception(exc))[-4000:],
                 )

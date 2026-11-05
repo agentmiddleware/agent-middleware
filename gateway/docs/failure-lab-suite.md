@@ -390,6 +390,22 @@ not own.
   and signing seed in a temporary directory.
 - No external network requests. Any external-target mode requires an explicit
   opt-in that is off by default.
+- An arm that sends a payload nobody authorized, with no gateway in its path,
+  runs only against the lab's own simulated tool. `T02` on the two direct
+  configurations resubmits a spent key with a 100x amount, and under
+  `A_direct_naive` nothing refuses it at all. Before the first call,
+  ``require_in_process_downstream`` inspects the transport the agent's HTTP
+  client actually sends through. It must be bound by object identity, not by a
+  URL or a setting, to the target's own downstream app, with no mount routing
+  any URL elsewhere, and that downstream must carry the lab's own
+  ``SimulatedRefundService``. Only a ``DirectAgent`` itself passes; a subclass
+  or any other agent class is refused, because an external adapter would most
+  naturally be written as one. The transport and the service are held to the
+  same exact class, since a subclass of either can keep the right app and
+  still send the bytes elsewhere. Otherwise it raises ``UnsafeTargetError``:
+  the configuration is recorded as `ERROR`, named as the fuse, and nothing is
+  sent. The gateway configurations are deliberately not fused: the gateway's
+  refusal before dispatch is what they verify.
 - Deterministic cleanup: run directories are removed on exit, including on
   failure.
 - Secrets are redacted from everything written to disk or served over HTTP.

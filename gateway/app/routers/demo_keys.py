@@ -15,14 +15,17 @@ from ..core.config import get_settings
 from ..core.rate_limiter import _client_id
 from ..services.demo_tenant import (
     DEMO_TENANT_LABEL,
+    DEMO_TOOL,
     ISSUE_SCOPE_IP,
     ISSUANCE_RATE_LIMITED,
     ISSUANCE_UNAVAILABLE,
     check_issuance_limits,
     demo_key_funnel,
     log_demo_event,
+    mint_demo_issue_permit,
     mint_demo_keypair,
 )
+from ..services.permits import PermitError
 
 router = APIRouter(prefix="/v1/demo", tags=["Demo"])
 admin_router = APIRouter(prefix="/v1/admin/demo-keys", tags=["Demo"])
@@ -96,6 +99,17 @@ class DemoKeyIssueResponse(BaseModel):
     budget_credits: Decimal
     base_url: str = Field(description="API base URL hint for SDK callers.")
     note: str
+    permit_id: str | None = Field(
+        default=None,
+        description="Short-lived permit scoped to demo_tool only, or null "
+        "when demo_tool is not in the demo allowlist.",
+    )
+    permit_expires_at: datetime | None = Field(
+        default=None, description="Expiry of permit_id (ISO 8601, UTC)."
+    )
+    demo_tool: str = Field(
+        default=DEMO_TOOL, description="The only tool permit_id authorizes."
+    )
 
 
 class DemoKeyFunnelRow(BaseModel):
@@ -226,6 +240,19 @@ async def issue_demo_key(
         key_id=minted["key_id"],
         wallet_id=minted["wallet_id"],
     )
+    try:
+        permit = await mint_demo_issue_permit(minted)
+    except PermitError as exc:
+        log_demo_event(
+            "demo_issue_permit_failed", key_id=minted["key_id"], reason=exc.reason
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": ISSUANCE_UNAVAILABLE,
+                "message": "Demo issuance is temporarily unavailable. Try again shortly.",
+            },
+        ) from exc
     product_analytics.track_signup(minted["sponsor_wallet_id"], method="demo_key")
     base_url = settings.PUBLIC_URL.rstrip("/") if settings.PUBLIC_URL else ""
     return DemoKeyIssueResponse(
@@ -240,6 +267,9 @@ async def issue_demo_key(
         max_uses=minted["max_uses"],
         budget_credits=minted["budget_credits"],
         base_url=base_url,
+        permit_id=permit["permit_id"] if permit else None,
+        permit_expires_at=permit["expires_at"] if permit else None,
+        demo_tool=DEMO_TOOL,
         note=(
             "Store the api_key now; it is shown only once. This key is "
             "confined to the demo tenant: it can only ever act on "

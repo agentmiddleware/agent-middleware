@@ -3183,7 +3183,18 @@ async def _execute_registered_tool_inner(
                         ok=False,
                         error="refund_failed",
                         metadata={
-                            "receipt_id": receipt_payload["receipt_id"],
+                            "receipt_id": (
+                                receipt_payload["receipt_id"]
+                                if receipt_payload is not None
+                                else None
+                            ),
+                            # Only an unsigned receipt adds a key, so the
+                            # signed case keeps its existing audit shape.
+                            **(
+                                {"receipt_status": "unsigned"}
+                                if receipt_payload is None
+                                else {}
+                            ),
                             "permit_id": permit_model.permit_id,
                             "ledger_entry_id": charge_result.entry_id,
                             "credits": str(credits_charged),
@@ -4536,8 +4547,13 @@ async def _finalize_unrefunded_failure(
     response_hash_override: str | None = None,
     approval_id: str | None = None,
     counterparty: str | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Persist the signed failure and its exact-once operator work item.
+
+    The receipt payload is ``None`` when the receipt could not be signed (the
+    signing key became unusable after the call was admitted). The work item is
+    recorded all the same, marked ``receipt_status: unsigned``, and a replica
+    whose key can sign signs the receipt later.
 
     Both call sites reach here having already charged the caller, run the tool
     and failed the refund, so this is unconditionally a post-effects site --
@@ -4580,6 +4596,13 @@ async def _finalize_unrefunded_failure(
         # losses at the other post-effects sites, and it still may not be
         # called retryable: the charge stands and the tool already ran.
         raise _receipt_contention_after_effects() from exc
+    if receipt is None:
+        logger.error(
+            "mcp_refund_reconciliation_receipt_unsigned ledger_entry_id=%s wallet_id=%s",
+            ledger_entry_id,
+            wallet_id,
+        )
+        return None, reconciliation
     receipt_payload = _receipt_response_payload(receipt)
     return receipt_payload, reconciliation
 

@@ -25,9 +25,15 @@ for evaluators in [`INTEROP.md`](INTEROP.md).
 
 - **Signature:** Ed25519 over the UTF-8 bytes of `signing_input`, exactly as
   transmitted. Verifiers must not re-serialize before verifying.
-- **Canonical JSON (`awi-canonical-json/1`):** object keys sorted at every
-  level, no insignificant whitespace (`,` and `:` separators), non-ASCII
-  escaped as lowercase `\uXXXX`.
+- **Canonical JSON (`awi-canonical-json/1`):** RFC 8785 (JCS) over JSON-native
+  values: ECMAScript number serialization, object keys sorted by UTF-16 code
+  units, UTF-8 string contents with only the JCS escapes, no insignificant
+  whitespace. `Decimal` / `datetime` values are mapped to strings before JCS
+  (Appendix D/E). The profile name stays `awi-canonical-json/1`; it does not
+  distinguish pre-JCS vs JCS byte layouts. Verifiers that check the transmitted
+  `signing_input` bytes are unaffected. Gateway re-serializing verifiers try
+  JCS first, then the pre-cutover `json.dumps` form, so historical float and
+  non-ASCII signatures keep verifying.
 - **Amounts and timestamps:** credit amounts and timestamps are strings before
   they are signed. Amount strings are fixed point, with no exponent and with
   trailing zeros removed (`2.50` is signed as `2.5`, `10.00` as `10`).
@@ -38,9 +44,8 @@ for evaluators in [`INTEROP.md`](INTEROP.md).
   payload *without* the `payload_hash` member. It is itself part of the signed
   bytes, so the signature covers it: editing it without re-signing is
   `invalid`. Verifiers treat it as advisory and never recompute it, because
-  signed payloads may carry JSON numbers (floats, exponents, integers above
-  2^53) whose rendering differs between languages, and re-serializing the
-  parsed payload would reject genuine receipts.
+  signed payloads may carry JSON numbers whose pre-image must stay verbatim,
+  and re-serializing a parsed payload would reject genuine receipts.
 - **`kid`:** the signing key id, inside the signed payload. Key selection uses
   the signed `kid`, never the unauthenticated envelope.
 

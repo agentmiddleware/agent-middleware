@@ -255,7 +255,9 @@ missing control.
   anonymous callers get 429 until the window resets, and callers with a key
   are unaffected. Callers that share an egress
   address (a corporate NAT or proxy) still share one per-client anonymous
-  bucket.
+  bucket. Behind a reverse proxy or load balancer, every caller shares the
+  proxy's address until `FORWARDED_ALLOW_IPS` names it; see the forwarded
+  address contract under unaccepted credentials below.
 - **Readiness:** `/health/ready` has its own per-client and route-wide
   budgets and ignores credential headers, so traffic on other routes, anonymous
   or keyed, cannot consume the readiness budget. Readiness requests themselves
@@ -299,9 +301,58 @@ missing control.
   - A request whose credentials the app accepts leaves the bucket exactly as
     it found it. Client identity is the ingress peer address (Railway's
     `X-Real-IP` only where the platform marker is present, per the public-MCP
-    rule above), so callers sharing one egress address share that bucket — and
+    rule above), so callers sharing one egress address share that bucket, and
     callers spread across many source addresses get one such bucket each. A
     distributed flood is still the edge's job.
+  - **Forwarded address contract.** The client address is the connection peer
+    as the ASGI server reports it. `docker_entrypoint.sh` starts uvicorn
+    without `--forwarded-allow-ips`, so uvicorn trusts forwarding headers only
+    from `127.0.0.1` and `::1` (its default, or the `FORWARDED_ALLOW_IPS`
+    environment variable when set). Behind a reverse proxy, load balancer or
+    Kubernetes ingress that is not on loopback, every caller therefore shares
+    the proxy's address, and the per-address buckets above (anonymous,
+    readiness and this one) become one deployment-wide bucket for all of them.
+    Behind a shared address, a caller with a valid key of any kind can then
+    receive this bucket's `429` while other callers send invalid keys. No key
+    class is exempt from it.
+    To count real client addresses, set `FORWARDED_ALLOW_IPS` to the exact
+    address or addresses of your ingress, or to a CIDR range that covers it
+    (uvicorn accepts both, comma separated). Use the narrowest CIDR that
+    covers only your ingress peers. A catch-all range (`0.0.0.0/0` or
+    `::/0`) trusts every peer of that address family, and for entries of that
+    family uvicorn then takes the left-most one, exactly as it does for `*`,
+    so do not use one. Uvicorn reads the client from `X-Forwarded-For` only on
+    connections from the trusted addresses, and it takes the right-most entry
+    that is not itself a trusted address. **That entry is the address the
+    ingress observed only if the ingress overwrites `X-Forwarded-For` with the
+    client address it saw, or appends that address to the inbound chain.** An
+    ingress that forwards the inbound header unchanged lets the caller choose
+    the address even when `FORWARDED_ALLOW_IPS` names that exact ingress, so do
+    not trust such an ingress for address-based limiting. **Do not set it to
+    `*`.** With `*`
+    uvicorn trusts every connection and takes the left-most
+    `X-Forwarded-For` entry. A caller controls that entry whenever the ingress
+    appends to the header instead of replacing it, so any caller can send its
+    own value and receive a fresh bucket per request. That holds even when the
+    application is reachable only through the ingress.
+    On the standard container launch path, set `FORWARDED_ALLOW_IPS` in the
+    process environment of the container that runs uvicorn. If a command
+    override passes uvicorn's `--forwarded-allow-ips` option instead, that
+    option takes precedence over the environment variable. The uvicorn
+    command line also reads `UVICORN_FORWARDED_ALLOW_IPS` as the value of
+    that option, so it has the same effect and the same precedence, and it
+    must not be set to `*` either. The gateway application does not read
+    `FORWARDED_ALLOW_IPS` from `.env` itself. A `.env` file reaches uvicorn only
+    when whatever launches the container loads it into the process
+    environment. The Compose file in this repository does that
+    (`env_file: .env`), so on that stack a value in `.env` applies, and the
+    same rules hold for it: never `*`, `0.0.0.0/0` or `::/0`. Elsewhere a
+    `.env` file the launcher does not load has no effect. **No setting is
+    needed on Railway.** There the gateway reads the single canonical `X-Real-IP` value, as described
+    above, under Railway's platform marker. The setting applies to other
+    ingress. This document does not assume any other platform sets `X-Real-IP`.
+    The gateway does not refuse to start without a trusted-proxy setting.
+    Whether it should is a maintainer decision.
 - **Counted responses** — including `401`s — carry `X-RateLimit-Limit`,
   `X-RateLimit-Remaining`, and `X-RateLimit-Reset`. Remaining dropping from
   119 toward 80 with no `429` means the budget has not been reached.

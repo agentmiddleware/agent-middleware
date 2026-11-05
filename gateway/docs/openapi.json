@@ -7544,6 +7544,37 @@
           "note": {
             "type": "string",
             "title": "Note"
+          },
+          "permit_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Id",
+            "description": "Short-lived permit scoped to demo_tool only, or null when demo_tool is not in the demo allowlist."
+          },
+          "permit_expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Expires At",
+            "description": "Expiry of permit_id (ISO 8601, UTC)."
+          },
+          "demo_tool": {
+            "type": "string",
+            "title": "Demo Tool",
+            "description": "The only tool permit_id authorizes.",
+            "default": "partner.echo"
           }
         },
         "type": "object",

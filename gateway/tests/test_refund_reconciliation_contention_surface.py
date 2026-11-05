@@ -72,7 +72,8 @@ from app.services.refund_reconciliation import (
 )
 from app.services.receipts import ReceiptWriteContendedError
 from app.services.service_registry import get_service_registry
-from app.services.signing_keys import get_signing_key_service
+from app.services import signing_keys as signing_keys_module
+from app.services.signing_keys import SigningKeyService, get_signing_key_service
 from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
 
 TOOL_COST = 2.0
@@ -201,11 +202,11 @@ def _retire_key_after_resolution(
     """Retire the signing key inside ``create_pending``'s attempt, after resolution."""
     real_get_signing_key_service = reconciliation_module.get_signing_key_service
     state = {"resolved": 0, "retired": 0}
-    # A rotation moves the process-wide service to a new key id; put it back
-    # when the test ends so later tests sign under the key they expect.
-    real_service = real_get_signing_key_service()
-    real_service._public_key_b64()  # settle an ephemeral key's own id first
-    monkeypatch.setattr(real_service, "_key_id", real_service._key_id)
+    # A rotation moves the signing service it runs on to a new key id. Run it
+    # on a separate instance with the same key, installed as the module's
+    # service, so the process-wide one is never mutated and is back in place
+    # when the test ends.
+    _install_signing_service(monkeypatch, _copy_of_signing_service())
 
     def patched_get_signing_key_service():
         return _KeyRetiredAfterResolution(
@@ -355,19 +356,34 @@ async def _count_receipts() -> int:
         )
 
 
+def _copy_of_signing_service() -> SigningKeyService:
+    """A separate service instance with the current key id and key material."""
+    current = get_signing_key_service()
+    current._public_key_b64()  # settle an ephemeral key's own id first
+    copy = SigningKeyService()
+    copy._private_key = current._private_key
+    copy._key_id = current._key_id
+    return copy
+
+
+def _install_signing_service(monkeypatch, service: SigningKeyService) -> None:
+    """Make ``service`` the module's signing service until the test ends."""
+    monkeypatch.setattr(signing_keys_module, "_signing_key_service", service)
+
+
 def _redeploy_with_new_key(monkeypatch) -> str:
-    """Give the process-wide signing service a new key id and key material.
+    """Install a signing service with a new key id and new key material.
 
     This is what restoring a replica left on a retired key looks like: it is
-    redeployed with the key the rotation moved to. The monkeypatch puts the
-    old identity back when the test ends.
+    redeployed with the key the rotation moved to. The original service is
+    back in place when the test ends.
     """
-    service = get_signing_key_service()
-    service._public_key_b64()
-    new_key_id = f"{service._key_id}-redeployed"
-    monkeypatch.setattr(service, "_private_key", Ed25519PrivateKey.generate())
-    monkeypatch.setattr(service, "_key_id", new_key_id)
-    return new_key_id
+    current_key_id = _copy_of_signing_service()._key_id
+    redeployed = SigningKeyService()
+    redeployed._private_key = Ed25519PrivateKey.generate()
+    redeployed._key_id = f"{current_key_id}-redeployed"
+    _install_signing_service(monkeypatch, redeployed)
+    return redeployed._key_id
 
 
 async def _assert_unsigned_pending(resp: Any) -> None:

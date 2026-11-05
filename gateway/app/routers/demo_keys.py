@@ -24,7 +24,9 @@ from ..services.demo_tenant import (
     log_demo_event,
     mint_demo_issue_permit,
     mint_demo_keypair,
+    revoke_demo_issue,
 )
+from ..services.demo_tenant_boundary import DemoPermitDenied, KeyAllowlistDenied
 from ..services.permits import PermitError
 
 router = APIRouter(prefix="/v1/demo", tags=["Demo"])
@@ -242,9 +244,15 @@ async def issue_demo_key(
     )
     try:
         permit = await mint_demo_issue_permit(minted)
-    except PermitError as exc:
+    except (PermitError, DemoPermitDenied, KeyAllowlistDenied) as exc:
+        # The caller never sees this key, so revoke it rather than leave an
+        # inaccessible live key counting toward DEMO_MAX_LIVE_KEYS.
+        revoked = await revoke_demo_issue(minted, reason="demo_issue_permit_failed")
         log_demo_event(
-            "demo_issue_permit_failed", key_id=minted["key_id"], reason=exc.reason
+            "demo_issue_permit_failed",
+            key_id=minted["key_id"],
+            reason=getattr(exc, "reason", None) or getattr(exc, "error", None),
+            key_revoked=revoked,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

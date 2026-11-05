@@ -15,12 +15,14 @@ from cryptography.hazmat.primitives.serialization import (
     PrivateFormat,
 )
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.db.database import get_session_factory
-from app.db.models import PermitModel
+from app.db.models import APIKeyModel, PermitModel
 from app.main import app
-from app.services.demo_tenant import _memory_counters
+from app.services.demo_tenant import _memory_counters, count_live_demo_keys
+from app.services.permits import PermitCreationRejectedError, get_permit_service
 from app.services.signing_keys import get_signing_key_service
 
 RATE_LIMIT_HEADERS = ("X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset")
@@ -186,3 +188,63 @@ async def test_demo_key_anonymous_per_ip_rate_limit(
     async with _client("203.0.113.244") as other:
         third = await other.post("/v1/demo/keys", json={})
     assert third.status_code == 201, third.text
+
+
+@pytest.mark.anyio
+async def test_demo_key_permit_credits_bounded_by_wallet_funding(
+    clean_database, demo_settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Wallet funding below the permit cap must shrink the permit, not 503.
+    monkeypatch.setattr(demo_settings, "DEMO_WALLET_CREDITS", Decimal("1"))
+    monkeypatch.setattr(demo_settings, "DEMO_MAX_PERMIT_CREDITS", Decimal("3"))
+    async with _client("203.0.113.245") as client:
+        response = await client.post("/v1/demo/keys", json={})
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert Decimal(str(body["budget_credits"])) == Decimal("1")
+    permit = await _permit(body["permit_id"])
+    assert permit.max_credits == Decimal("1")
+    assert permit.status == "active"
+
+
+@pytest.mark.anyio
+async def test_demo_key_permit_failure_revokes_key_and_frees_live_slot(
+    clean_database, demo_settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(demo_settings, "DEMO_MAX_LIVE_KEYS", 1)
+    service = get_permit_service()
+    real_create_permit = service.create_permit
+
+    async def failing_create_permit(*args, **kwargs):
+        raise PermitCreationRejectedError("injected_permit_failure")
+
+    monkeypatch.setattr(service, "create_permit", failing_create_permit)
+    async with _client("203.0.113.246") as client:
+        failed = await client.post("/v1/demo/keys", json={})
+    assert failed.status_code == 503, failed.text
+    assert failed.json()["detail"]["error"] == "demo_issuance_unavailable"
+    assert "api_key" not in failed.text
+
+    # The key minted before the permit failure is revoked, not left live.
+    async with get_session_factory()() as session:
+        keys = (
+            (
+                await session.execute(
+                    select(APIKeyModel).where(APIKeyModel.tenant == "demo")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(keys) == 1
+    assert keys[0].status == "revoked"
+    assert keys[0].revoked_at is not None
+    assert keys[0].revoke_reason == "demo_issue_permit_failed"
+    assert await count_live_demo_keys() == 0
+
+    # With DEMO_MAX_LIVE_KEYS=1 the failed issuance must not block the next one.
+    monkeypatch.setattr(service, "create_permit", real_create_permit)
+    async with _client("203.0.113.246") as client:
+        retry = await client.post("/v1/demo/keys", json={})
+    assert retry.status_code == 201, retry.text
+    assert retry.json()["permit_id"]

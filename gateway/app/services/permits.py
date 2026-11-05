@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 from sqlalchemy import case, func, or_, select, update as sa_update
@@ -45,6 +45,26 @@ from app.services.signing_keys import (
     legacy_canonical_json,
     sha256_hex,
 )
+
+if TYPE_CHECKING:
+    from app.services.mcp_dispatch_reconciliation import UpstreamDispatchStatusLookup
+
+
+def register_permit_upstream_status_lookup(
+    upstream_origin: str, lookup: UpstreamDispatchStatusLookup
+) -> None:
+    """Register a read-only async action-permit lookup in the MCP registry.
+
+    The origin must exactly match the stored dispatch origin. Action-permit
+    attempts must match on invocation_id: forwarded_idempotency_key is None.
+    Delegated registration validates async callables and replaces prior lookups.
+    This helper does not reconcile budgets or write or update receipts.
+    """
+    # Local import avoids the reconciliation service's PermitService import cycle.
+    from app.services.mcp_dispatch_reconciliation import register_upstream_status_lookup
+
+    register_upstream_status_lookup(upstream_origin, lookup)
+
 
 logger = logging.getLogger(__name__)
 

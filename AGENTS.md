@@ -33,7 +33,7 @@ while IFS= read -r project; do
   uv run --directory "$project" --no-project --isolated --with "ruff==${RUFF_VERSION}" ruff check .
   uv run --directory "$project" --no-project --isolated --with "ruff==${RUFF_VERSION}" ruff format --check .
 done < <(python3 .github/scripts/detect_projects.py | sed -n 's/^python=//p' | python3 -c 'import json, sys; print(*json.load(sys.stdin), sep="\n")')
-uv run --directory gateway --no-project --isolated --python 3.12 --with-requirements requirements.txt --with-editable '../sdk/python[verify]' --with 'mypy==2.4.0' mypy app/
+uv run --directory gateway --no-project --isolated --python 3.12 --with-requirements requirements.txt --with-editable '../sdk/python[verify]' --with 'mypy==2.4.1' mypy app/
 uv run --no-project --isolated --python 3.12 --with-editable './sdk/python[verify]' python verifier/check_vectors.py
 ```
 

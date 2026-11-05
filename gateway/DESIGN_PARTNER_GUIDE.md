@@ -84,6 +84,13 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
   caller can only spend its own budget, plus an anonymous backstop at 20 times
   the limit for the whole deployment (`RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER`).
   Callers behind one shared egress address share that address's bucket.
+  On Railway no setting is needed: the gateway reads the platform's
+  `X-Real-IP`. Behind any other reverse proxy or load balancer that is not on
+  loopback, set `FORWARDED_ALLOW_IPS` in the container environment to its exact
+  address or the narrowest CIDR range covering it (never `*`, `0.0.0.0/0` or
+  `::/0`) so the gateway sees real client addresses; otherwise all callers
+  share the proxy's address. The proxy must overwrite `X-Forwarded-For` with
+  the client address it saw, or append that address to the inbound chain.
   `/health/dependencies` is counted here. With shared Redis counters these
   buckets are shared across workers and replicas; without `REDIS_URL` each
   worker or replica keeps its own per-client buckets and its own backstop.
@@ -96,7 +103,9 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
   request does not hand you a fresh 120. A key the deployment accepts on an
   authenticated route never touches that bucket, and neither does a permit
   denial: being refused on scope is normal governed traffic, not a bad
-  credential.
+  credential. Behind a shared address, a valid key can still receive this
+  `429` while other callers send invalid keys; setting `FORWARDED_ALLOW_IPS`
+  (above) so real client addresses are visible removes the shared address.
 - **Window accounting:** the shared Redis limiter counts fixed 60-second
   buckets; the in-memory limiter counts a rolling 60 seconds. The in-memory
   limiter counts whenever the deployment has no `REDIS_URL`, in any

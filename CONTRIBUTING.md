@@ -42,10 +42,10 @@ Local lint and type-check must use the blessed versions in
 `gateway/requirements-dev.txt`. CI installs those same versions
 (`.github/workflows/ci.yml`):
 
-- ruff `0.17.2` (`RUFF_VERSION` in `.github/workflows/ci.yml` and `.github/workflows/lint.yml`)
-- mypy `2.4.0` (`MYPY_VERSION`)
+- ruff `0.17.3` (`RUFF_VERSION` in `.github/workflows/ci.yml` and `.github/workflows/lint.yml`)
+- mypy `2.4.1` (`MYPY_VERSION`)
 
-`gateway/requirements.txt` pins mypy to `2.4.0` as well, so an application
+`gateway/requirements.txt` pins mypy to `2.4.1` as well, so an application
 install cannot float the type checker. Bump the dev lock, that requirements
 pin, and the workflow env vars in the same change. `gateway/scripts/core_quality_gate.sh`
 runs `ruff check .` and `mypy app/` with those pins.

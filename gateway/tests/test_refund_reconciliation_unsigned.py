@@ -280,3 +280,48 @@ async def get_receipt_service_verifies(receipt_id: str) -> bool:
         receipt = await session.get(ReceiptModel, receipt_id)
         assert receipt is not None
         return await get_receipt_service().verify_model(receipt, session=session)
+
+
+@pytest.mark.anyio
+async def test_a_tampered_stored_payload_is_never_signed(
+    client: AsyncClient, clean_database: None, key_lost_mid_call_tool
+) -> None:
+    """The signer refuses a payload that no longer hashes to the caller's response.
+
+    The unsigned item keeps the response payload and, separately, its hash as
+    recorded when the call failed. If the stored payload changes afterwards (a
+    JSON round trip that alters a value, or an edit), signing it would put the
+    gateway's signature on a response the caller never got. The item stays
+    unsigned and the record is left exactly as it was.
+    """
+    await _run_call_that_loses_its_key(
+        client, key_lost_mid_call_tool, key="refund-unsigned-tampered"
+    )
+    record = await _record_for("refund-unsigned-tampered")
+    stored = json.loads(record.response_json or "{}")
+    # The injected fault: change the stored payload, not the recorded hash.
+    stored[UNSIGNED_RECEIPT_KEY]["inputs"]["response_payload"] = {
+        "error": "not what the caller was told"
+    }
+    tampered_json = json.dumps(stored)
+    async with get_session_factory()() as session:
+        row = await session.get(IdempotencyRecordModel, record.record_id)
+        assert row is not None
+        row.response_json = tampered_json
+        session.add(row)
+        await session.commit()
+    receipts_before = await _count(ReceiptModel)
+    # A key that can sign, so the hash check is the only thing that refuses.
+    await _set_key_status(key_lost_mid_call_tool["key_id"], "active")
+
+    (
+        signed,
+        still_unsigned,
+    ) = await get_refund_reconciliation_service().sign_unsigned_pending()
+
+    assert (signed, still_unsigned) == (0, 1)
+    assert await _count(ReceiptModel) == receipts_before
+    after = await _record_for("refund-unsigned-tampered")
+    assert after.response_reference is None
+    assert after.response_json == tampered_json
+    assert after.status_code == record.status_code

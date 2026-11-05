@@ -62,7 +62,14 @@ Each claim points at where it is stated or implemented in this repository.
   savings, or reliability numbers. Do not cite any.
 - **No uptime promise.** No public uptime SLA, RTO, RPO, tenant isolation
   guarantee, or immutable ledger claim.
-- **MCP only.** Governed adapters beyond MCP are not implemented.
+- **MCP is the default governed surface.** Governed HTTP execution routes
+  exist in [gateway/app/routers/awi.py](../gateway/app/routers/awi.py) (for
+  example `POST /v1/awi/execute`, which requires `X-Permit-Id` and
+  `Idempotency-Key`), but they are proof surfaces. They are mounted only when
+  `ENABLE_PROOF_SURFACES` is true, which defaults to false
+  ([gateway/app/core/config.py](../gateway/app/core/config.py)) and must stay
+  false in production like environments. Do not treat them as part of the
+  default product.
 - **Not on PyPI.** The `agent-middleware` 0.5.0 package is not published yet:
   TODO(T-01). Install from source.
 - **Demo key permit fields not shipped.** `permit_id`, a permit level

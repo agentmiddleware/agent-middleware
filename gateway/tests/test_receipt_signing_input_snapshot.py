@@ -47,7 +47,7 @@ GOLDEN_DIR = Path(__file__).parent / "fixtures" / "receipt_signing_golden"
 # Fixed 32-byte seed; NOT a production key. Exists only to make the
 # signature pin deterministic.
 _TEST_SEED = bytes(range(32))
-_FIXED_CREATED_AT = datetime(2026, 9, 14, 17, 0, 0, tzinfo=timezone.utc)
+_FIXED_CREATED_AT = datetime(2026, 9, 16, 12, 30, 0, tzinfo=timezone.utc)
 
 
 def _base_model(**overrides) -> ReceiptModel:
@@ -56,7 +56,9 @@ def _base_model(**overrides) -> ReceiptModel:
         idempotency_record_id="idem_golden_0001",
         dispatch_attempt_id="disp_golden_0001",
         permit_id="pmt_golden_0001",
-        wallet_id="agt-golden-0001",
+        # Subject wallet of pmt_golden_0001 (was agt-golden-0001; that wallet
+        # is not on the permit, so the sample could not check against it).
+        wallet_id="agt-golden-subject",
         key_id="key_golden_0001",
         tool="golden-path-echo",
         request_hash="a" * 64,
@@ -68,6 +70,15 @@ def _base_model(**overrides) -> ReceiptModel:
         reason_code=None,
         audit_event_id="aud_golden_0001",
         approval_id=None,
+        # SHA-256 of pmt_golden_0001's golden signing_input (active_minimal).
+        permit_digest="d9b3c6d71c4ad21500425f018e7393200cd53bcfb1e9e9b520d549839181d62e",
+        # No signed-approval golden exists yet; omit approval_digest even when
+        # approval_id is set (see success_approval cases).
+        approval_digest=None,
+        counterparty="partner.example",
+        sequence=0,
+        # sequence 0: prev_receipt_digest omitted (None).
+        prev_receipt_digest=None,
         constraints_evaluated_json=None,
         created_at=_FIXED_CREATED_AT,
         signature="",

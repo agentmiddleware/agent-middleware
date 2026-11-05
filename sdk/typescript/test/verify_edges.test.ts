@@ -132,10 +132,10 @@ test("swapping signed algorithm, hash, or kid invalidates the recorded signature
 });
 
 test("canonical JSON matches the shared escaping rules", () => {
-  assert.equal(canonicalJson({ k: "\u007f" }), '{"k":"\\u007f"}');
-  assert.equal(canonicalJson({ k: "\u0080" }), '{"k":"\\u0080"}');
+  assert.equal(canonicalJson({ k: "\u007f" }), '{"k":"\u007f"}');
+  assert.equal(canonicalJson({ k: "\u0080" }), '{"k":"\u0080"}');
   assert.equal(canonicalJson({ k: "a\nb" }), '{"k":"a\\nb"}');
-  assert.equal(canonicalJson({ k: "\uD83D\uDE00" }), '{"k":"\\ud83d\\ude00"}');
+  assert.equal(canonicalJson({ k: "\uD83D\uDE00" }), '{"k":"😀"}');
 });
 
 test("a key set document without a keys list throws", () => {

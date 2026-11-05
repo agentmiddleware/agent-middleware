@@ -4,8 +4,8 @@
 What it checks: that the Ed25519 signature in the bundle verifies over the
 bundle's `signing_input` bytes with the public key named by the signed `kid`,
 that the envelope around those bytes agrees with them, that an optional
-expected issuer label matches, and that a `payload_hash` statement matches
-the signed payload. Exit 0 means verified, 1 means the bundle is well-formed
+expected issuer label matches, and and treats an embedded `payload_hash` as advisory (already covered by the
+signature over signing_input). Exit 0 means verified, 1 means the bundle is well-formed
 but does not hold together (bad signature or contradicting envelope - treat
 as tampered), 2 means verification could not run (unknown key, malformed
 input, bad usage).
@@ -25,10 +25,11 @@ SHA-256 hashes of the request and the tool's response, never the response
 body itself, and it says nothing about whether the tool's output was
 correct.
 
-This script is deliberately standalone: Python 3.9+ standard library plus
-the `cryptography` package only. It imports nothing from the gateway or its
-SDK, and it never makes a network call - the key set must already be on
-disk (pass --keys). Usage:
+This script is deliberately offline: Python 3.9+ standard library plus the
+`cryptography` package, plus the sibling `jcs.py` RFC 8785 helper published
+alongside it on /proof/. It imports nothing from the gateway or its SDK, and
+it never makes a network call - the key set must already be on disk (pass
+--keys). Download both Python files into the same directory. Usage:
 
     python3 -m pip install cryptography
     python3 verify_receipt.py --bundle receipt.json --keys trust-keys.json \
@@ -64,13 +65,34 @@ REJECTED = ("invalid", "mismatch")
 
 
 def canonical_json(payload):
-    """Sorted-key compact JSON, the byte layout the gateway signs.
+    """RFC 8785 (JCS) compact JSON, the byte layout the gateway signs."""
+    dumps_text = _load_jcs_dumps_text()
+    return dumps_text(payload)
 
-    This is not RFC 8785 JCS: Python sorts by Unicode code point and escapes
-    non-ASCII text, while JCS uses UTF-16 key order and UTF-8 output. Number
-    serialization can also differ.
-    """
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+def _load_jcs_dumps_text():
+    """Load dumps_text from sibling jcs.py (or an already-importable jcs)."""
+    try:
+        from jcs import dumps_text
+
+        return dumps_text
+    except ImportError:
+        pass
+    import importlib.util
+    from pathlib import Path
+
+    sibling = Path(__file__).resolve().parent / "jcs.py"
+    if not sibling.is_file():
+        raise SystemExit(
+            "missing sibling jcs.py next to verify_receipt.py; download both "
+            "from https://www.agentmiddleware.dev/proof/"
+        )
+    spec = importlib.util.spec_from_file_location("_amw_proof_jcs", sibling)
+    if spec is None or spec.loader is None:
+        raise SystemExit("could not load sibling jcs.py next to verify_receipt.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.dumps_text
 
 
 def _b64decode(value, urlsafe=False):
@@ -388,28 +410,11 @@ def verify_bundle(bundle, key_set, expected_issuer=None):
             {},
         )
 
-    stated_hash = payload.get("payload_hash")
-    if isinstance(stated_hash, str):
-        inner = {k: v for k, v in payload.items() if k != "payload_hash"}
-        try:
-            canonical = canonical_json(inner)
-        except (RecursionError, ValueError):
-            return (
-                "malformed",
-                "signed payload exceeds the supported JSON nesting depth",
-                None,
-                key_id,
-                {},
-            )
-        computed = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-        if computed != stated_hash:
-            return (
-                "mismatch",
-                "payload_hash does not match the signed payload",
-                None,
-                key_id,
-                {},
-            )
+    # payload_hash is advisory once the signature covers signing_input. Do not
+    # recompute it under today's JCS rules and reject: a pre-JCS float /
+    # non-ASCII signing_input verifies over its transmitted bytes, but its
+    # embedded hash was produced by the legacy serializer and will not match a
+    # fresh JCS digest of the same object tree.
 
     receipt_id = payload.get("receipt_id")
     if not isinstance(receipt_id, str) or not receipt_id:

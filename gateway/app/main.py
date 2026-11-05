@@ -49,6 +49,7 @@ from .core.product_positioning import (
     POSITIONING_TAGLINE,
 )
 from .core.rate_limiter import RateLimitMiddleware, rate_limit_discovery
+from .core.runtime_degradation import warn_if_rate_limiter_memory_only
 from .core.runtime_mode import get_simulation_modes
 from .middleware.head_method import HeadMethodMiddleware
 from .middleware.error_envelope import ErrorEnvelopeMiddleware, error_envelope
@@ -179,6 +180,7 @@ async def lifespan(app: FastAPI):
     validate_trust_mode_guardrails(settings)
     validate_api_key_hashing_config()
     warn_if_trust_mode_permissive(settings)
+    warn_if_rate_limiter_memory_only()
     # Operator-facing posture record. The unauthenticated /health/dependencies
     # payload no longer publishes per-service simulation modes when proof
     # surfaces are unmounted, so this startup line is where that truth lives

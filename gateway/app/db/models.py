@@ -870,6 +870,18 @@ class ReceiptModel(SQLModel, table=True):
     """Signed receipt for a governed MCP invocation attempt."""
 
     __tablename__ = "receipts"
+    __table_args__ = (
+        # Partial unique: multiple NULL sequences (pre-056 / non-chain) allowed.
+        # Migration 057 installs the same index; create_all needs it for SQLite tests.
+        Index(
+            "uq_receipts_permit_sequence",
+            "permit_id",
+            "sequence",
+            unique=True,
+            postgresql_where=text("sequence IS NOT NULL"),
+            sqlite_where=text("sequence IS NOT NULL"),
+        ),
+    )
 
     receipt_id: str = Field(primary_key=True, max_length=64)
     idempotency_record_id: Optional[str] = Field(
@@ -920,6 +932,23 @@ class ReceiptModel(SQLModel, table=True):
     # receipt signatures stay valid. Plain string (no FK) — the column is
     # ALTER-added and SQLite cannot add FK constraints via ALTER (see 020).
     approval_id: Optional[str] = Field(default=None, max_length=64, index=True)
+    # Digest of the signed permit this receipt ran under (SHA-256 of that
+    # permit's exact signing_input UTF-8 bytes). Signed only when set so
+    # pre-056 receipts keep verifying.
+    permit_digest: Optional[str] = Field(default=None, max_length=64)
+    # Digest of the signed approval the executor verified, when one was used.
+    # Signed only when set. Absent when no signed approval artifact exists.
+    approval_digest: Optional[str] = Field(default=None, max_length=64)
+    # Other party of the call (hostname/domain) so recipient_domain can be
+    # checked. Signed only when set.
+    counterparty: Optional[str] = Field(default=None, max_length=255)
+    # Per-permit sequence starting at 0. Signed only when set so pre-056
+    # receipts keep verifying. When sequence is 0, prev_receipt_digest is
+    # omitted.
+    sequence: Optional[int] = Field(default=None)
+    # SHA-256 of the previous receipt's exact signing_input UTF-8 bytes under
+    # the same permit. Omitted when sequence is 0 or unset.
+    prev_receipt_digest: Optional[str] = Field(default=None, max_length=64)
     # Permit schema v2: snapshot of constraints that were evaluated at invoke time
     constraints_evaluated_json: Optional[str] = Field(default=None)
     created_at: datetime = Field(

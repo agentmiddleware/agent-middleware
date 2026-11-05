@@ -495,7 +495,10 @@ async def _configured_key_row_problem() -> str | None:
     try:
         return await get_signing_key_service().configured_key_problem()
     except Exception:
-        logger.debug("signing key row check raised", exc_info=True)
+        # Not reported down here (the postgres check owns a database outage),
+        # but never silent: a failure that is not the database would otherwise
+        # leave readiness "up" with no trace of why the row went unread.
+        logger.warning("signing key row check raised", exc_info=True)
         return None
 
 

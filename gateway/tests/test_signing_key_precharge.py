@@ -29,6 +29,7 @@ from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, ReceiptModel, SigningKeyModel
 from app.main import app
 from app.schemas.billing import ServiceCategory
+from app.services import signing_keys as signing_keys_module
 from app.services.service_registry import get_service_registry
 from app.services.signing_keys import (
     SigningKeyService,
@@ -285,6 +286,55 @@ async def test_health_reports_an_unusable_key_row_without_changing_it(
 
 
 @pytest.mark.anyio
+async def test_health_reports_a_key_row_bound_to_other_key_material(
+    client: AsyncClient, clean_database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replica whose key material does not match its key id's row is down."""
+    original = await get_signing_key_service().ensure_active_key()
+    misconfigured = SigningKeyService()
+    misconfigured._private_key = Ed25519PrivateKey.generate()
+    misconfigured._key_id = original.key_id
+    monkeypatch.setattr(signing_keys_module, "_signing_key_service", misconfigured)
+
+    report = await gather_dependency_report()
+    signing_key = report["dependencies"]["signing_key"]
+    assert signing_key["status"] == "down", signing_key
+    assert signing_key["error"] == "signing_key_id_public_key_mismatch"
+
+    ready = await client.get("/health/ready")
+    assert ready.status_code == 503, ready.text
+    assert (
+        ready.json()["checks"]["signing_key"]["error"]
+        == "signing_key_id_public_key_mismatch"
+    )
+    # The probe left the row as it found it.
+    row = await _key_row(original.key_id)
+    assert row.public_key_b64 == original.public_key_b64
+    assert row.status == "active"
+
+
+@pytest.mark.anyio
+async def test_health_logs_a_key_row_read_that_fails(
+    clean_database: None,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(self: SigningKeyService) -> None:
+        raise RuntimeError("row read failed")
+
+    monkeypatch.setattr(SigningKeyService, "configured_key_problem", broken)
+    with caplog.at_level("WARNING", logger="app.core.health"):
+        report = await gather_dependency_report()
+
+    assert report["dependencies"]["signing_key"]["status"] == "up"
+    assert any(
+        record.levelname == "WARNING"
+        and record.getMessage() == "signing key row check raised"
+        for record in caplog.records
+    ), caplog.records
+
+
+@pytest.mark.anyio
 async def test_health_reports_a_usable_key_as_up(
     client: AsyncClient, clean_database: None
 ) -> None:
@@ -412,6 +462,31 @@ async def test_billing_charge_refuses_before_the_debit_and_the_key_stays_retryab
     again = await client.post(url, headers=headers)
     assert again.status_code == 200, again.text
     assert await _debits(wallet_id) == debits_before + 1
+
+
+@pytest.mark.anyio
+async def test_billing_charge_refuses_before_the_wallet_lookup(
+    client: AsyncClient, clean_database: None
+) -> None:
+    """The wallet lookup writes a signed audit event when the wallet is missing.
+
+    So the key check runs before it: an unknown wallet on a replica whose key
+    cannot sign gets the same retryable 503, not a failed audit signature.
+    """
+    key = await get_signing_key_service().ensure_active_key()
+    url = "/v1/billing/charge?wallet_id=wal-does-not-exist-000000&service=agent_comms&units=1"
+    headers = {"X-API-Key": "test-key"}
+    await _set_key_status(key.key_id, "disabled")
+
+    refused = await client.post(url, headers=headers)
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["error"] == "signing_key_unavailable"
+
+    await _set_key_status(key.key_id, "active")
+    missing = await client.post(url, headers=headers)
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["detail"]["error"] == "wallet_not_found"
 
 
 @pytest.mark.anyio

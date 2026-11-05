@@ -268,9 +268,12 @@ If the configured key is retired, disabled, bound to other key material, or
 otherwise cannot sign, the call is refused with `signing_key_unavailable`
 (JSON-RPC `-32005`, HTTP 409 on the REST invoke route, HTTP 503 on the AWI
 routes and on the billing charge route) and nothing is recorded, so the caller
-can retry the same idempotency key on a replica whose key can sign. The
-underlying reason is logged once, as a `signing_key_unavailable cause=...`
-warning from `app.services.signing_keys`.
+can retry the same idempotency key on a replica whose key can sign. On the
+billing charge route the check also runs before an idempotent replay, so a key
+whose charge already completed gets the same 503 from this replica and its
+recorded answer from a replica whose key can sign. The underlying reason is
+logged once, as a `signing_key_unavailable cause=...` warning from
+`app.services.signing_keys`.
 
 A key retired (or disabled) after that check and before the call finishes is
 only partly covered:

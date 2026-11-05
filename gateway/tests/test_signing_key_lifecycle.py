@@ -625,3 +625,27 @@ async def test_active_key_route_answers_503_when_the_configured_key_cannot_sign(
         key_set = await client.get("/.well-known/trust-keys.json")
         assert key_set.status_code == 200, key_set.text
         assert key.key_id in {k["kid"] for k in key_set.json()["keys"]}
+
+
+@pytest.mark.anyio
+async def test_rotation_back_to_a_retired_key_id_reactivates_it(clean_database):
+    """The one documented way a retired row becomes active again.
+
+    ``rotate_active_key_metadata`` to an existing (retired) target id, from an
+    instance that holds that key's material, sets the target active and
+    retires the key it rotates away from. Signing then works under the target.
+    """
+    first = _same_identity(get_signing_key_service())
+    first_key_id = (await first.ensure_active_key()).key_id
+    second_key_id = f"{first_key_id}-second"
+    await first.rotate_active_key_metadata(second_key_id)
+    assert (await _key_row(first_key_id)).status == "retired"
+
+    await first.rotate_active_key_metadata(first_key_id)
+
+    back = await _key_row(first_key_id)
+    assert back.status == "active"
+    assert back.retired_at is None
+    assert (await _key_row(second_key_id)).status == "retired"
+    _sig, kid, _hash = await first.sign_payload({"purpose": "after-rotation-back"})
+    assert kid == first_key_id

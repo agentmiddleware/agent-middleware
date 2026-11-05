@@ -380,7 +380,12 @@ sign writes the `failed_unrefunded` receipt and turns the item into an
 ordinary pending work item, which the operator list and retry then see; a
 replica that cannot sign leaves it for the next pass. Until it is signed the
 item does not appear in the operator list
-(`tests/test_refund_reconciliation_unsigned.py`).
+(`tests/test_refund_reconciliation_unsigned.py`). The unsigned item is the
+only owner of that debt: the dispatch reconciler skips an upstream attempt
+whose record carries it, as it skips one with a signed `failed_unrefunded`
+receipt, so the money is refunded once, through the operator retry. If a
+refund for the charge is already in the ledger anyway, the signer refuses and
+logs `refund_reconciliation_unsigned_already_refunded` for an operator.
 
 ## What this deliberately does not claim
 

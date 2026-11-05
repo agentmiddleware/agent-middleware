@@ -29,6 +29,25 @@ class SigningKeyError(RuntimeError):
     """Raised when trust-plane signing or verification cannot proceed."""
 
 
+class SigningKeyUnavailableError(SigningKeyError):
+    """The configured signing key cannot sign, found before any effect.
+
+    Raised only by :meth:`SigningKeyService.assert_ready_to_sign`, which the
+    governed pipelines call before they reserve budget or charge a wallet.
+    Nothing has been recorded when this is raised, so a caller may retry the
+    same idempotency key (on a replica whose key can sign). It is deliberately
+    its own type: a plain :class:`SigningKeyError` raised after a charge must
+    never be read as retryable. ``cause`` keeps the underlying reason for the
+    server log; the wire only ever carries ``reason``.
+    """
+
+    reason = "signing_key_unavailable"
+
+    def __init__(self, cause: str) -> None:
+        self.cause = cause
+        super().__init__(self.reason)
+
+
 # Names the exact byte-level contract :func:`canonical_json` implements, so an
 # independent verifier can state which rules it was written against. Bump only
 # when the bytes a signature covers change shape — never for additive fields,
@@ -322,6 +341,38 @@ class SigningKeyService:
                 self._assert_public_key_mapping(key, public_key_b64)
                 self._assert_key_not_disabled(key)
             return key
+
+    async def assert_ready_to_sign(self) -> None:
+        """Fail before any effect when the configured key cannot sign.
+
+        Runs the same resolution every signature runs (``ensure_active_key``)
+        and converts its refusal into :class:`SigningKeyUnavailableError`.
+        Governed pipelines call this before reserving budget or charging, so a
+        replica whose key is disabled, mismatched or otherwise unusable refuses
+        while nothing has moved, instead of charging and then failing to sign
+        the audit event and receipt.
+        """
+
+        try:
+            await self.ensure_active_key()
+        except SigningKeyError as exc:
+            raise SigningKeyUnavailableError(str(exc)) from exc
+
+    async def configured_key_status(self) -> str | None:
+        """Read the configured key's row status without writing anything.
+
+        Returns ``None`` when no row exists yet (the first signature creates
+        it). Raises :class:`SigningKeyError` with
+        ``signing_key_id_public_key_mismatch`` when the row is bound to other
+        key material. Used by readiness reporting, which must not mutate state.
+        """
+
+        public_key_b64 = self._public_key_b64()
+        key = await self.get_public_key(self._key_id)
+        if key is None:
+            return None
+        self._assert_public_key_mapping(key, public_key_b64)
+        return key.status
 
     async def get_active_key(self) -> SigningKeyModel:
         """Return the current active public metadata, creating it if needed."""

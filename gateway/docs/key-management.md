@@ -243,23 +243,39 @@ Rollout order that avoids the problem:
    a stale replica un-retires the old row on its next restart, signature or
    `GET /v1/signing-keys/active` request.
 
-How an operator can and cannot tell a replica is stale:
+How an operator can tell a replica is stale:
 
-- Health does not show it. The signing-key health check
-  (`validate_signing_key_configuration`) validates configuration only and
-  never reads the key row status, so a stale replica reports `up`.
-- The reactivation is silent. It writes no log line and returns no error.
-- The only visible sign is the published key set: the old `kid` flipping from
-  `retired` back to `active`.
+- `GET /health/ready` and `GET /health/dependencies` read the configured key's
+  row without writing it. A row that is `retired` or `disabled`, or that is
+  bound to other key material, reports `signing_key` as `down` with
+  `signing_key_retired`, `signing_key_disabled` or
+  `signing_key_id_public_key_mismatch`, and readiness answers 503. A load
+  balancer that gates on readiness stops sending traffic to that replica.
+- Until a retired key refuses to sign, the window is short: the next request
+  that reaches the stale replica reactivates the row, and health reports `up`
+  again. The reactivation itself writes no log line and returns no error.
+- The published key set shows it too: the old `kid` flips from `retired` back
+  to `active`.
 
-Why the code is not changed: making a retired key refuse to sign
+What a governed call does when the key cannot sign: the governed MCP
+transports (`/mcp/messages`, `/mcp/tools/{tool}/invoke` and `/mcp`) and the
+AWI HTTP routes run `SigningKeyService.assert_ready_to_sign` before they
+reserve budget or charge. If the configured key is disabled, bound to other
+key material, or otherwise cannot sign, the call is refused with
+`signing_key_unavailable` (JSON-RPC `-32005`, HTTP 409 on the REST invoke
+route, HTTP 503 on the AWI routes) and nothing is recorded, so the caller can
+retry the same idempotency key on a replica whose key can sign. A rotation
+that lands after that check and before the call finishes is not covered by
+it.
+
+Why a retired key still signs: making a retired key refuse to sign
 (`signing_key_retired`) would stop the reactivation, but the pending-refund
 path relies on it. `RefundReconciliationService.create_pending` resolves the
 signing key per attempt and restarts after a concurrent rotation, and the
 restart currently succeeds because `ensure_active_key` reactivates the key. A
 refusal there would escape as an internal error and lose both the receipt and
-the refund work item for a charge that already happened. The maintainer chose
-documentation only for now. The analysis and the parked follow-up changes are
+the refund work item for a charge that already happened. That path has to
+record the refund without a signed receipt first. The plan and its status are
 in [issue 280](https://github.com/agentmiddleware/agent-middleware/issues/280).
 
 This is documented as a known limitation in `SECURITY_LIMITATIONS.md` and

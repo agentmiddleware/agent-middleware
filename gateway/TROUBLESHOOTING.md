@@ -152,3 +152,17 @@ SQLite-only tests will still pass; PostgreSQL-specific tests skip if unavailable
 - Review [CONTRIBUTING.md](../CONTRIBUTING.md) for development setup and `make` targets.
 
 If you believe you've found a bug, use the [bug report template](https://github.com/agentmiddleware/agent-middleware/issues/new?template=bug.md). For security issues, see [SECURITY.md](../SECURITY.md).
+
+For uncertain AWI HTTP callbacks, deployments can register an async, read-only
+`register_awi_status_lookup(lookup)` from `app.services.awi_http_governance`.
+The default is no hook. Return `AwiStatusAnswer("not_dispatched")` only with
+proof that the action did not and cannot later execute; this uses the existing
+refund path. Delivered answers keep the charge and uncertainty because they
+cannot replace the failed response with success. Unknown/None, malformed
+answers, exceptions, and the five-second timeout preserve uncertainty. Never
+retry the action inside a lookup.
+
+Action-permit deployments may use `register_permit_upstream_status_lookup` from
+`app.services.permits` to register in the existing MCP registry. Match queries
+on `invocation_id`, not the absent `forwarded_idempotency_key`. This registration
+helper does not rewrite receipts. Stripe status lookup is not wired.

@@ -506,7 +506,10 @@ async def _configured_key_row_problem() -> str | None:
             return "signing_key_id_public_key_mismatch"
         return None
     except Exception:
-        logger.debug("signing key row check raised", exc_info=True)
+        # Not reported down here (the postgres check owns a database outage),
+        # but never silent: a failure that is not the database would otherwise
+        # leave readiness "up" with no trace of why the row went unread.
+        logger.warning("signing key row check raised", exc_info=True)
         return None
     if status is None:
         return None

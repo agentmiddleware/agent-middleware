@@ -1,12 +1,11 @@
 # Demo script
 
 Every endpoint and command below exists in this repository. Code locations are
-given so a judge can check. Facts marked "observed 2026-11-05" were observed by
-the AMW maintainers with curl against the hosted gateway at
-`https://api.agentmiddleware.dev` on 2026-11-05 at about 3:18 AM PT. They are
-not a guarantee and can change. Re-run the curl command shown in that step to
-confirm them yourself. Each observed value also names the code default that
-backs it, so you can check the value in this repository.
+given so a judge can check. Expected values come from code defaults in this
+repository, and the file is cited for each one. This kit states no
+observations of the hosted gateway at `https://api.agentmiddleware.dev`. A
+deployment can override defaults, so run the curl shown in each step to
+confirm a value on the hosted gateway.
 
 Never paste a real API key into a shared document, issue, or screen recording.
 The commands below read keys from environment variables.
@@ -18,13 +17,17 @@ curl -s https://api.agentmiddleware.dev/health/dependencies
 ```
 
 - Route: `GET /health/dependencies` in `gateway/app/main.py`. Unauthenticated.
-- Reports dependency status for the transaction integrity boundary (database,
-  cache, signing key, upstream MCP) plus version and commit.
-- Observed 2026-11-05 (maintainers, curl, about 3:18 AM PT; not a guarantee):
-  HTTP 200, version `1.3.0`. Confirm by re-running the curl above with
-  `-i` to see the status line. Code default: `__version__ = "1.3.0"` in
-  `gateway/app/__init__.py` and `APP_VERSION: str = "1.3.0"` in
-  `gateway/app/core/config.py`.
+- Per `gateway/app/main.py` (`health_dependencies`) and
+  `build_public_dependency_report` in `gateway/app/core/health.py`, with proof
+  surfaces unmounted (`ENABLE_PROOF_SURFACES: bool = False` in
+  `gateway/app/core/config.py`) the response should include `status`
+  (`healthy` or `degraded`), `version`, `commit_sha`, and dependency entries
+  for the transaction integrity boundary (database, cache, signing key,
+  upstream MCP).
+- Per `gateway/app/core/config.py` defaults (`APP_VERSION: str = "1.3.0"`,
+  matching `__version__ = "1.3.0"` in `gateway/app/__init__.py`), `version`
+  should be `1.3.0` for a build of this commit. Run the curl above, with `-i`
+  to see the status line, to confirm on the hosted gateway.
 
 ## Step 2: mint a demo key
 
@@ -37,29 +40,33 @@ export AMW_WALLET_ID=$(echo "$DEMO_JSON" | python3 -c 'import json,sys; print(js
 ```
 
 - Route: `POST /v1/demo/keys` in `gateway/app/routers/demo_keys.py`. Anonymous,
-  returns 201 when the demo tenant is enabled. `GET /v1/demo/keys` returns
-  usage help.
+  returns 201 when the demo tenant is enabled and 404 when it is not
+  (`ENABLE_DEMO_TENANT: bool = False` by default in
+  `gateway/app/core/config.py`). `GET /v1/demo/keys` returns usage help.
 - The key is shown once. Do not print `$DEMO_JSON` on a shared screen.
 - Response fields defined in code (`DemoKeyIssueResponse`): `api_key`,
   `key_id`, `key_prefix`, `wallet_id`, `sponsor_wallet_id`, `tenant`,
   `allowed_tools`, `expires_at`, `max_uses`, `budget_credits`, `base_url`,
   `note`.
-- Observed 2026-11-05 (maintainers, curl, about 3:18 AM PT; not a guarantee):
-  HTTP 201 with `api_key`, `wallet_id`, `key_id`, `sponsor_wallet_id`,
-  `tenant` = `demo`, `budget_credits` = 1000. Code default:
-  `DEMO_WALLET_CREDITS: Decimal = Decimal("1000")` in
-  `gateway/app/core/config.py`. Credits are metering units, not money.
-- Observed 2026-11-05 (maintainers, curl, about 3:18 AM PT; not a guarantee):
-  response header `X-RateLimit-Limit: 120`. Code default:
-  `RATE_LIMIT_PER_MINUTE: int = 120` in `gateway/app/core/config.py`; the
-  header is written by `RateLimitMiddleware` in
-  `gateway/app/core/rate_limiter.py`, which takes that default.
-- To confirm both yourself, run the `POST /v1/demo/keys` curl by itself with
-  `-i` added (not inside the `DEMO_JSON=$(...)` assignment, where the headers
-  would break the JSON parsing), on a private screen, and read the status
-  line, the `X-RateLimit-Limit` header, and `budget_credits`. This mints a new
-  key and prints it, so do not share that output.
-- Issuance is rate limited per client; a 429 carries `Retry-After`.
+- Per `gateway/app/services/demo_tenant.py` (`DEMO_TENANT_LABEL = "demo"`),
+  the response should include `tenant` = `demo`.
+- Per `gateway/app/core/config.py` defaults
+  (`DEMO_WALLET_CREDITS: Decimal = Decimal("1000")`, used for
+  `budget_credits` in `gateway/app/services/demo_tenant.py`), the response
+  should include `budget_credits` = 1000. Credits are metering units, not
+  money.
+- Per `gateway/app/core/config.py` defaults (`RATE_LIMIT_PER_MINUTE: int = 120`)
+  and `RateLimitMiddleware` in `gateway/app/core/rate_limiter.py`, which takes
+  that default and, in `dispatch`, sets `X-RateLimit-Limit` to that limit on
+  the response, the response should include `X-RateLimit-Limit: 120`.
+- To confirm these on the hosted gateway, run the `POST /v1/demo/keys` curl
+  by itself with `-i` added (not inside the `DEMO_JSON=$(...)` assignment,
+  where the headers would break the JSON parsing), on a private screen, and
+  read the status line, `tenant`, `budget_credits`, and the
+  `X-RateLimit-Limit` header. This mints a new key and prints it, so do not
+  share that output.
+- Issuance is rate limited per client; per
+  `gateway/app/routers/demo_keys.py`, a 429 carries `Retry-After`.
 
 TODO(T-00): `permit_id`, a permit level `expires_at`, and `demo_tool` in the
 demo key response are not shipped. The response schema today has a key level
@@ -68,15 +75,15 @@ those fields until T-00 lands.
 
 ## Step 3: governed call and retry on the hosted gateway
 
-The hosted gateway exposes the standard MCP endpoint `POST /mcp`
+The gateway code defines the standard MCP endpoint `POST /mcp`
 (`gateway/app/routers/mcp_standard.py`). Send the key as the `X-API-Key`
-header. The public reference tool on the hosted demo is `partner.echo`
-(observed 2026-11-05 by the maintainers with curl, about 3:18 AM PT; not a
-guarantee). Code: registered as `name="partner.echo"` in
-`gateway/app/partner_mcp.py`, a stateless echo with no persistence or external
-side effects. To confirm which tools the hosted gateway lists for your key,
-re-run a `tools/list` call yourself (the endpoint is stateless and answers in
-plain JSON, per the module docstring of `gateway/app/routers/mcp_standard.py`):
+header. The reference tool in this repository is `partner.echo`, registered
+as `name="partner.echo"` in `gateway/app/partner_mcp.py`, a stateless echo
+with no persistence or external side effects. Which tools a deployment exposes
+is configuration, so this kit does not state what the hosted gateway lists.
+Run a `tools/list` call to confirm on the hosted gateway (the endpoint is
+stateless and answers in plain JSON, per the module docstring of
+`gateway/app/routers/mcp_standard.py`):
 
 ```bash
 curl -s -X POST "$API_URL/mcp" -H "X-API-Key: $AMW_API_KEY" \
@@ -145,7 +152,7 @@ wc -l data/dogfood_partner_notes.jsonl   # count went up by one for two calls
   grew by one line for the pair of calls.
 
 This client sends a `text` argument, which fits `partner.notes.write`. It is
-not the hosted `partner.echo` client; use step 3 for that tool.
+not the amw-demo echo client; use step 3 for that.
 
 ## Step 5: verify the receipt offline
 

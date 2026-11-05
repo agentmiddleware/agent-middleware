@@ -37,11 +37,15 @@ are no paying customers or production deployments to point to.
    explains the failure AMW targets: an agent retries a paid tool call after a
    timeout, and without idempotency the action could run twice.
 2. **Check the hosted gateway is up (30 seconds).**
-   `curl -s https://api.agentmiddleware.dev/health/dependencies` returns the
-   dependency report and gateway version. Details in
+   Run `curl -s https://api.agentmiddleware.dev/health/dependencies`. Per
+   `gateway/app/core/health.py` (`build_public_dependency_report`), the
+   response should include a dependency report, `status`, and `version`; run
+   the curl to confirm on the hosted gateway. Details in
    [DEMO-SCRIPT.md](DEMO-SCRIPT.md), step 1.
-3. **Get a demo key (30 seconds).** `POST /v1/demo/keys` on the hosted gateway,
-   or use the [demo key page](https://www.agentmiddleware.dev/demo-key/).
+3. **Get a demo key (30 seconds).** `POST /v1/demo/keys`
+   (`gateway/app/routers/demo_keys.py`) on the hosted gateway, or use the
+   [demo key page](https://www.agentmiddleware.dev/demo-key/) (source in
+   `site/demo-key/index.html`).
    [DEMO-SCRIPT.md](DEMO-SCRIPT.md), step 2.
 4. **See a retry return the same receipt (2 minutes).** Either the hosted
    [amw-demo](https://github.com/agentmiddleware/amw-demo) client, or a local

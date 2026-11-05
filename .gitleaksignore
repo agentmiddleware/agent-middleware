@@ -98,3 +98,5 @@ d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generi
 d48ded5412bd16082542bdebd06ba5945ad08235:spec/request-key-v1/vectors.json:generic-api-key:315
 # Reviewed placeholder in a docs curl example from a superseded commit.
 e31a5a1e89bd3886e00389ec62b9f0b6885a9665:gateway/docs/quickstart.md:curl-auth-header:430
+fcbaf4acaee220be5fdf5b33561dd2314bdf3a14:site/docs-src/http-api.md:curl-auth-header:16
+fcbaf4acaee220be5fdf5b33561dd2314bdf3a14:site/docs-src/receipt-spec-v0-1.md:curl-auth-header:16

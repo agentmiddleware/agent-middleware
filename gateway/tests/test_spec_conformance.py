@@ -105,6 +105,11 @@ RECEIPT_DOCUMENTED = {
 RECEIPT_ADDITIVE = {
     "reason_code",
     "approval_id",
+    "permit_digest",
+    "approval_digest",
+    "counterparty",
+    "sequence",
+    "prev_receipt_digest",
     "constraints_evaluated",
     "action_contract_version",
     "action_payload_hash",

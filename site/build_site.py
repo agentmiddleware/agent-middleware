@@ -164,6 +164,7 @@ REQUIRED_PUBLIC_ASSETS = (
     # here fails the build if it ever goes missing instead of publishing a
     # page whose download link 404s.
     "proof/verify_receipt.py",
+    "proof/jcs.py",
 )
 PROVISIONAL_TERMS = (
     "change me",

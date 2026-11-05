@@ -157,6 +157,18 @@ repo; do not Redeploy from GitHub source).
   rate-limiter outage (HTTP 503) instead of silently using per-process memory.
   `/health/dependencies` exposes `runtime_degradation` when any configured
   backend has fallen back to in-memory.
+- A production-like deployment that never sets `REDIS_URL` still boots, and its
+  rate limiter counts in process memory: each worker and replica keeps its own
+  counters, so every limit is multiplied by the process count, and nothing
+  fails closed because there is no shared backend to lose. The runtime
+  reports this instead of looking healthy: `/health/dependencies` shows
+  `runtime_degradation.degraded` as `true` with the stable reason
+  `rate_limiter_redis_not_configured`, and the app logs one startup warning
+  with the same reason per process. The HTTP status of `/health/dependencies`
+  and the set of configurations that boot are unchanged. Requiring
+  `REDIS_URL` at boot would be a breaking change for single-process
+  deployments, so it is left as a separate, announced decision for the
+  maintainers.
 - All Phase 9 AWI MCP tools always require signed permits (`requirePermit` in
   `/mcp/tools.json`), even if legacy unpermitted MCP is enabled. Those stubs
   are not wedge product; Phase 2 drops them from discovery when proof
@@ -213,20 +225,35 @@ missing control.
   budget and the window length, not an algorithm.** The shared Redis limiter
   counts fixed 60-second buckets, so a caller straddling a bucket boundary can
   land up to twice the budget inside one arbitrary 60-second span. The
-  in-memory fallback counts a rolling 60 seconds and is strictly tighter; it is
-  never reached in a production-like environment, which fails closed instead.
-  `rate_limits.window_accounting` in discovery names this difference.
+  in-memory limiter counts a rolling 60 seconds and is strictly tighter. It
+  counts whenever `REDIS_URL` is unset, in any environment. With `REDIS_URL`
+  set, a production-like environment never falls back to it and fails closed
+  instead; other environments fall back to it when Redis is unreachable.
+  `rate_limits.window_accounting` in discovery names the difference between the
+  two algorithms. `rate_limits.counter_scope` reports the configured scope:
+  `shared_redis` when `REDIS_URL` is set, otherwise `per_process`. It is
+  configuration, not live state. With `REDIS_URL` set but unreachable in a
+  non-production-like environment, the limiter counts in memory while the field
+  still says `shared_redis`; fallbacks that have happened show under
+  `runtime_degradation` on `/health/dependencies`.
+- **Counters are shared only with Redis.** Every bound below (per key,
+  anonymous, readiness and pre-auth) is per process when `REDIS_URL` is unset,
+  so with several workers or replicas the effective ceiling is the stated
+  ceiling times the process count. Words such as deployment-wide and shared
+  below describe the Redis-backed limiter.
 - **Authenticated:** one bucket per `X-API-Key` value. The bucket is named by
   a domain-separated SHA-256 digest of the value, never the key itself, so the
   limiter's Redis key names hold neither live API keys nor the `key_hash` the
   key table stores for them.
 - **No key:** one anonymous bucket per observed client address, so one
   stranger can only spend their own budget and cannot starve other clients,
-  `/.well-known/trust-keys.json` or `/v1/discover`. A deployment-wide
-  anonymous backstop at `RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER` times the
-  per-client limit (default 20) still brakes a flood spread over many
-  addresses; when it trips, anonymous callers get 429 until the window
-  resets, and callers with a key are unaffected. Callers that share an egress
+  `/.well-known/trust-keys.json` or `/v1/discover`. An anonymous backstop at
+  `RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER` times the per-client limit
+  (default 20) still brakes a flood spread over many addresses. It is
+  deployment-wide when the counters are shared through Redis; without
+  `REDIS_URL` each worker or replica has its own backstop. When it trips,
+  anonymous callers get 429 until the window resets, and callers with a key
+  are unaffected. Callers that share an egress
   address (a corporate NAT or proxy) still share one per-client anonymous
   bucket.
 - **Readiness:** `/health/ready` has its own per-client and route-wide
@@ -284,8 +311,12 @@ missing control.
 - This is a request-count ceiling, not a connection or bandwidth limit. An
   edge request-count/connection cap remains the operator's job, as noted
   under inbound body bounding above.
-- Redis outage in production-like environments fails closed (`503`), never
-  silently wider than declared.
+- With `REDIS_URL` set, a Redis outage in production-like environments fails
+  closed (`503`), never silently wider than declared. Without `REDIS_URL`
+  there is no shared limiter to lose: each worker or replica enforces the
+  declared limit on its own, so the effective limit is the declared limit times
+  the process count, and a production-like deployment is reported as degraded
+  (see the startup posture notes above).
 
 `GET /` and `GET /v1/discover` both publish this as `rate_limits`.
 

@@ -388,22 +388,6 @@ class SigningKeyService:
             )
             raise SigningKeyUnavailableError(str(exc)) from exc
 
-    async def configured_key_status(self) -> str | None:
-        """Read the configured key's row status without writing anything.
-
-        Returns ``None`` when no row exists yet (the first signature creates
-        it). Raises :class:`SigningKeyError` with
-        ``signing_key_id_public_key_mismatch`` when the row is bound to other
-        key material. Used by readiness reporting, which must not mutate state.
-        """
-
-        public_key_b64 = self._public_key_b64()
-        key = await self.get_public_key(self._key_id)
-        if key is None:
-            return None
-        self._assert_public_key_mapping(key, public_key_b64)
-        return key.status
-
     async def configured_key_problem(self) -> str | None:
         """Why the configured key cannot sign, by the same rule signing uses.
 

@@ -250,10 +250,12 @@ Rollout order:
 How an operator can tell a replica is stale:
 
 - `GET /health/ready` and `GET /health/dependencies` read the configured key's
-  row without writing it. A row that is `retired` or `disabled`, or that is
-  bound to other key material, reports `signing_key` as `down` with
-  `signing_key_retired`, `signing_key_disabled` or
-  `signing_key_id_public_key_mismatch`, and readiness answers 503. A load
+  row without writing it, by the same rule signing uses. A row that is
+  `retired` (or `active` with `retired_at` set), `disabled`, in a status the
+  gateway does not know, or bound to other key material reports `signing_key`
+  as `down` with `signing_key_retired`, `signing_key_disabled`,
+  `signing_key_status_invalid` or `signing_key_id_public_key_mismatch`, and
+  readiness answers 503. A load
   balancer that gates on readiness stops sending traffic to that replica.
 - Its governed calls are refused with `signing_key_unavailable`, and so is
   `GET /v1/signing-keys/active` (HTTP 503); the server log carries the

@@ -25,9 +25,12 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   # Blessed ruff and mypy. Must match gateway/requirements-dev.txt.
   # mypy must also match the exact pin in gateway/requirements.txt.
+  # PYTEST_VERSION is installed over requirements.txt in every Python job, so it
+  # must satisfy the pytest floor in gateway/requirements.txt. Bump them in the
+  # same change. gateway/tests/test_dev_tool_pins.py enforces this.
   RUFF_VERSION: "0.17.3"
   MYPY_VERSION: "2.4.1"
-  PYTEST_VERSION: "9.1.1"
+  PYTEST_VERSION: "9.2.0"
 
 jobs:
   lint:
@@ -321,7 +324,7 @@ jobs:
           python-version: "3.12"
           enable-cache: false
       - name: Test framework integrations
-        run: uv run --no-project --isolated --python 3.12 --with pytest==9.1.1 --with-editable './sdk/python[verify]' python -m pytest integrations/framework_integrations/tests -q -rs
+        run: uv run --no-project --isolated --python 3.12 --with "pytest==${PYTEST_VERSION}" --with-editable './sdk/python[verify]' python -m pytest integrations/framework_integrations/tests -q -rs
 
   postgres-concurrency:
     # Proves the PostgreSQL row-lock behavior the default SQLite run cannot:

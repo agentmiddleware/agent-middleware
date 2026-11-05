@@ -247,14 +247,26 @@ async def create_test_payment_intent(key: str) -> str:
     return str(body["id"])
 
 
+STRIPE_LIST_PAGE_LIMIT = 100
+
+
 async def list_refunds(key: str, payment_intent: str) -> list[dict[str, Any]]:
+    """Return every refund for ``payment_intent``, following Stripe pagination."""
+    refunds: list[dict[str, Any]] = []
+    params = {"payment_intent": payment_intent, "limit": str(STRIPE_LIST_PAGE_LIMIT)}
     async with stripe_client(key) as client:
-        response = await client.get(
-            "/v1/refunds", params={"payment_intent": payment_intent, "limit": "10"}
-        )
-    if response.status_code != 200:
-        raise RuntimeError(_stripe_error(response))
-    return list(response.json().get("data", []))
+        while True:
+            response = await client.get("/v1/refunds", params=params)
+            if response.status_code != 200:
+                raise RuntimeError(_stripe_error(response))
+            body = response.json()
+            page = list(body.get("data", []))
+            refunds.extend(page)
+            if not body.get("has_more"):
+                return refunds
+            if not page:
+                raise RuntimeError("stripe reported more refunds but sent none")
+            params = {**params, "starting_after": str(page[-1]["id"])}
 
 
 @dataclass

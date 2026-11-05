@@ -7,6 +7,7 @@ so receipts, ledger debits and idempotency records all come from the product.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Iterator
@@ -68,8 +69,32 @@ class FakeStripe:
                 self.refunds_by_idempotency_key[idem] = refund
             return httpx.Response(200, json=self.refunds_by_idempotency_key[idem])
         if request.method == "GET" and request.url.path == "/v1/refunds":
-            return httpx.Response(200, json={"data": self.refunds})
+            return self.list_refunds(request)
         return httpx.Response(404, json={"error": {"type": "invalid_request_error"}})
+
+    def list_refunds(self, request: httpx.Request) -> httpx.Response:
+        """Page like Stripe: newest first, default limit 10, ``starting_after``."""
+        params = request.url.params
+        matching = [
+            r
+            for r in reversed(self.refunds)
+            if r["payment_intent"] == params.get("payment_intent")
+        ]
+        limit = int(params.get("limit", "10"))
+        assert 1 <= limit <= 100
+        start = 0
+        if "starting_after" in params:
+            ids = [r["id"] for r in matching]
+            start = ids.index(params["starting_after"]) + 1
+        page = matching[start : start + limit]
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": page,
+                "has_more": start + limit < len(matching),
+            },
+        )
 
 
 @pytest.fixture
@@ -137,6 +162,50 @@ def test_retry_returns_same_receipt_one_debit_and_skips_stripe(
     assert TEST_KEY not in out
     assert TEST_KEY not in err
     assert TEST_KEY not in caplog.text
+
+
+@pytest.mark.parametrize("existing", [10, 11, 100, 101, 250])
+def test_list_refunds_follows_pagination(
+    existing: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Tests supply their own inputs: these stand in for Stripe's response to a
+    # payment that already has many refunds.
+    fake = FakeStripe()
+    fake.refunds = [
+        {
+            "id": f"re_offline_{i}",
+            "amount": 1,
+            "currency": "usd",
+            "status": "succeeded",
+            "payment_intent": "pi_offline_test",
+        }
+        for i in range(1, existing + 1)
+    ]
+    monkeypatch.setattr(example, "stripe_transport", httpx.MockTransport(fake.handler))
+
+    refunds = asyncio.run(example.list_refunds(TEST_KEY, "pi_offline_test"))
+
+    assert len(refunds) == existing
+    assert len({r["id"] for r in refunds}) == existing
+    gets = [r for r in fake.requests if r.method == "GET"]
+    assert len(gets) == -(-existing // 100)
+    assert all(r.url.params["limit"] == "100" for r in gets)
+    assert "starting_after" not in gets[0].url.params
+    # Each later page starts after the last refund of the page before it.
+    assert [r.url.params["starting_after"] for r in gets[1:]] == [
+        refunds[i]["id"] for i in range(99, existing - 1, 100)
+    ]
+
+
+def test_list_refunds_stops_when_stripe_sends_an_empty_page_with_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [], "has_more": True})
+
+    monkeypatch.setattr(example, "stripe_transport", httpx.MockTransport(broken))
+    with pytest.raises(RuntimeError, match="more refunds"):
+        asyncio.run(example.list_refunds(TEST_KEY, "pi_offline_test"))
 
 
 def test_check_flags_each_broken_property() -> None:

@@ -377,3 +377,25 @@ async def test_billing_charge_refuses_before_the_debit_and_the_key_stays_retryab
     assert again.status_code == 200, again.text
     assert await _debits(wallet_id) == debits_before + 1
 
+
+@pytest.mark.anyio
+async def test_the_refusal_logs_its_underlying_reason_once(
+    clean_database: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Callers answer with the canned reason; the cause is in the server log."""
+    service = get_signing_key_service()
+    key = await service.ensure_active_key()
+    await _set_key_status(key.key_id, "disabled")
+
+    with caplog.at_level("WARNING", logger="app.services.signing_keys"):
+        with pytest.raises(SigningKeyUnavailableError):
+            await service.assert_ready_to_sign()
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.services.signing_keys"
+    ]
+    assert len(lines) == 1, lines
+    assert "cause=signing_key_disabled" in lines[0]
+    assert key.key_id in lines[0]

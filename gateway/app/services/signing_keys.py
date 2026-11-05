@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import base64
 import binascii
 import hashlib
@@ -23,6 +25,9 @@ from app.core.config import Settings, get_settings
 from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import SigningKeyModel
+
+
+logger = logging.getLogger(__name__)
 
 
 class SigningKeyError(RuntimeError):
@@ -356,6 +361,11 @@ class SigningKeyService:
         try:
             await self.ensure_active_key()
         except SigningKeyError as exc:
+            # The one place the underlying reason is written down: callers
+            # answer with the canned ``signing_key_unavailable`` only.
+            logger.warning(
+                "signing_key_unavailable cause=%s key_id=%s", exc, self._key_id
+            )
             raise SigningKeyUnavailableError(str(exc)) from exc
 
     async def configured_key_status(self) -> str | None:

@@ -338,7 +338,10 @@ missing control.
     On the standard container launch path, set `FORWARDED_ALLOW_IPS` in the
     process environment of the container that runs uvicorn. If a command
     override passes uvicorn's `--forwarded-allow-ips` option instead, that
-    option takes precedence over the environment variable. The gateway does
+    option takes precedence over the environment variable. The uvicorn
+    command line also reads `UVICORN_FORWARDED_ALLOW_IPS` as the value of
+    that option, so it has the same effect and the same precedence, and it
+    must not be set to `*` either. The gateway does
     not read it from `.env`, so putting it there has no effect. **No setting is needed on Railway.** There
     the gateway reads the single canonical `X-Real-IP` value, as described
     above, under Railway's platform marker. The setting applies to other

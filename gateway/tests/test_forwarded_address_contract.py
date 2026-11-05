@@ -65,6 +65,55 @@ def test_an_explicit_forwarded_allow_ips_option_beats_the_environment(
     assert config.forwarded_allow_ips == "10.0.0.50"
 
 
+@pytest.mark.parametrize(
+    ("environment", "arguments", "expected"),
+    [
+        ({"UVICORN_FORWARDED_ALLOW_IPS": "10.0.0.50"}, [], "10.0.0.50"),
+        (
+            {
+                "UVICORN_FORWARDED_ALLOW_IPS": "10.0.0.50",
+                "FORWARDED_ALLOW_IPS": "10.0.0.0/24",
+            },
+            [],
+            "10.0.0.50",
+        ),
+        (
+            {"UVICORN_FORWARDED_ALLOW_IPS": "10.0.0.50"},
+            ["--forwarded-allow-ips", "10.0.0.51"],
+            "10.0.0.51",
+        ),
+        # Only the unprefixed variable: the CLI passes nothing and Config reads it.
+        ({"FORWARDED_ALLOW_IPS": "10.0.0.0/24"}, [], None),
+    ],
+    ids=["prefixed", "prefixed-beats-plain", "option-beats-prefixed", "plain-only"],
+)
+def test_the_uvicorn_cli_reads_a_prefixed_variable_and_the_option(
+    monkeypatch, environment, arguments, expected
+) -> None:
+    """The container runs the uvicorn CLI, so test that path, not only Config."""
+    import importlib
+
+    from click.testing import CliRunner
+
+    # ``uvicorn.main`` the attribute is the click command; the module is separate.
+    uvicorn_main = importlib.import_module("uvicorn.main")
+
+    for name in ("UVICORN_FORWARDED_ALLOW_IPS", "FORWARDED_ALLOW_IPS"):
+        monkeypatch.delenv(name, raising=False)
+    captured: dict[str, object] = {}
+
+    def fake_run(_app, **options):
+        captured.update(options)
+
+    monkeypatch.setattr(uvicorn_main, "run", fake_run)
+    result = CliRunner().invoke(
+        uvicorn_main.main, ["app.main:app", *arguments], env=environment
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["forwarded_allow_ips"] == expected
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("trusted", "peer", "forwarded_for", "expected"),

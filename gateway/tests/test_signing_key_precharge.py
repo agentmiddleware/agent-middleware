@@ -379,6 +379,31 @@ async def test_billing_charge_refuses_before_the_debit_and_the_key_stays_retryab
 
 
 @pytest.mark.anyio
+async def test_billing_charge_refuses_before_the_wallet_lookup(
+    client: AsyncClient, clean_database: None
+) -> None:
+    """The wallet lookup writes a signed audit event when the wallet is missing.
+
+    So the key check runs before it: an unknown wallet on a replica whose key
+    cannot sign gets the same retryable 503, not a failed audit signature.
+    """
+    key = await get_signing_key_service().ensure_active_key()
+    url = "/v1/billing/charge?wallet_id=wal-does-not-exist-000000&service=agent_comms&units=1"
+    headers = {"X-API-Key": "test-key"}
+    await _set_key_status(key.key_id, "disabled")
+
+    refused = await client.post(url, headers=headers)
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["error"] == "signing_key_unavailable"
+
+    await _set_key_status(key.key_id, "active")
+    missing = await client.post(url, headers=headers)
+    assert missing.status_code == 404, missing.text
+    assert missing.json()["detail"]["error"] == "wallet_not_found"
+
+
+@pytest.mark.anyio
 async def test_the_refusal_logs_its_underlying_reason_once(
     clean_database: None, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -666,6 +666,23 @@ async def charge_wallet(
     request_id = request.headers.get("X-Request-ID")
     endpoint = "/v1/billing/charge"
 
+    # Refuse before anything is looked up, begun or debited when this
+    # replica's signing key cannot sign: the charge's governance audit event is
+    # signed after the debit, and finding out there would leave a debit with no
+    # audit event and the idempotency key stuck in progress. The wallet lookup
+    # below also writes a signed audit event when the wallet is missing, so
+    # the check runs first. Nothing is recorded here, so the caller may retry
+    # the same key on a replica whose key can sign. A completed idempotent
+    # charge is not replayed from this replica either: the same key gets its
+    # recorded answer from a replica whose key can sign.
+    try:
+        await get_signing_key_service().assert_ready_to_sign()
+    except SigningKeyUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": exc.reason},
+        ) from exc
+
     # Resolve after tenant authorization and before the idempotency row's FK.
     if not await money.get_wallet(wallet_id):
         await _record_billing_governance(
@@ -687,19 +704,6 @@ async def charge_wallet(
                 "message": str(WalletNotFoundError(wallet_id)),
             },
         )
-
-    # Refuse before anything is begun or debited when this replica's signing
-    # key cannot sign: the charge's governance audit event is signed after the
-    # debit, and finding out there would leave a debit with no audit event and
-    # the idempotency key stuck in progress. Nothing is recorded here, so the
-    # caller may retry the same key on a replica whose key can sign.
-    try:
-        await get_signing_key_service().assert_ready_to_sign()
-    except SigningKeyUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"error": exc.reason},
-        ) from exc
 
     # Idempotency is opt-in via the Idempotency-Key header: a client that
     # retries a charge (e.g. after a timeout) with the same key gets the

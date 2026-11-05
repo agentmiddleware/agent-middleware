@@ -56,9 +56,7 @@ Each claim points at where it is stated or implemented in this repository.
   party audit result.
 - **Not a standard.** The formats in [spec/](../spec/) are drafts. AMW is not a
   standard and is not endorsed by any standards body.
-- **No customers or production deployments.** AMW is pre revenue and pre
-  release.
-  AMW makes no customer or deployment claims. It is pre-revenue Preview software.
+- **No customer or deployment claims.** AMW is pre-revenue Preview software.
 - **No metrics or benchmarks.** We publish no performance, adoption, cost
   savings, or reliability numbers. Do not cite any.
 - **No uptime promise.** No public uptime SLA, RTO, RPO, tenant isolation

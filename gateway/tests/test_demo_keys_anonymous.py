@@ -248,3 +248,53 @@ async def test_demo_key_permit_failure_revokes_key_and_frees_live_slot(
         retry = await client.post("/v1/demo/keys", json={})
     assert retry.status_code == 201, retry.text
     assert retry.json()["permit_id"]
+
+
+@pytest.mark.anyio
+async def test_demo_key_unexpected_permit_error_revokes_key_without_leaking(
+    clean_database,
+    demo_settings,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A signing or database failure is not a PermitError; it must still revoke
+    # the just-minted key and answer 503 without echoing the error text.
+    monkeypatch.setattr(demo_settings, "DEMO_MAX_LIVE_KEYS", 1)
+    service = get_permit_service()
+    real_create_permit = service.create_permit
+    fault_message = "injected-signing-fault-do-not-leak"
+
+    async def failing_create_permit(*args, **kwargs):
+        raise RuntimeError(fault_message)
+
+    monkeypatch.setattr(service, "create_permit", failing_create_permit)
+    caplog.set_level("INFO")
+    async with _client("203.0.113.247") as client:
+        failed = await client.post("/v1/demo/keys", json={})
+    assert failed.status_code == 503, failed.text
+    assert failed.json()["detail"]["error"] == "demo_issuance_unavailable"
+    assert "api_key" not in failed.text
+    assert fault_message not in failed.text
+    assert fault_message not in caplog.text
+    assert "reason=unexpected:RuntimeError" in caplog.text
+
+    async with get_session_factory()() as session:
+        keys = (
+            (
+                await session.execute(
+                    select(APIKeyModel).where(APIKeyModel.tenant == "demo")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(keys) == 1
+    assert keys[0].status == "revoked"
+    assert keys[0].revoke_reason == "demo_issue_permit_failed"
+    assert await count_live_demo_keys() == 0
+
+    monkeypatch.setattr(service, "create_permit", real_create_permit)
+    async with _client("203.0.113.247") as client:
+        retry = await client.post("/v1/demo/keys", json={})
+    assert retry.status_code == 201, retry.text
+    assert retry.json()["permit_id"]

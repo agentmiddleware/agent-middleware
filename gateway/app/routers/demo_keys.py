@@ -244,14 +244,21 @@ async def issue_demo_key(
     )
     try:
         permit = await mint_demo_issue_permit(minted)
-    except (PermitError, DemoPermitDenied, KeyAllowlistDenied) as exc:
+    except Exception as exc:  # noqa: BLE001 - any failure must revoke the key
         # The caller never sees this key, so revoke it rather than leave an
-        # inaccessible live key counting toward DEMO_MAX_LIVE_KEYS.
+        # inaccessible live key counting toward DEMO_MAX_LIVE_KEYS. This covers
+        # unexpected signing or database errors too, not only permit denials.
         revoked = await revoke_demo_issue(minted, reason="demo_issue_permit_failed")
+        if isinstance(exc, (PermitError, DemoPermitDenied, KeyAllowlistDenied)):
+            reason = getattr(exc, "reason", None) or getattr(exc, "error", None)
+        else:
+            # Log only the exception type: messages from signing or database
+            # layers can carry connection strings or key material.
+            reason = f"unexpected:{type(exc).__name__}"
         log_demo_event(
             "demo_issue_permit_failed",
             key_id=minted["key_id"],
-            reason=getattr(exc, "reason", None) or getattr(exc, "error", None),
+            reason=reason,
             key_revoked=revoked,
         )
         raise HTTPException(

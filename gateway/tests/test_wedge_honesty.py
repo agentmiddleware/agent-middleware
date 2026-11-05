@@ -150,7 +150,8 @@ async def test_discover_pricing_and_guides_are_trust_plane(client, proof_surface
     guides = data["integration_guides"]
     assert "awi_adoption" not in guides
     assert guides["mcp_json_rpc"] == "/mcp/messages"
-    assert guides["mcp_json_rpc_status"] == "legacy_project_transport"
+    assert guides["mcp_json_rpc_status"] == "deprecated"
+    assert "POST /mcp" in guides["mcp_json_rpc_note"]
     # The standard MCP endpoint is on by default.
     assert guides["standard_mcp"] == "/mcp"
     assert guides["wedge"] == "/WEDGE.md"
@@ -214,7 +215,11 @@ async def test_agent_json_sdk_integrations_are_honest(client):
 
     assert integrations["mcp"] is True
     assert integrations["mcp_json_rpc"] == "/mcp/messages"
-    assert integrations["mcp_json_rpc_status"] == "legacy_project_transport"
+    assert integrations["mcp_json_rpc_status"] == "deprecated"
+    assert integrations["mcp_json_rpc_note"].startswith(
+        "Deprecated in favor of the standard MCP Streamable HTTP endpoint"
+    )
+    assert "/mcp/messages" not in typescript_sdk["note"]
     # The standard MCP endpoint is on by default, so it is the preferred path.
     assert integrations["preferred_integration"] == "standard_mcp_streamable_http"
     assert integrations["standard_mcp_streamable_http"] == "/mcp"

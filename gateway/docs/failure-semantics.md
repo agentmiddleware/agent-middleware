@@ -368,6 +368,20 @@ ack was lost is recognized rather than duplicated
 `resolved` claim without the matching ledger row fails closed on every read
 and replay (`test_forged_resolved_reconciliation_without_refund_fails_closed`).
 
+If the receipt cannot be signed at that moment (the signing key became
+unusable after the call was admitted, for example it was disabled), the work
+item is still recorded, without a receipt: the caller gets the same 500 /
+`-32603` answer with `refund_reconciliation.status` `pending`, `receipt_id`
+`null` and `receipt_status` `unsigned`, and a replay of the same key returns
+the same answer without running the tool. The stored record keeps the receipt
+inputs server side. The periodic cleanup on every replica runs
+`RefundReconciliationService.sign_unsigned_pending`: a replica whose key can
+sign writes the `failed_unrefunded` receipt and turns the item into an
+ordinary pending work item, which the operator list and retry then see; a
+replica that cannot sign leaves it for the next pass. Until it is signed the
+item does not appear in the operator list
+(`tests/test_refund_reconciliation_unsigned.py`).
+
 ## What this deliberately does not claim
 
 1. **Post-dispatch ambiguity is never resolved automatically.** No retry, no

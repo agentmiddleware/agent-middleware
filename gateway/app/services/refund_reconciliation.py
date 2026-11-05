@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import json
+import logging
 from typing import Any, Literal, cast
 
 from sqlalchemy import select, update as sa_update
@@ -28,11 +29,44 @@ from app.schemas.trust import RefundReconciliationItem
 from app.schemas.trust import ReceiptResponse
 from app.services.permits import get_permit_service
 from app.services.receipts import get_receipt_service
-from app.services.signing_keys import SigningKeyError, get_signing_key_service
+from app.services.signing_keys import (
+    SigningKeyError,
+    get_signing_key_service,
+    sha256_hex,
+)
+
+logger = logging.getLogger(__name__)
 
 
 RECONCILIATION_KIND = "mcp_failed_refund"
 RECONCILIATION_VERSION = 1
+
+# Top-level key of a stored response whose failed_unrefunded receipt could not
+# be signed yet. It holds the inputs a replica with a usable key needs to sign
+# that receipt later (``sign_unsigned_pending``). It is never replayed to a
+# caller: replay reads only named keys of the stored response.
+UNSIGNED_RECEIPT_KEY = "unsigned_receipt"
+UNSIGNED_RECEIPT_VERSION = 1
+
+
+def _unsigned_marker(record: IdempotencyRecordModel) -> dict[str, Any] | None:
+    """Return the unsigned-receipt marker of ``record``'s stored response."""
+    if record.response_json is None:
+        return None
+    try:
+        payload = json.loads(record.response_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    marker = payload.get(UNSIGNED_RECEIPT_KEY)
+    if (
+        not isinstance(marker, dict)
+        or marker.get("version") != UNSIGNED_RECEIPT_VERSION
+        or not isinstance(marker.get("inputs"), dict)
+    ):
+        return None
+    return marker
 
 
 class RefundReconciliationError(RuntimeError):
@@ -80,7 +114,7 @@ class RefundReconciliationContendedError(RuntimeError):
 
 def build_pending_refund_reconciliation(
     *,
-    receipt_id: str,
+    receipt_id: str | None,
     wallet_id: str,
     permit_id: str,
     ledger_entry_id: str,
@@ -164,7 +198,7 @@ class RefundReconciliationService:
         permit_id: str,
         key_id: str | None,
         tool_name: str,
-        request_payload: dict[str, Any],
+        request_payload: dict[str, Any] | None,
         ledger_entry_id: str,
         credits_authorized: Decimal,
         credits_charged: Decimal,
@@ -175,8 +209,23 @@ class RefundReconciliationService:
         response_payload: dict[str, Any] | None = None,
         response_hash_override: str | None = None,
         counterparty: str | None = None,
-    ) -> tuple[ReceiptResponse, dict[str, Any]]:
-        """Atomically insert the signed receipt and durable pending work item."""
+        request_hash: str | None = None,
+        _from_unsigned: bool = False,
+    ) -> tuple[ReceiptResponse | None, dict[str, Any]]:
+        """Atomically insert the signed receipt and durable pending work item.
+
+        When the receipt cannot be signed (any ``SigningKeyError`` that is not
+        the one restart reason, for example a key retired or disabled after
+        the call was admitted), the debt is still recorded: the stored
+        response carries the pending work item with ``receipt_id`` ``None``
+        and an ``unsigned_receipt`` marker holding everything needed to sign
+        the receipt later. The receipt is then ``None`` in the return value.
+        ``sign_unsigned_pending`` signs it from a replica whose key can sign,
+        through this same method with ``_from_unsigned=True``, which accepts
+        that marker as the checkpoint instead of an empty response.
+        """
+        if (request_payload is None) == (request_hash is None):
+            raise RefundReconciliationError("refund_reconciliation_request_invalid")
 
         async def validated_checkpoint(
             session: AsyncSession,
@@ -203,9 +252,19 @@ class RefundReconciliationService:
             if (
                 record is None
                 or record.ledger_entry_id != ledger_entry_id
-                or record.response_json is not None
                 or record.response_reference is not None
             ):
+                raise RefundReconciliationError(
+                    "refund_reconciliation_checkpoint_invalid"
+                )
+            # A fresh checkpoint has no stored response yet; signing an
+            # unsigned pending item later starts from its marker instead.
+            if _from_unsigned:
+                if _unsigned_marker(record) is None:
+                    raise RefundReconciliationError(
+                        "refund_reconciliation_checkpoint_invalid"
+                    )
+            elif record.response_json is not None:
                 raise RefundReconciliationError(
                     "refund_reconciliation_checkpoint_invalid"
                 )
@@ -303,6 +362,7 @@ class RefundReconciliationService:
                             key_id=key_id,
                             tool=tool_name,
                             request_payload=request_payload,
+                            request_hash=request_hash,
                             response_payload=response_payload or {"error": reason},
                             ledger_entry_id=ledger_entry_id,
                             credits_authorized=credits_authorized,
@@ -352,11 +412,203 @@ class RefundReconciliationService:
                 "signing_key_not_active"
             )
 
+        try:
+            return await run_with_write_conflict_retry(
+                attempt,
+                on_exhausted=lambda exc: RefundReconciliationContendedError(),
+                restart_on=retired_under_the_attempt,
+            )
+        except SigningKeyError as exc:
+            if _from_unsigned:
+                # Signing later on a replica that still cannot sign: leave the
+                # unsigned item in place for the next pass.
+                raise
+            effective_payload = response_payload or {"error": reason}
+            inputs: dict[str, Any] = {
+                "wallet_id": wallet_id,
+                "endpoint": endpoint,
+                "idempotency_key": idempotency_key,
+                "permit_id": permit_id,
+                "key_id": key_id,
+                "tool_name": tool_name,
+                "request_hash": (
+                    request_hash
+                    if request_hash is not None
+                    else sha256_hex(cast(dict[str, Any], request_payload))
+                ),
+                "ledger_entry_id": ledger_entry_id,
+                "credits_authorized": str(credits_authorized),
+                "credits_charged": str(credits_charged),
+                "audit_event_id": audit_event_id,
+                "reason": reason,
+                "dispatch_attempt_id": dispatch_attempt_id,
+                "approval_id": approval_id,
+                "response_payload": effective_payload,
+                "response_hash_override": response_hash_override,
+                "counterparty": counterparty,
+            }
+            reconciliation = await self._record_unsigned_pending(
+                validated_checkpoint=validated_checkpoint,
+                inputs=inputs,
+                response_hash=sha256_hex(effective_payload),
+                signing_error=str(exc),
+            )
+            return None, reconciliation
+
+    async def _record_unsigned_pending(
+        self,
+        *,
+        validated_checkpoint: Any,
+        inputs: dict[str, Any],
+        response_hash: str,
+        signing_error: str,
+    ) -> dict[str, Any]:
+        """Store the pending refund without a receipt, in one transaction.
+
+        The work item names no receipt yet (``receipt_id`` ``None``) and the
+        marker beside it keeps the receipt inputs. ``response_hash`` is the hash
+        of the response payload as it was handed in, so signing later can
+        refuse a payload the JSON round trip changed instead of signing a
+        different hash. The record is completed with status 500, so a replay
+        of the same key returns the same pending answer and never runs the
+        tool again.
+        """
+        factory = get_session_factory()
+
+        async def attempt() -> dict[str, Any]:
+            async with factory() as session:
+                async with session.begin():
+                    record = await validated_checkpoint(session, lock=True)
+                    reconciliation = build_pending_refund_reconciliation(
+                        receipt_id=None,
+                        wallet_id=inputs["wallet_id"],
+                        permit_id=inputs["permit_id"],
+                        ledger_entry_id=inputs["ledger_entry_id"],
+                        credits=Decimal(inputs["credits_charged"]),
+                    )
+                    reconciliation["receipt_status"] = "unsigned"
+                    record.response_json = json.dumps(
+                        {
+                            "content": [],
+                            "isError": True,
+                            "error": inputs["reason"],
+                            "receipt": None,
+                            "refund_reconciliation": reconciliation,
+                            UNSIGNED_RECEIPT_KEY: {
+                                "version": UNSIGNED_RECEIPT_VERSION,
+                                "signing_error": signing_error,
+                                "recorded_at": utc_now().isoformat(),
+                                "response_hash": response_hash,
+                                "inputs": inputs,
+                            },
+                        },
+                        default=str,
+                    )
+                    record.status_code = 500
+                    session.add(record)
+                    await session.flush()
+                    return reconciliation
+
         return await run_with_write_conflict_retry(
             attempt,
             on_exhausted=lambda exc: RefundReconciliationContendedError(),
-            restart_on=retired_under_the_attempt,
         )
+
+    async def sign_unsigned_pending(self, *, limit: int = 50) -> tuple[int, int]:
+        """Sign the receipts of pending refunds recorded without one.
+
+        Runs from the periodic cleanup on every replica. A replica whose key
+        cannot sign leaves each item as it is; one whose key can sign writes
+        the ``failed_unrefunded`` receipt and turns the item into an ordinary
+        pending work item (the same shape ``create_pending`` writes when it
+        can sign), which the operator list and ``retry`` then see. Concurrent
+        signers are safe: the checkpoint is re-read under a row lock and the
+        second signer finds it already signed.
+
+        Returns ``(signed, still_unsigned)``.
+        """
+        factory = get_session_factory()
+        async with factory() as session:
+            records = (
+                (
+                    await session.execute(
+                        select(IdempotencyRecordModel)
+                        .where(
+                            cast(
+                                ColumnElement[bool],
+                                cast(
+                                    Any, IdempotencyRecordModel.response_reference
+                                ).is_(None),
+                            ),
+                            cast(
+                                ColumnElement[bool],
+                                cast(
+                                    Any, IdempotencyRecordModel.response_json
+                                ).contains(f'"{UNSIGNED_RECEIPT_KEY}"'),
+                            ),
+                        )
+                        .order_by(
+                            cast(ColumnElement[Any], IdempotencyRecordModel.created_at)
+                        )
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        signed = 0
+        still_unsigned = 0
+        for record in records:
+            marker = _unsigned_marker(record)
+            if marker is None:
+                continue
+            inputs = dict(marker["inputs"])
+            if sha256_hex(inputs["response_payload"]) != marker.get("response_hash"):
+                # The stored payload no longer hashes to what the caller's
+                # response was; signing it would sign a different response.
+                logger.error(
+                    "refund_reconciliation_unsigned_payload_mismatch",
+                    extra={"record_id": record.record_id},
+                )
+                still_unsigned += 1
+                continue
+            try:
+                await self.create_pending(
+                    wallet_id=inputs["wallet_id"],
+                    endpoint=inputs["endpoint"],
+                    idempotency_key=inputs["idempotency_key"],
+                    permit_id=inputs["permit_id"],
+                    key_id=inputs["key_id"],
+                    tool_name=inputs["tool_name"],
+                    request_payload=None,
+                    request_hash=inputs["request_hash"],
+                    ledger_entry_id=inputs["ledger_entry_id"],
+                    credits_authorized=Decimal(inputs["credits_authorized"]),
+                    credits_charged=Decimal(inputs["credits_charged"]),
+                    audit_event_id=inputs["audit_event_id"],
+                    reason=inputs["reason"],
+                    dispatch_attempt_id=inputs["dispatch_attempt_id"],
+                    approval_id=inputs["approval_id"],
+                    response_payload=inputs["response_payload"],
+                    response_hash_override=inputs["response_hash_override"],
+                    counterparty=inputs["counterparty"],
+                    _from_unsigned=True,
+                )
+            except SigningKeyError:
+                still_unsigned += 1
+                continue
+            except (RefundReconciliationError, RefundReconciliationContendedError):
+                # Signed concurrently by another replica, or contended: the
+                # next pass reads it again.
+                logger.info(
+                    "refund_reconciliation_unsigned_skipped",
+                    extra={"record_id": record.record_id},
+                    exc_info=True,
+                )
+                still_unsigned += 1
+                continue
+            signed += 1
+        return signed, still_unsigned
 
     @staticmethod
     def _decode_response(record: IdempotencyRecordModel) -> dict[str, Any]:

@@ -404,6 +404,29 @@ def test_backfill_depth_matches_runtime():
     assert mod.MAX_WALLET_DEPTH == svc._MAX_WALLET_DEPTH
 
 
+def test_backfill_recursive_identifiers_have_matching_types():
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "migrations/versions/055_wallet_product_activation.py"
+    )
+    spec = importlib.util.spec_from_file_location("m055_casts", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    # SQLite execution cannot catch PostgreSQL's recursive CTE type mismatch.
+    # Both identifier columns must have the same explicit type in both arms.
+    sql = " ".join(mod.BACKFILL_SQL.split())
+    assert (
+        "SELECT CAST(wallet_id AS TEXT), CAST(wallet_id AS TEXT), 0 FROM used "
+        "UNION ALL "
+        "SELECT CAST(a.wallet_id AS TEXT), CAST(w.parent_wallet_id AS TEXT), "
+        "a.depth + 1 FROM anc a"
+    ) in sql
+
+
 async def test_backfill_marks_root_of_deep_used_descendant(clean_database):
     import importlib.util
     from datetime import datetime

@@ -40,15 +40,18 @@ from app.services.ownership import CallerIdentity
 from app.db.models import McpDispatchAttemptModel
 from app.main import app
 from app.schemas.billing import ServiceCategory
+from app.services.agent_money import AgentMoney
 from app.services.billing_engine import BillingEngine
 from app.services.idempotency import (
     GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
+    IdempotencyService,
     get_idempotency_service,
 )
 from app.services.mcp_dispatch_reconciliation import (
     get_mcp_dispatch_reconciliation_service,
 )
 from app.services.permits import get_permit_service
+from app.services.quotes import QuoteService
 from app.services.service_registry import get_service_registry
 from tests.test_mcp_upstream_governed import FakeUpstreamExecutor
 from tests.test_trust_helpers import (
@@ -716,6 +719,29 @@ def _one_shot(error: BaseException, real: Any) -> tuple[Any, dict[str, int]]:
     return wrapper, state
 
 
+def _fail_once_on(
+    monkeypatch: Any, cls: type, name: str, error: BaseException
+) -> dict[str, int]:
+    """Make the first call to ``cls.name`` raise ``error``, then pass through.
+
+    Patched on the class, never on a singleton instance. ``monkeypatch`` puts an
+    instance attribute back by assigning the saved bound method, which on some
+    pytest releases leaves a shadow behind; a later test that patches the class
+    would then be bypassed on that instance. A class attribute restores exactly.
+    """
+    real = cls.__dict__[name]
+    state = {"calls": 0}
+
+    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise error
+        return await real(self, *args, **kwargs)
+
+    monkeypatch.setattr(cls, name, wrapper)
+    return state
+
+
 async def _capped_governed_call(
     client: AsyncClient, tool_name: str, *, with_quote: bool, idem_key: str
 ) -> tuple[dict[str, Any], dict[str, Any], str, str | None]:
@@ -772,7 +798,6 @@ async def test_quote_is_released_when_the_debit_is_contended_once(
     client: AsyncClient, clean_database: None, governed_tool, monkeypatch
 ) -> None:
     """The retry the contention answer advises must keep its locked price."""
-    from app.services.agent_money import get_agent_money
     from app.services.billing_engine import LedgerWriteContendedError
     from tests.test_permit_reservation_unwind import _calls_made
 
@@ -781,9 +806,9 @@ async def test_quote_is_released_when_the_debit_is_contended_once(
         client, tool_name, with_quote=True, idem_key="prefault-quote-1"
     )
     assert quote_id is not None
-    money = get_agent_money()
-    wrapper, state = _one_shot(LedgerWriteContendedError(), money.charge)
-    monkeypatch.setattr(money, "charge", wrapper)
+    state = _fail_once_on(
+        monkeypatch, AgentMoney, "charge", LedgerWriteContendedError()
+    )
 
     first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
     assert first.json()["error"]["message"] == "ledger_write_contended", first.text
@@ -818,16 +843,13 @@ async def test_the_reservation_goes_back_exactly_once_on_a_contended_debit(
 ) -> None:
     """Adding the quote release must not add a second reservation release."""
     from app.routers import mcp as mcp_router
-    from app.services.agent_money import get_agent_money
     from app.services.billing_engine import LedgerWriteContendedError
 
     tool_name, _ = governed_tool
     ctx, body, _permit_id, _quote_id = await _capped_governed_call(
         client, tool_name, with_quote=True, idem_key="prefault-once-1"
     )
-    money = get_agent_money()
-    wrapper, _ = _one_shot(LedgerWriteContendedError(), money.charge)
-    monkeypatch.setattr(money, "charge", wrapper)
+    _fail_once_on(monkeypatch, AgentMoney, "charge", LedgerWriteContendedError())
     real_release = mcp_router._release_local_permit_reservation
     releases: list[str] = []
 
@@ -852,7 +874,6 @@ async def test_the_key_is_freed_when_the_wallet_policy_raises_once(
 ) -> None:
     """A generic fault after the record begins and before any charge."""
     from app.routers import mcp as mcp_router
-    from app.services.agent_money import get_agent_money
     from tests.test_permit_reservation_unwind import _calls_made
 
     tool_name, runs = governed_tool
@@ -866,11 +887,12 @@ async def test_the_key_is_freed_when_the_wallet_policy_raises_once(
         )
         monkeypatch.setattr(mcp_router, "evaluate_wallet_policy", wrapper)
     else:
-        money = get_agent_money()
-        wrapper, state = _one_shot(
-            RuntimeError("spend read failed"), money.get_daily_spend
+        state = _fail_once_on(
+            monkeypatch,
+            AgentMoney,
+            "get_daily_spend",
+            RuntimeError("spend read failed"),
         )
-        monkeypatch.setattr(money, "get_daily_spend", wrapper)
 
     first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
     assert first.json()["error"]["message"] == "internal_error", first.text
@@ -900,9 +922,9 @@ async def test_a_fault_after_the_charge_keeps_the_record_and_the_quote(
         client, tool_name, with_quote=True, idem_key=key
     )
     assert quote_id is not None
-    idem = get_idempotency_service()
-    wrapper, state = _one_shot(RuntimeError("checkpoint lost"), idem.mark_charged)
-    monkeypatch.setattr(idem, "mark_charged", wrapper)
+    state = _fail_once_on(
+        monkeypatch, IdempotencyService, "mark_charged", RuntimeError("checkpoint lost")
+    )
 
     first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
     assert first.json()["error"]["message"] == "internal_error", first.text
@@ -961,10 +983,10 @@ async def test_abandon_never_deletes_a_record_with_a_response_or_a_ledger_entry(
     assert denied.json()["error"]["message"] == "insufficient_funds", denied.text
     await _set_balance(wallet, "1000")
 
-    async def response_lost(**_kwargs: Any) -> None:
+    async def response_lost(self: Any, **_kwargs: Any) -> None:
         raise RuntimeError("checkpoint lost")
 
-    monkeypatch.setattr(idem, "complete", response_lost)
+    monkeypatch.setattr(IdempotencyService, "complete", response_lost)
     charged_call = await client.post(
         "/mcp/messages",
         json=_call_body(
@@ -1010,7 +1032,6 @@ async def test_a_fault_after_the_reserve_does_not_free_the_key_over_a_held_reser
     hand back exactly once, so freeing the key there would let the retry reserve
     a second time on top of the first. The record stays, as it did before.
     """
-    from app.services.quotes import get_quote_service
     from tests.test_permit_reservation_unwind import _calls_made
 
     tool_name, runs = governed_tool
@@ -1018,9 +1039,9 @@ async def test_a_fault_after_the_reserve_does_not_free_the_key_over_a_held_reser
     ctx, body, permit_id, quote_id = await _capped_governed_call(
         client, tool_name, with_quote=True, idem_key=key
     )
-    quotes = get_quote_service()
-    wrapper, state = _one_shot(RuntimeError("quote store down"), quotes.consume)
-    monkeypatch.setattr(quotes, "consume", wrapper)
+    state = _fail_once_on(
+        monkeypatch, QuoteService, "consume", RuntimeError("quote store down")
+    )
 
     first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
     assert first.json()["error"]["message"] == "internal_error", first.text
@@ -1061,7 +1082,6 @@ async def test_an_unexpected_value_error_before_the_reserve_frees_the_key(
     debited, or the retry meets ``idempotency_in_progress`` forever.
     """
     from app.routers import mcp as mcp_router
-    from app.services.agent_money import get_agent_money
     from tests.test_permit_reservation_unwind import _calls_made
 
     tool_name, runs = governed_tool
@@ -1075,9 +1095,7 @@ async def test_an_unexpected_value_error_before_the_reserve_frees_the_key(
         wrapper, state = _one_shot(error, mcp_router.evaluate_wallet_policy)
         monkeypatch.setattr(mcp_router, "evaluate_wallet_policy", wrapper)
     else:
-        money = get_agent_money()
-        wrapper, state = _one_shot(error, money.get_daily_spend)
-        monkeypatch.setattr(money, "get_daily_spend", wrapper)
+        state = _fail_once_on(monkeypatch, AgentMoney, "get_daily_spend", error)
 
     first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
     assert first.json()["error"]["message"] == "internal_error", first.text
@@ -1136,14 +1154,13 @@ async def test_a_deliberate_value_error_keeps_its_own_cleanup(
         idempotency_key="prefault-absent-1",
     )
     abandons: list[str] = []
-    idem = get_idempotency_service()
-    real_abandon = idem.abandon
+    real_abandon = IdempotencyService.abandon
 
-    async def counted_abandon(**kwargs: Any) -> bool:
+    async def counted_abandon(self: Any, **kwargs: Any) -> bool:
         abandons.append(str(kwargs.get("idempotency_key")))
-        return await real_abandon(**kwargs)
+        return await real_abandon(self, **kwargs)
 
-    monkeypatch.setattr(idem, "abandon", counted_abandon)
+    monkeypatch.setattr(IdempotencyService, "abandon", counted_abandon)
     resp = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
     assert resp.json()["error"]["code"] == -32001, resp.text
     # Released once by the branch that raised, never again by the wrapper.

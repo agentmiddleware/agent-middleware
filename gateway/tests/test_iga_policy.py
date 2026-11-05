@@ -1254,7 +1254,10 @@ async def test_ledger_contention_releases_iga_use(
         registry.unregister_local(E2E_TOOL)
 
 
-@pytest.mark.parametrize("fault", ["generic", "audit_contended", "reserve_contended"])
+@pytest.mark.parametrize(
+    "fault",
+    ["generic", "value_error", "json_decode", "audit_contended", "reserve_contended"],
+)
 async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
     iga_config, clean_database, rsa_key, client, monkeypatch, fault
 ):
@@ -1264,6 +1267,8 @@ async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
     one-shot fault there must give it back along with the abandoned key, or a
     ``max_uses=1`` principal is refused the retry the key now permits.
     """
+    import json
+
     from app.routers import mcp as mcp_router
     from app.services.audit_chain import AuditChainContendedError
     from app.services.permits import PermitService, PermitWriteContendedError
@@ -1289,6 +1294,10 @@ async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
             if state["calls"] == 1:
                 if fault == "audit_contended":
                     raise AuditChainContendedError("head contended")
+                if fault == "value_error":
+                    raise ValueError("stored value could not be read")
+                if fault == "json_decode":
+                    raise json.JSONDecodeError("Expecting value", "", 0)
                 raise RuntimeError("policy backend down")
             return await real(*args, **kwargs)
 

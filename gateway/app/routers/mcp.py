@@ -1140,10 +1140,12 @@ async def _assert_replay_iga_access(*, auth: AuthContext, tool_name: str) -> Non
 # denial or failure that already wrote its terminal answer, an in-progress or
 # conflict answer about a record this call does not own, and the approval and
 # terminal-write signals. The wrapper's generic pre-charge abandon skips them.
+# A bare ValueError is not listed: library and driver errors subclass it too,
+# so it is kept only when the pipeline raised it on purpose
+# (``_is_record_keeping_error``).
 _RECORD_KEEPING_ERRORS: tuple[type[BaseException], ...] = (
     GovernedToolError,
     PermissionError,
-    ValueError,
     HTTPException,
     IdempotencyInProgressError,
     IdempotencyConflictError,
@@ -1151,6 +1153,23 @@ _RECORD_KEEPING_ERRORS: tuple[type[BaseException], ...] = (
     ToolExecutionError,
     TerminalRecordContendedError,
 )
+
+
+def _is_record_keeping_error(exc: BaseException) -> bool:
+    """True for an outcome that keeps or finalizes its own idempotency record.
+
+    A ``ValueError`` counts only when ``_value_error_jsonrpc_code`` recognises
+    its text, which is the set the pipeline raises on purpose (each of those
+    finalizes or releases its record before raising, or never owned one). Any
+    other ``ValueError`` (a ``json.JSONDecodeError`` or a driver error, for
+    example) is an unexpected fault and takes the generic pre-charge release
+    like any other.
+    """
+    if isinstance(exc, _RECORD_KEEPING_ERRORS):
+        return True
+    return (
+        isinstance(exc, ValueError) and _value_error_jsonrpc_code(str(exc)) is not None
+    )
 
 
 async def _execute_registered_tool(
@@ -1248,8 +1267,7 @@ async def _execute_registered_tool(
                 PermitWriteContendedError,
             ),
         ) and (
-            owned_record.get("past_precharge_span")
-            or isinstance(exc, _RECORD_KEEPING_ERRORS)
+            owned_record.get("past_precharge_span") or _is_record_keeping_error(exc)
         ):
             raise
         generic_precharge = not isinstance(

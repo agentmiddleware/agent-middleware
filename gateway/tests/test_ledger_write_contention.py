@@ -930,17 +930,31 @@ async def test_abandon_never_deletes_a_record_with_a_response_or_a_ledger_entry(
     wallet = (await provision_agent_wallet(client))["agent_wallet_id"]
     endpoint = "/mcp/messages"
 
+    from app.services.agent_money import get_agent_money
+
     charged = await idem.begin_with_record(
         wallet_id=wallet,
         endpoint=endpoint,
         idempotency_key="guard-charged",
         request_payload={"n": 1},
     )
+    # A real debit on the provisioned wallet, keyed by the record like the
+    # governed path keys it, so the checkpoint names an entry that exists.
+    entry = await get_agent_money().charge(
+        wallet_id=wallet,
+        service_category=ServiceCategory.AGENT_COMMS,
+        units=Decimal(str(TOOL_COST)),
+        request_path=endpoint,
+        description="abandon guard debit",
+        operation_key=charged.record_id,
+        caller=CallerIdentity.for_wallet(wallet),
+    )
+    assert getattr(entry, "entry_id", None), entry
     await idem.mark_charged(
         wallet_id=wallet,
         endpoint=endpoint,
         idempotency_key="guard-charged",
-        ledger_entry_id="led-1",
+        ledger_entry_id=entry.entry_id,
     )
     answered = await idem.begin_with_record(
         wallet_id=wallet,
@@ -1004,3 +1018,121 @@ async def test_a_fault_after_the_reserve_does_not_free_the_key_over_a_held_reser
     assert await _spent_credits(permit_id) == Decimal(str(TOOL_COST))
     assert await _calls_made(permit_id, tool_name) == 1
     assert runs["count"] == 0
+
+
+def _unexpected_value_error(kind: str) -> ValueError:
+    """The unexpected ValueError shapes a library or driver can raise."""
+    if kind == "json_decode":
+        import json
+
+        return json.JSONDecodeError("Expecting value", "", 0)
+    return ValueError("stored value could not be read")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failing", ["evaluate_wallet_policy", "get_daily_spend"])
+@pytest.mark.parametrize("kind", ["value_error", "json_decode"])
+async def test_an_unexpected_value_error_before_the_reserve_frees_the_key(
+    client: AsyncClient,
+    clean_database: None,
+    governed_tool,
+    monkeypatch,
+    failing: str,
+    kind: str,
+) -> None:
+    """ValueError subclasses are not all deliberate outcomes.
+
+    A ``json.JSONDecodeError`` or a driver error is a ValueError too. Raised
+    after the record is granted and before the reserve, it must free the key
+    like any other pre-charge fault, with the quote untouched and nothing
+    debited, or the retry meets ``idempotency_in_progress`` forever.
+    """
+    from app.routers import mcp as mcp_router
+    from app.services.agent_money import get_agent_money
+    from tests.test_permit_reservation_unwind import _calls_made
+
+    tool_name, runs = governed_tool
+    key = f"prefault-valueerror-{kind}-{failing}"
+    ctx, body, permit_id, quote_id = await _capped_governed_call(
+        client, tool_name, with_quote=True, idem_key=key
+    )
+    assert quote_id is not None
+    error = _unexpected_value_error(kind)
+    if failing == "evaluate_wallet_policy":
+        wrapper, state = _one_shot(error, mcp_router.evaluate_wallet_policy)
+        monkeypatch.setattr(mcp_router, "evaluate_wallet_policy", wrapper)
+    else:
+        money = get_agent_money()
+        wrapper, state = _one_shot(error, money.get_daily_spend)
+        monkeypatch.setattr(money, "get_daily_spend", wrapper)
+
+    first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert first.json()["error"]["message"] == "internal_error", first.text
+    assert state["calls"] == 1
+    assert await _record(ctx, key) is None
+    assert await _quote_status(quote_id) == "active"
+    assert (
+        await _debit_count(
+            client, ctx["agent_wallet_id"], ctx["agent_headers"], tool_name
+        )
+        == 0
+    )
+    assert await _spent_credits(permit_id) == Decimal("0")
+    assert await _calls_made(permit_id, tool_name) == 0
+    assert runs["count"] == 0
+
+    second = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert second.status_code == 200, second.text
+    assert "error" not in second.json(), second.text
+    assert await _quote_status(quote_id) == "consumed"
+    assert (
+        await _debit_count(
+            client, ctx["agent_wallet_id"], ctx["agent_headers"], tool_name
+        )
+        == 1
+    )
+    assert runs["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_a_deliberate_value_error_keeps_its_own_cleanup(
+    client: AsyncClient, clean_database: None, monkeypatch
+) -> None:
+    """A classified ValueError still takes the path it always took.
+
+    "Tool not found" on a permitted call releases its own record before it
+    raises; the wrapper must neither change that answer nor touch the record
+    again.
+    """
+    from tests.test_permit_reservation_unwind import _create_capped_permit
+
+    absent_tool = "contention-absent-tool"
+    ctx = await provision_agent_wallet(client)
+    permit_id = await _create_capped_permit(
+        client,
+        wallet_id=ctx["agent_wallet_id"],
+        key_id=ctx["key_id"],
+        tool_name=absent_tool,
+        max_calls=1,
+        idem_key="prefault-absent-permit",
+    )
+    body = _call_body(
+        tool_name=absent_tool,
+        wallet_id=ctx["agent_wallet_id"],
+        permit_id=permit_id,
+        idempotency_key="prefault-absent-1",
+    )
+    abandons: list[str] = []
+    idem = get_idempotency_service()
+    real_abandon = idem.abandon
+
+    async def counted_abandon(**kwargs: Any) -> bool:
+        abandons.append(str(kwargs.get("idempotency_key")))
+        return await real_abandon(**kwargs)
+
+    monkeypatch.setattr(idem, "abandon", counted_abandon)
+    resp = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert resp.json()["error"]["code"] == -32001, resp.text
+    # Released once by the branch that raised, never again by the wrapper.
+    assert abandons == ["prefault-absent-1"]
+    assert await _record(ctx, "prefault-absent-1") is None

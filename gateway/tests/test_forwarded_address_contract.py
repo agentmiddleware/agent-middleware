@@ -30,6 +30,14 @@ def test_no_launch_file_passes_forwarded_allow_ips() -> None:
         assert "forwarded-allow-ips" not in text, relative
 
 
+def test_compose_loads_dotenv_into_the_container_environment() -> None:
+    """The docs say a .env value applies where the launcher loads it, as Compose does."""
+    compose = (ROOT / "docker-compose.yml").read_text()
+    lines = [line.strip() for line in compose.splitlines()]
+    assert "env_file:" in lines
+    assert "- .env" in lines
+
+
 def test_uvicorn_default_trusts_loopback_only(monkeypatch) -> None:
     monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
 

@@ -341,9 +341,14 @@ missing control.
     option takes precedence over the environment variable. The uvicorn
     command line also reads `UVICORN_FORWARDED_ALLOW_IPS` as the value of
     that option, so it has the same effect and the same precedence, and it
-    must not be set to `*` either. The gateway does
-    not read it from `.env`, so putting it there has no effect. **No setting is needed on Railway.** There
-    the gateway reads the single canonical `X-Real-IP` value, as described
+    must not be set to `*` either. The gateway application does not read
+    `FORWARDED_ALLOW_IPS` from `.env` itself. A `.env` file reaches uvicorn only
+    when whatever launches the container loads it into the process
+    environment. The Compose file in this repository does that
+    (`env_file: .env`), so on that stack a value in `.env` applies, and the
+    same rules hold for it: never `*`, `0.0.0.0/0` or `::/0`. Elsewhere a
+    `.env` file the launcher does not load has no effect. **No setting is
+    needed on Railway.** There the gateway reads the single canonical `X-Real-IP` value, as described
     above, under Railway's platform marker. The setting applies to other
     ingress. This document does not assume any other platform sets `X-Real-IP`.
     The gateway does not refuse to start without a trusted-proxy setting.

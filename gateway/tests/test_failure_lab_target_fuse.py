@@ -180,6 +180,14 @@ def test_unknown_httpx_internals_fail_closed():
     assert configurations._client_routes_only_to(NotAClient(), object()) is False
 
 
+def test_transport_without_app_fails_closed():
+    """An exact ``ASGITransport`` whose ``app`` is gone refuses, not crashes."""
+    app = object()
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_foreign_app))
+    del client._transport.app
+    assert configurations._client_routes_only_to(client, app) is False
+
+
 @pytest.mark.anyio
 async def test_t02_direct_naive_is_refused_not_executed(tmp_path, monkeypatch):
     """The arm this fuse exists for: refused, recorded as an error, nothing paid."""

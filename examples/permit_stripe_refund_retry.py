@@ -195,7 +195,9 @@ def read_upstreams(environ: Mapping[str, str]) -> tuple[UpstreamSpec, UpstreamSp
     )
     tool_2 = environ.get("UPSTREAM_TOOL_2", DEFAULT_TOOL_2)
     if origin_1 == origin_2:
-        raise SafetyRefusal("UPSTREAM_MCP_ORIGIN_1 and UPSTREAM_MCP_ORIGIN_2 differ")
+        raise SafetyRefusal(
+            "UPSTREAM_MCP_ORIGIN_1 and UPSTREAM_MCP_ORIGIN_2 must differ"
+        )
     if tool_2 == ECHO_TOOL:
         raise SafetyRefusal(f"UPSTREAM_TOOL_2 must not be {ECHO_TOOL}")
     return UpstreamSpec(origin_1, ECHO_TOOL), UpstreamSpec(origin_2, tool_2)

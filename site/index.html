@@ -200,12 +200,35 @@
             <p>Each action runs once and leaves a receipt.</p>
             <p class="hero-v2-boundary">One accepted request key permits at most one gateway dispatch to the configured upstream tool and at most one debit. Each finalized or reconciled path has a receipt.</p>
             <div class="hero-v2-actions">
+              <a class="hero-v2-action hero-v2-action-primary" href="#pip-quickstart">Install the Python SDK</a>
+              <a class="hero-v2-action hero-v2-action-secondary" href="#safe-demo">Try the demo without a key</a>
               <button class="hero-v2-action hero-v2-action-primary" id="home-key-trigger" type="button" aria-controls="home-key-panel" data-analytics-event="demo_key_click" hidden>Get a demo key</button>
               <noscript><a class="hero-v2-action hero-v2-action-primary" href="/demo-key/">Get a demo key</a></noscript>
-              <a class="hero-v2-action hero-v2-action-secondary" href="https://github.com/agentmiddleware/amw-demo" rel="noopener noreferrer">Run the quickstart: amw-demo <span aria-hidden="true">→</span></a>
+              <a class="hero-v2-action hero-v2-action-secondary" href="https://github.com/agentmiddleware/amw-demo" rel="noopener noreferrer">Optional hosted quickstart: amw-demo <span aria-hidden="true">→</span></a>
             </div>
           </div>
-          <section class="hero-v2-code" aria-label="Quickstart commands">
+          <section class="hero-v2-code" id="pip-quickstart" aria-labelledby="pip-title">
+            <h2 id="pip-title">Install the Python SDK</h2>
+            <p>Use Python 3.11 or newer in a fresh virtual environment.</p>
+            <pre tabindex="0"><code>python3 -m venv .venv
+# macOS / Linux:
+source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install amw-sdk
+python -c "import amw; print(amw.__version__)"</code></pre>
+            <p>This imports the SDK and prints its installed version. No API key is needed.</p>
+          </section>
+          <section class="hero-v2-code" id="safe-demo" aria-labelledby="safe-demo-title">
+            <h2 id="safe-demo-title">Verify a published receipt</h2>
+            <p>In the same environment, install the verification extra and download the existing public receipt and public key snapshot:</p>
+            <pre id="home-safe-demo" tabindex="0"><code>pip install 'amw-sdk[verify]'
+curl -fsSLo receipt.json https://www.agentmiddleware.dev/proof/receipt.json
+curl -fsSLo trust-keys.json https://www.agentmiddleware.dev/proof/trust-keys.json
+amw verify --bundle receipt.json --keys trust-keys.json --expect-issuer https://api.thisisatest.tech</code></pre>
+            <p>No secrets, no spend, no production mutation. Downloads only read public files; verification then runs offline with no gateway call.</p>
+            <p>Success reports <code>VERIFIED</code>. This is a historical, self-issued receipt, not a new tool execution. It checks the signature against the supplied public key snapshot and does not prove a downstream effect or independent issuer trust. <a href="/proof/">Inspect the receipt and verification limits.</a></p>
+          </section>
+          <section class="hero-v2-code" aria-label="Optional hosted quickstart commands">
             <div class="hero-v2-tabs">
               <span class="hero-v2-tab hero-v2-tab-active">Python</span>
               <span class="hero-v2-tab"><code>curl</code></span>

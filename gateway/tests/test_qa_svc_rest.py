@@ -218,14 +218,16 @@ class TestApiMockEvaluation:
         )
         total = env.state.metadata["num_endpoints"]
         assert total == 6
-        for _ in range(4):
+        endpoints = env.state.metadata["mock_api"]
+        paths = [endpoint["path"] for endpoint in endpoints]
+        for path in paths[:4]:
             result = await engine.submit_action(
-                env.env_id, {"type": "call_endpoint", "value": "x"}
+                env.env_id, {"type": "call_endpoint", "value": path}
             )
             assert "successfully" in result.feedback
         assert env.state.metadata["endpoints_discovered"] == 4
         fifth = await engine.submit_action(
-            env.env_id, {"type": "call_endpoint", "value": "x"}
+            env.env_id, {"type": "call_endpoint", "value": paths[4]}
         )
         assert "schema has changed" in fifth.feedback
         assert env.state.metadata["endpoints_discovered"] == 4

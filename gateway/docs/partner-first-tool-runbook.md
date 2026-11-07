@@ -178,8 +178,10 @@ measured integration burden is recorded.
 **Commercial signal:** the partner says what unacceptable risk would return if
 the boundary were removed and commits an owner, next action, and decision date.
 A follow-up meeting or "cool demo" response alone is not validation. The
-pass and fail rules in this section are the gate. There is no separate
-validation document in this repository.
+pass and fail rules in this section are the gate. Record scope, baseline,
+per-case evidence, and the buying decision in the
+[pilot evaluation packet](pilot-evaluation-packet.md). That packet does not
+replace this gate or a deployment approval.
 
 **Fail / stop:** partner asks for settlement, KMS, multi-framework policy, or
 broad migration before the single-tool loop is trusted. Point to

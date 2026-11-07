@@ -1254,6 +1254,94 @@ async def test_ledger_contention_releases_iga_use(
         registry.unregister_local(E2E_TOOL)
 
 
+@pytest.mark.parametrize(
+    "fault",
+    ["generic", "value_error", "json_decode", "audit_contended", "reserve_contended"],
+)
+async def test_generic_precharge_fault_releases_iga_use_and_frees_the_key(
+    iga_config, clean_database, rsa_key, client, monkeypatch, fault
+):
+    """A fault after the use is recorded and before the reserve hands it back.
+
+    The enterprise use is consumed ahead of the wallet policy check, so a
+    one-shot fault there must give it back along with the abandoned key, or a
+    ``max_uses=1`` principal is refused the retry the key now permits.
+    """
+    import json
+
+    from app.routers import mcp as mcp_router
+    from app.services.audit_chain import AuditChainContendedError
+    from app.services.permits import PermitService, PermitWriteContendedError
+
+    calls: list[dict] = []
+    registry = _register_e2e_tool(calls)
+    try:
+        setup = await _provision_for_e2e(client, idem_key=f"iga-e2e-precharge-{fault}")
+        bundle_wallet = await _make_wallet()
+        policy_id = await _make_bundle(bundle_wallet, allowed_tools=[E2E_TOOL])
+        iga_config(
+            _okta_issuers(rsa_key),
+            {"payments-ops": {"policy_id": policy_id, "max_uses": 1}},
+        )
+        token = _mint(rsa_key, extra={"groups": ["payments-ops"]})
+        headers = {**setup["agent_headers"], "Authorization": f"Bearer {token}"}
+
+        real = mcp_router.evaluate_wallet_policy
+        state = {"calls": 0}
+
+        async def one_shot(*args, **kwargs):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                if fault == "audit_contended":
+                    raise AuditChainContendedError("head contended")
+                if fault == "value_error":
+                    raise ValueError("stored value could not be read")
+                if fault == "json_decode":
+                    raise json.JSONDecodeError("Expecting value", "", 0)
+                raise RuntimeError("policy backend down")
+            return await real(*args, **kwargs)
+
+        if fault == "reserve_contended":
+            real_reserve = PermitService.authorize_and_reserve
+
+            async def one_shot_reserve(self, *args, **kwargs):
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    raise PermitWriteContendedError()
+                return await real_reserve(self, *args, **kwargs)
+
+            monkeypatch.setattr(
+                PermitService, "authorize_and_reserve", one_shot_reserve
+            )
+        else:
+            monkeypatch.setattr(mcp_router, "evaluate_wallet_policy", one_shot)
+        first = await _invoke_tool_call(
+            client,
+            wallet_id=setup["agent_wallet_id"],
+            permit_id=setup["permit_id"],
+            idem_key=f"iga-e2e-precharge-{fault}-1",
+            headers=headers,
+        )
+        assert "error" in first, first
+        assert state["calls"] == 1
+        assert calls == []
+        assert oidc_iga._lifetime_uses == {}
+        assert oidc_iga._window_calls == {}
+
+        retry = await _invoke_tool_call(
+            client,
+            wallet_id=setup["agent_wallet_id"],
+            permit_id=setup["permit_id"],
+            idem_key=f"iga-e2e-precharge-{fault}-1",
+            headers=headers,
+        )
+        assert "result" in retry, retry
+        assert calls == [{"message": "hello"}]
+        assert sum(oidc_iga._lifetime_uses.values()) == 1
+    finally:
+        registry.unregister_local(E2E_TOOL)
+
+
 async def test_a_contended_remote_charge_keeps_the_use_it_cannot_prove_unspent(
     iga_config, clean_database, rsa_key, client, monkeypatch
 ):

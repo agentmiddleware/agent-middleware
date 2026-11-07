@@ -1138,6 +1138,42 @@ async def _assert_replay_iga_access(*, auth: AuthContext, tool_name: str) -> Non
         )
 
 
+# Typed outcomes that hold or finalize the idempotency record deliberately: a
+# denial or failure that already wrote its terminal answer, an in-progress or
+# conflict answer about a record this call does not own, and the approval and
+# terminal-write signals. The wrapper's generic pre-charge abandon skips them.
+# A bare ValueError is not listed: library and driver errors subclass it too,
+# so it is kept only when the pipeline raised it on purpose
+# (``_is_record_keeping_error``).
+_RECORD_KEEPING_ERRORS: tuple[type[BaseException], ...] = (
+    GovernedToolError,
+    PermissionError,
+    HTTPException,
+    IdempotencyInProgressError,
+    IdempotencyConflictError,
+    HumanApprovalPendingSignal,
+    ToolExecutionError,
+    TerminalRecordContendedError,
+)
+
+
+def _is_record_keeping_error(exc: BaseException) -> bool:
+    """True for an outcome that keeps or finalizes its own idempotency record.
+
+    A ``ValueError`` counts only when ``_value_error_jsonrpc_code`` recognises
+    its text, which is the set the pipeline raises on purpose (each of those
+    finalizes or releases its record before raising, or never owned one). Any
+    other ``ValueError`` (a ``json.JSONDecodeError`` or a driver error, for
+    example) is an unexpected fault and takes the generic pre-charge release
+    like any other.
+    """
+    if isinstance(exc, _RECORD_KEEPING_ERRORS):
+        return True
+    return (
+        isinstance(exc, ValueError) and _value_error_jsonrpc_code(str(exc)) is not None
+    )
+
+
 async def _execute_registered_tool(
     *,
     tool_name: str,
@@ -1217,11 +1253,33 @@ async def _execute_registered_tool(
                 transport_key=idempotency_key,
             )
         raise
-    except (
-        AuditChainContendedError,
-        ReceiptWriteContendedError,
-        PermitWriteContendedError,
-    ):
+    except Exception as exc:
+        # The three contention types are provably pre-effect wherever they
+        # escape. Any other fault is only proven pre-charge while it is still in
+        # the span before the reserve: nothing there takes a reservation, a
+        # prepared attempt, a quote or a charge, so the owned record is all that
+        # is left holding. Past it, the inner branches own their cleanup.
+        # Deliberate typed outcomes keep their record on purpose and are never
+        # swept up here.
+        if not isinstance(
+            exc,
+            (
+                AuditChainContendedError,
+                ReceiptWriteContendedError,
+                PermitWriteContendedError,
+            ),
+        ) and (
+            owned_record.get("past_precharge_span") or _is_record_keeping_error(exc)
+        ):
+            raise
+        generic_precharge = not isinstance(
+            exc,
+            (
+                AuditChainContendedError,
+                ReceiptWriteContendedError,
+                PermitWriteContendedError,
+            ),
+        )
         record_id = owned_record.get("record_id")
         record_key = owned_record.get("key", idempotency_key)
         if record_id and wallet_id and record_key:
@@ -1243,14 +1301,37 @@ async def _execute_registered_tool(
                         idempotency_key=record_key,
                         expected_record_id=record_id,
                     )
-                    if abandoned and record_endpoint == "/mcp/action/v1":
+                    if abandoned and (
+                        record_endpoint == "/mcp/action/v1"
+                        or generic_precharge
+                        or not owned_record.get("past_precharge_span")
+                        or isinstance(exc, PermitWriteContendedError)
+                    ):
                         # Only confirmed deletion proves this invocation's use
                         # unaccepted. Inner cleanup may already have released
                         # it; in that case abandon returns False, not a refund.
+                        # A generic pre-charge fault has no inner handler, and
+                        # the use was recorded before the gates that can raise,
+                        # so a max_uses=1 principal would otherwise meet the
+                        # advised retry as iga_max_uses_exceeded. A contention
+                        # type that escapes before the reserve is the same
+                        # case: no inner branch has run to release the use.
+                        # So is a contended reserve: it is the only place the
+                        # permit type escapes the inner function, because both
+                        # post-charge budget releases absorb their own. Past
+                        # the reserve, the other contention types on a
+                        # non-action record stay with the inner branches, which
+                        # release their own use.
                         await _release_iga_use(
                             owned_record.get("iga_granted_use"),
                             tool_name,
-                            reason="preacceptance_write_contended",
+                            reason=(
+                                "precharge_fault"
+                                if generic_precharge
+                                or not owned_record.get("past_precharge_span")
+                                or isinstance(exc, PermitWriteContendedError)
+                                else "preacceptance_write_contended"
+                            ),
                         )
                 except Exception:
                     logger.exception(
@@ -2149,7 +2230,7 @@ async def _execute_registered_tool_inner(
                     iga_decision.policy_id,
                     iga_decision.reservation,
                 )
-                if action_identity is not None and owned_record is not None:
+                if owned_record is not None:
                     owned_record["iga_granted_use"] = iga_granted_use
     except IGAError as exc:
         # Catches verification failures for bearers routed to the IGA layer
@@ -2487,6 +2568,13 @@ async def _execute_registered_tool_inner(
         else None
     )
     dispatch_attempt = None
+
+    # Past this line a reservation, a prepared attempt, a consumed quote or a
+    # charge may exist, so the wrapper may no longer abandon the record for an
+    # arbitrary fault: it could not also hand those back exactly once. Every
+    # fault before it provably held none of them.
+    if owned_record is not None:
+        owned_record["past_precharge_span"] = True
 
     # Linearize authorization as late as possible. For a remote call, reserve
     # permit budget and create the recoverable prepared checkpoint in the same
@@ -2868,6 +2956,19 @@ async def _execute_registered_tool_inner(
         await _release_iga_use(
             iga_granted_use, tool_name, reason="ledger_write_contended"
         )
+        # The quote was consumed just above the debit and the debit rolled back
+        # whole, so the price lock was never spent. Hand it back on the same
+        # proof as the use above, or the retry this answer advises meets
+        # quote_already_consumed. The generic branch below does not do this: an
+        # unclassified fault there cannot prove the debit did not commit.
+        if quoted is not None and quote_id:
+            try:
+                await get_quote_service().release(quote_id)
+            except Exception:
+                logger.exception(
+                    "mcp_contended_quote_release_failed",
+                    extra={"quote_id": quote_id},
+                )
         try:
             await _audit_mcp_invocation(
                 effects_committed=False,
@@ -4081,10 +4182,13 @@ def _registered_tool_cost(
 ) -> Decimal:
     # Shared with the quote endpoint so a locked quote and the charge that
     # honors it are computed from one definition of price. A price that is
-    # not finite and non-negative raises ValueError("tool_price_invalid")
-    # here, before idempotency, policy, permit or ledger state is touched; it
-    # is deliberately not a classified ValueError, so the caller gets the
-    # opaque internal_error and the operator gets the logged traceback.
+    # not finite and non-negative raises ValueError("tool_price_invalid").
+    # At the quote endpoint that happens before any idempotency state exists.
+    # On a permitted invoke it happens after the idempotency record is granted
+    # and before the permit reserve, so the wrapper's pre-charge release frees
+    # the key. It is deliberately not a classified ValueError, so the caller
+    # gets the opaque internal_error and the operator gets the logged
+    # traceback.
     return tool_price(service, category)
 
 

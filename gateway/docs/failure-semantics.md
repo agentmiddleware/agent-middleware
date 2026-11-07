@@ -368,6 +368,32 @@ ack was lost is recognized rather than duplicated
 `resolved` claim without the matching ledger row fails closed on every read
 and replay (`test_forged_resolved_reconciliation_without_refund_fails_closed`).
 
+If the receipt cannot be signed at that moment (the signing key became
+unusable after the call was admitted, for example it was disabled), the work
+item is still recorded, without a receipt: the caller gets the same 500 /
+`-32603` answer with `refund_reconciliation.status` `pending`, `receipt_id`
+`null` and `receipt_status` `unsigned`, and a replay of the same key returns
+the same answer without running the tool. The stored record keeps the receipt
+inputs server side. The periodic cleanup on every replica runs
+`RefundReconciliationService.sign_unsigned_pending`: a replica whose key can
+sign writes the `failed_unrefunded` receipt and turns the item into an
+ordinary pending work item, which the operator list and retry then see; a
+replica that cannot sign leaves it for the next pass. Until it is signed the
+item does not appear in the operator list
+(`tests/test_refund_reconciliation_unsigned.py`). The unsigned item is the
+only owner of that debt: the dispatch reconciler skips an upstream attempt
+whose record carries it, as it skips one with a signed `failed_unrefunded`
+receipt, so the money is refunded once, through the operator retry. If a
+refund for the charge is already in the ledger and its permit reservation is
+still held (the live path refunded, then failed to record the refund on the
+dispatch attempt), the signer signs as usual and logs
+`refund_reconciliation_unsigned_refund_unacknowledged`; the operator retry
+then finds that refund, refunds nothing more, and releases the reservation
+once. If the reservation was already released as well, the signer refuses and
+logs `refund_reconciliation_unsigned_already_refunded`; that item has no
+automatic resolution and needs an operator
+(`tests/test_mcp_upstream_governed.py`).
+
 ## What this deliberately does not claim
 
 1. **Post-dispatch ambiguity is never resolved automatically.** No retry, no

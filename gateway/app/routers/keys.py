@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import AuthContext, get_auth_context
 from app.schemas.trust import SigningKeyResponse
-from app.trust import get_signing_key_service
+from app.trust import SigningKeyError, get_signing_key_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/signing-keys", tags=["Trust Signing Keys"])
 
@@ -25,9 +29,21 @@ def _key_response(key) -> SigningKeyResponse:
 async def get_active_signing_key(
     auth: AuthContext = Depends(get_auth_context),
 ) -> SigningKeyResponse:
-    """Return public metadata for the active transaction-evidence signing key."""
+    """Return public metadata for the active transaction-evidence signing key.
 
-    key = await get_signing_key_service().get_active_key()
+    A replica whose configured key cannot sign (retired, disabled, bound to
+    other key material) answers 503 ``signing_key_unavailable``, the same
+    reason the governed paths give, rather than an unclassified 500. The
+    underlying reason stays in the server log.
+    """
+
+    try:
+        key = await get_signing_key_service().get_active_key()
+    except SigningKeyError as exc:
+        logger.warning("signing_key_active_unavailable reason=%s", exc)
+        raise HTTPException(
+            status_code=503, detail={"error": "signing_key_unavailable"}
+        ) from exc
     return _key_response(key)
 
 

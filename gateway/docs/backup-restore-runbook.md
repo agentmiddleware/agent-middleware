@@ -457,7 +457,7 @@ After backup, upgrade, restore, or rollback:
    | Check | What it proves | Source |
    | --- | --- | --- |
    | `GET /health` | Process up. Redis PING when `REDIS_URL` is set. Returns `commit_sha`, `build_provenance`, `tenant_rls_mode`. | `gateway/app/main.py` `/health`; Docker `HEALTHCHECK` in `gateway/Dockerfile` and `gateway/docker-compose.yml` |
-   | `GET /health/ready` | Durable state store, MQTT (or `not_used` when simulated), and database `SELECT 1`. Database not `up` is not ready. | `gateway/app/main.py` `/health/ready`; `gateway/app/core/health.py` `check_database_readiness` |
+   | `GET /health/ready` | Durable state store, MQTT (or `not_used` when simulated), database `SELECT 1`, and the signing key (key material loads and the configured key's row can sign). State store, MQTT or signing key `down`, or database not `up`, is not ready. | `gateway/app/main.py` `/health/ready`; `gateway/app/core/health.py` `check_database_readiness`, `check_signing_key_readiness` |
    | `GET /health/dependencies` | Postgres, Redis, signing key, upstream MCP, version and commit SHA (production posture). | `gateway/app/main.py` `/health/dependencies` |
    | `scripts/human_preflight.sh` | Unauthenticated GETs: `/health`, `/health/dependencies`, OpenAPI, agent manifest, catalogs. | `gateway/scripts/human_preflight.sh`; `gateway/docs/human-onboarding.md` Preflight script |
 

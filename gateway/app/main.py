@@ -40,6 +40,7 @@ from .core.health import (
     build_public_dependency_report,
     check_redis_liveness,
     check_database_readiness,
+    check_signing_key_readiness,
     check_mqtt_readiness,
     gather_dependency_report,
 )
@@ -298,6 +299,9 @@ async def lifespan(app: FastAPI):
                 # reserve and the receipt write (only touches idle permits).
                 if settings.DATABASE_URL:
                     from .services.idempotency import get_idempotency_service
+                    from .services.refund_reconciliation import (
+                        get_refund_reconciliation_service,
+                    )
                     from .services.mcp_dispatch_attempts import (
                         MAX_UPSTREAM_CALL_TIMEOUT_SECONDS,
                         MAX_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
@@ -389,6 +393,19 @@ async def lifespan(app: FastAPI):
                             "cleanup_completed",
                             idempotency_records_repaired=repaired,
                             idempotency_records_needing_review=needs_review,
+                        )
+
+                    # Pending refunds recorded while this or another replica
+                    # could not sign get their receipt from a replica that can.
+                    (
+                        refund_receipts_signed,
+                        refund_receipts_unsigned,
+                    ) = await get_refund_reconciliation_service().sign_unsigned_pending()
+                    if refund_receipts_signed or refund_receipts_unsigned:
+                        logger.info(
+                            "cleanup_completed",
+                            refund_receipts_signed=refund_receipts_signed,
+                            refund_receipts_still_unsigned=refund_receipts_unsigned,
                         )
 
             except asyncio.CancelledError:
@@ -1335,6 +1352,10 @@ async def health_ready():
 
     checks["database"] = await check_database_readiness()
     if checks["database"]["status"] != "up":
+        all_healthy = False
+
+    checks["signing_key"] = await check_signing_key_readiness()
+    if checks["signing_key"]["status"] != "up":
         all_healthy = False
 
     return JSONResponse(

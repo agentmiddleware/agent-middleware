@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import base64
 import binascii
 import hashlib
@@ -25,8 +27,30 @@ from app.db.database import get_session_factory
 from app.db.models import SigningKeyModel
 
 
+logger = logging.getLogger(__name__)
+
+
 class SigningKeyError(RuntimeError):
     """Raised when trust-plane signing or verification cannot proceed."""
+
+
+class SigningKeyUnavailableError(SigningKeyError):
+    """The configured signing key cannot sign, found before any effect.
+
+    Raised only by :meth:`SigningKeyService.assert_ready_to_sign`, which the
+    governed pipelines call before they reserve budget or charge a wallet.
+    Nothing has been recorded when this is raised, so a caller may retry the
+    same idempotency key (on a replica whose key can sign). It is deliberately
+    its own type: a plain :class:`SigningKeyError` raised after a charge must
+    never be read as retryable. ``cause`` keeps the underlying reason for the
+    server log; the wire only ever carries ``reason``.
+    """
+
+    reason = "signing_key_unavailable"
+
+    def __init__(self, cause: str) -> None:
+        self.cause = cause
+        super().__init__(self.reason)
 
 
 # Names the exact byte-level contract :func:`canonical_json` implements, so an
@@ -274,6 +298,31 @@ class SigningKeyService:
         if key.status == "disabled":
             raise SigningKeyError("signing_key_disabled")
 
+    @staticmethod
+    def _assert_configured_key_can_sign(key: SigningKeyModel) -> None:
+        """Refuse a configured key that may no longer sign new objects.
+
+        ``disabled`` is terminal for signing and verification. ``retired``
+        means the key stopped signing new objects at a rotation
+        (``spec/key-set-v0.1.md``); its row stays published so older
+        signatures keep verifying. Neither is ever flipped back to ``active``
+        by a signer: a replica still configured with a retired key id refuses
+        with ``signing_key_retired`` until it is redeployed with the new key id
+        and key material. Only ``rotate_active_key_metadata`` reactivates a
+        row, and only the explicit target of a rotation.
+        """
+
+        SigningKeyService._assert_key_not_disabled(key)
+        if key.status == "retired" or (
+            key.status == "active" and key.retired_at is not None
+        ):
+            raise SigningKeyError("signing_key_retired")
+        if key.status != "active":
+            # Not "signing_key_not_active": that reason is the refund path's
+            # restart signal for a rotation landing mid-attempt, and an unknown
+            # status would only repeat on every restart.
+            raise SigningKeyError("signing_key_status_invalid")
+
     async def ensure_active_key(self) -> SigningKeyModel:
         factory = get_session_factory()
         public_key_b64 = self._public_key_b64()
@@ -284,26 +333,21 @@ class SigningKeyService:
                 )
             )
             key = result.scalar_one_or_none()
-            # Read-mostly fast path: when the active key already matches, do no
-            # write. This keeps the common (per-signature) call free of write
-            # contention and the first-time insert race below.
+            # An existing row is only ever read here, never rewritten: an
+            # active key signs with no write, and a retired, disabled or
+            # mismatched one refuses. Only a key id with no row yet is
+            # inserted, as active (the first-time bootstrap below).
             if key:
                 self._assert_public_key_mapping(key, public_key_b64)
-                self._assert_key_not_disabled(key)
-                if key.status == "active" and key.retired_at is None:
-                    return key
-                key.status = "active"
-                key.activated_at = utc_now()
-                key.retired_at = None
-                session.add(key)
-            else:
-                key = SigningKeyModel(
-                    key_id=self._key_id,
-                    public_key_b64=public_key_b64,
-                    status="active",
-                    activated_at=utc_now(),
-                )
-                session.add(key)
+                self._assert_configured_key_can_sign(key)
+                return key
+            key = SigningKeyModel(
+                key_id=self._key_id,
+                public_key_b64=public_key_b64,
+                status="active",
+                activated_at=utc_now(),
+            )
+            session.add(key)
             try:
                 await session.commit()
             except IntegrityError:
@@ -320,8 +364,50 @@ class SigningKeyService:
                     )
                 ).scalar_one()
                 self._assert_public_key_mapping(key, public_key_b64)
-                self._assert_key_not_disabled(key)
+                self._assert_configured_key_can_sign(key)
             return key
+
+    async def assert_ready_to_sign(self) -> None:
+        """Fail before any effect when the configured key cannot sign.
+
+        Runs the same resolution every signature runs (``ensure_active_key``)
+        and converts its refusal into :class:`SigningKeyUnavailableError`.
+        Governed pipelines call this before reserving budget or charging, so a
+        replica whose key is disabled, mismatched or otherwise unusable refuses
+        while nothing has moved, instead of charging and then failing to sign
+        the audit event and receipt.
+        """
+
+        try:
+            await self.ensure_active_key()
+        except SigningKeyError as exc:
+            # The one place the underlying reason is written down: callers
+            # answer with the canned ``signing_key_unavailable`` only.
+            logger.warning(
+                "signing_key_unavailable cause=%s key_id=%s", exc, self._key_id
+            )
+            raise SigningKeyUnavailableError(str(exc)) from exc
+
+    async def configured_key_problem(self) -> str | None:
+        """Why the configured key cannot sign, by the same rule signing uses.
+
+        Read-only: applies ``_assert_public_key_mapping`` and
+        ``_assert_configured_key_can_sign`` to the stored row and returns the
+        refusal reason, or ``None`` when the key can sign (or has no row yet,
+        which the first signature creates). Readiness uses this so it can
+        never report ``up`` for a key that ``ensure_active_key`` refuses.
+        """
+
+        public_key_b64 = self._public_key_b64()
+        key = await self.get_public_key(self._key_id)
+        if key is None:
+            return None
+        try:
+            self._assert_public_key_mapping(key, public_key_b64)
+            self._assert_configured_key_can_sign(key)
+        except SigningKeyError as exc:
+            return str(exc)
+        return None
 
     async def get_active_key(self) -> SigningKeyModel:
         """Return the current active public metadata, creating it if needed."""

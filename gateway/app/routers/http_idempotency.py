@@ -1,9 +1,14 @@
 """Opt-in ``Idempotency-Key`` replay protection for state-changing HTTP routes.
 
-Shared by the billing provisioning routes and API-key issuance: begin a record
-on the way in (replaying a stored response, or 409-ing on a conflicting
-reuse), and complete it with the terminal outcome so a retry with the same key
-gets the original result instead of repeating the side effect.
+Shared by the billing routes and API-key issuance: begin a record on the way
+in (replaying a stored response, or 409 on a conflicting reuse), and complete
+it with the terminal outcome so a retry with the same key gets the original
+result instead of repeating the side effect.
+
+A missing header is still opt-in: the call runs, and a later call is a new
+operation. A header that is present but unusable is refused before any side
+effect. Dropping it would make the retry look like a call that never asked
+for replay protection.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from fastapi.responses import JSONResponse
 from ..services.idempotency import (
     IDEMPOTENCY_KEY_HEADER_SOURCE,
     IdempotencyConflictError,
+    IdempotencyCreationDisabledError,
     IdempotencyInProgressError,
     IdempotencyService,
     InvalidIdempotencyKeyError,
@@ -62,31 +68,78 @@ class IdempotencyGuard:
         )
 
 
+def resolve_optional_http_idempotency_key(lines: Sequence[str] | None) -> str | None:
+    """Return the one key to honor, or None when the caller sent no header.
+
+    Every line the client sent has to be a usable key, and when more than one
+    line is present they have to agree. The first line must not win by itself:
+    a retry that leads with the other line would be a second operation.
+    """
+    if not lines:
+        return None
+    return resolve_client_idempotency_key(
+        [
+            (IDEMPOTENCY_KEY_HEADER_SOURCE, decode_idempotency_key_header(line))
+            for line in lines
+        ]
+    )
+
+
 async def begin_http_idempotency(
     *,
-    idempotency_key: str | None,
+    idempotency_key_lines: list[str] | None,
     wallet_id: str,
     endpoint: str,
     request_payload: dict[str, Any],
+    compatible_request_payload: dict[str, Any] | None = None,
 ) -> tuple[IdempotencyGuard, JSONResponse | None]:
     """Start (or replay) an idempotent operation. Returns the guard plus an
-    optional replay response to return immediately."""
-    if not idempotency_key:
+    optional replay response to return immediately.
+
+    ``compatible_request_payload`` is an older hash shape that may only be
+    read. It is never used to open a new record.
+    """
+    try:
+        idempotency_key = resolve_optional_http_idempotency_key(idempotency_key_lines)
+    except InvalidIdempotencyKeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": str(exc), **exc.as_error_data()},
+        ) from exc
+    if idempotency_key is None:
         return IdempotencyGuard(None, wallet_id, endpoint, None), None
     idem = get_idempotency_service()
     try:
+        allow_new_record = True
+        # API-key routes historically stored FastAPI's latin-1 header text.
+        # Prefer an existing historical identity before opening a UTF-8 slot.
+        # Never create a historical slot, even if it disappears after lookup.
+        if endpoint in {"/v1/api-keys", "/v1/api-keys/rotate"}:
+            for line in idempotency_key_lines or ():
+                if (
+                    line != idempotency_key
+                    and await idem.get_record(
+                        wallet_id=wallet_id, endpoint=endpoint, idempotency_key=line
+                    )
+                    is not None
+                ):
+                    idempotency_key = line
+                    allow_new_record = False
+                    break
         replay = await idem.begin(
             wallet_id=wallet_id,
             endpoint=endpoint,
             idempotency_key=idempotency_key,
             request_payload=request_payload,
+            allow_new_record=allow_new_record,
+            compatible_request_payload=compatible_request_payload,
         )
     except IdempotencyConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "idempotency_key_reused", "message": str(exc)},
         ) from exc
-    except IdempotencyInProgressError as exc:
+    except (IdempotencyInProgressError, IdempotencyCreationDisabledError) as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "idempotency_in_progress", "message": str(exc)},
@@ -124,12 +177,7 @@ def resolve_idempotency_key_lines(
     FastAPI still answers 422 when a required Header parameter is omitted.
     """
     try:
-        key = resolve_client_idempotency_key(
-            [
-                (IDEMPOTENCY_KEY_HEADER_SOURCE, decode_idempotency_key_header(line))
-                for line in lines or ()
-            ]
-        )
+        key = resolve_optional_http_idempotency_key(lines)
     except InvalidIdempotencyKeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

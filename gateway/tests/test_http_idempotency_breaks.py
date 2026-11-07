@@ -10,7 +10,6 @@ not repeat the effect.
 from __future__ import annotations
 
 from decimal import Decimal
-import json
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -273,27 +272,23 @@ async def test_transfer_recorded_before_correlation_is_part_of_the_hash_still_re
         "amount": "25.0",
         "description": None,
     }
-    stored = {
-        "transfer_id": "old-transfer",
-        "from_wallet_id": sender,
-        "to_wallet_id": receiver,
-        "amount": 25.0,
-        "from_balance_after": 4975.0,
-        "to_balance_after": 25.0,
-        "status": "completed",
-    }
+    headers = {**api_headers, "Idempotency-Key": "xfer-old-hash"}
+    first = await client.post(
+        "/v1/billing/transfer",
+        params={"from_wallet_id": sender, "to_wallet_id": receiver, "amount": 25},
+        headers=headers,
+    )
+    assert first.status_code == 200, first.text
     async with get_session_factory()() as session:
-        session.add(
-            IdempotencyRecordModel(
-                record_id="idm-oldtransfer0001",
-                wallet_id=sender,
-                endpoint="/v1/billing/transfer",
-                idempotency_key="xfer-old-hash",
-                request_hash=sha256_hex(old_payload),
-                response_json=json.dumps(stored),
-                status_code=200,
+        record = (
+            await session.execute(
+                select(IdempotencyRecordModel).where(
+                    IdempotencyRecordModel.wallet_id == sender,
+                    IdempotencyRecordModel.idempotency_key == "xfer-old-hash",
+                )
             )
-        )
+        ).scalar_one()
+        record.request_hash = sha256_hex(old_payload)
         await session.commit()
 
     response = await client.post(
@@ -308,9 +303,9 @@ async def test_transfer_recorded_before_correlation_is_part_of_the_hash_still_re
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["transfer_id"] == "old-transfer"
-    assert await _balance(client, api_headers, sender) == 5000
-    assert await _balance(client, api_headers, receiver) == 0
+    assert response.json() == first.json()
+    assert await _balance(client, api_headers, sender) == 4975
+    assert await _balance(client, api_headers, receiver) == 25
 
 
 # --- Replay after a terminal outcome ---
@@ -517,3 +512,59 @@ async def test_agent_wallet_replay_returns_the_original_json(
     assert second.status_code == 201, second.text
     assert second.json() == first.json()
     assert await _balance(client, api_headers, sponsor) == 900
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/api-keys", "/v1/api-keys/rotate"])
+@pytest.mark.parametrize("in_progress", [False, True])
+async def test_historical_api_key_header_does_not_remint(
+    client, api_headers, clean_database, endpoint, in_progress
+):
+    sponsor = await _sponsor(client, api_headers, "historical-key")
+    payload = {"wallet_id": sponsor, "key_name": "once"}
+    key = "café"
+    headers = [(b"X-API-Key", b"test-key"), (b"Idempotency-Key", key.encode("utf-8"))]
+    first = await client.post(endpoint, json=payload, headers=headers)
+    assert first.status_code == (200 if endpoint.endswith("rotate") else 201)
+    async with get_session_factory()() as session:
+        record = (
+            await session.execute(
+                select(IdempotencyRecordModel).where(
+                    IdempotencyRecordModel.wallet_id == sponsor,
+                    IdempotencyRecordModel.endpoint == endpoint,
+                    IdempotencyRecordModel.idempotency_key == key,
+                )
+            )
+        ).scalar_one()
+        record.idempotency_key = key.encode("utf-8").decode("latin-1")
+        if in_progress:
+            record.response_json = None
+        await session.commit()
+
+    retry = await client.post(endpoint, json=payload, headers=headers)
+    if in_progress:
+        assert retry.status_code == 409, retry.text
+        assert retry.json()["detail"]["error"] == "idempotency_in_progress"
+    else:
+        assert retry.status_code == first.status_code, retry.text
+        expected = first.json()
+        if endpoint.endswith("rotate"):
+            expected["new_key"]["api_key"] = None
+        else:
+            expected["api_key"] = None
+        assert retry.json() == expected
+    listed = await client.get(f"/v1/api-keys/{sponsor}", headers=api_headers)
+    assert len(listed.json()["keys"]) == 1
+    async with get_session_factory()() as session:
+        records = (
+            (
+                await session.execute(
+                    select(IdempotencyRecordModel).where(
+                        IdempotencyRecordModel.wallet_id == sponsor,
+                        IdempotencyRecordModel.endpoint == endpoint,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(records) == 1

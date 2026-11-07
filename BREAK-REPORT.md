@@ -4,7 +4,7 @@ Summary: 6 breaks found, 6 fixed and tested, 0 fixed but failing, 0 blocked.
 
 Local SQLite tests only. No production calls, no migrations, no deploy.
 
-The new tests were run on the old code first: 8 failed, 5 passed in 2.56s. After the fix the same file is 13 passed. The five that already passed are the cases that should stay: a missing header charges twice, identical repeated header lines collapse to one charge, an old transfer row still replays, a charge replay matches the first JSON, and an agent-wallet replay matches the first JSON.
+The new tests were run on the old code first: 8 failed, 5 passed in 2.56s. After the fix the same file is 14 passed after the governance test. The five that already passed are the cases that should stay: a missing header charges twice, identical repeated header lines collapse to one charge, an old transfer row still replays, a charge replay matches the first JSON, and an agent-wallet replay matches the first JSON.
 
 ## High: a blank Idempotency-Key still charged or minted
 
@@ -40,7 +40,7 @@ Root cause: `gateway/app/routers/billing.py:1040` (old) hashed from, to, amount,
 
 Fix: New transfer rows include `correlation_id` in the hash, so a different correlation is HTTP 409 `idempotency_key_reused` and does not move money. The previous four-field hash is passed only as a compatible payload for rows already stored. A brand-new key is not saved under the old hash. Rows written before this change still replay when the four old fields match, even if a later retry adds a correlation id. That is deliberate so a deploy does not turn an old retry into a second transfer.
 
-Tests: `test_transfer_reused_key_with_different_correlation_conflicts` failed before the edit (second call HTTP 200). It passes after it: HTTP 409, balances 4900 and 100. `test_transfer_recorded_before_correlation_is_part_of_the_hash_still_replays` passed before and after: a seeded old-hash row replays and balances stay 5000 and 0.
+Tests: `test_transfer_reused_key_with_different_correlation_conflicts` failed before the edit (second call HTTP 200). It passes after it: HTTP 409, balances 4900 and 100. `test_transfer_recorded_before_correlation_is_part_of_the_hash_still_replays` passed before and after: a product-created transfer with its hash adjusted to the old shape replays and balances stay 4975 and 25.
 
 ## Medium: a keyed transfer to an unknown source wallet returned 500
 
@@ -86,7 +86,7 @@ Pre-fix, from `gateway/`:
 
 Result: `8 failed, 5 passed in 2.56s`. Failures: `test_blank_idempotency_key_does_not_charge`, `test_overlong_and_control_keys_do_not_charge`, `test_disagreeing_idempotency_key_headers_do_not_charge`, `test_blank_key_does_not_mint_api_key_or_agent_wallet`, `test_transfer_reused_key_with_different_correlation_conflicts`, `test_transfer_replay_returns_the_original_json`, `test_transfer_error_replays_keep_the_original_body`, `test_transfer_unknown_source_with_key_is_404`.
 
-After the fix, same command: `13 passed in 1.29s`.
+After the fix, same command: `14 passed` after the governance test.
 
 Related suites, from `gateway/`:
 
@@ -835,3 +835,20 @@ integration runs needing the app and databases were not run beyond the
    Recommend yes, as a follow-up task.
 2. No migration, no config, no API changes in this work. Nothing needs a
    decision to land it.
+
+
+## PR 32 review follow-up
+
+Historical API-key create and rotate rows keyed by FastAPI's latin-1 header
+text are checked before opening a UTF-8 identity. Existing rows are read only:
+completed rows replay, and in-progress rows refuse another mint. New rows
+continue to use the decoded UTF-8 identity. Four regression cases cover both
+routes and both row states, using product-created records.
+
+The historical transfer test now creates a real transfer and changes only its
+stored request hash to the historical shape. Its retry returns the original
+body and leaves balances at 4975 and 25.
+
+Review follow-up validation: `test_http_idempotency_breaks.py` has 18 passing
+cases (14 existing plus four API-key compatibility cases). Together with
+`test_api_keys.py` and `test_rotate_api_keys.py`, 96 tests pass.

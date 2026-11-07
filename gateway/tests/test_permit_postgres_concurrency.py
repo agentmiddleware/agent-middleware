@@ -2649,3 +2649,175 @@ async def test_permit_request_lock_wait_crossing_deadline_rolls_back_all_mint_cl
                 )
             )
             await session.commit()
+
+
+async def _guarded_reservation_rowcount(
+    permit_id: str, amount: Decimal, *, count_orphan_receipts: bool
+) -> int:
+    """Run the production reservation expression as one guarded UPDATE."""
+    from sqlalchemy import update as sa_update
+
+    def charge() -> Any:
+        return PermitService._reservation_charge_expr(
+            amount, count_orphan_receipts=count_orphan_receipts
+        )
+
+    factory = get_session_factory()
+    async with factory() as session:
+        async with session.begin():
+            result = await session.execute(
+                sa_update(PermitModel)
+                .where(
+                    PermitModel.permit_id == permit_id,
+                    charge() <= PermitModel.max_credits,
+                )
+                .values(spent_credits=charge())
+                .execution_options(synchronize_session=False)
+            )
+            return int(result.rowcount or 0)
+
+
+async def _permit_spent(permit_id: str) -> Decimal:
+    factory = get_session_factory()
+    async with factory() as session:
+        model = await session.get(PermitModel, permit_id)
+        assert model is not None
+        return Decimal(model.spent_credits)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_reservation_charge_expr_counts_orphan_receipts_in_postgres(
+    seeded_permit: SeededPermit,
+) -> None:
+    """Issue #197: the correlated orphan-receipt subquery runs on PostgreSQL.
+
+    _reservation_charge_expr(count_orphan_receipts=True) correlates a
+    SUM(receipts.credits_charged) subquery to the permits row being updated.
+    It is used in both the SET and the WHERE of the guarded reservation
+    UPDATE. Prove it compiles and executes on asyncpg, absorbs a receipt
+    above spent_credits, and lets the max_credits predicate see the orphan.
+    """
+    permit_id = seeded_permit.permit_id
+    other_permit_id = f"permit-pg-other-{uuid.uuid4().hex[:16]}"
+    factory = get_session_factory()
+    async with factory() as session:
+        async with session.begin():
+            base = await session.get(PermitModel, permit_id)
+            assert base is not None
+            # A second permit with its own charged receipt. If the subquery
+            # were not correlated to the updated row, these 10 credits would
+            # leak into this permit's orphan total and change every result.
+            session.add(
+                PermitModel(
+                    permit_id=other_permit_id,
+                    issuer_wallet_id=base.issuer_wallet_id,
+                    subject_wallet_id=base.subject_wallet_id,
+                    subject_key_id=None,
+                    scopes_json=base.scopes_json,
+                    allowed_tools_json=base.allowed_tools_json,
+                    max_credits=Decimal("100"),
+                    spent_credits=Decimal("0"),
+                    expires_at=base.expires_at,
+                    nonce=uuid.uuid4().hex,
+                    status="active",
+                    signature=base.signature,
+                    key_id=base.key_id,
+                    issued_at=base.issued_at,
+                )
+            )
+
+    # Real receipts from the receipt service: one charged against this permit
+    # (the orphan) and one against the other permit, which a correctly
+    # correlated subquery must exclude.
+    receipt_service = get_receipt_service()
+    record_ids: list[str] = []
+    try:
+        for receipt_permit_id, charged in (
+            (permit_id, Decimal("3")),
+            (other_permit_id, Decimal("10")),
+        ):
+            request_payload = {"message": uuid.uuid4().hex}
+            record_id = await _create_receipt_idempotency_record(
+                seeded_permit, request_payload=request_payload
+            )
+            record_ids.append(record_id)
+            kwargs = _receipt_kwargs(
+                seeded_permit,
+                record_id=record_id,
+                request_payload=request_payload,
+                response_payload={"content": [{"type": "text", "text": "ok"}]},
+            )
+            kwargs.update(
+                permit_id=receipt_permit_id,
+                credits_authorized=charged,
+                credits_charged=charged,
+                outcome="success",
+            )
+            await receipt_service.create_receipt(**kwargs)
+
+        await _assert_orphan_reservations(permit_id)
+        # The other permit's receipt was never counted against this one,
+        # and the other permit itself was never touched.
+        assert await _permit_spent(other_permit_id) == Decimal("0")
+
+        # Disabled branch with receipts (10) above spent (0): the reservation
+        # is admitted and stores only the amount, never absorbing the excess.
+        assert (
+            await _guarded_reservation_rowcount(
+                other_permit_id, Decimal("1"), count_orphan_receipts=False
+            )
+            == 1
+        )
+        assert await _permit_spent(other_permit_id) == Decimal("1")
+    finally:
+        for record_id in record_ids:
+            await _delete_receipt_idempotency_record(record_id)
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(ReceiptModel).where(
+                        ReceiptModel.permit_id == other_permit_id
+                    )
+                )
+                await session.execute(
+                    delete(PermitModel).where(PermitModel.permit_id == other_permit_id)
+                )
+
+
+async def _assert_orphan_reservations(permit_id: str) -> None:
+    # Orphan (3) + amount (5) = 8 > max_credits (7): the WHERE must reject,
+    # which only happens if the subquery is evaluated against this row.
+    assert (
+        await _guarded_reservation_rowcount(
+            permit_id, Decimal("5"), count_orphan_receipts=True
+        )
+        == 0
+    )
+    assert await _permit_spent(permit_id) == Decimal("0")
+
+    # Orphan (3) + amount (2) = 5 <= 7: SET absorbs the orphan.
+    assert (
+        await _guarded_reservation_rowcount(
+            permit_id, Decimal("2"), count_orphan_receipts=True
+        )
+        == 1
+    )
+    assert await _permit_spent(permit_id) == Decimal("5")
+
+    # Receipts (3) are now below spent (5): no orphan, plain increment.
+    assert (
+        await _guarded_reservation_rowcount(
+            permit_id, Decimal("1"), count_orphan_receipts=True
+        )
+        == 1
+    )
+    assert await _permit_spent(permit_id) == Decimal("6")
+
+    # Disabled path ignores receipts entirely: 6 + 1 = 7 <= 7.
+    assert (
+        await _guarded_reservation_rowcount(
+            permit_id, Decimal("1"), count_orphan_receipts=False
+        )
+        == 1
+    )
+    assert await _permit_spent(permit_id) == Decimal("7")

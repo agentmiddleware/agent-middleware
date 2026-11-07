@@ -14,14 +14,18 @@ router, charges a Stripe Shared Payment Token and mints no credits.
 from decimal import Decimal
 from typing import ClassVar, cast
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from ..core import product_analytics
 from ..core.auth import AuthContext, get_auth_context, verify_api_key
 from ..core.config import get_settings
 from ..core.wallet_resolution import resolve_wallet_id
 from ..core.dependencies import get_agent_money
 from .http_idempotency import (
     begin_http_idempotency as _begin_idempotency,
+    resolve_idempotency_key_lines,
 )
 from ..services.agent_money import (
     AgentMoney,
@@ -31,6 +35,11 @@ from ..services.agent_money import (
 )
 from ..services.governance import record_governed_action
 from ..services.ownership import CallerIdentity, OwnershipDeniedError
+from ..services.idempotency import (
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
+    InvalidIdempotencyKeyError,
+)
 from ..services.policies import evaluate_wallet_policy
 from ..services.velocity_monitor import WalletFrozenError
 from ..services.wallet_engine import CrossTenantTransferError, WalletExpiredError
@@ -271,7 +280,7 @@ async def create_sponsor_wallet(
         if request.initial_credits
         else Decimal("0")
     )
-    return await money.create_sponsor_wallet(
+    wallet = await money.create_sponsor_wallet(
         sponsor_name=request.sponsor_name,
         email=request.email,
         initial_credits=initial,
@@ -279,6 +288,10 @@ async def create_sponsor_wallet(
         metadata=request.metadata,
         require_kyc=request.require_kyc,
     )
+    product_analytics.track_signup(
+        wallet.wallet_id, method="sponsor_wallet", email=request.email
+    )
+    return wallet
 
 
 @router.post(
@@ -300,6 +313,7 @@ async def create_agent_wallet(
     money: AgentMoney = Depends(get_agent_money),
 ):
     _require_wallet_access(auth, request.sponsor_wallet_id)
+    resolve_idempotency_key_lines(idempotency_key_lines)
     # Resolve the sponsor before opening an idempotency record: the record's
     # wallet_id references wallets, so beginning one for an unknown sponsor
     # would fail the foreign key and answer 500 where the unkeyed path answers
@@ -634,6 +648,7 @@ async def charge_wallet(
     money: AgentMoney = Depends(get_agent_money),
 ):
     wallet_id = resolve_wallet_id(wallet_id, auth)
+    resolve_idempotency_key_lines(idempotency_key_lines)
     category = service_category or service
     if not category:
         raise HTTPException(
@@ -961,6 +976,7 @@ async def prepare_top_up(
         description="Amount in fiat currency (USD)",
     ),
     currency: str = Query("USD", description="Fiat currency code"),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ):
     """
@@ -1009,14 +1025,28 @@ async def prepare_top_up(
     stripe_integration = get_stripe_integration()
 
     try:
+        key_arg = (
+            {"idempotency_key": idempotency_key} if idempotency_key is not None else {}
+        )
         result = await stripe_integration.create_top_up_intent(
             wallet_id=wallet_id,
             amount_fiat=Decimal(str(amount_fiat)),
             currency=currency,
+            **key_arg,
         )
         return result
     except WalletNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except InvalidIdempotencyKeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": str(e), **e.as_error_data()},
+        ) from e
+    except (IdempotencyConflictError, IdempotencyInProgressError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": str(e), "message": str(e)},
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1064,6 +1094,7 @@ async def transfer_wallets(
     Both wallets are locked during the transaction for ACID compliance.
     """
     _require_wallet_access(auth, from_wallet_id)
+    resolve_idempotency_key_lines(idempotency_key_lines)
     endpoint = "/v1/billing/transfer"
     # The idempotency row's wallet_id references wallets. Opening one for an
     # unknown source fails the foreign key and answers 500, while the same
@@ -1137,8 +1168,10 @@ async def transfer_wallets(
                 "description": description,
             },
         )
-        await guard.complete(result, 200, response_reference=result.get("transfer_id"))
-        return result
+        # Store and return the same JSON representation for live and replay responses.
+        body = jsonable_encoder(result)
+        await guard.complete(body, 200, response_reference=body.get("transfer_id"))
+        return JSONResponse(status_code=200, content=body)
     except WalletNotFoundError as e:
         await _record_billing_governance(
             event="billing.transfer",
@@ -1154,15 +1187,15 @@ async def transfer_wallets(
         )
         await guard.complete({"detail": str(e)}, 404)
         raise HTTPException(status_code=404, detail=str(e))
-    except CrossTenantTransferError as e:
+    except CrossTenantTransferError:
         refused_detail = {
             "error": "cross_tenant_transfer_refused",
-            "message": str(e),
+            "message": "The request could not be completed.",
         }
         await guard.complete(refused_detail, status.HTTP_403_FORBIDDEN)
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=refused_detail,
+            content=refused_detail,
         )
     except OwnershipDeniedError:
         await _record_billing_governance(

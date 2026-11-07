@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges" role="img" aria-label="Agent Middleware API">
+  <!-- Arcade-cabinet tokens from styles.css, drawn on a 16x16 pixel grid so
+       the mark stays exact at 16px and steps cleanly at every larger size:
+       ink ground, text letterform, gold seal pixel. No radius, no curve —
+       every edge lands on a whole pixel. -->
+  <rect width="16" height="16" fill="#0b1020" />
+  <!-- "A", eight rows tall, one pixel per step. -->
+  <path fill="#e9edf8" d="M6 3h4v1H6zM5 4h1v1H5zm5 0h1v1h-1zM4 5h1v4H4zm7 0h1v4h-1zM5 9h6v1H5zM4 10h1v3H4zm7 0h1v3h-1z" />
+  <!-- Seal: a single gold pixel block, top-right, where the rotated square was. -->
+  <rect x="12" y="2" width="2" height="2" fill="#f0b43c" />
+</svg>

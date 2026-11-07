@@ -113,7 +113,13 @@ async def test_issued_key_shape_wallets_and_hash(
         "budget_credits",
         "base_url",
         "note",
+        "permit_id",
+        "permit_expires_at",
+        "demo_tool",
     }
+    assert body["permit_id"] is None
+    assert body["permit_expires_at"] is None
+    assert body["demo_tool"] == "partner.echo"
     assert body["api_key"].startswith("b2a_")
     assert body["key_prefix"] == body["api_key"][:8]
     assert body["tenant"] == "demo"
@@ -126,8 +132,9 @@ async def test_issued_key_shape_wallets_and_hash(
     key = await _key_row(body["key_id"])
     assert key.wallet_id == body["wallet_id"]
     assert key.tenant == "demo"
-    assert len(key.key_hash) == 64
-    assert key.key_hash != body["api_key"]
+    assert key.key_hash.startswith("scrypt$")
+    assert body["api_key"] not in key.key_hash
+    assert key.key_lookup == body["api_key"][:16]
     matched = await get_api_key_service().validate_key(body["api_key"], consume=False)
     assert matched is not None and matched.key_id == key.key_id
     after_lookup = await _key_row(body["key_id"])

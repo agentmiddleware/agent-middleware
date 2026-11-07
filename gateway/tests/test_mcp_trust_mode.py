@@ -426,10 +426,10 @@ async def test_strict_mode_replays_missing_tool_lookup_error_with_idempotency_ke
 
     assert first.status_code == 200
     assert first.json()["error"]["code"] == -32001
-    assert first.json()["error"]["message"] == f"Tool not found: {tool_name}"
+    assert first.json()["error"]["message"] == "Tool not found"
     assert replay.status_code == 200
     assert replay.json()["error"]["code"] == -32001
-    assert replay.json()["error"]["message"] == f"Tool not found: {tool_name}"
+    assert replay.json()["error"]["message"] == "Tool not found"
     assert replay.json()["error"]["message"] != "idempotency_in_progress"
     # docs/failure-semantics.md: an unknown tool completes a terminal record.
     assert (
@@ -483,10 +483,10 @@ async def test_strict_mode_replays_non_executable_tool_error_with_idempotency_ke
 
     assert first.status_code == 200
     assert first.json()["error"]["code"] == -32002
-    assert first.json()["error"]["message"] == f"Tool not executable: {tool_name}"
+    assert first.json()["error"]["message"] == "Tool not executable"
     assert replay.status_code == 200
     assert replay.json()["error"]["code"] == -32002
-    assert replay.json()["error"]["message"] == f"Tool not executable: {tool_name}"
+    assert replay.json()["error"]["message"] == "Tool not executable"
     assert replay.json()["error"]["message"] != "idempotency_in_progress"
     # docs/failure-semantics.md: a resolved but non-executable tool is
     # rejected before the governed record is begun, so nothing is recorded.

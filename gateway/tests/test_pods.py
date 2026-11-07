@@ -92,7 +92,7 @@ async def test_explicit_member_budgets_are_honored(client):
 async def test_even_split_never_over_allocates_past_the_pod_total(client):
     """A remainder that doesn't divide evenly must truncate, not round up.
 
-    Regression for a real bug (flagged by review on PetrefiedThunder/
+    Regression for a real bug (flagged by review on agentmiddleware/
     agent-middleware-api#429): 1 / 6 = 0.16666666...repeating. Decimal's
     default quantize rounding (ROUND_HALF_EVEN) rounds the 8th decimal
     place up to 0.16666667 here, and 6 members at that share sum to

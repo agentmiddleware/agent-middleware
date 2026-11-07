@@ -3,8 +3,9 @@
 The model's own ``tool_call.id`` is the operation identity: it is assigned
 once per tool call, lives in the conversation transcript, and therefore
 survives every retry of that call. :class:`GovernedToolRunner` derives the
-trust plane's ``Idempotency-Key`` from it, persists the derivation before the
-first network call, and never invents a key of its own.
+trust plane's ``Idempotency-Key`` from it, persists that derivation and the
+canonical arguments before the first network call, and never invents a key
+of its own.
 """
 
 from .client import B2AClient

@@ -1,0 +1,64 @@
+    <footer class="site-footer">
+      <div class="footer-branding">
+        <div class="footer-brand">Agent Middleware</div>
+        <p>Let agents retry safely.</p>
+      </div>
+      <div class="footer-directory">
+        <p>Human contact</p>
+        <a
+          class="button button-primary"
+          href="@@PILOT_EMAIL_HREF@@"
+          data-analytics-event="email_click"
+          aria-label="Pilot by email (opens your mail app)"
+          >Pilot</a
+        >
+        <a
+          href="mailto:@@PUBLIC_CONTACT_EMAIL@@"
+          data-analytics-event="email_click"
+          aria-label="Email @@PUBLIC_CONTACT_EMAIL@@"
+          >@@PUBLIC_CONTACT_EMAIL@@</a
+        >
+        <!-- booking:start -->
+        <a
+          href="@@PUBLIC_BOOKING_URL@@"
+          target="_blank"
+          rel="noopener noreferrer"
+          data-analytics-event="booking_click"
+          aria-label="Book a call if your scenario needs one (opens in a new tab)"
+          >Book a call if your scenario needs one</a
+        >
+        <span class="booking-context">@@BOOKING_CONTEXT@@</span>
+        <!-- booking:end -->
+        <span>Accountable contact: @@PUBLIC_DISPLAY_NAME@@</span>
+      </div>
+      <div class="footer-directory">
+        <p>Evidence and discovery</p>
+        <a href="/proof/" data-analytics-event="proof_click">Receipt proof</a>
+        <a href="https://api.thisisatest.tech/.well-known/agent.json" target="_blank" rel="noopener noreferrer">Agent manifest</a>
+        <a href="https://api.thisisatest.tech/openapi.json" target="_blank" rel="noopener noreferrer">OpenAPI</a>
+        <a href="https://api.thisisatest.tech/health/dependencies" target="_blank" rel="noopener noreferrer">Live dependency status</a>
+      </div>
+      <div class="footer-directory">
+        <p>Source and policy</p>
+        <a
+          href="https://github.com/agentmiddleware/agent-middleware"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Source</a
+        >
+        <a
+          href="https://api.thisisatest.tech/DESIGN_PARTNER_GUIDE.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Design partner guide (Preview)</a
+        >
+        <a
+          href="https://api.thisisatest.tech/SECURITY_LIMITATIONS.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Limits</a
+        >
+        <a href="/.well-known/security.txt">Security</a>
+      </div>
+      <p class="footer-license">Apache 2.0 (gateway is Fair Source, FSL-1.1)</p>
+    </footer>

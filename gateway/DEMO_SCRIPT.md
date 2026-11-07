@@ -96,7 +96,8 @@ the verifier themselves, rehearses the independent-verification mechanics of
 the customer-validation milestone; the milestone step itself requires the
 receipt to come from a partner-owned agent and staging tool and be verified
 in the partner's environment
-(docs/30-day-customer-validation.md).
+(`docs/30-day-customer-validation.md`, not included in this repository;
+rehearse with the in-repo [design partner guide](DESIGN_PARTNER_GUIDE.md)).
 
 The proof artifact shape is captured in
 [`docs/demo-trust-plane-output.md`](docs/demo-trust-plane-output.md). Use the

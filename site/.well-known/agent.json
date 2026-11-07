@@ -1,0 +1,107 @@
+{
+  "schema_version": "1.0",
+  "name": "agent-middleware-api",
+  "description": "This marketing host points machines to the Agent Middleware API transaction-integrity boundary for consequential autonomous actions on the configured upstream-MCP path: one logical action, bounded authority consumption, at-most-one gateway dispatch and debit, explicit delivery uncertainty, and linked gateway evidence for required external reconciliation.",
+  "primary_audience": "autonomous_agents",
+  "buyer_audience": [
+    "platform_engineering",
+    "ai_infrastructure",
+    "security_teams_operating_internal_mcp_tools",
+    "teams_operating_consequential_autonomous_actions"
+  ],
+  "positioning": {
+    "schema_version": "1.0",
+    "effective_date": "2026-08-28",
+    "id": "transaction_integrity_for_consequential_autonomous_actions",
+    "label": "Transaction integrity for consequential autonomous actions",
+    "tagline": "Make consequential agent actions transactional.",
+    "legacy_aliases": [
+      "governed_mcp_trust_plane"
+    ],
+    "legacy_protocol_identifiers": {
+      "mcp_server_name": "Agent Middleware MCP Trust Plane"
+    },
+    "supersedes": [
+      "product_wedge",
+      "product_loop"
+    ],
+    "scope": {
+      "transaction_state_machine": "configured_upstream_mcp_tool_only",
+      "local_and_dogfood_tools": "not_covered_by_dispatch_uncertainty_semantics"
+    },
+    "semantics": [
+      "logical_action_identity",
+      "bounded_authority_consumption",
+      "at_most_one_gateway_dispatch_and_debit",
+      "delivery_uncertain_no_automatic_redispatch",
+      "linked_gateway_evidence",
+      "authoritative_external_reconciliation_required"
+    ],
+    "canonical_loop": [
+      "logical_action_identity",
+      "authorize",
+      "reserve_configured_allowance",
+      "debit",
+      "claim_gateway_dispatch",
+      "confirmed_outcome_or_delivery_uncertain",
+      "linked_receipt_and_audit",
+      "authoritative_external_reconciliation_required"
+    ],
+    "claim_boundary": "gateway_state_machine_not_distributed_acid_or_downstream_effect_proof"
+  },
+  "product_wedge": "governed_mcp_trust_plane",
+  "thesis": "Before an autonomous agent acts, it needs bounded authority and portable proof.",
+  "product_loop": [
+    "discover",
+    "authenticate",
+    "authorize",
+    "invoke",
+    "meter",
+    "receipt",
+    "audit",
+    "govern"
+  ],
+  "canonical_api": "https://api.thisisatest.tech",
+  "human_site": "https://www.agentmiddleware.dev/",
+  "github": "https://github.com/agentmiddleware/agent-middleware",
+  "github_access": "public",
+  "discovery": {
+    "agent_manifest": "https://api.thisisatest.tech/.well-known/agent.json",
+    "llm_txt": "https://api.thisisatest.tech/llm.txt",
+    "llms_txt": "https://api.thisisatest.tech/llms.txt",
+    "mcp_tools": "https://api.thisisatest.tech/mcp/tools.json",
+    "openapi": "https://api.thisisatest.tech/openapi.json",
+    "capability_index": "https://api.thisisatest.tech/v1/discover",
+    "dependency_truth": "https://api.thisisatest.tech/health/dependencies"
+  },
+  "bootstrap_sequence": [
+    "https://api.thisisatest.tech/.well-known/agent.json",
+    "https://api.thisisatest.tech/llms.txt",
+    "https://api.thisisatest.tech/mcp/tools.json",
+    "https://api.thisisatest.tech/openapi.json"
+  ],
+  "simulation_and_dependency_truth": "https://api.thisisatest.tech/health/dependencies",
+  "try_it": {
+    "mode": "local_self_hosted",
+    "repository": "https://github.com/agentmiddleware/agent-middleware",
+    "repository_access": "public",
+    "command": "make prove-trust-plane",
+    "live_access": "operator_issued",
+    "requires_live_credentials": false,
+    "proves": [
+      "scoped_permit",
+      "metered_mcp_invoke",
+      "signed_receipt",
+      "replay_without_second_charge",
+      "out_of_scope_denial",
+      "offline_receipt_verification"
+    ],
+    "note": "Runs the real FastAPI transaction-integrity path against a throwaway local SQLite database. This is a reproducible proof, not a production or settlement claim. The source repository is public and can be cloned to run the proof locally without live API credentials."
+  },
+  "authentication": {
+    "type": "api_key",
+    "header": "X-API-Key",
+    "note": "Free sandbox demo keys are self-serve on this marketing host. Live keys are operator-issued to design partners."
+  },
+  "note": "This file is a pointer only. Do not treat this marketing origin as the API base URL."
+}

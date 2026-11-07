@@ -157,6 +157,18 @@ repo; do not Redeploy from GitHub source).
   rate-limiter outage (HTTP 503) instead of silently using per-process memory.
   `/health/dependencies` exposes `runtime_degradation` when any configured
   backend has fallen back to in-memory.
+- A production-like deployment that never sets `REDIS_URL` still boots, and its
+  rate limiter counts in process memory: each worker and replica keeps its own
+  counters, so every limit is multiplied by the process count, and nothing
+  fails closed because there is no shared backend to lose. The runtime
+  reports this instead of looking healthy: `/health/dependencies` shows
+  `runtime_degradation.degraded` as `true` with the stable reason
+  `rate_limiter_redis_not_configured`, and the app logs one startup warning
+  with the same reason per process. The HTTP status of `/health/dependencies`
+  and the set of configurations that boot are unchanged. Requiring
+  `REDIS_URL` at boot would be a breaking change for single-process
+  deployments, so it is left as a separate, announced decision for the
+  maintainers.
 - All Phase 9 AWI MCP tools always require signed permits (`requirePermit` in
   `/mcp/tools.json`), even if legacy unpermitted MCP is enabled. Those stubs
   are not wedge product; Phase 2 drops them from discovery when proof
@@ -213,14 +225,50 @@ missing control.
   budget and the window length, not an algorithm.** The shared Redis limiter
   counts fixed 60-second buckets, so a caller straddling a bucket boundary can
   land up to twice the budget inside one arbitrary 60-second span. The
-  in-memory fallback counts a rolling 60 seconds and is strictly tighter; it is
-  never reached in a production-like environment, which fails closed instead.
-  `rate_limits.window_accounting` in discovery names this difference.
+  in-memory limiter counts a rolling 60 seconds and is strictly tighter. It
+  counts whenever `REDIS_URL` is unset, in any environment. With `REDIS_URL`
+  set, a production-like environment never falls back to it and fails closed
+  instead; other environments fall back to it when Redis is unreachable.
+  `rate_limits.window_accounting` in discovery names the difference between the
+  two algorithms. `rate_limits.counter_scope` reports the configured scope:
+  `shared_redis` when `REDIS_URL` is set, otherwise `per_process`. It is
+  configuration, not live state. With `REDIS_URL` set but unreachable in a
+  non-production-like environment, the limiter counts in memory while the field
+  still says `shared_redis`; fallbacks that have happened show under
+  `runtime_degradation` on `/health/dependencies`.
+- **Counters are shared only with Redis.** Every bound below (per key,
+  anonymous, readiness and pre-auth) is per process when `REDIS_URL` is unset,
+  so with several workers or replicas the effective ceiling is the stated
+  ceiling times the process count. Words such as deployment-wide and shared
+  below describe the Redis-backed limiter.
 - **Authenticated:** one bucket per `X-API-Key` value. The bucket is named by
   a domain-separated SHA-256 digest of the value, never the key itself, so the
   limiter's Redis key names hold neither live API keys nor the `key_hash` the
   key table stores for them.
-- **No key:** one shared `anonymous` bucket for the whole deployment.
+- **No key:** one anonymous bucket per observed client address, so one
+  stranger can only spend their own budget and cannot starve other clients,
+  `/.well-known/trust-keys.json` or `/v1/discover`. An anonymous backstop at
+  `RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER` times the per-client limit
+  (default 20) still brakes a flood spread over many addresses. It is
+  deployment-wide when the counters are shared through Redis; without
+  `REDIS_URL` each worker or replica has its own backstop. When it trips,
+  anonymous callers get 429 until the window resets, and callers with a key
+  are unaffected. Callers that share an egress
+  address (a corporate NAT or proxy) still share one per-client anonymous
+  bucket. Behind a reverse proxy or load balancer, every caller shares the
+  proxy's address until `FORWARDED_ALLOW_IPS` names it; see the forwarded
+  address contract under unaccepted credentials below.
+- **Readiness:** `/health/ready` has its own per-client and route-wide
+  budgets and ignores credential headers, so traffic on other routes, anonymous
+  or keyed, cannot consume the readiness budget. Readiness requests themselves
+  can still exhaust the route-wide readiness bucket (ten times the per-client
+  limit), and probes then receive 429 until the window resets. It is limited
+  rather than exempt because it runs state store, MQTT and database checks.
+  `/health/dependencies` stays on the ordinary limits because it runs live
+  Stripe and Sentinel probes.
+- **Namespaced buckets:** per-key and anonymous bucket names, and so their
+  Redis keys, carry `STATE_NAMESPACE` and the public URL (or app name), so two
+  deployments that share one Redis do not share budgets.
 - **Unaccepted credentials:** the per-key bucket is selected from a
   caller-supplied header before the key has been verified, so every request
   whose credentials the app does not accept is additionally charged to one
@@ -253,9 +301,58 @@ missing control.
   - A request whose credentials the app accepts leaves the bucket exactly as
     it found it. Client identity is the ingress peer address (Railway's
     `X-Real-IP` only where the platform marker is present, per the public-MCP
-    rule above), so callers sharing one egress address share that bucket — and
+    rule above), so callers sharing one egress address share that bucket, and
     callers spread across many source addresses get one such bucket each. A
     distributed flood is still the edge's job.
+  - **Forwarded address contract.** The client address is the connection peer
+    as the ASGI server reports it. `docker_entrypoint.sh` starts uvicorn
+    without `--forwarded-allow-ips`, so uvicorn trusts forwarding headers only
+    from `127.0.0.1` and `::1` (its default, or the `FORWARDED_ALLOW_IPS`
+    environment variable when set). Behind a reverse proxy, load balancer or
+    Kubernetes ingress that is not on loopback, every caller therefore shares
+    the proxy's address, and the per-address buckets above (anonymous,
+    readiness and this one) become one deployment-wide bucket for all of them.
+    Behind a shared address, a caller with a valid key of any kind can then
+    receive this bucket's `429` while other callers send invalid keys. No key
+    class is exempt from it.
+    To count real client addresses, set `FORWARDED_ALLOW_IPS` to the exact
+    address or addresses of your ingress, or to a CIDR range that covers it
+    (uvicorn accepts both, comma separated). Use the narrowest CIDR that
+    covers only your ingress peers. A catch-all range (`0.0.0.0/0` or
+    `::/0`) trusts every peer of that address family, and for entries of that
+    family uvicorn then takes the left-most one, exactly as it does for `*`,
+    so do not use one. Uvicorn reads the client from `X-Forwarded-For` only on
+    connections from the trusted addresses, and it takes the right-most entry
+    that is not itself a trusted address. **That entry is the address the
+    ingress observed only if the ingress overwrites `X-Forwarded-For` with the
+    client address it saw, or appends that address to the inbound chain.** An
+    ingress that forwards the inbound header unchanged lets the caller choose
+    the address even when `FORWARDED_ALLOW_IPS` names that exact ingress, so do
+    not trust such an ingress for address-based limiting. **Do not set it to
+    `*`.** With `*`
+    uvicorn trusts every connection and takes the left-most
+    `X-Forwarded-For` entry. A caller controls that entry whenever the ingress
+    appends to the header instead of replacing it, so any caller can send its
+    own value and receive a fresh bucket per request. That holds even when the
+    application is reachable only through the ingress.
+    On the standard container launch path, set `FORWARDED_ALLOW_IPS` in the
+    process environment of the container that runs uvicorn. If a command
+    override passes uvicorn's `--forwarded-allow-ips` option instead, that
+    option takes precedence over the environment variable. The uvicorn
+    command line also reads `UVICORN_FORWARDED_ALLOW_IPS` as the value of
+    that option, so it has the same effect and the same precedence, and it
+    must not be set to `*` either. The gateway application does not read
+    `FORWARDED_ALLOW_IPS` from `.env` itself. A `.env` file reaches uvicorn only
+    when whatever launches the container loads it into the process
+    environment. The Compose file in this repository does that
+    (`env_file: .env`), so on that stack a value in `.env` applies, and the
+    same rules hold for it: never `*`, `0.0.0.0/0` or `::/0`. Elsewhere a
+    `.env` file the launcher does not load has no effect. **No setting is
+    needed on Railway.** There the gateway reads the single canonical `X-Real-IP` value, as described
+    above, under Railway's platform marker. The setting applies to other
+    ingress. This document does not assume any other platform sets `X-Real-IP`.
+    The gateway does not refuse to start without a trusted-proxy setting.
+    Whether it should is a maintainer decision.
 - **Counted responses** — including `401`s — carry `X-RateLimit-Limit`,
   `X-RateLimit-Remaining`, and `X-RateLimit-Reset`. Remaining dropping from
   119 toward 80 with no `429` means the budget has not been reached.
@@ -265,8 +362,12 @@ missing control.
 - This is a request-count ceiling, not a connection or bandwidth limit. An
   edge request-count/connection cap remains the operator's job, as noted
   under inbound body bounding above.
-- Redis outage in production-like environments fails closed (`503`), never
-  silently wider than declared.
+- With `REDIS_URL` set, a Redis outage in production-like environments fails
+  closed (`503`), never silently wider than declared. Without `REDIS_URL`
+  there is no shared limiter to lose: each worker or replica enforces the
+  declared limit on its own, so the effective limit is the declared limit times
+  the process count, and a production-like deployment is reported as degraded
+  (see the startup posture notes above).
 
 `GET /` and `GET /v1/discover` both publish this as `rate_limits`.
 

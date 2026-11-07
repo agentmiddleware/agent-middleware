@@ -64,6 +64,15 @@ def do_run_migrations(connection: Connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata)
 
     with context.begin_transaction():
+        if connection.dialect.name == "postgresql":
+            # Explicit admin mechanism for migrations, as in the archived api
+            # chain: FORCE ROW LEVEL SECURITY (048_tenant_rls, enforce mode)
+            # binds the table owner too, so data migrations such as the 050
+            # backfill opt out of the wallet policies for this transaction
+            # only (set_config is_local=true, the SET LOCAL equivalent).
+            connection.exec_driver_sql(
+                "SELECT set_config('app.rls_bypass', 'on', true)"
+            )
         context.run_migrations()
 
 

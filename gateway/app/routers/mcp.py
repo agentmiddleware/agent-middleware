@@ -21,18 +21,22 @@ import inspect
 import json
 import logging
 import math
+import re
+import unicodedata
 import uuid
 from dataclasses import asdict
 from decimal import Decimal
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from ..audit.lightweight import record_audit
 from ..core.config import DuplicateGuardMode, get_settings
+from ..core.time import to_naive_utc, utc_now
+from ..core.reason_codes import REFUSAL_REASON_CODES, is_refusal_reason_code
 from ..policy.jev_guard import evaluate_jev_guard
 from ..services.jev_guard_metadata import jev_audit_id, load_jev_guard_metadata
 from ..core.auth import (
@@ -176,12 +180,16 @@ class GovernedToolError(RuntimeError):
         extra_data: dict[str, Any] | None = None,
         status_code: int = 500,
         jsonrpc_code: int = -32603,
+        tool_originated: bool = False,
     ) -> None:
         super().__init__(reason)
         self.receipt = receipt
         self.extra_data = extra_data or {}
         self.status_code = status_code
         self.jsonrpc_code = jsonrpc_code
+        # True when ``reason`` is a tool's own exception text rather than a
+        # gateway-chosen reason code; public surfaces must not echo it.
+        self.tool_originated = tool_originated
 
 
 class ToolPermissionDenied(PermissionError):
@@ -407,16 +415,203 @@ def _safe_jsonrpc_id(value: Any) -> str | int | float | None:
     return None
 
 
+INTERNAL_ERROR_MESSAGE = "internal_error"
+
+# Public JSON-RPC messages are canned constants. Exception text is logged
+# under a request id and never copied into the client payload.
+_MCP_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_JSONRPC_PUBLIC_MESSAGES: dict[int, str] = {
+    -32600: "Invalid Request",
+    -32601: "Method not found",
+    -32602: "Invalid params",
+    -32603: INTERNAL_ERROR_MESSAGE,
+    -32001: "Tool not found",
+    -32002: "Tool not executable",
+    -32003: "Permission denied",
+    -32004: "insufficient_funds",
+    -32005: "idempotency_in_progress",
+    -32006: "upstream_error",
+}
+_PUBLIC_REASON_MESSAGES: dict[str, str] = {
+    code: code
+    for code in (
+        *REFUSAL_REASON_CODES,
+        "Missing tool name",
+        "Missing wallet_id in mcpContext",
+        "idempotency_key_required",
+        "idempotency_in_progress",
+        "invalid_idempotency_key",
+        "jev_risk_review_required",
+        "permit_required",
+        "quote_already_consumed",
+        "quote_expired",
+        "quote_invalid",
+        "quote_not_found",
+        "quote_tool_mismatch",
+        "quote_wallet_mismatch",
+        "refund_reconciliation_resolution_invalid",
+        "human_approval_pending",
+        "human_approval_unavailable",
+        "ledger_write_contended",
+        "audit_chain_head_contention",
+        "receipt_write_contended",
+        "permit_write_contended",
+        "tool_execution_failed",
+    )
+}
+_PUBLIC_MESSAGE_BY_EXC_TYPE: dict[type[BaseException], str] = {
+    InvalidIdempotencyKeyError: "invalid_idempotency_key",
+    GovernedRequestInvalid: "Invalid params",
+    HumanApprovalPendingSignal: "human_approval_pending",
+    IdempotencyInProgressError: "idempotency_in_progress",
+    LedgerWriteContendedError: "ledger_write_contended",
+    AuditChainContendedError: "audit_chain_head_contention",
+    ReceiptWriteContendedError: "receipt_write_contended",
+    PermitWriteContendedError: "permit_write_contended",
+    ToolPermissionDenied: "Permission denied",
+    PermissionError: "Permission denied",
+    ToolExecutionError: "tool_execution_failed",
+}
+
+# Refusal codes whose ``code: detail`` suffix is recognized on the denial
+# path (a ToolPermissionDenied/PermissionError). ``permit_forbidden_field``
+# is the one documented producer-controlled detail: the suffix names the entry
+# of the permit's own forbidden-fields list that the caller's arguments hit
+# (docs/denial-details.md), and the field name already travels in the denial's
+# details payload and the server log. The wire always gets the bare reason
+# code; the suffix never reaches the client. In particular a wrapped tool
+# failure must never smuggle arbitrary tool output onto the wire by mimicking
+# a ``code: detail`` prefix.
+_REFUSAL_DETAIL_ALLOWLIST: frozenset[str] = frozenset({"permit_forbidden_field"})
+
+
+def _mcp_request_id(request: Request) -> str:
+    """Return a short correlation id from X-Request-ID, or a fresh uuid4 hex.
+
+    The header is accepted only when it is short and charset-limited so a
+    client cannot inject log or JSON delimiters through it.
+    """
+    raw = request.headers.get("x-request-id")
+    if raw is not None and _MCP_REQUEST_ID_RE.fullmatch(raw):
+        return raw
+    return uuid.uuid4().hex
+
+
+def _public_jsonrpc_message(exc: BaseException, *, code: int) -> str:
+    """Client message for ``exc``: stable reason codes pass through, rest is canned.
+
+    Governed denial reason codes (``delivery_uncertain``,
+    ``permit_forbidden_field``, ...) are contract, not exception text:
+    clients match them and receipts sign them. Every refusal code is
+    answered bare (text before the first colon); a ``code: detail`` suffix
+    never reaches the wire, even for a code in
+    ``_REFUSAL_DETAIL_ALLOWLIST`` carried by a denial exception, so a
+    wrapped tool failure can neither select the denial contract nor smuggle
+    arbitrary tool output through it. Anything else that is not one of the
+    fixed public strings below is replaced by a canned message and the
+    original text stays server-side in the log.
+    """
+    if isinstance(exc, ToolExecutionError):
+        # A wrapped tool failure, classified by type before any text matching:
+        # the tool's own text may mimic a refusal code or a denial prefix, and
+        # must never select the message.
+        return "tool_execution_failed"
+    text = str(exc)
+    canned = _PUBLIC_REASON_MESSAGES.get(text)
+    if canned is not None:
+        return canned
+    if text.startswith("Invalid params"):
+        return "Invalid params"
+    if text.startswith("invalid_idempotency_key"):
+        return "invalid_idempotency_key"
+    if text.startswith("Tool not found"):
+        return "Tool not found"
+    if text.startswith("Tool not executable"):
+        return "Tool not executable"
+    if text.startswith("refund_failed"):
+        return "refund_failed"
+    if is_refusal_reason_code(text):
+        bare_code = text.split(":", 1)[0].strip()
+        if bare_code in _REFUSAL_DETAIL_ALLOWLIST and isinstance(exc, PermissionError):
+            # Allowlisted detail stays server-side; the wire gets the fixed code.
+            return bare_code
+        return bare_code
+    for exc_type, message in _PUBLIC_MESSAGE_BY_EXC_TYPE.items():
+        if isinstance(exc, exc_type):
+            return message
+    return _JSONRPC_PUBLIC_MESSAGES.get(code, INTERNAL_ERROR_MESSAGE)
+
+
 def _jsonrpc_error_response(
     request_id: str | int | float | None,
     code: int,
     message: str,
     data: dict[str, Any] | None = None,
 ) -> JSONResponse:
+    """Build a JSON-RPC error. ``message`` must be a canned public string."""
     error_payload: dict[str, Any] = {"code": code, "message": message}
     if data:
-        error_payload["data"] = data
+        error_payload["data"] = dict(data)
     return JSONResponse({"jsonrpc": "2.0", "id": request_id, "error": error_payload})
+
+
+def _sanitize_log_message(value: object, limit: int = 500) -> str:
+    """Make exception text safe for a single log line, capped at ``limit`` chars.
+
+    Every ``Cc`` control character (which includes CR and LF) plus U+2028 and
+    U+2029 is replaced with an escaped form or a space so a crafted message
+    cannot inject log lines or break line-oriented collectors. Over-long
+    messages are truncated with a ``...[truncated]`` suffix.
+    """
+    text = str(value)
+    parts: list[str] = []
+    for char in text:
+        if char == "\n":
+            parts.append("\\n")
+        elif char == "\r":
+            parts.append("\\r")
+        elif char == "\t":
+            parts.append("\\t")
+        elif char in ("\u2028", "\u2029"):
+            parts.append(" ")
+        elif unicodedata.category(char) == "Cc":
+            code_point = ord(char)
+            if code_point < 0x100:
+                parts.append(f"\\x{code_point:02x}")
+            elif code_point < 0x10000:
+                parts.append(f"\\u{code_point:04x}")
+            else:
+                parts.append(f"\\U{code_point:08x}")
+        else:
+            parts.append(char)
+    sanitized = "".join(parts)
+    if len(sanitized) > limit:
+        return sanitized[:limit] + "...[truncated]"
+    return sanitized
+
+
+def _public_jsonrpc_error(
+    exc: BaseException,
+    *,
+    request: Request,
+    rpc_id: str | int | float | None,
+    code: int,
+    data: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """Log ``str(exc)`` with a request id and return a public JSON-RPC error."""
+    request_id = _mcp_request_id(request)
+    logger.error(
+        "mcp_jsonrpc_error surface=/mcp/messages request_id=%s code=%s class=%s error=%r",
+        request_id,
+        code,
+        type(exc).__name__,
+        _sanitize_log_message(exc),
+    )
+    payload_data = dict(data or {})
+    payload_data["request_id"] = request_id
+    return _jsonrpc_error_response(
+        rpc_id, code, _public_jsonrpc_message(exc, code=code), payload_data
+    )
 
 
 class McpContext(BaseModel):
@@ -469,9 +664,12 @@ async def get_tools_json(
     Return the MCP tools.json manifest.
 
     This is an HTTP mirror of tool metadata exposed by this project's
-    governed JSON-RPC subset. Clients can obtain the same list by
-    sending ``tools/list`` to ``/mcp/messages``; that endpoint does not
-    implement the complete MCP initialization lifecycle.
+    governed tool surfaces. New integrations should invoke tools through
+    the standard Streamable HTTP endpoint at POST /mcp and can obtain the
+    same list via its ``tools/list`` method. Clients can also obtain the
+    list by sending ``tools/list`` to the legacy ``/mcp/messages``
+    endpoint; that endpoint does not implement the complete MCP
+    initialization lifecycle.
 
     On production-like boots the catalog requires the same credentials as
     invoke. Local-compatible environments keep it anonymous for quickstart.
@@ -490,11 +688,13 @@ async def get_tools_json(
 @router.post(
     "/messages",
     name="MCP JSON-RPC Messages",
+    summary="Deprecated: legacy MCP JSON-RPC messages (use POST /mcp)",
     deprecated=True,
     description=(
-        "Legacy project JSON-RPC endpoint, kept for existing clients and the "
-        "local proof scripts. It does not implement the standard MCP "
-        "initialization lifecycle. Check `/.well-known/agent.json` before "
+        "Deprecated in favor of the standard MCP Streamable HTTP endpoint at "
+        "POST /mcp. Legacy project JSON-RPC endpoint, kept for existing "
+        "clients and the local proof scripts. It does not implement the "
+        "standard MCP initialization lifecycle. Check `/.well-known/agent.json` before "
         "assuming the standard MCP Streamable HTTP endpoint at POST /mcp is "
         "available; both transports run the same governed permit→meter→receipt "
         "path when enabled."
@@ -589,11 +789,17 @@ async def handle_messages(
                 ]
             )
         except InvalidIdempotencyKeyError as e:
-            return _jsonrpc_error_response(
-                request_id, -32602, str(e), e.as_error_data()
+            return _public_jsonrpc_error(
+                e,
+                request=request,
+                rpc_id=request_id,
+                code=-32602,
+                data=e.as_error_data(),
             )
         except GovernedRequestInvalid as e:
-            return _jsonrpc_error_response(request_id, -32602, str(e))
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=-32602
+            )
         try:
             result = await _handle_tools_call(
                 call_params,
@@ -613,18 +819,12 @@ async def handle_messages(
                 }
             )
         except HumanApprovalPendingSignal as e:
-            error_payload: dict[str, Any] = {
-                "code": e.jsonrpc_code,
-                "message": str(e),
-            }
-            if e.data:
-                error_payload["data"] = e.data
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": error_payload,
-                }
+            return _public_jsonrpc_error(
+                e,
+                request=request,
+                rpc_id=request_id,
+                code=e.jsonrpc_code,
+                data=dict(e.data) if e.data else None,
             )
         except (
             IdempotencyInProgressError,
@@ -635,11 +835,12 @@ async def handle_messages(
         ) as e:
             # All five mean the same thing to a caller: nothing terminal was
             # recorded, retry the same idempotency key. -32005 is this
-            # surface's retryable code and str(e) carries which one it was, so
-            # a client can distinguish "a winner is mid-flight" from "the write
-            # lost its snapshot", "the audit chain stayed busy", "the receipt
-            # insert did" or "the permit write did" without any of them landing
-            # as internal_error.
+            # surface's retryable code. The public message is a canned string
+            # per exception class so a client can distinguish "a winner is
+            # mid-flight" from "the write lost its snapshot", "the audit chain
+            # stayed busy", "the receipt insert did" or "the permit write did"
+            # without any of them landing as internal_error, and without
+            # exception text reaching the wire.
             #
             # Only a refusal that ran nothing reaches here as
             # AuditChainContendedError, ReceiptWriteContendedError or
@@ -652,21 +853,26 @@ async def handle_messages(
             # the base also carries permit_not_found,
             # dispatch_attempt_not_found and the budget denials, none of which
             # are retryable contention.
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32005,
-                        "message": str(e),
-                    },
-                }
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=-32005
             )
         except TerminalRecordContendedError as e:
             # The same contention, on the other side of the charge. Its own
             # code so a client cannot read it as either neighbour: -32005 would
             # invite the retry that runs a paid call again, and -32603 would
-            # bury a deliberated state in the unclassified channel.
+            # bury a deliberated state in the unclassified channel. The reason
+            # is a stable code and stays on the wire; the request id joins it
+            # so the operator can find this log line from the client payload.
+            terminal_request_id = _mcp_request_id(request)
+            logger.error(
+                "mcp_jsonrpc_error surface=/mcp/messages request_id=%s code=%s class=%s error=%r",
+                terminal_request_id,
+                e.jsonrpc_code,
+                type(e).__name__,
+                _sanitize_log_message(e),
+            )
+            terminal_data = _terminal_record_contended_data(e.reason)
+            terminal_data["request_id"] = terminal_request_id
             return JSONResponse(
                 {
                     "jsonrpc": "2.0",
@@ -674,84 +880,59 @@ async def handle_messages(
                     "error": {
                         "code": e.jsonrpc_code,
                         "message": e.reason,
-                        "data": _terminal_record_contended_data(e.reason),
+                        "data": terminal_data,
                     },
                 }
             )
         except ToolPermissionDenied as e:
-            error_payload = {
-                "code": -32003,
-                "message": str(e),
-            }
             data: dict[str, Any] = {}
             if e.receipt:
                 data["receipt"] = e.receipt
             if e.details:
                 data["details"] = e.details
-            if data:
-                error_payload["data"] = data
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": error_payload,
-                }
+            return _public_jsonrpc_error(
+                e,
+                request=request,
+                rpc_id=request_id,
+                code=-32003,
+                data=data or None,
             )
         except GovernedToolError as e:
-            error_payload = {
-                "code": e.jsonrpc_code,
-                "message": str(e),
-            }
             error_data = dict(e.extra_data)
             if e.receipt:
                 error_data["receipt"] = e.receipt
-            if error_data:
-                error_payload["data"] = error_data
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": error_payload,
-                }
+            return _public_jsonrpc_error(
+                e,
+                request=request,
+                rpc_id=request_id,
+                code=e.jsonrpc_code,
+                data=error_data or None,
             )
         except PermissionError as e:
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32003,
-                        "message": str(e),
-                    },
-                }
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=-32003
             )
         except ToolExecutionError as e:
-            # Legacy (unpermitted) tool failure: compensation is complete and,
-            # as on the governed path, the message is the tool's own error.
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32603,
-                        "message": str(e),
-                    },
-                }
+            # Legacy (unpermitted) tool failure: compensation is complete.
+            # The tool's own error stays in the server log; the client gets
+            # a canned message and a request id.
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=-32603
             )
         except ValueError as e:
             code = _value_error_jsonrpc_code(str(e))
             if code is None:
-                error_payload = _internal_error(
-                    e, surface="/mcp/messages", request_id=request_id
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": _internal_error(
+                            e, surface="/mcp/messages", request_id=request_id
+                        ),
+                    }
                 )
-            else:
-                error_payload = {"code": code, "message": str(e)}
-            return JSONResponse(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": error_payload,
-                }
+            return _public_jsonrpc_error(
+                e, request=request, rpc_id=request_id, code=code
             )
         except Exception as e:
             return JSONResponse(
@@ -934,6 +1115,27 @@ def _verified_enterprise_principal(
     if not is_iga_issuer_token(enterprise_bearer_token):
         return None
     return parse_enterprise_token(enterprise_bearer_token)
+
+
+async def _assert_replay_iga_access(*, auth: AuthContext, tool_name: str) -> None:
+    """Run the enterprise IGA gate before serving any stored result.
+
+    A replay must not hand one human principal another's result (or a result
+    it is no longer entitled to). The check spends no use (``consume=False``):
+    the original call already did.
+    """
+    try:
+        principal = _verified_enterprise_principal(auth.enterprise_bearer_token)
+        if principal is None:
+            return
+        decision = await enforce_tool_call(principal, tool_name, consume=False)
+    except IGAError as exc:
+        raise ToolPermissionDenied(exc.reason) from exc
+    if not decision.allowed:
+        raise ToolPermissionDenied(
+            decision.reason,
+            details={"reason_code": decision.reason, **decision.details},
+        )
 
 
 async def _execute_registered_tool(
@@ -1194,6 +1396,103 @@ async def _assert_action_current_access(
         raise ToolPermissionDenied(policy.reason or "policy_denied")
 
 
+async def _deny_tool_outside_permit(
+    *,
+    idem: Any,
+    idem_started: bool,
+    permit_id: str,
+    wallet_id: str,
+    auth: AuthContext,
+    tool_name: str,
+    arguments: dict[str, Any],
+    endpoint: str,
+    idempotency_endpoint: str,
+    idempotency_key: str | None,
+    transport: str,
+    request_id: str | None,
+    effective_request_payload: dict[str, Any],
+    effective_request_hash: str,
+) -> None:
+    """Refuse a permit denial before registration can influence its evidence.
+
+    Returns without effect when the permit allows the tool. No credits are
+    authorized, reserved, charged, or dispatched for a refusal.
+    """
+    # Validate the permit (wallet, key, signature, expiry) BEFORE its allowlist
+    # influences the outcome. Reading allowed_tools first let a caller probe a
+    # permit_id belonging to another wallet: "not found" vs. a denial revealed
+    # whether that permit names the tool. A permit that fails validation keeps
+    # its narrower reason and details without exposing the allowlist.
+    validation = await get_permit_service().validate_for_action(
+        permit_id=permit_id,
+        wallet_id=wallet_id or "",
+        tool_name=tool_name,
+        estimated_credits=Decimal("0"),
+        key_id=auth.key_id,
+        arguments=arguments,
+    )
+    if validation.allowed:
+        # Continue to registration and price checks.
+        return
+    reason = validation.reason or "permit_tool_not_allowed"
+    details = validation.details
+    decision = evaluate_tool_invocation(
+        auth=auth,
+        wallet_id=wallet_id,
+        tool_name=tool_name,
+        estimated_cost=None,
+        request_id=request_id,
+    )
+    audit_event = await _audit_mcp_invocation(
+        effects_committed=False,
+        decision=decision,
+        endpoint=endpoint,
+        transport=transport,
+        ok=False,
+        error=reason,
+        extra_metadata={
+            "permit_id": permit_id,
+            "idempotency_key": idempotency_key,
+            "request_hash": effective_request_hash,
+        },
+    )
+    receipt_payload = None
+    # A signed receipt is minted only for an idempotent call: without a key
+    # there is no record to bind it to and retries would mint one per call.
+    if validation.permit is not None and wallet_id and idempotency_key:
+        receipt_payload = await _finalize_governed_denial(
+            unaccepted_action_owner_id=None,
+            idem=idem,
+            effects_committed=False,
+            approval_consumed=False,
+            permit_model=validation.permit,
+            wallet_id=wallet_id,
+            key_id=auth.key_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+            tool_name=tool_name,
+            request_payload=effective_request_payload,
+            arguments=arguments,
+            registered_cost=Decimal("0"),
+            audit_event_id=audit_event.event_id,
+            reason=reason,
+            reason_code=reason,
+            outcome="denied",
+            status_code=403,
+            response_extra_data={"details": details},
+        )
+    else:
+        await _complete_governed_denial_idempotency(
+            idem=idem,
+            idem_started=idem_started,
+            wallet_id=wallet_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+            reason=reason,
+        )
+    raise ToolPermissionDenied(reason, receipt=receipt_payload, details=details)
+
+
 async def _execute_registered_tool_inner(
     *,
     tool_name: str,
@@ -1289,25 +1588,114 @@ async def _execute_registered_tool_inner(
     service = registry.get_local(tool_name)
     if not service:
         service = await registry.get_persistent(tool_name)
+    if service and service.get("require_permit"):
+        governed_call = True
+        idempotency_endpoint = GOVERNED_MCP_IDEMPOTENCY_ENDPOINT
     action_identity = None
     action_binding = registry.get_action_binding(service) if service else None
     action_model = None
     if permit_id:
         async with get_session_factory()() as session:
             action_model = await session.get(PermitModel, permit_id)
-    is_action = action_model is not None and any(
-        getattr(action_model, field) is not None
-        for field in (
-            "action_contract_version",
-            "action_payload_hash",
-            "action_schema_id",
-            "action_schema_version",
-            "action_public_tool_id",
-            "action_upstream_binding_hash",
-        )
+    action_fields = (
+        [getattr(action_model, field) for field in _ACTION_PERMIT_FIELDS]
+        if action_model is not None
+        else []
     )
-    if action_binding is not None or is_action:
+    is_action = any(value is not None for value in action_fields)
+    # An action permit that does not name this tool is a permit-scope denial,
+    # decided before any registry-dependent action branch (binding lookup,
+    # validate_action_request). It takes the same governed path as a tool
+    # permit below: idempotency-key and quote gates, idempotency begin, then
+    # _deny_tool_outside_permit, which validates the permit (signature first)
+    # and, with an idempotency key, mints one signed denial receipt that a
+    # same-key retry replays. Registered and unregistered tools are
+    # indistinguishable.
+    #
+    # Authenticate the row (signature, status, expiry, wallet, key) BEFORE
+    # allowlist membership chooses the branch. Reading allowed_tools first let
+    # a foreign or tampered complete action permit return
+    # action_tool_binding_required when the tool was listed and
+    # permit_wallet_mismatch / permit_signature_invalid when it was not.
+    # Do not call validate_for_action here: that also enforces max_calls /
+    # budget and would refuse an exhausted but still-replayable action permit
+    # before the action idempotency short-circuit.
+    #
+    # An unauthenticated row stays on the action branch (never out_of_scope)
+    # so the pre-binding identity denial below raises the same reason for any
+    # tool_name, with action denial-receipt rules. Only authenticated rows may
+    # consult the unsigned allowlist for routing.
+    action_out_of_scope = False
+    if (
+        is_action
+        # A partially populated action row (some action_* fields set, others
+        # NULL) is malformed storage and stays on the action branch below.
+        and all(value is not None for value in action_fields)
+        and permit_id is not None
+        and action_model is not None
+    ):
+        authenticated = await _action_permit_authenticated_for_caller(
+            model=action_model,
+            wallet_id=wallet_id or "",
+            key_id=auth.key_id,
+        )
+        if authenticated:
+            action_out_of_scope = tool_name not in _permit_allowed_tools(action_model)
+    if (action_binding is not None or is_action) and not action_out_of_scope:
+        if (
+            is_action
+            and permit_id
+            and not all(value is not None for value in action_fields)
+        ):
+            # A partial action row is validated (signature first) before any
+            # binding decision, whatever the registry holds; a complete
+            # in-scope one is validated by validate_action_request below. No
+            # idempotency record has been begun here and none is passed, so
+            # _deny_tool_outside_permit itself mints nothing and completes
+            # nothing. The ToolPermissionDenied it raises reaches the caller
+            # through _execute_registered_tool, which attaches an unbound
+            # receipt (idempotency_record_id = None, one per call, never
+            # replayed) via _action_request_denial_receipt when the row still
+            # verifies; a row that fails signature verification (e.g.
+            # permit_signature_invalid) gets no receipt at all.
+            await _deny_tool_outside_permit(
+                idem=idem,
+                idem_started=False,
+                permit_id=permit_id,
+                wallet_id=wallet_id,
+                auth=auth,
+                tool_name=tool_name,
+                arguments=arguments,
+                endpoint=endpoint,
+                idempotency_endpoint=idempotency_endpoint,
+                idempotency_key=None,
+                transport=transport,
+                request_id=request_id,
+                effective_request_payload=effective_request_payload,
+                effective_request_hash=effective_request_hash,
+            )
+        if (
+            is_action
+            and action_model is not None
+            and all(value is not None for value in action_fields)
+        ):
+            # Complete action rows: reject unauthenticated callers before the
+            # binding check. Otherwise an allowlisted unknown tool raised
+            # action_tool_binding_required while the same foreign/tampered
+            # permit for a non-allowlisted tool took the governed path and
+            # returned permit_wallet_mismatch / permit_signature_invalid.
+            identity_reason = await _action_permit_identity_denial_reason(
+                model=action_model,
+                wallet_id=wallet_id or "",
+                key_id=auth.key_id,
+            )
+            if identity_reason is not None:
+                raise ToolPermissionDenied(identity_reason)
         if action_binding is None:
+            # An in-scope action permit for a tool with no action binding
+            # (registered without one, or unregistered). Nothing has been
+            # begun or recorded; _execute_registered_tool attaches an unbound
+            # denial receipt when the permit row verifies.
             raise ToolPermissionDenied("action_tool_binding_required")
         if not is_action or action_model is None:
             raise ToolPermissionDenied("action_permit_required")
@@ -1329,112 +1717,26 @@ async def _execute_registered_tool_inner(
         effective_request_payload = action_identity.request_payload
         effective_request_hash = sha256_hex(effective_request_payload)
 
-    if not service:
-        # Durable replay is authoritative even if an operator has since
-        # removed the executable registration. This is essential for terminal
-        # evidence recovery and avoids turning a completed invocation into a
-        # fresh "not found" response after restart or reconfiguration.
-        if governed_call and idempotency_key:
-            try:
-                idem_begin = await _begin_governed_mcp_idempotency(
-                    idem=idem,
-                    wallet_id=wallet_id,
-                    idempotency_key=idempotency_key,
-                    tool_name=tool_name,
-                    endpoint=endpoint,
-                    logical_request_payload=effective_request_payload,
-                    legacy_request_payload=request_payload,
-                    operation_kind="unresolved",
-                )
-                replay = idem_begin.replay
-                idem_started = True
-                if owned_record is not None:
-                    owned_record["record_id"] = idem_begin.record_id
-            except IdempotencyInProgressError:
-                raise
-            except IdempotencyConflictError as exc:
-                raise ValueError(str(exc)) from exc
-            if replay and replay.response_json:
-                if permit_id:
-                    await _assert_governed_replay_access(
-                        permit_id=permit_id,
-                        wallet_id=wallet_id,
-                        tool_name=tool_name,
-                        key_id=auth.key_id,
-                    )
-                await _raise_replayed_error(replay)
-                return replay.response_json
-        reason = f"Tool not found: {tool_name}"
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
-        )
-        raise ValueError(reason)
+    if action_identity is None:
+        if governed_call and permit_id and not idempotency_key:
+            await _audit_mcp_invocation(
+                effects_committed=False,
+                decision=tenant_decision,
+                endpoint=endpoint,
+                transport=transport,
+                ok=False,
+                error="idempotency_key_required",
+                extra_metadata={
+                    "permit_id": permit_id,
+                    "request_hash": effective_request_hash,
+                },
+            )
+            raise ValueError("idempotency_key_required")
 
-    execution_backend = str(service.get("execution_backend") or "metadata_only")
-    func = registry.get_local_func(tool_name)
-    upstream_executor = registry.get_executor(tool_name)
-    if execution_backend == "local" and func is None:
-        reason = f"Tool not executable: {tool_name}"
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
-        )
-        raise ValueError(reason)
-    if execution_backend == "upstream_mcp" and upstream_executor is None:
-        reason = f"Tool not executable: {tool_name}"
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
-        )
-        raise ValueError(reason)
-    if execution_backend not in {"local", "upstream_mcp"}:
-        reason = f"Tool not executable: {tool_name}"
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason=reason,
-            status_code=400,
-        )
-        raise ValueError(reason)
-
-    category = ServiceCategory(
-        service.get("category", ServiceCategory.PLATFORM_FEE.value)
-    )
-    # High-value tools can force the permit path even when legacy
-    # unpermitted MCP is otherwise allowed.
-    if service.get("require_permit"):
-        governed_call = True
-    if governed_call and action_identity is None:
-        idempotency_endpoint = GOVERNED_MCP_IDEMPOTENCY_ENDPOINT
-
-    registered_cost = _registered_tool_cost(service, category)
-
-    # A quote is a signed commitment to a price. Resolve it before anything
-    # downstream reads the cost, so the policy decision, the permit budget
-    # check, and the charge all see the number the caller was promised — not
-    # the live price it may have drifted from. Nothing is spent here; the
-    # single-use consume happens immediately before the charge.
+    # Quote validation and idempotency replay do not depend on registration.
+    # A refused request must cross the same gates for either registry state.
     quoted = None
-    if quote_id:
+    if quote_id and action_identity is None:
         quoted = await get_quote_service().validate_for_action(
             quote_id=quote_id,
             wallet_id=wallet_id,
@@ -1456,6 +1758,104 @@ async def _execute_registered_tool_inner(
                     "request_hash": effective_request_hash,
                 },
             )
+            raise PermissionError(reason)
+
+    if (
+        governed_call
+        and action_identity is None
+        and idempotency_key
+        and (permit_id or not service)
+    ):
+        execution_kind = (
+            str(service.get("execution_backend") or "metadata_only")
+            if service
+            else "unresolved"
+        )
+        try:
+            idem_begin = await _begin_governed_mcp_idempotency(
+                idem=idem,
+                wallet_id=wallet_id,
+                idempotency_key=idempotency_key,
+                tool_name=tool_name,
+                endpoint=endpoint,
+                logical_request_payload=effective_request_payload,
+                legacy_request_payload=request_payload,
+                operation_kind=execution_kind,
+                wait_timeout_seconds=(
+                    idempotency_wait_seconds
+                    if execution_kind == "upstream_mcp"
+                    else 0.0
+                ),
+            )
+            replay = idem_begin.replay
+            idem_started = True
+            if owned_record is not None:
+                owned_record["record_id"] = idem_begin.record_id
+        except (IdempotencyConflictError, IdempotencyInProgressError) as exc:
+            await _audit_mcp_invocation(
+                effects_committed=False,
+                decision=tenant_decision,
+                endpoint=endpoint,
+                transport=transport,
+                ok=False,
+                error=str(exc),
+                extra_metadata={
+                    "permit_id": permit_id,
+                    "idempotency_key": idempotency_key,
+                    "request_hash": effective_request_hash,
+                },
+            )
+            if isinstance(exc, IdempotencyInProgressError):
+                raise
+            raise ValueError(str(exc)) from exc
+        if replay and replay.response_json:
+            if permit_id:
+                await _assert_governed_replay_access(
+                    permit_id=permit_id,
+                    wallet_id=wallet_id,
+                    tool_name=tool_name,
+                    key_id=auth.key_id,
+                    replay=replay,
+                )
+            # Same IGA gate as the registered-tool replay path: a revoked
+            # principal must not read stored results via a removed tool.
+            await _assert_replay_iga_access(auth=auth, tool_name=tool_name)
+            await _raise_replayed_error(replay)
+            return replay.response_json
+
+    if governed_call and permit_id and action_identity is None:
+        # Decide permit refusals without a registered price. Denials authorize
+        # no credits and cannot reveal whether this tool is executable.
+        await _deny_tool_outside_permit(
+            idem=idem,
+            idem_started=idem_started,
+            permit_id=permit_id,
+            wallet_id=wallet_id,
+            auth=auth,
+            tool_name=tool_name,
+            arguments=arguments,
+            endpoint=endpoint,
+            idempotency_endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+            transport=transport,
+            request_id=request_id,
+            effective_request_payload=effective_request_payload,
+            effective_request_hash=effective_request_hash,
+        )
+
+    if not service:
+        reason = f"Tool not found: {tool_name}"
+        if permit_id:
+            # A permitted call: registry state is not the key's final answer.
+            await _release_unresolved_tool_idempotency(
+                idem=idem,
+                idem_begin=idem_begin if idem_started else None,
+                wallet_id=wallet_id,
+                endpoint=idempotency_endpoint,
+                idempotency_key=idempotency_key,
+            )
+        else:
+            # No permit: unchanged contract, a terminal replayable record.
             await _complete_governed_denial_idempotency(
                 idem=idem,
                 idem_started=idem_started,
@@ -1463,10 +1863,55 @@ async def _execute_registered_tool_inner(
                 endpoint=idempotency_endpoint,
                 idempotency_key=idempotency_key,
                 reason=reason,
+                status_code=400,
             )
-            # Denying beats quietly charging a different number: a price lock
-            # that silently reprices is worse than no lock at all.
-            raise PermissionError(reason)
+        raise ValueError(reason)
+
+    execution_backend = str(service.get("execution_backend") or "metadata_only")
+    func = registry.get_local_func(tool_name)
+    upstream_executor = registry.get_executor(tool_name)
+    if execution_backend == "local" and func is None:
+        reason = f"Tool not executable: {tool_name}"
+        await _release_unresolved_tool_idempotency(
+            idem=idem,
+            idem_begin=idem_begin if idem_started else None,
+            wallet_id=wallet_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+        )
+        raise ValueError(reason)
+    if execution_backend == "upstream_mcp" and upstream_executor is None:
+        reason = f"Tool not executable: {tool_name}"
+        await _release_unresolved_tool_idempotency(
+            idem=idem,
+            idem_begin=idem_begin if idem_started else None,
+            wallet_id=wallet_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+        )
+        raise ValueError(reason)
+    if execution_backend not in {"local", "upstream_mcp"}:
+        reason = f"Tool not executable: {tool_name}"
+        await _release_unresolved_tool_idempotency(
+            idem=idem,
+            idem_begin=idem_begin if idem_started else None,
+            wallet_id=wallet_id,
+            endpoint=idempotency_endpoint,
+            idempotency_key=idempotency_key,
+        )
+        raise ValueError(reason)
+
+    category = ServiceCategory(
+        service.get("category", ServiceCategory.PLATFORM_FEE.value)
+    )
+    registered_cost = _registered_tool_cost(service, category)
+
+    # A quote is a signed commitment to a price. Resolve it before anything
+    # downstream reads the cost, so the policy decision, the permit budget
+    # check, and the charge all see the number the caller was promised — not
+    # the live price it may have drifted from. Nothing is spent here; the
+    # single-use consume happens immediately before the charge.
+    if quoted is not None and quoted.quote is not None:
         registered_cost = quoted.quote.quoted_credits
 
     charge_units = _charge_units_for_registered_cost(registered_cost, category)
@@ -1503,29 +1948,7 @@ async def _execute_registered_tool_inner(
                 "request_hash": effective_request_hash,
             },
         )
-        await _complete_governed_denial_idempotency(
-            idem=idem,
-            idem_started=idem_started,
-            wallet_id=wallet_id,
-            endpoint=idempotency_endpoint,
-            idempotency_key=idempotency_key,
-            reason="permit_required",
-        )
         raise PermissionError("permit_required")
-    if governed_call and not idempotency_key:
-        await _audit_mcp_invocation(
-            effects_committed=False,
-            decision=decision,
-            endpoint=endpoint,
-            transport=transport,
-            ok=False,
-            error="idempotency_key_required",
-            extra_metadata={
-                "permit_id": permit_id,
-                "request_hash": effective_request_hash,
-            },
-        )
-        raise ValueError("idempotency_key_required")
 
     if action_identity is not None:
         existing = await idem.get_action_record(
@@ -1565,37 +1988,19 @@ async def _execute_registered_tool_inner(
                         admission.reason or "action_permit_denied"
                     )
 
-    if governed_call and idempotency_key and not idem_started:
+    if governed_call and idempotency_key and action_identity is not None:
         try:
-            if action_identity is not None:
-                idem_begin = await idem.begin_action_with_record(
-                    wallet_id=wallet_id,
-                    identity=action_identity,
-                    wait_timeout_seconds=idempotency_wait_seconds,
-                )
-            else:
-                idem_begin = await _begin_governed_mcp_idempotency(
-                    idem=idem,
-                    wallet_id=wallet_id,
-                    idempotency_key=idempotency_key,
-                    tool_name=tool_name,
-                    endpoint=endpoint,
-                    logical_request_payload=effective_request_payload,
-                    legacy_request_payload=request_payload,
-                    operation_kind=execution_backend,
-                    wait_timeout_seconds=(
-                        idempotency_wait_seconds
-                        if execution_backend == "upstream_mcp"
-                        else 0.0
-                    ),
-                )
+            idem_begin = await idem.begin_action_with_record(
+                wallet_id=wallet_id,
+                identity=action_identity,
+                wait_timeout_seconds=idempotency_wait_seconds,
+            )
             replay = idem_begin.replay
             idem_started = True
             if owned_record is not None:
                 owned_record["record_id"] = idem_begin.record_id
-                if action_identity is not None:
-                    owned_record["endpoint"] = action_identity.endpoint
-                    owned_record["key"] = action_identity.idempotency_key
+                owned_record["endpoint"] = action_identity.endpoint
+                owned_record["key"] = action_identity.idempotency_key
         except (IdempotencyConflictError, IdempotencyInProgressError) as exc:
             await _audit_mcp_invocation(
                 effects_committed=False,
@@ -1614,25 +2019,26 @@ async def _execute_registered_tool_inner(
                 raise
             raise ValueError(str(exc))
         if replay and replay.response_json:
-            if action_identity is not None:
-                # A waiter may observe completion after authority was revoked.
-                # This denial must never finalize or overwrite the accepted owner.
-                await _assert_action_current_access(
-                    permit_id=permit_id or "",
-                    wallet_id=wallet_id,
-                    auth=auth,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    money=money,
-                    estimated_cost=Decimal("0"),
-                    phase="replay",
-                )
+            # A waiter may observe completion after authority was revoked.
+            # This denial must never finalize or overwrite the accepted owner.
+            await _assert_action_current_access(
+                permit_id=permit_id or "",
+                wallet_id=wallet_id,
+                auth=auth,
+                tool_name=tool_name,
+                arguments=arguments,
+                money=money,
+                estimated_cost=Decimal("0"),
+                phase="replay",
+            )
             await _assert_governed_replay_access(
                 permit_id=permit_id,
                 wallet_id=wallet_id,
                 tool_name=tool_name,
                 key_id=auth.key_id,
+                replay=replay,
             )
+            await _assert_replay_iga_access(auth=auth, tool_name=tool_name)
             await _raise_replayed_error(replay)
             return replay.response_json
 
@@ -1685,6 +2091,7 @@ async def _execute_registered_tool_inner(
                     reason_code=reason,
                     outcome="denied",
                     status_code=403,
+                    response_extra_data={"details": permit_validation.details},
                 )
             elif permit_validation.reason:
                 await _complete_governed_denial_idempotency(
@@ -2067,6 +2474,7 @@ async def _execute_registered_tool_inner(
                 outcome="denied",
                 status_code=403,
                 approval_id=(approval_check.approval_id if approval_check else None),
+                counterparty=extract_recipient_identity(upstream_origin),
             )
             raise ToolPermissionDenied(
                 "permit_recipient_domain_mismatch",
@@ -2608,6 +3016,11 @@ async def _execute_registered_tool_inner(
                     else None
                 ),
                 approval_id=(approval_check.approval_id if approval_check else None),
+                counterparty=(
+                    extract_recipient_identity(dispatch_attempt.upstream_origin)
+                    if dispatch_attempt is not None
+                    else None
+                ),
             )
             raise GovernedToolError(
                 denial_reason,
@@ -2881,6 +3294,7 @@ async def _execute_registered_tool_inner(
                 receipt=receipt_payload,
                 status_code=500,
                 jsonrpc_code=-32603,
+                tool_originated=True,
             ) from exc
         raise ToolExecutionError(str(exc)) from exc
 
@@ -3358,6 +3772,7 @@ async def _execute_upstream_after_charge(
             dispatch_attempt_id=terminal.attempt_id,
             response_hash_override=terminal.response_hash,
             approval_id=(approval_check.approval_id if approval_check else None),
+            counterparty=extract_recipient_identity(terminal.upstream_origin),
             constraints_evaluated=_permit_constraints_snapshot(permit_model),
         )
     except ReceiptWriteContendedError as exc:
@@ -3458,6 +3873,7 @@ async def _raise_refunded_upstream_failure(
             response_payload=terminal_payload,
             response_hash_override=dispatch_attempt.response_hash,
             approval_id=(approval_check.approval_id if approval_check else None),
+            counterparty=extract_recipient_identity(dispatch_attempt.upstream_origin),
         )
         raise GovernedToolError(
             error,
@@ -3544,6 +3960,7 @@ async def _raise_refunded_upstream_failure(
         response_hash_override=dispatch_attempt.response_hash,
         response_extra_data=response_extra_data,
         approval_id=(approval_check.approval_id if approval_check else None),
+        counterparty=extract_recipient_identity(dispatch_attempt.upstream_origin),
     )
     raise GovernedToolError(
         reason,
@@ -3622,6 +4039,7 @@ async def _raise_charged_upstream_failure(
             idempotency_record_id=dispatch_attempt.idempotency_record_id,
             dispatch_attempt_id=dispatch_attempt.attempt_id,
             approval_id=(approval_check.approval_id if approval_check else None),
+            counterparty=extract_recipient_identity(dispatch_attempt.upstream_origin),
             constraints_evaluated=_permit_constraints_snapshot(permit_model),
         )
     except ReceiptWriteContendedError as exc:
@@ -3706,6 +4124,98 @@ def _governed_error_payload(
     }
     payload.update(extra_data or {})
     return payload
+
+
+_ACTION_PERMIT_FIELDS = (
+    "action_contract_version",
+    "action_payload_hash",
+    "action_schema_id",
+    "action_schema_version",
+    "action_public_tool_id",
+    "action_upstream_binding_hash",
+)
+
+
+async def _action_permit_identity_denial_reason(
+    *,
+    model: PermitModel,
+    wallet_id: str,
+    key_id: str | None,
+) -> str | None:
+    """Return an authenticity denial reason, or None when the caller is bound.
+
+    Check order matches ``validate_action_request`` (wallet, key, status,
+    expiry, signature) so action denial surfaces stay stable. Stops before
+    allowlist, scopes, budget, and max_calls — those must not influence
+    branch selection for an unauthenticated row, and max_calls must not run
+    before action idempotency replay can short-circuit.
+    """
+    if model.subject_wallet_id != wallet_id:
+        return "permit_wallet_mismatch"
+    if model.subject_key_id and model.subject_key_id != key_id:
+        return "permit_key_mismatch"
+    if model.status != "active":
+        return f"permit_{model.status}"
+    if to_naive_utc(model.expires_at) <= utc_now():
+        return "permit_expired"
+    if not await get_permit_service().verify_signature(model):
+        return "permit_signature_invalid"
+    return None
+
+
+async def _action_permit_authenticated_for_caller(
+    *,
+    model: PermitModel,
+    wallet_id: str,
+    key_id: str | None,
+) -> bool:
+    """True when the action permit row is authentic for this caller.
+
+    Used only to decide whether unsigned ``allowed_tools`` may influence
+    action-vs-governed routing. A False result must not depend on which tool
+    was requested, and must not read the allowlist.
+    """
+    reason = await _action_permit_identity_denial_reason(
+        model=model,
+        wallet_id=wallet_id,
+        key_id=key_id,
+    )
+    return reason is None
+
+
+def _permit_allowed_tools(model: Any) -> list[str]:
+    """The permit row's allowed_tools; malformed storage reads as empty."""
+    try:
+        value = json.loads(model.allowed_tools_json or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+async def _release_unresolved_tool_idempotency(
+    *,
+    idem: Any,
+    idem_begin: IdempotencyBegin | None,
+    wallet_id: str,
+    endpoint: str,
+    idempotency_key: str | None,
+) -> None:
+    """Release a governed claim when the tool cannot run yet.
+
+    "Tool not found" / "Tool not executable" depend on the current registry,
+    not on the request, so they must not be stored as the key's final answer:
+    a same-key retry after the tool is registered or made executable has to
+    execute instead of replaying the old failure. Nothing has run and nothing
+    was charged, so the pinned record is simply deleted.
+    """
+    if idem_begin is None or not idempotency_key:
+        return
+    await idem.abandon(
+        wallet_id=wallet_id,
+        endpoint=endpoint,
+        idempotency_key=idempotency_key,
+        expected_record_id=idem_begin.record_id,
+    )
 
 
 async def _complete_governed_denial_idempotency(
@@ -3866,6 +4376,7 @@ async def _finalize_governed_denial(
     response_hash_override: str | None = None,
     response_extra_data: dict[str, Any] | None = None,
     approval_id: str | None = None,
+    counterparty: str | None = None,
 ) -> dict[str, Any]:
     """Sign a non-success governed receipt and record the idempotent outcome.
 
@@ -3932,6 +4443,7 @@ async def _finalize_governed_denial(
             dispatch_attempt_id=dispatch_attempt_id,
             response_hash_override=response_hash_override,
             approval_id=approval_id,
+            counterparty=counterparty,
             constraints_evaluated=(
                 _permit_constraints_snapshot(permit_model)
                 if dispatch_attempt_id is not None
@@ -4008,6 +4520,7 @@ async def _finalize_unrefunded_failure(
     response_payload: dict[str, Any] | None = None,
     response_hash_override: str | None = None,
     approval_id: str | None = None,
+    counterparty: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Persist the signed failure and its exact-once operator work item.
 
@@ -4044,6 +4557,7 @@ async def _finalize_unrefunded_failure(
             response_payload=response_payload,
             response_hash_override=response_hash_override,
             approval_id=approval_id,
+            counterparty=counterparty,
         )
     except RefundReconciliationContendedError as exc:
         # The receipt and the operator work item were lost together, so nobody
@@ -4061,8 +4575,9 @@ async def _assert_governed_replay_access(
     wallet_id: str,
     tool_name: str,
     key_id: str | None,
+    replay: Any,
 ) -> None:
-    """Keep terminal replay bound to the permit's stable caller identity."""
+    """Keep terminal replay bound to its original caller and permit."""
     validation = await get_permit_service().validate_replay_access(
         permit_id=permit_id or "",
         wallet_id=wallet_id,
@@ -4070,6 +4585,24 @@ async def _assert_governed_replay_access(
         key_id=key_id,
     )
     if not validation.allowed:
+        response = replay.response_json if replay is not None else None
+        receipt = response.get("receipt") if isinstance(response, dict) else None
+        if (
+            validation.reason == "permit_wallet_mismatch"
+            and replay is not None
+            and replay.status_code == 403
+            and response is not None
+            and response.get("error") == validation.reason
+            and isinstance(receipt, dict)
+            and receipt.get("wallet_id") == wallet_id
+            and receipt.get("key_id") == key_id
+            and receipt.get("permit_id") == permit_id
+            and receipt.get("tool") == tool_name
+            and receipt.get("outcome") == "denied"
+        ):
+            # The original denial is evidence for this wallet and key, even
+            # though the foreign permit cannot authorize an execution.
+            return
         raise ToolPermissionDenied(validation.reason or "permit_denied")
 
 
@@ -4221,6 +4754,7 @@ async def _raise_replayed_error(replay: Any) -> None:
         return
     reason = str(replay.response_json.get("error") or "governed_call_failed")
     receipt = replay.response_json.get("receipt")
+    details = replay.response_json.get("details")
     extra_data = {}
     reconciliation = replay.response_json.get("refund_reconciliation")
     if isinstance(reconciliation, dict):
@@ -4255,13 +4789,21 @@ async def _raise_replayed_error(replay: Any) -> None:
     if isinstance(dispatch, dict):
         extra_data["dispatch"] = dispatch
     if replay.status_code == 403:
-        raise ToolPermissionDenied(reason, receipt=receipt)
+        raise ToolPermissionDenied(
+            reason,
+            receipt=receipt,
+            details=details if isinstance(details, dict) else None,
+        )
     raise GovernedToolError(
         reason,
         receipt=receipt,
         extra_data=extra_data,
         status_code=replay.status_code,
         jsonrpc_code=_status_to_jsonrpc_code(replay.status_code, reason),
+        tool_originated=(
+            isinstance(receipt, dict)
+            and receipt.get("reason_code") == "tool_execution_failed"
+        ),
     )
 
 
@@ -4306,10 +4848,11 @@ def _trust_metadata(
 def _value_error_jsonrpc_code(message: str) -> int | None:
     """JSON-RPC code for a ``ValueError`` the pipeline raised on purpose.
 
-    Every message here is contract: the Python SDK and existing clients match
-    these strings. ``None`` means the text is not one of ours — a library or
-    driver error that happens to subclass ``ValueError`` — and the route must
-    answer with ``internal_error`` instead of echoing it.
+    Classification inspects the exception text; the client-facing message is a
+    canned constant from ``_public_jsonrpc_message``. ``None`` means the text
+    is not one of ours — a library or driver error that happens to subclass
+    ``ValueError`` — and the route must answer with ``internal_error`` instead
+    of echoing it.
     """
     if message in {"Missing tool name", "Missing wallet_id in mcpContext"}:
         return -32602
@@ -4347,9 +4890,6 @@ def _receipt_contention_after_effects() -> TerminalRecordContendedError:
     so reconciliation owns the record from here.
     """
     return TerminalRecordContendedError(RECEIPT_WRITE_CONTENDED_AFTER_EFFECTS)
-
-
-INTERNAL_ERROR_MESSAGE = "internal_error"
 
 
 def _internal_error(
@@ -4453,7 +4993,7 @@ async def _audit_mcp_invocation(
             error=error,
             metadata={
                 "transport": transport,
-                "estimated_cost": decision.estimated_cost,
+                **({"estimated_cost": decision.estimated_cost} if ok else {}),
                 "policy_reason": decision.reason,
                 **(extra_metadata or {}),
             },
@@ -4528,19 +5068,43 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
     if registry.get_action_binding(record) is not None:
         raise ToolPermissionDenied("action_permit_required")
 
-    from .mcp_standard import _mint_auto_permit, _permit_error
+    from .mcp_standard import (
+        _mint_auto_permit,
+        _permit_error,
+        _resolve_unkeyed_retry,
+    )
 
     try:
-        permit_id = await _mint_auto_permit(
-            auth=request.auth,
-            tool_name=request.tool_name,
-            record=record,
-            client_key=request.idempotency_key,
-            requires_human_approval=await wallet_human_approval_required(
-                request.auth.wallet_id
-            ),
-            map_mcp_errors=False,
-        )
+        requires_approval = await wallet_human_approval_required(request.auth.wallet_id)
+        resolved = None
+        if not request.idempotency_key:
+            # Deterministic retry slot for unkeyed calls so a retry resolves
+            # to the same auto permit and replays instead of dispatching
+            # twice (SEL-484).
+            resolved = await _resolve_unkeyed_retry(
+                auth=request.auth,
+                tool_name=request.tool_name,
+                record=record,
+                arguments=request.arguments,
+                requires_human_approval=requires_approval,
+                map_mcp_errors=False,
+            )
+        if resolved is not None:
+            request.idempotency_key, permit_id = resolved
+        elif not request.idempotency_key:
+            # No deterministic retry slot and no client key: refuse rather
+            # than mint a random per-attempt key that would let a retry
+            # dispatch and bill twice (SEL-498 / #208).
+            raise ValueError("idempotency_key_required")
+        else:
+            permit_id = await _mint_auto_permit(
+                auth=request.auth,
+                tool_name=request.tool_name,
+                record=record,
+                client_key=request.idempotency_key,
+                requires_human_approval=requires_approval,
+                map_mcp_errors=False,
+            )
     except PermitWriteContendedError:
         raise
     except PermitError as exc:
@@ -4556,7 +5120,6 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
     except IdempotencyConflictError as exc:
         raise ValueError("idempotency_key_reused") from exc
     request.permit_id = permit_id
-    request.idempotency_key = request.idempotency_key or f"mcp-auto-{uuid.uuid4().hex}"
     return permit_id
 
 
@@ -4590,6 +5153,133 @@ async def _handle_tools_call(
     return response
 
 
+# Public error text for the legacy HTTP invoke route (follow-up to #242's
+# JSON-RPC fix). Exception text is logged with a request id and never copied
+# into the response body. The request id travels in the X-Request-ID response
+# header so an idempotent replay body stays byte-identical to the original.
+_INVOKE_SURFACE = "/mcp/tools/{service_id}/invoke"
+# Gateway-chosen reason codes echoed verbatim. Anything else, including any
+# snake_case text a tool raised, maps to a canned message.
+_INVOKE_PUBLIC_REASONS: frozenset[str] = frozenset(
+    {
+        "Missing wallet_id",
+        "idempotency_key_required",
+        "idempotency_in_progress",
+        "invalid_idempotency_key",
+        "permit_required",
+        "human_approval_pending",
+        "human_approval_unavailable",
+        "human_approval_request_mismatch",
+        "approval_window_elapsed",
+        "ledger_write_contended",
+        "audit_chain_head_contention",
+        "receipt_write_contended",
+        "permit_write_contended",
+        "preacceptance_write_contended",
+        "tool_execution_failed",
+        "quote_not_found",
+        "quote_wallet_mismatch",
+        "quote_tool_mismatch",
+        "quote_expired",
+        "quote_already_consumed",
+        "jev_risk_review_required",
+        "duplicate_request_new_key",
+        "action_permit_required",
+        "action_quote_unsupported",
+        "action_tool_binding_required",
+        "key_tool_not_allowed",
+        "demo_tool_not_allowed",
+        "anomalous_spend",
+        "iga_no_matching_role",
+        "insufficient_funds",
+        "wallet_frozen",
+        "wallet_expired",
+        "wallet_not_found",
+        "wallet_access_denied",
+        "signing_key_unavailable",
+        "dispatch_attempt_not_found",
+        "refund_failed",
+        "refund_reconciliation_failed",
+        "refund_reconciliation_resolution_invalid",
+        "refund_reconciliation_write_contended",
+        "upstream_pre_dispatch_failed",
+        "upstream_prepare_failed",
+        "upstream_returned_error",
+        "x402_settled_unrecoverable_replay",
+        "x402_settlement_needs_review",
+    }
+)
+# extra_data keys a GovernedToolError may expose on this route. upstream_result
+# is the raw upstream payload and stays server-side.
+_INVOKE_PUBLIC_EXTRA_KEYS: tuple[str, ...] = (
+    "dispatch",
+    "refund_reconciliation",
+    "reason_code",
+    "remediation",
+    "requested",
+)
+# extra_data["error"] replaces the canned message only when it is one of these
+# server-built codes (the demo auto-mint budget refusal sets it).
+_INVOKE_PUBLIC_EXTRA_ERRORS: frozenset[str] = frozenset({"authority_required"})
+_INVOKE_PUBLIC_MESSAGE_BY_TYPE: tuple[tuple[type[BaseException], str], ...] = (
+    (HumanApprovalPendingSignal, "human_approval_pending"),
+    (IdempotencyInProgressError, "idempotency_in_progress"),
+    (LedgerWriteContendedError, "ledger_write_contended"),
+    (AuditChainContendedError, "audit_chain_head_contention"),
+    (ReceiptWriteContendedError, "receipt_write_contended"),
+    (PermitWriteContendedError, "permit_write_contended"),
+    (ToolPermissionDenied, "Permission denied"),
+    (PermissionError, "Permission denied"),
+    (ToolExecutionError, "tool_execution_failed"),
+    (InvalidIdempotencyKeyError, "invalid_idempotency_key"),
+)
+
+
+def _invoke_public_message(exc: BaseException) -> str:
+    """Canned client message for ``exc`` on the invoke route. Never ``str(exc)``."""
+    if isinstance(exc, GovernedToolError) and exc.tool_originated:
+        return "tool_execution_failed"
+    text = str(exc)
+    if text in REFUSAL_REASON_CODES or text in _INVOKE_PUBLIC_REASONS:
+        return text
+    # Match JSON-RPC: a ``code: detail`` refusal still returns the bare code.
+    if is_refusal_reason_code(text):
+        return text.split(":", 1)[0].strip()
+    for prefix in ("Tool not found", "Tool not executable", "refund_failed"):
+        if text.startswith(prefix):
+            return prefix
+    for exc_type, message in _INVOKE_PUBLIC_MESSAGE_BY_TYPE:
+        if isinstance(exc, exc_type):
+            return message
+    if isinstance(exc, GovernedToolError):
+        return "tool_call_refused"
+    return "Invalid request"
+
+
+def _invoke_public_extra_data(exc: GovernedToolError) -> dict[str, Any]:
+    public = {
+        k: exc.extra_data[k] for k in _INVOKE_PUBLIC_EXTRA_KEYS if k in exc.extra_data
+    }
+    if exc.extra_data.get("error") in _INVOKE_PUBLIC_EXTRA_ERRORS:
+        public["error"] = exc.extra_data["error"]
+    return public
+
+
+def _invoke_log_error(exc: BaseException, request_id: str) -> str:
+    """Log the error class under ``request_id``; return the canned message.
+
+    The exception text is not logged: it can carry upstream payloads or key
+    material.
+    """
+    logger.error(
+        "mcp_invoke_error surface=%s request_id=%s class=%s",
+        _INVOKE_SURFACE,
+        request_id,
+        type(exc).__name__,
+    )
+    return _invoke_public_message(exc)
+
+
 @router.post(
     "/tools/{service_id}/invoke",
     name="Invoke MCP Tool",
@@ -4607,6 +5297,7 @@ async def invoke_tool(
     service_id: str,
     request: ToolCallRequest,
     http_request: Request,
+    http_response: Response,
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ) -> ToolCallResponse:
@@ -4653,9 +5344,11 @@ async def invoke_tool(
             ]
         )
     except InvalidIdempotencyKeyError as exc:
+        rid = _mcp_request_id(http_request)
         raise HTTPException(
             status_code=400,
-            detail={"message": str(exc), **exc.as_error_data()},
+            detail={"message": _invoke_log_error(exc, rid), **exc.as_error_data()},
+            headers={"X-Request-ID": rid},
         ) from exc
 
     mcp_payload = {
@@ -4686,10 +5379,13 @@ async def invoke_tool(
             response["permit_id"] = auto_permit_id
         return ToolCallResponse(**response)
     except HumanApprovalPendingSignal as exc:
-        detail: dict[str, Any] = {"error": str(exc)}
+        rid = _mcp_request_id(http_request)
+        detail: dict[str, Any] = {"error": _invoke_log_error(exc, rid)}
         if exc.data:
             detail["approval"] = exc.data
-        raise HTTPException(status_code=exc.status_code, detail=detail)
+        raise HTTPException(
+            status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid}
+        )
     except (
         IdempotencyInProgressError,
         LedgerWriteContendedError,
@@ -4721,9 +5417,11 @@ async def invoke_tool(
         # A contention loss whose effects committed does not arrive here at
         # all: the five receipt sites and the audit site re-raise it as
         # TerminalRecordContendedError, which the next branch answers.
+        rid = _mcp_request_id(http_request)
         raise HTTPException(
             status_code=409,
-            detail={"error": str(exc)},
+            detail={"error": _invoke_log_error(exc, rid)},
+            headers={"X-Request-ID": rid},
         ) from exc
     except TerminalRecordContendedError as exc:
         # Stays 500 -- the server did fail to record the call, and this surface
@@ -4731,30 +5429,49 @@ async def invoke_tool(
         # What changes is the body: a named reason and its remediation instead
         # of an opaque internal_error, matching the -32007 the JSON-RPC
         # surfaces return for the identical state.
+        rid = _mcp_request_id(http_request)
+        _invoke_log_error(exc, rid)
         raise HTTPException(
             status_code=exc.status_code,
             detail=_terminal_record_contended_data(exc.reason),
+            headers={"X-Request-ID": rid},
         ) from exc
     except ToolPermissionDenied as exc:
-        detail = {"error": str(exc)}
+        rid = _mcp_request_id(http_request)
+        detail = {"error": _invoke_log_error(exc, rid)}
         if exc.receipt:
             detail["receipt"] = exc.receipt
         if exc.details:
             detail["details"] = exc.details
-        raise HTTPException(status_code=403, detail=detail)
+        raise HTTPException(
+            status_code=403, detail=detail, headers={"X-Request-ID": rid}
+        )
     except GovernedToolError as exc:
-        detail = {"error": str(exc)}
+        rid = _mcp_request_id(http_request)
+        detail = {"error": _invoke_log_error(exc, rid)}
         if exc.receipt:
             detail["receipt"] = exc.receipt
-        detail.update(exc.extra_data)
-        raise HTTPException(status_code=exc.status_code, detail=detail)
+        detail.update(_invoke_public_extra_data(exc))
+        raise HTTPException(
+            status_code=exc.status_code, detail=detail, headers={"X-Request-ID": rid}
+        )
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        rid = _mcp_request_id(http_request)
+        raise HTTPException(
+            status_code=403,
+            detail=_invoke_log_error(exc, rid),
+            headers={"X-Request-ID": rid},
+        )
     except ToolExecutionError as exc:
-        # Legacy (unpermitted) tool failure: compensation is complete and the
-        # message is the tool's own error, as on the governed path.
+        # Legacy (unpermitted) tool failure: compensation is complete. The
+        # tool's own error stays in the server log under the request id.
+        rid = _mcp_request_id(http_request)
+        _invoke_log_error(exc, rid)
+        http_response.headers["X-Request-ID"] = rid
+        public = "tool_execution_failed"
         return ToolCallResponse(
-            content=[{"type": "text", "text": f"Error: {exc}"}],
+            content=[{"type": "text", "text": f"Error: {public}"}],
+            structuredContent={"error": public},
             isError=True,
         )
     except ValueError as exc:
@@ -4764,16 +5481,42 @@ async def invoke_tool(
                 exc, surface="/mcp/tools/{service_id}/invoke"
             )
         if message == "insufficient_funds":
-            raise HTTPException(status_code=402, detail=message)
+            rid = _mcp_request_id(http_request)
+            _invoke_log_error(exc, rid)
+            raise HTTPException(
+                status_code=402,
+                detail={"error": "insufficient_funds"},
+                headers={"X-Request-ID": rid},
+            )
         if message == "idempotency_key_reused":
-            raise HTTPException(status_code=409, detail=message)
+            rid = _mcp_request_id(http_request)
+            _invoke_log_error(exc, rid)
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "idempotency_key_reused"},
+                headers={"X-Request-ID": rid},
+            )
         if message in {"wallet_frozen", "wallet_expired"}:
-            raise HTTPException(status_code=403, detail={"error": message})
+            rid = _mcp_request_id(http_request)
+            _invoke_log_error(exc, rid)
+            raise HTTPException(
+                status_code=403,
+                detail={"error": message},
+                headers={"X-Request-ID": rid},
+            )
+        rid = _mcp_request_id(http_request)
+        public = _invoke_log_error(exc, rid)
         if message.startswith("Tool not found"):
-            raise HTTPException(status_code=404, detail=message)
-        if message.startswith("Tool not executable"):
-            raise HTTPException(status_code=501, detail=message)
-        raise HTTPException(status_code=400, detail=message)
+            status = 404
+        elif message.startswith("Tool not executable"):
+            status = 501
+        else:
+            status = 400
+        raise HTTPException(
+            status_code=status,
+            detail={"error": public},
+            headers={"X-Request-ID": rid},
+        )
     except Exception as exc:
         return _internal_error_tool_result(
             exc, surface="/mcp/tools/{service_id}/invoke"

@@ -1,0 +1,11 @@
+{
+  "alg": "Ed25519",
+  "canonicalization": "awi-canonical-json/1",
+  "issuer": "https://api.thisisatest.tech",
+  "keys_url": "/.well-known/trust-keys.json",
+  "kid": "railway-prod-ed25519",
+  "receipt_id": "rcpt-9daf745e477d45ab",
+  "schema_version": "1.0",
+  "signature": "xxLQs0mUvrszrZBtArrNr4RmREgDx2ql0DHomfPBkl9fhNDtc2axMqZvxq9Ew3L26Xpzl/8H10ZuxyCiIKr0Dg==",
+  "signing_input": "{\"alg\":\"Ed25519\",\"audit_event_id\":\"audit-dsp-dd01e66b4c7f2675292d2634aad3317b\",\"created_at\":\"2026-08-11T21:17:28.064620+00:00\",\"credits_authorized\":\"1\",\"credits_charged\":\"1\",\"dispatch_attempt_id\":\"dsp-51b58767185a4a69\",\"idempotency_record_id\":\"idm-171d7480a1434a27\",\"key_id\":\"key_27810727099f\",\"kid\":\"railway-prod-ed25519\",\"ledger_entry_id\":\"53bf3d00-5957-4290-a3ca-57d8638b8afa\",\"outcome\":\"success\",\"payload_hash\":\"59f98c521c38c985819c5bb712bc0ae79a22eb7aeca63d73ca83c18510c8a2b2\",\"permit_id\":\"permit-c73a0b621c244831\",\"receipt_id\":\"rcpt-9daf745e477d45ab\",\"request_hash\":\"97216c6b7355f6f6143dab38c2e2601d69d4430337e2a3f6151cf83bc3d0b44f\",\"response_hash\":\"a93ff7630d7084e76372ade82244d07ab72d5a832fc4534d101ee6fd781d0ebe\",\"tool\":\"partner.echo\",\"wallet_id\":\"agt-a4c3eb7baf11\"}"
+}

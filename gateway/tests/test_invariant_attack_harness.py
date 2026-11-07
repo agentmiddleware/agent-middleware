@@ -606,3 +606,15 @@ def test_evidence_redaction_removes_credentials_and_wallets() -> None:
     assert redacted["receipt_id"] == "rcpt-public-proof-reference"
     assert not redactor.contains_full_credential(redacted)
     assert not redactor.contains_wallet_identifier(redacted)
+
+
+def test_evidence_redaction_covers_child_wallets() -> None:
+    """Child wallet ids use the chd- prefix and must not ship in a narrative."""
+    child = "chd-abc123"
+    evidence = {"note": f"child wallet {child} stayed in the narrative"}
+
+    redacted = redactor.redact_evidence(evidence)
+
+    assert redacted["note"] == "child wallet <redacted-wallet> stayed in the narrative"
+    assert child not in json.dumps(redacted)
+    assert not redactor.contains_wallet_identifier(redacted)

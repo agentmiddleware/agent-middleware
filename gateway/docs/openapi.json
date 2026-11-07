@@ -4,8 +4,8 @@
     "title": "Agent Middleware API",
     "description": "## Agent Transaction Integrity\n\n**Make consequential agent actions transactional.**\n\nTransaction-integrity boundary for consequential autonomous actions on the configured upstream-MCP path: one logical action binds scoped authority and configured consumption to at most one gateway dispatch and debit, records delivery_uncertain instead of automatically redispatching, and links gateway evidence for required external reconciliation.\n\nIt is not a full agent middleware platform. This is a durable gateway state machine, not one distributed ACID transaction and not proof of the downstream effect. It is not exactly-once: a remote side effect is deduplicated only when the upstream honors the forwarded idempotency key. See `/WEDGE.md` and `/SECURITY_LIMITATIONS.md`.\n\n### Canonical Loop\n\n`logical action -> authorize -> reserve allowance -> debit -> claim dispatch -> confirmed outcome | delivery_uncertain -> receipt/audit -> authoritative external reconciliation required`\n\n### Product Surface\n\n- **Logical action identity** — accepted key bound to one payload\n- **Bounded authority consumption** — scoped permit and configured allowance\n- **One-shot gateway dispatch/debit** — at most once per accepted action\n- **Explicit uncertainty** — `delivery_uncertain` is not auto-redispatched\n- **Linked gateway evidence** — receipt and audit data for reconciliation\n- **Discovery** — `.well-known/agent.json`, `/mcp/tools.json`, `/llms.txt`, `/v1/discover`\n\n### Proof Surfaces\n\nAgentic-web, browser, content, oracle, sandbox, media, IoT, red-team, and telemetry demos are labeled scaffolding. They mount only when `ENABLE_PROOF_SURFACES=true` and do not define the product.\n\n### Authentication\n\nProtected endpoints require an API key via the `X-API-Key` header.\n\n### For Agents\n\nStart at `/.well-known/agent.json`, then `/llms.txt` and `/mcp/tools.json`. Prefer `PUBLIC_URL` over any localhost server entry.",
     "license": {
-      "name": "Business Source License 1.1",
-      "url": "https://github.com/PetrefiedThunder/agent-middleware/blob/main/LICENSE"
+      "name": "Functional Source License 1.1, Apache-2.0 future license (FSL-1.1-ALv2)",
+      "url": "https://github.com/agentmiddleware/agent-middleware/blob/main/gateway/LICENSE.md"
     },
     "version": "1.3.0"
   },
@@ -359,6 +359,7 @@
           "Control Plane Audit"
         ],
         "summary": "Verify Chain",
+        "description": "Verifies a wallet's hash-linked audit chain. One call walks at most `AUDIT_VERIFY_MAX_EVENTS` events (default 1000); `limit` can lower that and is clamped to it. `valid` means no defect was found in the walked span. `complete` is true only when the walk reached the end of the chain and ran the head and deleted-tail checks. When `complete` is false on a single-wallet request, pass `next_after_seq` and `next_after_event_id` as `after_seq` and `after_event_id` to resume. A global (operator) verification applies the cap to each wallet chain separately, so one request can walk more than the cap in total. It reports `complete=false` if any chain was capped and returns no shared cursor; resume each wallet on its own with `wallet_id`.",
         "operationId": "verify_chain_v1_audit_verify_chain_post",
         "security": [
           {
@@ -1579,7 +1580,10 @@
             "in": "header",
             "required": true,
             "schema": {
-              "type": "string",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
               "title": "Idempotency-Key"
             }
           },
@@ -1976,7 +1980,10 @@
             "in": "header",
             "required": true,
             "schema": {
-              "type": "string",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
               "title": "Idempotency-Key"
             }
           },
@@ -2977,6 +2984,7 @@
           "Trust Receipts"
         ],
         "summary": "Get Receipt Evidence",
+        "description": "Detailed evidence checks for a receipt. The `audit_chain` check verifies the receipt's own audit event (payload hash, signature, chain hash) and its link to the immediate predecessor; its details report `scope=receipt_event_link` and `chain_walk=not_run`. The wallet's whole chain is not walked here: the check reads one event and at most one predecessor. Use `POST /v1/audit/verify-chain` to walk the chain in bounded pages.",
         "operationId": "get_receipt_evidence_v1_receipts__receipt_id__evidence_get",
         "security": [
           {
@@ -3177,7 +3185,7 @@
           "Trust / Evidence"
         ],
         "summary": "Buyer-facing trust evidence bundle",
-        "description": "Returns the single, verifiable artifact for a receipt: the signed receipt, its permit, the linked ledger entry and audit event, and a `verification` map (receipt signature, permit signature, audit chain, request hash). This is the artifact a buyer can hand to an auditor.",
+        "description": "Returns the single, verifiable artifact for a receipt: the signed receipt, its permit, the linked ledger entry and audit event, and a `verification` map (receipt signature, permit signature, audit chain, request hash). This is the artifact a buyer can hand to an auditor. The `audit_chain` verification covers the receipt's own audit event (payload hash, signature, chain hash) and its link to the immediate predecessor. It reads one event and at most one predecessor and does not walk the wallet's whole chain; `verification.audit_chain_scope` names that scope (`receipt_event_link`) and is absent when no audit event is linked. Use `POST /v1/audit/verify-chain` to walk the chain in bounded pages.",
         "operationId": "get_evidence_bundle_v1_evidence__receipt_id__get",
         "security": [
           {
@@ -3311,7 +3319,7 @@
           "MCP"
         ],
         "summary": "Mcp Tools Manifest",
-        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned JSON-RPC subset. Clients can obtain the same list by\nsending ``tools/list`` to ``/mcp/messages``; that endpoint does not\nimplement the complete MCP initialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
+        "description": "Return the MCP tools.json manifest.\n\nThis is an HTTP mirror of tool metadata exposed by this project's\ngoverned tool surfaces. New integrations should invoke tools through\nthe standard Streamable HTTP endpoint at POST /mcp and can obtain the\nsame list via its ``tools/list`` method. Clients can also obtain the\nlist by sending ``tools/list`` to the legacy ``/mcp/messages``\nendpoint; that endpoint does not implement the complete MCP\ninitialization lifecycle.\n\nOn production-like boots the catalog requires the same credentials as\ninvoke. Local-compatible environments keep it anonymous for quickstart.\n\nQuery Parameters:\n    category: Optional service category filter\n\nReturns:\n    MCP tools.json manifest with tool definitions",
         "operationId": "MCP_Tools_Manifest_mcp_tools_json_get",
         "parameters": [
           {
@@ -3361,8 +3369,8 @@
         "tags": [
           "MCP"
         ],
-        "summary": "Mcp Json-Rpc Messages",
-        "description": "Legacy project JSON-RPC endpoint, kept for existing clients and the local proof scripts. It does not implement the standard MCP initialization lifecycle. Check `/.well-known/agent.json` before assuming the standard MCP Streamable HTTP endpoint at POST /mcp is available; both transports run the same governed permit→meter→receipt path when enabled.",
+        "summary": "Deprecated: legacy MCP JSON-RPC messages (use POST /mcp)",
+        "description": "Deprecated in favor of the standard MCP Streamable HTTP endpoint at POST /mcp. Legacy project JSON-RPC endpoint, kept for existing clients and the local proof scripts. It does not implement the standard MCP initialization lifecycle. Check `/.well-known/agent.json` before assuming the standard MCP Streamable HTTP endpoint at POST /mcp is available; both transports run the same governed permit→meter→receipt path when enabled.",
         "operationId": "MCP_JSON_RPC_Messages_mcp_messages_post",
         "deprecated": true,
         "security": [
@@ -3609,6 +3617,211 @@
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp": {
+      "post": {
+        "tags": [
+          "MCP Standard Endpoint"
+        ],
+        "summary": "Standard MCP endpoint (official MCP SDK, stateless Streamable HTTP, JSON responses)",
+        "description": "Hand one standard MCP message to the official SDK's transport.\n\nAuthentication and origin validation happen here at the HTTP layer; the\nSDK owns the protocol. The governed ``tools/call`` handler reads the\nauthenticated caller back from ``request.state``.",
+        "operationId": "MCP_Streamable_HTTP_Endpoint_mcp_post",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "jsonrpc"
+                ],
+                "properties": {
+                  "jsonrpc": {
+                    "type": "string",
+                    "const": "2.0"
+                  }
+                },
+                "oneOf": [
+                  {
+                    "title": "JSON-RPC request",
+                    "required": [
+                      "method",
+                      "id"
+                    ],
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "result"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "error"
+                          ]
+                        }
+                      ]
+                    },
+                    "properties": {
+                      "method": {
+                        "type": "string"
+                      },
+                      "params": {
+                        "anyOf": [
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "id": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "title": "JSON-RPC notification",
+                    "required": [
+                      "method"
+                    ],
+                    "not": {
+                      "anyOf": [
+                        {
+                          "required": [
+                            "id"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "result"
+                          ]
+                        },
+                        {
+                          "required": [
+                            "error"
+                          ]
+                        }
+                      ]
+                    },
+                    "properties": {
+                      "method": {
+                        "type": "string"
+                      },
+                      "params": {
+                        "anyOf": [
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "title": "JSON-RPC response",
+                    "required": [
+                      "id"
+                    ],
+                    "not": {
+                      "required": [
+                        "method"
+                      ]
+                    },
+                    "oneOf": [
+                      {
+                        "required": [
+                          "result"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "error"
+                        ]
+                      }
+                    ],
+                    "properties": {
+                      "id": {
+                        "anyOf": [
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "result": {},
+                      "error": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                ]
               }
             }
           }
@@ -5470,6 +5683,104 @@
         }
       }
     },
+    "/v1/admin/api-keys/usage/daily": {
+      "get": {
+        "tags": [
+          "API Key Management"
+        ],
+        "summary": "Admin: daily usage by API key",
+        "description": "Read daily call counts and latency for a bounded UTC window.",
+        "operationId": "admin_api_key_usage_daily_v1_admin_api_keys_usage_daily_get",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "key_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Key Id"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 90,
+              "minimum": 1,
+              "default": 7,
+              "title": "Days"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIKeyUsageDailyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/demo/keys": {
       "get": {
         "tags": [
@@ -5661,7 +5972,7 @@
           "Discovery"
         ],
         "summary": "Liveness check",
-        "description": "Returns 200 with status `healthy` when the API is running and its Redis (shared rate limiter) answers a PING, or when REDIS_URL is not configured (no PING is sent). Returns 503 with status `degraded` when Redis is configured but does not answer within 1 second; in production-like environments the rate limiter then refuses /v1 requests, so the API is not serving even though the process is up. `checks.redis` is `up`, `down`, or `not_configured`.",
+        "description": "Returns 200 with status `healthy` when the API is running and its Redis (shared rate limiter) answers a PING, or when REDIS_URL is not configured (no PING is sent). Returns 503 with status `degraded` when Redis is configured but does not answer within 1 second; in production-like environments the rate limiter then refuses /v1 requests, so the API is not serving even though the process is up. `checks.redis` is `up`, `down`, or `not_configured`. `tenant_rls_mode` is `off` or `enforce`.",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -5883,6 +6194,7 @@
           "use_count": {
             "type": "integer",
             "title": "Use Count",
+            "description": "Bounded-key budget uses, not total calls. See api_key_usage_daily.",
             "default": 0
           }
         },
@@ -5907,6 +6219,78 @@
           "suspended"
         ],
         "title": "APIKeyStatus"
+      },
+      "APIKeyUsageDailyResponse": {
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/APIKeyUsageDailyRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rows"
+        ],
+        "title": "APIKeyUsageDailyResponse"
+      },
+      "APIKeyUsageDailyRow": {
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "title": "Key Id"
+          },
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "calls": {
+            "type": "integer",
+            "title": "Calls"
+          },
+          "calls_4xx": {
+            "type": "integer",
+            "title": "Calls 4Xx"
+          },
+          "calls_5xx": {
+            "type": "integer",
+            "title": "Calls 5Xx"
+          },
+          "p50_latency_ms": {
+            "type": "number",
+            "title": "P50 Latency Ms"
+          },
+          "p95_latency_ms": {
+            "type": "number",
+            "title": "P95 Latency Ms"
+          },
+          "first_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Call At"
+          },
+          "last_call_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Last Call At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key_id",
+          "day",
+          "calls",
+          "calls_4xx",
+          "calls_5xx",
+          "p50_latency_ms",
+          "p95_latency_ms",
+          "first_call_at",
+          "last_call_at"
+        ],
+        "title": "APIKeyUsageDailyRow"
       },
       "APIKeyWithSecret": {
         "properties": {
@@ -6069,6 +6453,44 @@
               }
             ],
             "title": "Created Before"
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Seq",
+            "description": "Resume a single wallet chain after the event with this sequence number: the next_after_seq of a partial response. Not valid for a global (operator, wallet_id omitted) verification."
+          },
+          "after_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Event Id",
+            "description": "The next_after_event_id of a partial response, sent with after_seq. Required to resume at seq 0: pre-sequence audit rows all store seq 0."
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "Most events to walk in this call. Values above the server maximum (AUDIT_VERIFY_MAX_EVENTS) are clamped to it."
           }
         },
         "type": "object",
@@ -6127,6 +6549,33 @@
               }
             ],
             "title": "Broken Event Id"
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete",
+            "default": true
+          },
+          "next_after_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After Seq"
+          },
+          "next_after_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After Event Id"
           }
         },
         "type": "object",
@@ -6134,7 +6583,8 @@
           "valid",
           "checked_events"
         ],
-        "title": "AuditChainVerifyResponse"
+        "title": "AuditChainVerifyResponse",
+        "description": "Verdict over the span of the chain this call walked.\n\nvalid=true means no defect was found in that span. complete=true means the\nwalk reached the end of the chain and ran the head and deleted-tail checks.\nWhen complete=false the rest of the chain is unverified: resume with\nnext_after_seq (single wallet chains), and never treat the result as a\nfull-chain pass."
       },
       "AuditEventListResponse": {
         "properties": {
@@ -7100,6 +7550,37 @@
           "note": {
             "type": "string",
             "title": "Note"
+          },
+          "permit_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Id",
+            "description": "Short-lived permit scoped to demo_tool only, or null when demo_tool is not in the demo allowlist."
+          },
+          "permit_expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Expires At",
+            "description": "Expiry of permit_id (ISO 8601, UTC)."
+          },
+          "demo_tool": {
+            "type": "string",
+            "title": "Demo Tool",
+            "description": "The only tool permit_id authorizes.",
+            "default": "partner.echo"
           }
         },
         "type": "object",
@@ -9769,6 +10250,28 @@
             ],
             "title": "Reason Code"
           },
+          "enforcement_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enforcement Mode"
+          },
+          "gateway_build": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gateway Build"
+          },
           "audit_event_id": {
             "anyOf": [
               {
@@ -9790,6 +10293,61 @@
               }
             ],
             "title": "Approval Id"
+          },
+          "permit_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permit Digest"
+          },
+          "approval_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Digest"
+          },
+          "counterparty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterparty"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "prev_receipt_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prev Receipt Digest"
           },
           "constraints_evaluated": {
             "additionalProperties": true,

@@ -10,7 +10,10 @@ from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 API_URL_ENV_VAR = "AGENT_MIDDLEWARE_API_URL"
-CANONICAL_PRODUCTION_ORIGIN = "https://api.thisisatest.tech"
+CANONICAL_PRODUCTION_HOST = "api.agentmiddleware.dev"
+LEGACY_PRODUCTION_HOSTS = ("api.thisisatest.tech",)
+CANONICAL_PRODUCTION_ORIGIN = "https://api.agentmiddleware.dev"
+LEGACY_PRODUCTION_ORIGINS = ("https://api.thisisatest.tech",)
 
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
@@ -114,8 +117,38 @@ def resolve_live_target(
         authority = f"{authority}:{port}"
 
     origin = f"{scheme}://{authority}"
-    if origin == CANONICAL_PRODUCTION_ORIGIN and not confirm_production:
+    if (
+        host == CANONICAL_PRODUCTION_HOST or host in LEGACY_PRODUCTION_HOSTS
+    ) and not confirm_production:
         raise LiveTargetError(
             "the canonical production target requires --confirm-production"
+        )
+    return origin
+
+
+def require_loopback_origin(api_url: str) -> str:
+    """Return a normalized loopback origin for a script that mints a key.
+
+    Remote origins are refused over both HTTP and HTTPS. A credential embedded
+    in the URL is refused by the shared parser and is not echoed back.
+    """
+
+    try:
+        origin = resolve_live_target(api_url, confirm_production=True, environ={})
+    except LiveTargetError as exc:
+        if "loopback" in str(exc):
+            raise LiveTargetError(
+                f"refusing non-loopback target {api_url!r}: this script is loopback-only"
+            ) from exc
+        raise
+
+    host = urlsplit(origin).hostname or ""
+    try:
+        is_loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = host == "localhost"
+    if not is_loopback:
+        raise LiveTargetError(
+            f"refusing non-loopback target {api_url!r}: this script is loopback-only"
         )
     return origin

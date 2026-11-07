@@ -320,9 +320,23 @@ class ReceiptResponse(ActionPermitFields):
     credits_charged: Decimal
     outcome: str
     reason_code: str | None = None
+    # "enforce" when trust mode refuses unpermitted calls, else "permissive".
+    enforcement_mode: str | None = None
+    # Commit SHA of the gateway image that signed the receipt, when known.
+    gateway_build: str | None = None
     audit_event_id: str | None
     # Human approval that authorized this invoke, when the permit required one.
     approval_id: str | None = None
+    # SHA-256 of the signed permit's signing_input; set with permit_id from 056.
+    permit_digest: str | None = None
+    # SHA-256 of the signed approval's signing_input, when one was verified.
+    approval_digest: str | None = None
+    # Other party of the call (hostname/domain) for recipient_domain checks.
+    counterparty: str | None = None
+    # Per-permit sequence starting at 0. None on pre-056 receipts.
+    sequence: int | None = None
+    # Prior receipt signing_input digest under the same permit; omitted at 0.
+    prev_receipt_digest: str | None = None
     # Permit schema v2: snapshot of constraints evaluated at invoke time
     constraints_evaluated: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
@@ -380,15 +394,52 @@ class AuditChainVerifyRequest(BaseModel):
     wallet_id: str | None = None
     created_after: datetime | None = None
     created_before: datetime | None = None
+    after_seq: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Resume a single wallet chain after the event with this sequence "
+            "number: the next_after_seq of a partial response. Not valid for "
+            "a global (operator, wallet_id omitted) verification."
+        ),
+    )
+    after_event_id: str | None = Field(
+        default=None,
+        description=(
+            "The next_after_event_id of a partial response, sent with "
+            "after_seq. Required to resume at seq 0: pre-sequence audit rows "
+            "all store seq 0."
+        ),
+    )
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Most events to walk in this call. Values above the server maximum "
+            "(AUDIT_VERIFY_MAX_EVENTS) are clamped to it."
+        ),
+    )
 
 
 class AuditChainVerifyResponse(BaseModel):
+    """Verdict over the span of the chain this call walked.
+
+    valid=true means no defect was found in that span. complete=true means the
+    walk reached the end of the chain and ran the head and deleted-tail checks.
+    When complete=false the rest of the chain is unverified: resume with
+    next_after_seq (single wallet chains), and never treat the result as a
+    full-chain pass.
+    """
+
     valid: bool
     checked_events: int
     first_event_id: str | None = None
     last_event_id: str | None = None
     reason: str | None = None
     broken_event_id: str | None = None
+    complete: bool = True
+    next_after_seq: int | None = None
+    next_after_event_id: str | None = None
 
 
 class ReceiptEvidenceCheck(BaseModel):

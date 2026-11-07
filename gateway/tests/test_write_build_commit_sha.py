@@ -20,6 +20,7 @@ def _run(
     staged: str | None,
     build_arg: str | None,
     nested: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ):
     context = tmp_path / "context"
     context.mkdir()
@@ -33,6 +34,9 @@ def _run(
     env = os.environ.copy()
     env["STAGED_SHA_PATH"] = str(stamp)
     env["BUILD_SHA_PATH"] = str(output)
+    env.pop("RAILWAY_GIT_COMMIT_SHA", None)
+    env.pop("GIT_COMMIT_SHA", None)
+    env.update(extra_env or {})
     if build_arg is None:
         env.pop("RELEASE_COMMIT_SHA", None)
     else:
@@ -130,3 +134,76 @@ def test_short_sha_rejected():
 
 def test_seven_char_sha_accepted():
     assert resolve_stamp(None, "abc1234") == "abc1234"
+
+
+# Resolution order: RELEASE_COMMIT_SHA > RAILWAY_GIT_COMMIT_SHA >
+# GIT_COMMIT_SHA > staged file. Every set source must agree.
+
+
+def test_railway_sha_alone_is_used():
+    assert resolve_stamp(None, "", SHA.upper(), "") == SHA
+
+
+def test_ci_sha_alone_is_used():
+    assert resolve_stamp(None, "", "", SHA) == SHA
+
+
+def test_staged_file_is_last_resort():
+    assert resolve_stamp(SHA + "\n") == SHA
+
+
+@pytest.mark.parametrize(
+    ("release", "railway", "ci", "staged", "loser"),
+    [
+        (OTHER, SHA, "", None, "RAILWAY_GIT_COMMIT_SHA"),
+        ("", OTHER, SHA, None, "GIT_COMMIT_SHA"),
+        ("", "", OTHER, SHA + "\n", "staged .build_commit_sha"),
+        (OTHER, "", "", SHA + "\n", "staged .build_commit_sha"),
+    ],
+)
+def test_any_disagreement_fails_instead_of_using_stale_value(
+    release, railway, ci, staged, loser
+):
+    with pytest.raises(SystemExit, match=f"disagrees with {loser}"):
+        resolve_stamp(staged, release, railway, ci)
+
+
+def test_all_sources_agreeing_returns_highest_precedence_lowercase():
+    assert resolve_stamp(SHA + "\n", SHA.upper(), SHA, SHA[:]) == SHA
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "name"),
+    [
+        ({"railway_sha": "xyz1234"}, "RAILWAY_GIT_COMMIT_SHA"),
+        ({"ci_sha": "abc12"}, "GIT_COMMIT_SHA"),
+        ({"ci_sha": "a" * 41}, "GIT_COMMIT_SHA"),
+    ],
+)
+def test_invalid_source_fails_by_name(kwargs, name):
+    with pytest.raises(SystemExit, match=name):
+        resolve_stamp(None, **kwargs)
+
+
+def test_forty_char_upper_bound():
+    assert resolve_stamp(None, ci_sha="a" * 40) == "a" * 40
+
+
+def test_script_reads_railway_and_ci_build_args(tmp_path):
+    result, output = _run(
+        tmp_path,
+        None,
+        None,
+        extra_env={"RAILWAY_GIT_COMMIT_SHA": SHA, "GIT_COMMIT_SHA": SHA.upper()},
+    )
+    assert result.returncode == 0, result.stderr
+    assert output.read_text(encoding="utf-8") == SHA + "\n"
+
+
+def test_script_fails_when_pinned_override_is_stale(tmp_path):
+    result, output = _run(
+        tmp_path, None, OTHER, extra_env={"RAILWAY_GIT_COMMIT_SHA": SHA}
+    )
+    assert result.returncode != 0
+    assert "RELEASE_COMMIT_SHA disagrees with RAILWAY_GIT_COMMIT_SHA" in result.stderr
+    assert not output.exists()

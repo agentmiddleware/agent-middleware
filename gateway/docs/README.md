@@ -18,9 +18,11 @@ consequential MCP tool behind a governed boundary. Start with the
 | Run fourteen injected failures and get a signed evidence bundle | [Failure lab suite](failure-lab-suite.md) |
 | Review security claims and limits | [Security limitations](../SECURITY_LIMITATIONS.md) and [security review kit](security-review-kit.md) |
 | Rotate or revoke API keys | [API key rotation](api-key-rotation.md) |
+| Configure API-key hashing (pepper) | [API key hashing](api-key-hashing.md) |
 | Plan a design-partner evaluation | [Design partner guide](../DESIGN_PARTNER_GUIDE.md) |
 | Tell plain pytest, Postgres, and live runs apart | [Test tiers](TESTING_TIERS.md) |
 | Contribute to the repository | [Contributing guide](../../CONTRIBUTING.md) |
+| Review GitHub organization and repository settings | [GitHub organization configuration](github-org-configuration.md) |
 
 ## Agent and API discovery
 
@@ -49,7 +51,18 @@ use them as product onboarding or a public capability list:
 - [`agent-recipes.md`](agent-recipes.md) and
   [`human-onboarding.md`](human-onboarding.md) are legacy proof-surface
   material, not the supported one-tool pilot.
+- [Product analytics](product-analytics.md) documents the optional PostHog
+  signup, identify and activation events (`POSTHOG_API_KEY`, `POSTHOG_HOST`).
 - [Pods](pods.md) are a dormant trust feature, not part of the supported pilot.
-- This tree has no registry-submission runbook. Do not submit the server
-  to a public MCP registry from this repository. The standard MCP endpoint
-  stays off unless `ENABLE_STANDARD_MCP_ENDPOINT` is set.
+- `server.json` at the repository root is the official MCP registry
+  manifest. It advertises the standard MCP endpoint
+  (`https://api.agentmiddleware.dev/mcp`). To connect,
+  [get an API key](https://www.agentmiddleware.dev/demo-key/).
+  `ENABLE_STANDARD_MCP_ENDPOINT`
+  defaults to on; a host that sets it false answers 404 after authentication.
+  Before requesting owner approval to publish, send an authenticated MCP
+  `initialize` request to that exact host with a valid wallet-scoped API key.
+  Require HTTP 200 and a JSON-RPC `result` containing `protocolVersion` and
+  `serverInfo`. An unauthenticated 401 does not prove the endpoint is enabled:
+  authentication runs before the enable check, so a disabled host also returns
+  401. Run `mcp-publisher publish` only after owner approval.

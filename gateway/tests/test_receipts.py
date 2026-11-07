@@ -15,11 +15,14 @@ from app.schemas.billing import ServiceCategory
 from app.services.idempotency import get_idempotency_service
 from app.services.receipts import ReceiptError, get_receipt_service
 from app.services.service_registry import get_service_registry
+from tests.support.db_gate import collection_mark, require_live_postgres
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
     create_tool_permit,
     provision_agent_wallet,
 )
+
+_RECEIPT_PG_REASON = "requires an opted-in disposable PostgreSQL test database"
 
 
 @pytest.fixture
@@ -262,7 +265,8 @@ async def test_dynamic_forbidden_field_denial_signs_stable_reason_without_charge
 
     assert response.status_code == 200, response.text
     error = response.json()["error"]
-    assert error["message"] == f"permit_forbidden_field:{unsafe_field_name}"
+    assert error["message"] == "permit_forbidden_field"
+    assert unsafe_field_name not in error["message"]
     receipt = error["data"]["receipt"]
     assert receipt["reason_code"] == "permit_forbidden_field"
     assert receipt["ledger_entry_id"] is None
@@ -549,3 +553,992 @@ async def test_receipt_read_surfaces_require_authentication(
     assert resp.status_code == expected_status, resp.text
     # Auth is enforced before the lookup: no existence disclosure to anon callers.
     assert resp.status_code != 404, resp.text
+
+
+@pytest.mark.anyio
+async def test_receipt_digest_chain_validation_and_pre056_idempotent_replay(
+    client,
+    clean_database,
+    monkeypatch,
+):
+    """Digest/chain gates: hex shape, sequence rules, pre-056 NULL replay.
+
+    Real issues from bot review on #294: invalid digests must not pass a loose
+    int() check; sequence stays unset until opted in; adopting a pre-056 row
+    (NULL provenance, signature without those fields) must not conflict when
+    the retry would freshly compute digests.
+    """
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-digest-chain-tool",
+        idem_key="receipt-digest-chain-permit",
+    )
+    service = get_receipt_service()
+    base = {
+        "permit_id": permit["permit_id"],
+        "wallet_id": provisioned["agent_wallet_id"],
+        "key_id": provisioned["key_id"],
+        "tool": "receipt-digest-chain-tool",
+        "request_payload": {"attempt": "digest-chain"},
+        "response_payload": {"ok": True},
+        "ledger_entry_id": None,
+        "credits_authorized": Decimal("1"),
+        "credits_charged": Decimal("0"),
+        "outcome": "denied",
+        "reason_code": "permit_budget_exceeded",
+        "audit_event_id": None,
+    }
+
+    with pytest.raises(ReceiptError, match="receipt_permit_digest_invalid"):
+        await service.create_receipt(**base, permit_digest="not-64-hex")
+    with pytest.raises(ReceiptError, match="receipt_permit_digest_invalid"):
+        await service.create_receipt(**base, permit_digest="g" * 64)
+    with pytest.raises(ReceiptError, match="receipt_sequence_invalid"):
+        await service.create_receipt(**base, sequence=-1)
+    with pytest.raises(ReceiptError, match="receipt_prev_digest_required"):
+        await service.create_receipt(**base, sequence=1)
+    with pytest.raises(ReceiptError, match="receipt_prev_digest_invalid"):
+        await service.create_receipt(**base, sequence=1, prev_receipt_digest="z" * 64)
+
+    # First write mimics pre-056: no permit_digest available to bind.
+    import app.services.receipts as receipts_mod
+
+    async def _no_permit_digest(permit_id, *, session=None):
+        return None
+
+    monkeypatch.setattr(receipts_mod, "permit_digest_for_permit_id", _no_permit_digest)
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-digest-chain-invoke",
+        request_payload=base["request_payload"],
+    )
+    assert begun.replay is None
+    first = await service.create_receipt(
+        **base,
+        idempotency_record_id=begun.record_id,
+    )
+    assert first.sequence is None
+    assert first.permit_digest is None
+    assert first.prev_receipt_digest is None
+
+    # Retry with live digest computation restored: historical NULL omission
+    # must adopt, not raise receipt_idempotency_conflict.
+    monkeypatch.undo()
+    replay = await service.create_receipt(
+        **base,
+        idempotency_record_id=begun.record_id,
+    )
+    assert replay.receipt_id == first.receipt_id
+    assert replay.permit_digest is None  # adopted row keeps historical omission
+
+    # Explicit sequence 0 still signs as the first link and omits prev.
+    chained = await service.create_receipt(**base, sequence=0)
+    assert chained.sequence == 0
+    assert chained.prev_receipt_digest is None
+    signing_input = await service.signing_input(chained.receipt_id)
+    assert signing_input is not None
+    body = json.loads(signing_input)
+    assert body["sequence"] == 0
+    assert "prev_receipt_digest" not in body
+
+
+def test_assert_idempotent_match_tolerates_null_provenance_only():
+    """Unit gate: stored NULL additive fields match; stored values still bind."""
+    from app.services.receipts import ReceiptService
+
+    model = ReceiptModel(
+        receipt_id="rcpt_unit_1",
+        permit_id="pmt_unit_1",
+        wallet_id="w",
+        key_id="k",
+        tool="t",
+        request_hash="a" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        permit_digest=None,
+        approval_digest=None,
+        counterparty=None,
+        sequence=None,
+        prev_receipt_digest=None,
+        created_at=datetime.now(timezone.utc),
+        signature="sig",
+        signature_key_id="sk",
+        idempotency_record_id="idem_1",
+    )
+    kwargs = dict(
+        idempotency_record_id="idem_1",
+        dispatch_attempt_id=None,
+        permit_id="pmt_unit_1",
+        wallet_id="w",
+        key_id="k",
+        tool="t",
+        request_hash="a" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        permit_digest="b" * 64,
+        sequence=0,
+    )
+    ReceiptService._assert_idempotent_match(model, **kwargs)
+
+    model.permit_digest = "c" * 64
+    with pytest.raises(ReceiptError, match="receipt_idempotency_conflict"):
+        ReceiptService._assert_idempotent_match(model, **kwargs)
+
+
+def test_assert_idempotent_match_maps_jcs_reject_to_conflict():
+    """Non-I-JSON constraints must conflict, not raise CanonicalizationError."""
+    from app.services.receipts import ReceiptService
+
+    model = ReceiptModel(
+        receipt_id="rcpt_unit_jcs",
+        permit_id="pmt_unit_jcs",
+        wallet_id="w",
+        key_id="k",
+        tool="t",
+        request_hash="a" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        permit_digest=None,
+        approval_digest=None,
+        counterparty=None,
+        sequence=None,
+        prev_receipt_digest=None,
+        created_at=datetime.now(timezone.utc),
+        signature="sig",
+        signature_key_id="sk",
+        idempotency_record_id="idem_jcs",
+        constraints_evaluated_json='{"n": 9007199254740993}',
+    )
+    kwargs = dict(
+        idempotency_record_id="idem_jcs",
+        dispatch_attempt_id=None,
+        permit_id="pmt_unit_jcs",
+        wallet_id="w",
+        key_id="k",
+        tool="t",
+        request_hash="a" * 64,
+        response_hash=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        approval_id=None,
+        constraints_evaluated={"n": 9007199254740993},
+    )
+    with pytest.raises(ReceiptError, match="receipt_idempotency_conflict"):
+        ReceiptService._assert_idempotent_match(model, **kwargs)
+
+
+@pytest.mark.anyio
+async def test_create_receipt_maps_jcs_sign_reject_to_domain_error(
+    client,
+    clean_database,
+    monkeypatch,
+):
+    """Sign-time JCS reject must surface as ReceiptError, not an HTTP 500."""
+    from app.services import receipts as receipts_mod
+    from app.services.jcs import CanonicalizationError
+
+    service = get_receipt_service()
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-jcs-tool",
+        idem_key="jcs-canon-reject-permit",
+    )
+
+    class _Keys:
+        async def sign_payload(self, payload):
+            raise CanonicalizationError("forced JCS reject")
+
+        def sign_payload_with_key_id(self, payload, key_id):
+            raise CanonicalizationError("forced JCS reject")
+
+        async def validate_prepared_signing_key(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(receipts_mod, "get_signing_key_service", lambda: _Keys())
+    with pytest.raises(ReceiptError, match="receipt_canonicalization_invalid"):
+        await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool="receipt-jcs-tool",
+            request_payload={"probe": "jcs-sign-reject"},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal("1"),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id="idem_jcs_sign_reject",
+        )
+
+
+@pytest.mark.anyio
+async def test_create_receipt_maps_jcs_reject_request_hash_to_domain_error(
+    client,
+    clean_database,
+):
+    """Out-of-range request ints must raise ReceiptError, not CanonicalizationError."""
+    # First integer above the JCS/I-JSON exact safe range (±(2**53 - 1)).
+    unsafe = 2**53 + 1
+    service = get_receipt_service()
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-jcs-req-tool",
+        idem_key="jcs-req-hash-reject-permit",
+    )
+    with pytest.raises(ReceiptError, match="receipt_canonicalization_invalid"):
+        await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool="receipt-jcs-req-tool",
+            request_payload={"n": unsafe},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal("1"),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id="idem_jcs_req_hash_reject",
+        )
+
+
+@pytest.mark.anyio
+async def test_create_receipt_maps_jcs_reject_response_hash_to_domain_error(
+    client,
+    clean_database,
+):
+    """Out-of-range response ints must raise ReceiptError, not CanonicalizationError."""
+    unsafe = 2**53 + 1
+    service = get_receipt_service()
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-jcs-resp-tool",
+        idem_key="jcs-resp-hash-reject-permit",
+    )
+    with pytest.raises(ReceiptError, match="receipt_canonicalization_invalid"):
+        await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool="receipt-jcs-resp-tool",
+            request_payload={"probe": "jcs-resp-hash"},
+            response_payload={"n": unsafe},
+            ledger_entry_id=None,
+            credits_authorized=Decimal("1"),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id="idem_jcs_resp_hash_reject",
+        )
+
+
+@pytest.mark.anyio
+async def test_create_receipt_binds_counterparty_on_failed_unrefunded(
+    client,
+    clean_database,
+):
+    """Failure outcomes must still accept and sign the upstream counterparty."""
+    service = get_receipt_service()
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="receipt-tool",
+        idem_key="counterparty-unrefunded-permit",
+    )
+    receipt = await service.create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool="receipt-tool",
+        request_payload={"ping": "pong"},
+        response_payload={"error": "refund_failed"},
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("1"),
+        outcome="failed_unrefunded",
+        audit_event_id=None,
+        reason_code="refund_failed",
+        counterparty="partner.example",
+    )
+    assert receipt.counterparty == "partner.example"
+    signing_input = await service.signing_input(receipt.receipt_id)
+    assert signing_input is not None
+    body = json.loads(signing_input)
+    assert body["counterparty"] == "partner.example"
+
+
+@pytest.mark.anyio
+async def test_receipt_chain_integrity_and_permit_digest_binding(
+    client, clean_database
+):
+    """Data-free chain/permit_digest properties.
+
+    No invented digests/amounts: mismatch uses a second permit's live digest
+    (foreign artifact); wrong prev uses the permit digest (real, wrong role).
+    Asserts are structural — mismatch rejected, bound digest recomputes equal,
+    sequence unique, predecessor round-trips, sequence advances by one.
+    """
+    from app.services import receipts as receipts_mod
+    from app.services.signing_keys import sha256_hex
+
+    provisioned = await provision_agent_wallet(client)
+    tool_a = "receipt-chain-tool-a"
+    tool_b = "receipt-chain-tool-b"
+    permit_a = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_a,
+        idem_key="receipt-chain-permit-a",
+    )
+    permit_b = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_b,
+        idem_key="receipt-chain-permit-b",
+    )
+    service = get_receipt_service()
+    live_a = await receipts_mod.permit_digest_for_permit_id(permit_a["permit_id"])
+    live_b = await receipts_mod.permit_digest_for_permit_id(permit_b["permit_id"])
+    assert live_a is not None and live_b is not None
+    assert live_a != live_b
+
+    async def write_a(**extra):
+        # credits_authorized from the issued permit; denied charges nothing.
+        return await service.create_receipt(
+            permit_id=permit_a["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool=tool_a,
+            request_payload={},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal(str(permit_a["max_credits"])),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            **extra,
+        )
+
+    with pytest.raises(ReceiptError, match="receipt_permit_digest_mismatch"):
+        await write_a(permit_digest=live_b)
+
+    bound = await write_a(permit_digest=live_a, sequence=0)
+    # Round-trip: stored digest recomputes equal to the live permit artifact.
+    assert bound.permit_digest == await receipts_mod.permit_digest_for_permit_id(
+        permit_a["permit_id"]
+    )
+    assert bound.sequence == 0
+
+    with pytest.raises(ReceiptError, match="receipt_sequence_conflict"):
+        await write_a(sequence=0)
+
+    first_input = await service.signing_input(bound.receipt_id)
+    assert first_input is not None
+    prev_digest = sha256_hex(first_input)
+
+    with pytest.raises(ReceiptError, match="receipt_prev_digest_mismatch"):
+        # Real digest, wrong role (permit digest is not the predecessor).
+        await write_a(sequence=1, prev_receipt_digest=live_a)
+    with pytest.raises(ReceiptError, match="receipt_prev_not_found"):
+        await write_a(sequence=2, prev_receipt_digest=prev_digest)
+
+    second = await write_a(sequence=1, prev_receipt_digest=prev_digest)
+    assert second.sequence == bound.sequence + 1
+    assert second.prev_receipt_digest == prev_digest
+    # Predecessor digest recomputes from the first receipt's signing input.
+    assert second.prev_receipt_digest == sha256_hex(first_input)
+
+
+@pytest.mark.anyio
+async def test_receipt_sequence_unique_constraint_enforced(
+    client, clean_database, monkeypatch
+):
+    """DB unique index rejects duplicate sequence when SELECT check is skipped."""
+    from app.services.receipts import ReceiptService
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-seq-unique-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-seq-unique-permit",
+    )
+    service = get_receipt_service()
+
+    async def _skip_select_check(self, session, **_kwargs):
+        return None
+
+    monkeypatch.setattr(ReceiptService, "_assert_opted_in_chain", _skip_select_check)
+
+    async def write():
+        return await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool=tool_name,
+            request_payload={},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal(str(permit["max_credits"])),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            sequence=0,
+        )
+
+    first = await write()
+    assert first.sequence == 0
+    with pytest.raises(ReceiptError, match="receipt_sequence_conflict"):
+        await write()
+
+
+@pytest.mark.anyio
+async def test_concurrent_receipt_sequence_zero_one_wins(
+    client, clean_database, monkeypatch
+):
+    """Concurrent sequence=0 writers: exactly one succeeds (structural).
+
+    Barrier arms on ``AsyncSession.commit`` once a ``ReceiptModel`` is pending
+    so both writers pass the SELECT preflight, then race the insert together.
+    """
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.models import ReceiptModel
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-seq-race-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-seq-race-permit",
+    )
+    service = get_receipt_service()
+    writers = 2
+    barrier = asyncio.Barrier(writers)
+    reached_insert = 0
+    original_commit = AsyncSession.commit
+
+    async def commit_after_rivals(self, *args, **kwargs):
+        nonlocal reached_insert
+        if any(isinstance(obj, ReceiptModel) for obj in self.new):
+            reached_insert += 1
+            await asyncio.wait_for(barrier.wait(), timeout=5)
+        return await original_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit_after_rivals)
+
+    async def write():
+        return await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool=tool_name,
+            request_payload={},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal(str(permit["max_credits"])),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            sequence=0,
+        )
+
+    results = await asyncio.gather(
+        *(write() for _ in range(writers)), return_exceptions=True
+    )
+    assert reached_insert == writers, reached_insert
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    conflicts = [
+        r
+        for r in results
+        if isinstance(r, ReceiptError) and r.reason == "receipt_sequence_conflict"
+    ]
+    assert len(successes) == 1, results
+    assert len(conflicts) == len(results) - 1, results
+
+
+@pytest.mark.anyio
+async def test_chain_assert_same_idempotency_returns_for_adopt(client, clean_database):
+    """Visible sequence row with same idempotency is returned, not conflict."""
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-seq-chain-adopt-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-seq-chain-adopt-permit",
+    )
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-seq-chain-adopt-invoke",
+        request_payload={},
+    )
+    assert begun.replay is None
+    service = get_receipt_service()
+    first = await service.create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool=tool_name,
+        request_payload={},
+        response_payload=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal(str(permit["max_credits"])),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        idempotency_record_id=begun.record_id,
+        sequence=0,
+    )
+    async with get_session_factory()() as session:
+        same = await service._assert_opted_in_chain(
+            session,
+            permit_id=permit["permit_id"],
+            sequence=0,
+            prev_receipt_digest=None,
+            idempotency_record_id=begun.record_id,
+        )
+        assert same is not None
+        assert same.receipt_id == first.receipt_id
+        with pytest.raises(ReceiptError, match="receipt_sequence_conflict"):
+            await service._assert_opted_in_chain(
+                session,
+                permit_id=permit["permit_id"],
+                sequence=0,
+                prev_receipt_digest=None,
+                idempotency_record_id=None,
+            )
+
+
+@pytest.mark.anyio
+async def test_concurrent_same_idempotency_adopts_not_sequence_conflict(
+    client, clean_database, monkeypatch
+):
+    """Same idempotency + sequence race: adopt winner; never sequence_conflict.
+
+    Barrier on receipt ``commit`` so every writer reaches the insert race
+    (IntegrityError recover / adopt) rather than being turned away by SELECT.
+    """
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.models import ReceiptModel
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-seq-idem-race-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-seq-idem-race-permit",
+    )
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-seq-idem-race-invoke",
+        request_payload={},
+    )
+    assert begun.replay is None
+    service = get_receipt_service()
+    writers = 3
+    barrier = asyncio.Barrier(writers)
+    reached_insert = 0
+    original_commit = AsyncSession.commit
+
+    async def commit_after_rivals(self, *args, **kwargs):
+        nonlocal reached_insert
+        if any(isinstance(obj, ReceiptModel) for obj in self.new):
+            reached_insert += 1
+            await asyncio.wait_for(barrier.wait(), timeout=5)
+        return await original_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit_after_rivals)
+
+    async def write():
+        return await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool=tool_name,
+            request_payload={},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal(str(permit["max_credits"])),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id=begun.record_id,
+            sequence=0,
+        )
+
+    results = await asyncio.gather(
+        *(write() for _ in range(writers)), return_exceptions=True
+    )
+    assert reached_insert == writers, reached_insert
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    conflicts = [
+        r
+        for r in results
+        if isinstance(r, ReceiptError) and r.reason == "receipt_sequence_conflict"
+    ]
+    assert not conflicts, results
+    assert len(successes) == len(results), results
+    assert len({r.receipt_id for r in successes}) == 1
+
+
+@pytest.mark.anyio
+async def test_sqlite_integrity_recover_rolls_back_caller_session(
+    client, clean_database, monkeypatch
+):
+    """Caller-owned SQLite IntegrityError adopt must leave the session usable.
+
+    After a failed flush the session is pending-rollback. Recovery adopts via a
+    fresh session; the caller's session must be rolled back so a later query or
+    commit does not raise. Forces the IntegrityError path by skipping the SELECT
+    chain preflight and suppressing the first idempotency lookup so insert runs.
+    """
+    from sqlalchemy.exc import PendingRollbackError
+
+    from app.services.receipts import ReceiptService
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-sqlite-rollback-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-sqlite-rollback-permit",
+    )
+    service = get_receipt_service()
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-sqlite-rollback-invoke",
+        request_payload={},
+    )
+    assert begun.replay is None
+
+    winner = await service.create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool=tool_name,
+        request_payload={},
+        response_payload=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal(str(permit["max_credits"])),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        idempotency_record_id=begun.record_id,
+        sequence=0,
+    )
+
+    async def _skip_chain(self, session, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        ReceiptService, "_assert_opted_in_chain", _skip_chain, raising=True
+    )
+
+    lookups = {"n": 0}
+    real_get = ReceiptService._get_by_idempotency_record
+
+    async def _get_skip_preflight(session, idempotency_record_id):
+        lookups["n"] += 1
+        # First lookup is the caller-session preflight; return None so insert runs
+        # and hits uq_receipts_permit_sequence. Later recovery must see the winner.
+        if lookups["n"] == 1:
+            return None
+        return await real_get(session, idempotency_record_id)
+
+    monkeypatch.setattr(
+        ReceiptService, "_get_by_idempotency_record", staticmethod(_get_skip_preflight)
+    )
+
+    factory = get_session_factory()
+    async with factory() as caller_session:
+        adopted = await service.create_receipt(
+            permit_id=permit["permit_id"],
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool=tool_name,
+            request_payload={},
+            response_payload=None,
+            ledger_entry_id=None,
+            credits_authorized=Decimal(str(permit["max_credits"])),
+            credits_charged=Decimal("0"),
+            outcome="denied",
+            reason_code="permit_budget_exceeded",
+            audit_event_id=None,
+            idempotency_record_id=begun.record_id,
+            sequence=0,
+            session=caller_session,
+        )
+        assert adopted.receipt_id == winner.receipt_id
+        try:
+            await caller_session.execute(select(ReceiptModel).limit(1))
+        except PendingRollbackError as exc:  # pragma: no cover - failure path
+            raise AssertionError(
+                "caller session still pending-rollback after IntegrityError adopt"
+            ) from exc
+        await caller_session.commit()
+
+
+@pytest.mark.anyio
+async def test_sqlite_integrity_recover_inside_begin_finalizes(
+    client, clean_database, monkeypatch
+):
+    """create_pending-style session.begin() must finalize after SQLite adopt.
+
+    create_pending wraps create_receipt in ``async with session.begin():``.
+    SQLite IntegrityError adopt rolls that transaction back; finalization must
+    open a fresh begin() (same pattern as RefundReconciliationService.create_pending).
+    """
+    from app.db.models import IdempotencyRecordModel
+    from app.services.receipts import ReceiptService
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "receipt-sqlite-begin-tool"
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key="receipt-sqlite-begin-permit",
+    )
+    service = get_receipt_service()
+    begun = await get_idempotency_service().begin_with_record(
+        wallet_id=provisioned["agent_wallet_id"],
+        endpoint="/mcp/messages",
+        idempotency_key="receipt-sqlite-begin-invoke",
+        request_payload={},
+    )
+    assert begun.replay is None
+
+    winner = await service.create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool=tool_name,
+        request_payload={},
+        response_payload=None,
+        ledger_entry_id=None,
+        credits_authorized=Decimal(str(permit["max_credits"])),
+        credits_charged=Decimal("0"),
+        outcome="denied",
+        reason_code="permit_budget_exceeded",
+        audit_event_id=None,
+        idempotency_record_id=begun.record_id,
+        sequence=0,
+    )
+
+    async def _skip_chain(self, session, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        ReceiptService, "_assert_opted_in_chain", _skip_chain, raising=True
+    )
+
+    lookups = {"n": 0}
+    real_get = ReceiptService._get_by_idempotency_record
+
+    async def _get_skip_preflight(session, idempotency_record_id):
+        lookups["n"] += 1
+        if lookups["n"] == 1:
+            return None
+        return await real_get(session, idempotency_record_id)
+
+    monkeypatch.setattr(
+        ReceiptService, "_get_by_idempotency_record", staticmethod(_get_skip_preflight)
+    )
+
+    class _AdoptedAfterCallerRollback(Exception):
+        def __init__(self, adopted, record_id: str) -> None:
+            self.adopted = adopted
+            self.record_id = record_id
+
+    factory = get_session_factory()
+    async with factory() as caller_session:
+        try:
+            async with caller_session.begin():
+                record = await caller_session.get(
+                    IdempotencyRecordModel, begun.record_id
+                )
+                assert record is not None
+                adopted = await service.create_receipt(
+                    permit_id=permit["permit_id"],
+                    wallet_id=provisioned["agent_wallet_id"],
+                    key_id=provisioned["key_id"],
+                    tool=tool_name,
+                    request_payload={},
+                    response_payload=None,
+                    ledger_entry_id=None,
+                    credits_authorized=Decimal(str(permit["max_credits"])),
+                    credits_charged=Decimal("0"),
+                    outcome="denied",
+                    reason_code="permit_budget_exceeded",
+                    audit_event_id=None,
+                    idempotency_record_id=begun.record_id,
+                    sequence=0,
+                    session=caller_session,
+                )
+                assert adopted.receipt_id == winner.receipt_id
+                if not caller_session.in_transaction():
+                    raise _AdoptedAfterCallerRollback(adopted, begun.record_id)
+                raise AssertionError("expected SQLite adopt to roll back begin()")
+        except _AdoptedAfterCallerRollback as pending:
+            async with caller_session.begin():
+                record = await caller_session.get(
+                    IdempotencyRecordModel, pending.record_id
+                )
+                assert record is not None
+                record.response_reference = pending.adopted.receipt_id
+                record.status_code = 500
+                caller_session.add(record)
+                await caller_session.flush()
+
+    async with factory() as verify_session:
+        row = await verify_session.get(IdempotencyRecordModel, begun.record_id)
+    assert row is not None
+    assert row.response_reference == winner.receipt_id
+    assert row.status_code == 500
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@collection_mark(flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=_RECEIPT_PG_REASON)
+async def test_postgres_parallel_receipt_sequence_zero_one_wins(monkeypatch):
+    """Postgres proof: many concurrent sequence=0 writers; exactly one row."""
+    import asyncio
+
+    from app.db import database as database_module
+
+    with monkeypatch.context() as patch:
+        patch.setattr(database_module, "_engine", None)
+        patch.setattr(database_module, "_session_factory", None)
+        engine = database_module.get_engine()
+        try:
+            require_live_postgres(
+                flag="RUN_POSTGRES_CONCURRENCY_TESTS", reason=_RECEIPT_PG_REASON
+            )
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                provisioned = await provision_agent_wallet(client)
+                tool_name = "receipt-seq-pg-race-tool"
+                permit = await create_tool_permit(
+                    client,
+                    wallet_id=provisioned["agent_wallet_id"],
+                    key_id=provisioned["key_id"],
+                    tool_name=tool_name,
+                    idem_key="receipt-seq-pg-race-permit",
+                )
+                service = get_receipt_service()
+
+                async def write(_index: int):
+                    return await service.create_receipt(
+                        permit_id=permit["permit_id"],
+                        wallet_id=provisioned["agent_wallet_id"],
+                        key_id=provisioned["key_id"],
+                        tool=tool_name,
+                        request_payload={},
+                        response_payload=None,
+                        ledger_entry_id=None,
+                        credits_authorized=Decimal(str(permit["max_credits"])),
+                        credits_charged=Decimal("0"),
+                        outcome="denied",
+                        reason_code="permit_budget_exceeded",
+                        audit_event_id=None,
+                        sequence=0,
+                    )
+
+                results = await asyncio.gather(
+                    *(write(i) for i in range(8)), return_exceptions=True
+                )
+                successes = [r for r in results if not isinstance(r, BaseException)]
+                conflicts = [
+                    r
+                    for r in results
+                    if isinstance(r, ReceiptError)
+                    and r.reason == "receipt_sequence_conflict"
+                ]
+                assert len(successes) == 1, results
+                assert len(conflicts) == len(results) - 1, results
+
+                async with get_session_factory()() as session:
+                    rows = (
+                        (
+                            await session.execute(
+                                select(ReceiptModel).where(
+                                    ReceiptModel.permit_id == permit["permit_id"],
+                                    ReceiptModel.sequence == 0,
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                assert len(rows) == 1
+        finally:
+            if engine is not None:
+                await engine.dispose()

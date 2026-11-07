@@ -50,6 +50,11 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
+if __package__:
+    from .live_script_target import LiveTargetError, require_loopback_origin
+else:
+    from live_script_target import LiveTargetError, require_loopback_origin
+
 ROOT = Path(__file__).resolve().parents[1]
 SDK_SRC = ROOT.parent / "sdk" / "python" / "src"
 DEFAULT_API_URL = "http://127.0.0.1:8000"
@@ -62,7 +67,6 @@ PERMIT_MAX_CREDITS = 10
 # lets the meter stage prove the charge is not just present but *correct* — a
 # server that regressed metering to 0 (revenue leak) must fail, not pass.
 EXPECTED_CREDITS_PER_CALL = Decimal("2")
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 # Every file the run writes into the handoff directory.
 ARTIFACTS = (
     "receipt-bundle.json",
@@ -90,10 +94,14 @@ def _sanitize_url_for_record(url: str) -> str:
 
     The transcript ships inside the partner handoff bundle, so a secret carried
     in ``--api-url`` (basic-auth userinfo or a token query param) must never be
-    persisted there. Keep only scheme, host, port, and path.
+    persisted there. Keep only scheme, host, port, and path. Bracket an IPv6
+    host so the saved URL still parses.
     """
     parts = urlparse(url)
-    netloc = parts.hostname or ""
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = host
     if parts.port is not None:
         netloc = f"{netloc}:{parts.port}"
     return urlunparse((parts.scheme, netloc, parts.path, "", "", ""))
@@ -384,7 +392,10 @@ class ProofRun:
         keys_url = self.client.base_url.join(".well-known/trust-keys.json")
         # trust_env=False for the same reason as the main client: keep every
         # request on the loopback host, never through an ambient proxy.
-        keys = httpx.get(str(keys_url), timeout=30, trust_env=False)
+        # Redirects stay off so a 30x cannot leave this host.
+        keys = httpx.get(
+            str(keys_url), timeout=30, trust_env=False, follow_redirects=False
+        )
         require(keys.status_code == 200, "trust-keys.json not served")
         path = self.output_dir / "trust-keys.json"
         path.write_text(keys.text, encoding="utf-8")
@@ -578,7 +589,9 @@ def run(api_url: str, output_dir: Path) -> None:
     # default, which could route that credential off the loopback host through
     # a proxy. Disabling env trust keeps the whole loopback-only guarantee
     # airtight regardless of the caller's proxy environment.
-    with httpx.Client(base_url=api_url, timeout=30, trust_env=False) as client:
+    with httpx.Client(
+        base_url=api_url, timeout=30, trust_env=False, follow_redirects=False
+    ) as client:
         proof = ProofRun(client, output_dir)
         print(f"live loop proof {proof.run_id} against {api_url}\n")
 
@@ -655,18 +668,17 @@ def main(argv: list[str] | None = None) -> int:
     # every request, and self-provision exists only on dev-like postures. There
     # is no supported remote target, so any non-loopback host is refused before
     # a credential is minted.
-    host = urlparse(args.api_url).hostname or ""
-    if host not in LOOPBACK_HOSTS:
+    try:
+        api_url = require_loopback_origin(args.api_url)
+    except LiveTargetError as exc:
         print(
-            f"refusing non-loopback target {args.api_url!r}: the live-loop "
-            "proof is loopback-only; run it against a local `make quickstart` "
-            "server",
+            f"{exc}; run it against a local `make quickstart` server",
             file=sys.stderr,
         )
         return 2
 
     try:
-        run(args.api_url.rstrip("/"), args.output_dir)
+        run(api_url, args.output_dir)
     except StageFailure as failure:
         print(f"\nSTAGE FAILED: {failure}", file=sys.stderr)
         return 1

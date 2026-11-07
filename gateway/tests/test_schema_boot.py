@@ -214,6 +214,17 @@ async def test_init_db_production_like_accepts_legacy_create_all_tables(
     ("table_name", "column_name"),
     [
         ("mcp_dispatch_attempts", "dispatch_claim_hash"),
+        *[
+            ("mcp_dispatch_attempts", column)
+            for column in (
+                "reconcile_status",
+                "reconcile_lease_owner",
+                "reconcile_lease_expires_at",
+                "reconcile_next_probe_at",
+                "reconcile_probe_count",
+                "reconciled_at",
+            )
+        ],
         ("permits", "repeat_window_seconds"),
         ("receipt_resolutions", "payload_hash"),
         ("receipt_resolutions", "signing_input"),
@@ -245,6 +256,10 @@ async def test_init_db_rejects_unstamped_legacy_table_missing_required_column(
 
     sync = create_engine(f"sqlite:///{db_path}")
     with sync.begin() as connection:
+        # SQLite cannot drop an indexed column; drop its indexes first.
+        for index in inspect(connection).get_indexes(table_name):
+            if column_name in index["column_names"]:
+                connection.exec_driver_sql(f"DROP INDEX {index['name']}")
         connection.exec_driver_sql(
             f"ALTER TABLE {table_name} DROP COLUMN {column_name}"
         )

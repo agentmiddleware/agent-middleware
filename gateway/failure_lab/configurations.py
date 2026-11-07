@@ -161,6 +161,52 @@ def _refund_arguments(refund: RefundRequest | dict[str, Any]) -> dict[str, Any]:
     return refund.as_dict() if isinstance(refund, RefundRequest) else dict(refund)
 
 
+class UnsafeTargetError(RuntimeError):
+    """A direct configuration faced a downstream that is not the lab's own.
+
+    Raised by :func:`configured_target` instead of yielding the target, so no
+    request is ever sent. The direct configurations exist to measure what a
+    naive integration does, which for some scenarios means *executing* a
+    request it should have refused: ``T02`` expects ``A_direct_naive`` to pay a
+    100x refund under a spent key. That is only harmless because the
+    downstream is :class:`SimulatedRefundService`, in this process. If a direct
+    agent could ever reach anything else, those scenarios would move real
+    money and record it as the expected result.
+
+    The gateway configurations are deliberately not fused here: there the
+    gateway's own pre-dispatch refusal is the protection under test, as with
+    the unfused ``gateway.key_conflict`` arm of ``scripts/failure_lab.py``.
+    """
+
+
+def _client_routes_only_to(client: httpx.AsyncClient, app: object) -> bool:
+    """Whether every request ``client`` can send ends in ``app`` itself.
+
+    Identity, not configuration: a URL, an environment variable or a settings
+    field can change without changing where the bytes go, so this inspects the
+    transport the client will actually use and compares its app by ``is``.
+    The direct agent never wraps its transport, so any wrapper reads as
+    foreign rather than being walked. The type is matched exactly: a subclass
+    could keep the right ``app`` and still send its requests somewhere else.
+    Mounted transports route some URLs elsewhere, so any mount reads as
+    foreign too. Every attribute read here is read with a default: the
+    client's transport and mounts are httpx internals, and the transport's
+    ``app`` is read the same way, so a rename makes this return ``False`` and
+    the lab refuse with :class:`UnsafeTargetError`, which is the safe
+    direction.
+    """
+    transport = getattr(client, "_transport", None)
+    if (
+        type(transport) is not httpx.ASGITransport
+        or getattr(transport, "app", None) is not app
+    ):
+        return False
+    mounts = getattr(client, "_mounts", None)
+    if mounts is None:
+        return False
+    return all(mounted is None for mounted in mounts.values())
+
+
 class DirectAgent(Agent):
     """Calls the downstream REST endpoint itself, holding the tool credential."""
 
@@ -171,6 +217,10 @@ class DirectAgent(Agent):
             base_url=DOWNSTREAM_BASE_URL,
             headers={"Authorization": f"Bearer {downstream.bearer_token}"},
         )
+
+    def routes_only_to(self, downstream: DownstreamApp) -> bool:
+        """Whether this agent's requests can only reach ``downstream``'s own app."""
+        return _client_routes_only_to(self._client, downstream.asgi)
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -428,20 +478,46 @@ async def configured_target(
         bearer_token=env.downstream_bearer_token,
         control_token=env.control_token,
     )
-    async with downstream.lifespan():
-        if not configuration.uses_gateway:
-            agent = DirectAgent(configuration, downstream)
-            try:
+    direct_agent: DirectAgent | None = None
+    if not configuration.uses_gateway:
+        direct_agent = DirectAgent(configuration, downstream)
+        # Checked before the downstream's lifespan starts, so a refusal happens
+        # before any scenario can send a request and before any task group can
+        # wrap it: the scenario report then names UnsafeTargetError instead of
+        # an anonymous ExceptionGroup. It surfaces as a harness error for this
+        # configuration (see Scenario.run), never as a measurement.
+        try:
+            if downstream.service is not service:
+                raise UnsafeTargetError(
+                    f"{configuration.value}: the downstream does not wrap the "
+                    "simulated refund service this target built; refusing to "
+                    "drive a direct configuration against it"
+                )
+            if not direct_agent.routes_only_to(downstream):
+                raise UnsafeTargetError(
+                    f"{configuration.value}: the direct agent's requests do not "
+                    "end in this target's own in-process downstream app; "
+                    "refusing before any request is sent"
+                )
+        except BaseException:
+            await direct_agent.aclose()
+            raise
+    if direct_agent is not None:
+        # The agent now exists before the lifespan, so its client is closed
+        # even if the lifespan itself fails to start.
+        try:
+            async with downstream.lifespan():
                 yield Target(
                     configuration=configuration,
                     ledger=ledger,
                     injector=injector,
                     downstream=downstream,
-                    agent=agent,
+                    agent=direct_agent,
                 )
-            finally:
-                await agent.aclose()
-            return
+        finally:
+            await direct_agent.aclose()
+        return
+    async with downstream.lifespan():
         async with GatewayUnderTest(
             downstream=downstream,
             app=env.app,
@@ -477,5 +553,6 @@ __all__ = [
     "LabEnvironment",
     "MANDATORY_CONFIGURATIONS",
     "Target",
+    "UnsafeTargetError",
     "configured_target",
 ]

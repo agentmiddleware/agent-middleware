@@ -25,6 +25,7 @@ export interface VerificationResult {
   ok: boolean;
   reason?: string;
   receiptId?: string;
+  permitId?: string;
   keyId?: string;
   /**
    * Fields read from the signed bytes. An integer that does not fit in a JS
@@ -61,15 +62,50 @@ function b64(value: unknown, urlsafe = false): Buffer | null {
   return Buffer.from(value, "base64");
 }
 
-/** Keys sorted at every level, no whitespace, non-ASCII escaped as \uXXXX. */
+/** Reject lone UTF-16 surrogates (RFC 8785 §3.2.2.2); Python JCS does the same. */
+function assertNoLoneSurrogate(text: string): void {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new TypeError("lone Unicode surrogate is not valid under RFC 8785");
+      }
+      i += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      throw new TypeError("lone Unicode surrogate is not valid under RFC 8785");
+    }
+  }
+}
+
+/** RFC 8785 (JCS): keys sorted (UTF-16 code units), no whitespace, UTF-8 strings, ES numbers. */
 export function canonicalJson(value: unknown): string {
   const ser = (v: unknown): string => {
     if (v === null || typeof v !== "object") {
-      return JSON.stringify(v).replace(/[\u007f-\uffff]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+      // JSON.stringify matches ECMAScript Number::toString for finite numbers
+      // and emits UTF-8 string contents with only the required escapes.
+      if (typeof v === "number" && !Number.isFinite(v)) {
+        throw new TypeError("NaN/Infinity are not valid JSON numbers under RFC 8785");
+      }
+      if (typeof v === "string") {
+        assertNoLoneSurrogate(v);
+      }
+      return JSON.stringify(v);
     }
     if (Array.isArray(v)) return "[" + v.map(ser).join(",") + "]";
     const obj = v as Record<string, unknown>;
-    return "{" + Object.keys(obj).sort().map((k) => ser(k) + ":" + ser(obj[k])).join(",") + "}";
+    // UTF-16 code unit order matches JS string comparison for BMP+surrogate keys.
+    return (
+      "{" +
+      Object.keys(obj)
+        .sort()
+        .map((k) => {
+          assertNoLoneSurrogate(k);
+          return JSON.stringify(k) + ":" + ser(obj[k]);
+        })
+        .join(",") +
+      "}"
+    );
   };
   return ser(value);
 }
@@ -198,12 +234,27 @@ function parseJsonPreservingUnsafeIntegers(text: string): unknown {
 }
 
 function edOk(raw: Buffer, sig: Buffer, msg: Buffer): boolean {
-  try {
-    const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: raw.toString("base64url") }, format: "jwk" });
-    return cryptoVerify(null, msg, key, sig);
-  } catch {
-    return false;
-  }
+  // A crypto backend failure is not evidence of a bad signature.
+  const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: raw.toString("base64url") }, format: "jwk" });
+  return cryptoVerify(null, msg, key, sig);
+}
+
+function rawKeyBytes(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  return null;
+}
+
+function textFromBytes(value: Uint8Array): string | null {
+  const buf = Buffer.from(value);
+  const text = buf.toString("utf8");
+  // Invalid UTF-8 is replaced during the decode, so the bytes no longer match.
+  if (hasLoneSurrogate(text) || !Buffer.from(text, "utf8").equals(buf)) return null;
+  return text;
+}
+
+function p256Key(value: unknown): value is P256VerificationKey {
+  return value !== null && typeof value === "object" && "alg" in value && value.alg === P256_ALGORITHM;
 }
 
 function p256PublicKey(key: P256VerificationKey): ReturnType<typeof createPublicKey> | null {
@@ -253,17 +304,28 @@ function p256Ok(key: ReturnType<typeof createPublicKey>, sig: Buffer, msg: Buffe
   }
 }
 
-function signatureValid(key: Buffer | P256VerificationKey, sig: Buffer, msg: Buffer): boolean {
-  if (Buffer.isBuffer(key)) return key.length === RAW_KEY_LEN && sig.length === SIG_LEN && edOk(key, sig, msg);
-  const publicKey = key.alg === P256_ALGORITHM ? p256PublicKey(key) : null;
+function signatureValid(key: unknown, sig: Buffer, msg: Buffer): boolean {
+  const raw = rawKeyBytes(key);
+  if (raw) return raw.length === RAW_KEY_LEN && sig.length === SIG_LEN && edOk(raw, sig, msg);
+  const publicKey = p256Key(key) ? p256PublicKey(key) : null;
   return publicKey !== null && isDerEcdsaSignature(sig) && p256Ok(publicKey, sig, msg);
 }
 
-/** Verify one portable receipt bundle against a caller-supplied key set. */
-export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: string): VerificationResult {
-  if (typeof bundle === "string") {
+/**
+ * Shared core behind verifyBundle and verifyPermitBundle. Receipts and
+ * permits share a signed-envelope shape; permits also require signed permit fields.
+ */
+function verifySignedBundle(
+  bundle: unknown,
+  keySet: { get(kid: string): unknown },
+  idField: "receipt_id" | "permit_id",
+  expectedIssuer?: string,
+): VerificationResult {
+  if (typeof bundle === "string" || bundle instanceof Uint8Array) {
+    const text = typeof bundle === "string" ? bundle : textFromBytes(bundle);
+    if (text === null) return fail("malformed", "bundle is not valid JSON");
     try {
-      bundle = JSON.parse(bundle);
+      bundle = JSON.parse(text);
     } catch {
       return fail("malformed", "bundle is not valid JSON");
     }
@@ -304,29 +366,32 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
 
   const sig = b64(sigB64);
   if (!sig) return fail("malformed", "signature is not valid base64", kid);
+  if (hasLoneSurrogate(signingInput)) return fail("malformed", "signing_input is not valid UTF-8 text", kid);
   const msg = Buffer.from(signingInput, "utf8");
 
-  const raw = keySet.get(kid);
-  if (!raw) {
+  const stored = keySet.get(kid);
+  if (stored === undefined) {
     const envKey = envKid !== kid ? keySet.get(envKid) : undefined;
     if (envKey && signatureValid(envKey, sig, msg)) {
       return fail("mismatch", `signed under kid ${envKid} but the payload names kid ${kid}`, kid);
     }
     return fail("unknown_key", `no published key for kid ${kid}`, kid);
   }
-  if (Buffer.isBuffer(raw)) {
+  const raw = rawKeyBytes(stored);
+  if (raw) {
     if (sig.length !== SIG_LEN) return fail("malformed", "signature is not a 64-byte Ed25519 signature", kid);
     if (raw.length !== RAW_KEY_LEN) return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 key`, kid);
     if (!edOk(raw, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
   } else {
-    const publicKey = raw.alg === P256_ALGORITHM ? p256PublicKey(raw) : null;
+    if (!p256Key(stored)) return fail("malformed", `public key for kid ${kid} is not a 32-byte Ed25519 or P-256 DER SPKI key`, kid);
+    const publicKey = p256PublicKey(stored);
     if (!publicKey) return fail("malformed", `public key for kid ${kid} is not a P-256 DER SPKI key`, kid);
     if (!isDerEcdsaSignature(sig)) return fail("malformed", "signature is not a DER ECDSA signature", kid);
     if (!p256Ok(publicKey, sig, msg)) return fail("invalid", "signature does not verify over signing_input", kid);
   }
 
   if (alg !== "Ed25519") return fail("unsupported", `unsupported signature algorithm: ${String(alg)}`, kid);
-  if (!Buffer.isBuffer(raw)) return fail("unsupported", `unsupported verification key algorithm: ${raw.alg}`, kid);
+  if (!raw) return fail("unsupported", `unsupported verification key algorithm: ${P256_ALGORITHM}`, kid);
   if (typeof signedCanon === "string" && signedCanon !== CANONICALIZATION) {
     return fail("unsupported", `unsupported canonicalization: ${signedCanon}`, kid);
   }
@@ -338,15 +403,48 @@ export function verifyBundle(bundle: unknown, keySet: KeySet, expectedIssuer?: s
   const envelopeCanon = b.canonicalization === undefined ? CANONICALIZATION : b.canonicalization;
   if (envelopeCanon !== expectedCanon) return fail("mismatch", "bundle canonicalization differs from the signed payload", kid);
 
-  // payload_hash is advisory and never recomputed here. The Ed25519 check
-  // above already covers signing_input verbatim, payload_hash included, so
-  // any edit to the signed bytes is invalid. Re-serializing the parsed
-  // payload would reject genuine receipts: JSON numbers do not round-trip
-  // across languages (Python signs 1.0 and 4e-05; this parser reads them as
-  // 1 and 0.00004). Integers that do not fit in a JS number are returned as
-  // the signed decimal text, not the rounded number.
-  const receiptId = p.receipt_id;
-  if (typeof receiptId !== "string" || !receiptId) return fail("malformed", "signed payload has no receipt_id", kid);
-  if (b.receipt_id !== undefined && b.receipt_id !== null && b.receipt_id !== receiptId) return fail("mismatch", "bundle receipt_id does not match the signed receipt_id", kid, receiptId);
-  return { status: "verified", ok: true, receiptId, keyId: kid, claims: p };
+  // payload_hash is advisory and never recomputed here. The signature covers
+  // signing_input verbatim; re-serializing signed JSON can change number text.
+  const objectId = p[idField];
+  if (typeof objectId !== "string" || !objectId) return fail("malformed", `signed payload has no ${idField}`, kid);
+  if (idField === "permit_id") {
+    const stringFields = ["issuer_wallet_id", "subject_wallet_id", "max_credits", "issued_at", "expires_at", "nonce", "payload_hash"];
+    const lists = ["scopes", "allowed_tools"];
+    if (
+      stringFields.some((name) => typeof p[name] !== "string") ||
+      "receipt_id" in p ||
+      !("subject_key_id" in p) ||
+      (p.subject_key_id !== null && typeof p.subject_key_id !== "string") ||
+      lists.some((name) => !Array.isArray(p[name]) || !(p[name] as unknown[]).every((item) => typeof item === "string")) ||
+      p.status !== "active"
+    ) {
+      return fail("malformed", "signed payload is not a permit", kid);
+    }
+  }
+  if (b[idField] !== undefined && b[idField] !== null && b[idField] !== objectId) {
+    const mismatch = fail("mismatch", `bundle ${idField} does not match the signed ${idField}`, kid);
+    if (idField === "permit_id") mismatch.permitId = objectId;
+    else mismatch.receiptId = objectId;
+    return mismatch;
+  }
+  const done: VerificationResult = { status: "verified", ok: true, keyId: kid, claims: p };
+  if (idField === "permit_id") done.permitId = objectId;
+  else done.receiptId = objectId;
+  return done;
+}
+
+/** Verify one portable receipt bundle against a caller-supplied key set. */
+export function verifyBundle(bundle: unknown, keySet: { get(kid: string): unknown }, expectedIssuer?: string): VerificationResult {
+  return verifySignedBundle(bundle, keySet, "receipt_id", expectedIssuer);
+}
+
+/**
+ * Verify one portable permit bundle against a caller-supplied key set.
+ * Same envelope shape and status taxonomy as verifyBundle, with permit_id
+ * in place of receipt_id. Signature only: expiry and revocation are enforced
+ * by the gateway at validation time, so a verified permit must still be
+ * rechecked live before it is honored.
+ */
+export function verifyPermitBundle(bundle: unknown, keySet: { get(kid: string): unknown }, expectedIssuer?: string): VerificationResult {
+  return verifySignedBundle(bundle, keySet, "permit_id", expectedIssuer);
 }

@@ -430,12 +430,10 @@ async def test_transfer_error_replays_keep_the_original_body(
     )
     assert first_cross.status_code == 403, first_cross.text
     assert second_cross.status_code == 403, second_cross.text
-    # Main's stored shape wins for this replay: the original refusal carries
-    # detail, the replay carries the bare error/message body plus the envelope.
-    assert first_cross.json()["detail"]["error"] == "cross_tenant_transfer_refused"
-    assert set(second_cross.json()) == {"error", "message", "code", "fix", "docs_url"}
-    assert second_cross.json()["error"] == "cross_tenant_transfer_refused"
-    assert second_cross.json()["code"] == "cross_tenant_transfer_refused"
+    assert second_cross.json() == first_cross.json()
+    assert set(first_cross.json()) == {"error", "message", "code", "fix", "docs_url"}
+    assert first_cross.json()["error"] == "cross_tenant_transfer_refused"
+    assert first_cross.json()["code"] == "cross_tenant_transfer_refused"
     assert await _balance(client, api_headers, demo.wallet_id) == 20
 
 

@@ -51,6 +51,14 @@ def _upstream_result(payload: dict[str, Any]) -> UpstreamMcpResult:
     )
 
 
+def _without_request_id(payload: dict[str, Any]) -> dict[str, Any]:
+    """Replay identity ignores the per-call correlation id."""
+    error = dict(payload.get("error") or {})
+    data = dict(error.get("data") or {})
+    data.pop("request_id", None)
+    return {**payload, "error": {**error, "data": data}}
+
+
 @dataclass
 class AmbiguousExecutor:
     """Executor that always raises delivery_uncertain after the dispatch checkpoint."""
@@ -318,8 +326,8 @@ async def test_delivery_uncertain_replay_never_redispatches(
         assert replay.status_code == 200
         replay_data = replay.json()
 
-        # Should be identical
-        assert replay_data == first_data
+        # Should be identical apart from the per-call request id.
+        assert _without_request_id(replay_data) == _without_request_id(first_data)
 
         # Verify NO additional dispatch
         assert executor.dispatch_count == 1, "Should not redispatch on replay"

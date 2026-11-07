@@ -8,14 +8,16 @@ Two changes:
    reloaded approval reject an invoke that reused the same idempotency key with
    different arguments or a different current price.
 
-2. Repair ``permits.requires_human_approval`` on SQLite. Migration 023 added
-   the column with ``server_default="false"`` — a plain string that SQLite
-   stores as the *text* ``'false'`` and then reads back through SQLAlchemy's
-   non-native Boolean as ``True`` (``bool("false")``). Every permit that
-   existed before 023 therefore reports ``requires_human_approval=True`` and
-   fails signature verification (the flag enters the signed payload only when
-   true). Postgres parses ``'false'`` as boolean false, so it is unaffected;
-   the repair runs on SQLite only, normalizing any non-0/1 value back to 0.
+2. Repair text booleans on SQLite. Migrations 022 and 023 added
+   ``refresh_tokens.revoked``, ``permits.requires_human_approval``, and
+   ``human_approvals.simulated`` with the string server default ``"false"``.
+   SQLite stores that as the text ``'false'``. SQLAlchemy then reads any
+   non-empty text as true, so a live refresh token looks revoked, a permit
+   looks like it requires human approval (and fails signature verification,
+   because the flag enters the signed payload only when true), and a real
+   approval looks simulated. Postgres parses ``'false'`` as boolean false, so
+   it is unaffected. The repair runs on SQLite only and rewrites the known
+   text values in the correct direction. Unexpected text is left alone.
 
 Revision ID: 024_human_approval_hardening
 Revises: 023_human_approval_gate
@@ -40,25 +42,30 @@ def upgrade() -> None:
 
     bind = op.get_bind()
     if bind.dialect.name == "sqlite":
-        # Existing rows backfilled by 023 hold the text 'false'. Repair only
-        # the known text booleans, in the correct direction, so an unexpected
-        # value is never silently downgraded to "approval not required" (that
-        # would remove a control rather than restore one). 023's server_default
-        # can only produce 'false', but the 'true' side is handled defensively.
-        op.execute(
-            sa.text(
-                "UPDATE permits SET requires_human_approval = 0 "
-                "WHERE typeof(requires_human_approval) = 'text' "
-                "AND lower(requires_human_approval) IN ('false', 'f', '0', 'no')"
+        # Rows created under the old string default hold the text 'false'.
+        # Repair only the known text booleans, in the correct direction, so an
+        # unexpected value is never silently turned into "not set". The old
+        # server default can only produce 'false', but the 'true' side is
+        # handled so a real true is not left as text.
+        for table, column in (
+            ("permits", "requires_human_approval"),
+            ("human_approvals", "simulated"),
+            ("refresh_tokens", "revoked"),
+        ):
+            op.execute(
+                sa.text(
+                    f"UPDATE {table} SET {column} = 0 "
+                    f"WHERE typeof({column}) = 'text' "
+                    f"AND lower({column}) IN ('false', 'f', '0', 'no')"
+                )
             )
-        )
-        op.execute(
-            sa.text(
-                "UPDATE permits SET requires_human_approval = 1 "
-                "WHERE typeof(requires_human_approval) = 'text' "
-                "AND lower(requires_human_approval) IN ('true', 't', '1', 'yes')"
+            op.execute(
+                sa.text(
+                    f"UPDATE {table} SET {column} = 1 "
+                    f"WHERE typeof({column}) = 'text' "
+                    f"AND lower({column}) IN ('true', 't', '1', 'yes')"
+                )
             )
-        )
 
 
 def downgrade() -> None:

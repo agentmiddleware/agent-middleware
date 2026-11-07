@@ -55,17 +55,49 @@ classified as already sent; they are never claimable again.
 | `failed_unrefunded` | A refund was owed and the refund **itself** failed | Charged; a durable operator work item is created atomically with the receipt | Depends on the underlying failure | 500 / `-32603` | `test_governed_refund_failure_keeps_permit_budget_reserved`, `test_refund_reconciliation_retries_exactly_once_and_preserves_agent_replay` |
 
 Requests rejected before a valid permit and an executable tool are established
-produce no receipt — there is no authority to bill against. The README states
-this limit. What they leave behind differs by reason:
+produce no billing receipt — there is no authority to bill against. The README
+states this limit. What they leave behind differs by reason:
 
-- An unknown tool (`Tool not found`) or `permit_not_found` on a governed call
-  that carries an idempotency key completes a terminal *idempotency record*;
-  a same-key replay returns the original error envelope.
-- `permit_required` on a resolved tool, and a resolved tool that is not
-  executable, record nothing: the governed idempotency record is only begun
-  after the permit check, so the completion call in `app/routers/mcp.py` is a
-  no-op. A same-key retry returns the same error while nothing has changed,
-  and after minting a permit it executes normally
+- A governed call with a valid permit that names a tool outside the permit's
+  `allowed_tools` gets 403 / `-32003` `permit_tool_not_allowed`, whether or not
+  the tool is registered and whether the permit is a tool permit or an action
+  permit. With an idempotency key it mints a signed denial receipt
+  (`credits_authorized = 0`, `credits_charged = 0`) bound to the idempotency
+  record (`idempotency_record_id` set) and completes that record as terminal,
+  so a same-key replay returns the same envelope and the same receipt
+  (`test_denials_do_not_reveal_registration`,
+  `test_action_permit_denial_identical_for_registry_state`,
+  `test_action_permit_denial_replays_same_receipt_for_same_key`).
+- An action permit that *does* name the tool, used against a tool that has no
+  action binding (registered without one, or not registered), gets 403 /
+  `-32003` `action_tool_binding_required`, not `Tool not found`. No idempotency
+  record is begun. The response carries an unbound denial receipt
+  (`idempotency_record_id = null`) minted per call while the permit row still
+  verifies, so a same-key retry returns a fresh receipt rather than a replay.
+- An unknown tool (`Tool not found`) on a governed call *without* a permit, or
+  `permit_not_found`, on a call that carries an idempotency key completes a
+  terminal *idempotency record*; a same-key replay returns the original error
+  envelope
+  (`test_strict_mode_replays_missing_tool_lookup_error_with_idempotency_key`).
+- A call *without* a permit to a registered but non-executable tool (`Tool not
+  executable`) records nothing: no governed record is begun for a resolved tool
+  without a permit, so the key is untouched
+  (`test_strict_mode_replays_non_executable_tool_error_with_idempotency_key`).
+- On a call that carries a valid *tool* permit naming the tool, `Tool not found`
+  and `Tool not executable` record nothing: they depend on the current
+  registry, not on the request, so the governed idempotency claim is released
+  (`_release_unresolved_tool_idempotency` in `app/routers/mcp.py`). A same-key
+  retry executes normally once the tool is registered or executable
+  (`test_unresolved_tool_failure_is_not_replayed_after_fix`). This holds when
+  the release runs. If the process dies between saving the claim and releasing
+  it, the row stays behind with `operation_kind` `unresolved` or `local`;
+  `reconcile_stuck_records` sweeps only `upstream_mcp` rows, and no TTL
+  applies to idempotency records, so a same-key retry answers
+  `idempotency_in_progress` until an operator clears the row. Retrying under
+  a new key is unaffected.
+- `permit_required` on a resolved tool records nothing. A same-key retry returns
+  the same error while nothing has changed, and after minting a permit it
+  executes normally
   (`test_strict_mode_missing_permit_denial_leaves_no_idempotency_record`).
   Whether that stays the contract is the open D2 decision in
   [authority-required-flow.md](authority-required-flow.md).
@@ -244,11 +276,46 @@ asked for: every retry carrying the same malformed key would become a new
 charged operation (`test_mcp_idempotency_key_validation`).
 
 Only a genuinely **absent** key — no header, no body entry, or a JSON `null`
-entry — is treated as an un-keyed call. On the standard MCP endpoint that means
-a generated key, and every un-keyed call, retries included, is a new charged
-operation. Clients that retry must always send their own persistent key; a
-governed `/mcp/messages` call without one is refused with
-`idempotency_key_required`.
+entry — is treated as an un-keyed call. On the standard MCP endpoint (and the
+`/mcp/messages` demo auto-permit path) an un-keyed call to a mutating tool
+gets a deterministic `mcp-retry-` key from the caller's wallet and API key,
+the verified enterprise principal (provider, issuer, subject) when an IGA
+bearer is present, the tool, and the canonical JSON of the arguments. The
+JSON-RPC id is not part of it, because retries carry fresh ids.
+
+- **Sliding window.** Slot selection and the auto-permit mint run under a
+  per-identity lock row. A slot first minted less than
+  the effective window ago is joined (the smaller of
+  `MCP_UNKEYED_RETRY_WINDOW_SECONDS`, default 300, and the auto-permit TTL,
+  default 120 and lower for demo tenants; so 120 s by default, after which an
+  identical unkeyed retry runs and bills again) even if the
+  clock bucket has rolled over, so a retry or concurrent twin straddling the
+  edge resolves to one dispatch. A concurrent duplicate either replays the
+  same receipt or gets the retryable `idempotency_in_progress`. A lock older
+  than 120 s is treated as abandoned and can be taken over. The auto-permit
+  mint row is written only if the writer still owns the lock (checked in the
+  same transaction as the insert), so a stalled former holder never mints or
+  dispatches, and it releases only its own lock row.
+- **IGA before replay.** A replay of a stored governed result re-runs the IGA
+  check (without spending a use) first, and the principal is part of the key,
+  so one human never receives another's stored result.
+- **Mutating tools only.** Tools registered `read_only` (for example
+  `partner.notes.count`) get no derived key, so an unkeyed call to one is
+  refused (below). Undeclared tools are treated as mutating.
+- **No-effect failures retry.** If the stored result is a refunded
+  pre-dispatch failure, the retry moves to the next attempt slot and runs
+  again (up to three attempts per window) instead of replaying the failure.
+
+Two deliberately identical un-keyed calls inside one window still collapse
+into one; clients that need repeats must send their own key. The gateway never mints a
+random per-call key: an unkeyed call with no derived key (a `read_only` tool,
+the window set to `0`, or an enterprise bearer that fails verification) is
+refused with JSON-RPC `-32003` `idempotency_key_required` (HTTP 400 on
+`/mcp/tools/{service_id}/invoke`) before any permit, dispatch, or charge, so
+a retry cannot run or bill twice. A
+governed `/mcp/messages` call without a key is still refused with
+`idempotency_key_required`, and a wallet that requires human approval still
+needs an explicit key.
 
 The governed AWI HTTP routes — `POST /v1/awi/execute`,
 `/v1/awi/passkey/challenge`, `/v1/awi/passkey/verify`, `/v1/awi/dom/sync`,

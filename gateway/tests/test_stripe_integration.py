@@ -14,8 +14,15 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.time import utc_now
+from app.db.database import get_session_factory
+from app.db.models import IdempotencyRecordModel
 from tests.conftest import interleaving_factory, requires_sqlite_row_lock_noop
 from app.main import app
+from app.services.idempotency import (
+    IdempotencyInProgressError,
+    InvalidIdempotencyKeyError,
+    get_idempotency_service,
+)
 from app.services.stripe_integration import StripeIntegration, StripeSettlementError
 
 
@@ -183,6 +190,445 @@ async def test_prepare_top_up_creates_payment_intent(
         assert call_kwargs["currency"] == "usd"
         assert call_kwargs["metadata"]["wallet_id"] == wallet_id
         assert call_kwargs["metadata"]["credits"] == "50000"
+        # No client key: this call must not invent a Stripe idempotency key.
+        assert "idempotency_key" not in call_kwargs
+
+
+@pytest.fixture(autouse=True)
+def fake_payment_intent_retrieve():
+    """Replays re-fetch client_secret by id; never call real Stripe in tests."""
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.retrieve",
+        side_effect=lambda intent_id: MagicMock(
+            id=intent_id, client_secret=f"{intent_id}_secret"
+        ),
+    ) as mock_retrieve:
+        yield mock_retrieve
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_never_persists_client_secret(
+    client, sponsor_wallet, api_headers, fake_payment_intent_retrieve
+):
+    """CWE-312: the idempotency row must not hold the PaymentIntent secret.
+
+    Replay rebuilds the response by re-fetching the secret from Stripe.
+    """
+    from sqlalchemy import select
+
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "no-secret-at-rest"}
+    url = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0"
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_no_secret", client_secret="pi_no_secret_secret"
+        )
+        first = await client.post(url, headers=headers)
+        fake_payment_intent_retrieve.assert_not_called()
+        second = await client.post(url, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["client_secret"] == "pi_no_secret_secret"
+    assert second.json() == first.json()
+    mock_create.assert_called_once()
+    fake_payment_intent_retrieve.assert_called_once_with("pi_no_secret")
+
+    async with get_session_factory()() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(IdempotencyRecordModel).where(
+                        IdempotencyRecordModel.response_reference == "pi_no_secret"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    stored = rows[0].response_json or ""
+    assert "client_secret" not in stored
+    assert "pi_no_secret_secret" not in stored
+    assert "pi_no_secret" in stored
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_in_progress_fallback_rehydrates_client_secret(
+    client, sponsor_wallet, api_headers, fake_payment_intent_retrieve
+):
+    """Race: begin_with_record says in-progress, but the row has completed.
+
+    The fallback must re-fetch the secret instead of returning the stored row.
+    """
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "in-progress-race"}
+    url = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0"
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_race", client_secret="pi_race_secret"
+        )
+        first = await client.post(url, headers=headers)
+        with patch(
+            "app.services.idempotency.IdempotencyService.begin_with_record",
+            new=AsyncMock(side_effect=IdempotencyInProgressError("in progress")),
+        ):
+            second = await client.post(url, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["client_secret"] == "pi_race_secret"
+    assert second.json() == first.json()
+    mock_create.assert_called_once()
+    fake_payment_intent_retrieve.assert_called_once_with("pi_race")
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_in_progress_fallback_rejects_reused_key_other_amount(
+    client, sponsor_wallet, api_headers, fake_payment_intent_retrieve
+):
+    """In-progress fallback must check request_hash before replaying.
+
+    Same key with a different amount gets 409 and never touches Stripe's
+    stored PaymentIntent or its client_secret.
+    """
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "in-progress-reuse"}
+    base = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}"
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_reuse", client_secret="pi_reuse_secret"
+        )
+        first = await client.post(f"{base}&amount_fiat=50.0", headers=headers)
+        with patch(
+            "app.services.idempotency.IdempotencyService.begin_with_record",
+            new=AsyncMock(side_effect=IdempotencyInProgressError("in progress")),
+        ):
+            second = await client.post(f"{base}&amount_fiat=75.0", headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["detail"]["error"] == "idempotency_key_reused"
+    assert "pi_reuse_secret" not in second.text
+    mock_create.assert_called_once()
+    fake_payment_intent_retrieve.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_retry_sends_the_same_stripe_idempotency_key(
+    client, sponsor_wallet, api_headers
+):
+    """A retried prepare with the same client key must ask Stripe for the same intent.
+
+    The gateway replays the saved response without another Stripe request.
+    """
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "topup-client-retry-1"}
+
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_retry_1",
+            client_secret="pi_retry_1_secret",
+            status="requires_payment_method",
+        )
+        url = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0"
+        first = await client.post(url, headers=headers)
+        second = await client.post(url, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["payment_intent_id"] == "pi_retry_1"
+    assert second.json()["payment_intent_id"] == "pi_retry_1"
+    mock_create.assert_called_once()
+    first_kwargs = mock_create.call_args.kwargs
+    assert first_kwargs["idempotency_key"].startswith("top-up:")
+    assert first_kwargs["metadata"]["idempotency_key"] == "topup-client-retry-1"
+    assert first_kwargs["amount"] == 5000
+    assert first_kwargs["currency"] == "usd"
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_key_is_wallet_scoped(client, sponsor_wallet, api_headers):
+    second_wallet = await client.post(
+        "/v1/billing/wallets/sponsor",
+        json={
+            "sponsor_name": "Second Stripe Test Sponsor",
+            "email": "stripe-second@b2a.dev",
+            "initial_credits": 0,
+        },
+        headers=api_headers,
+    )
+    assert second_wallet.status_code == 201
+    wallets = (sponsor_wallet["wallet_id"], second_wallet.json()["wallet_id"])
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.side_effect = [
+            MagicMock(id="pi_wallet_1", client_secret="secret_wallet_1"),
+            MagicMock(id="pi_wallet_2", client_secret="secret_wallet_2"),
+        ]
+        responses = [
+            await client.post(
+                f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0",
+                headers={**api_headers, "Idempotency-Key": "shared-client-key"},
+            )
+            for wallet_id in wallets
+        ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert [response.json()["payment_intent_id"] for response in responses] == [
+        "pi_wallet_1",
+        "pi_wallet_2",
+    ]
+    first_key, second_key = [
+        call.kwargs["idempotency_key"] for call in mock_create.call_args_list
+    ]
+    assert first_key != second_key
+    assert all(key.startswith("top-up:") for key in (first_key, second_key))
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_replays_first_quote_after_rate_change(
+    client, sponsor_wallet, api_headers, monkeypatch
+):
+    from app.services.stripe_integration import settings
+
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "delayed-retry-key"}
+    url = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0"
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_delayed", client_secret="pi_delayed_secret"
+        )
+        first = await client.post(url, headers=headers)
+        monkeypatch.setattr(settings, "EXCHANGE_RATE", Decimal("2000"))
+        second = await client.post(url, headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    mock_create.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_rejects_changed_amount_for_same_key(
+    client, sponsor_wallet, api_headers
+):
+    wallet_id = sponsor_wallet["wallet_id"]
+    headers = {**api_headers, "Idempotency-Key": "amount-conflict-key"}
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.return_value = MagicMock(
+            id="pi_amount", client_secret="pi_amount_secret"
+        )
+        first = await client.post(
+            f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0",
+            headers=headers,
+        )
+        changed = await client.post(
+            f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=51.0",
+            headers=headers,
+        )
+
+    assert first.status_code == 200
+    assert changed.status_code == 409
+    assert changed.json()["detail"]["error"] == "idempotency_key_reused"
+    assert changed.json()["detail"]["message"] == "idempotency_key_reused"
+    mock_create.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_uncertain_stripe_result_does_not_create_again(
+    client, sponsor_wallet, api_headers
+):
+    wallet_id = sponsor_wallet["wallet_id"]
+    integration = StripeIntegration()
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create",
+        side_effect=TimeoutError("Stripe result unknown"),
+    ) as mock_create:
+        with pytest.raises(TimeoutError):
+            await integration.create_top_up_intent(
+                wallet_id=wallet_id,
+                amount_fiat=Decimal("50"),
+                idempotency_key="uncertain-stripe-result",
+            )
+        with pytest.raises(IdempotencyInProgressError):
+            await integration.create_top_up_intent(
+                wallet_id=wallet_id,
+                amount_fiat=Decimal("50"),
+                idempotency_key="uncertain-stripe-result",
+            )
+        response = await client.post(
+            f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50",
+            headers={**api_headers, "Idempotency-Key": "uncertain-stripe-result"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "idempotency_in_progress"
+    mock_create.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_recovers_uncertain_stripe_result_with_original_quote(
+    sponsor_wallet, monkeypatch
+):
+    from app.services.stripe_integration import settings
+
+    wallet_id = sponsor_wallet["wallet_id"]
+    integration = StripeIntegration()
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.side_effect = [
+            TimeoutError("Stripe result unknown"),
+            MagicMock(id="pi_recovered", client_secret="pi_recovered_secret"),
+        ]
+        with pytest.raises(TimeoutError):
+            await integration.create_top_up_intent(
+                wallet_id=wallet_id,
+                amount_fiat=Decimal("50"),
+                idempotency_key="recover-stripe-result",
+            )
+        async with get_session_factory()() as session:
+            await session.execute(
+                sa_update(IdempotencyRecordModel)
+                .where(IdempotencyRecordModel.wallet_id == wallet_id)
+                .values(created_at=utc_now() - timedelta(minutes=6))
+            )
+            await session.commit()
+        monkeypatch.setattr(settings, "EXCHANGE_RATE", Decimal("2000"))
+        recovered = await integration.create_top_up_intent(
+            wallet_id=wallet_id,
+            amount_fiat=Decimal("50"),
+            idempotency_key="recover-stripe-result",
+        )
+        replayed = await integration.create_top_up_intent(
+            wallet_id=wallet_id,
+            amount_fiat=Decimal("50"),
+            idempotency_key="recover-stripe-result",
+        )
+
+    assert recovered == replayed
+    assert recovered["payment_intent_id"] == "pi_recovered"
+    assert recovered["amount_credits"] == 50000
+    assert mock_create.call_count == 2
+    assert mock_create.call_args_list[0].kwargs == mock_create.call_args_list[1].kwargs
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_recovers_when_replay_completion_fails(sponsor_wallet):
+    wallet_id = sponsor_wallet["wallet_id"]
+    integration = StripeIntegration()
+    replay_service = get_idempotency_service()
+    with (
+        patch(
+            "app.services.stripe_integration.stripe.PaymentIntent.create"
+        ) as mock_create,
+        patch.object(
+            replay_service, "complete", side_effect=[TimeoutError("write failed"), None]
+        ),
+    ):
+        mock_create.return_value = MagicMock(
+            id="pi_completed_late", client_secret="pi_completed_late_secret"
+        )
+        with pytest.raises(TimeoutError):
+            await integration.create_top_up_intent(
+                wallet_id=wallet_id,
+                amount_fiat=Decimal("50"),
+                idempotency_key="late-completion",
+            )
+        async with get_session_factory()() as session:
+            await session.execute(
+                sa_update(IdempotencyRecordModel)
+                .where(IdempotencyRecordModel.wallet_id == wallet_id)
+                .values(created_at=utc_now() - timedelta(minutes=6))
+            )
+            await session.commit()
+        recovered = await integration.create_top_up_intent(
+            wallet_id=wallet_id,
+            amount_fiat=Decimal("50"),
+            idempotency_key="late-completion",
+        )
+
+    assert recovered["payment_intent_id"] == "pi_completed_late"
+    assert mock_create.call_count == 2
+    assert mock_create.call_args_list[0].kwargs == mock_create.call_args_list[1].kwargs
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_does_not_resend_after_stripe_replay_window(
+    sponsor_wallet,
+):
+    wallet_id = sponsor_wallet["wallet_id"]
+    integration = StripeIntegration()
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create",
+        side_effect=TimeoutError("Stripe result unknown"),
+    ) as mock_create:
+        with pytest.raises(TimeoutError):
+            await integration.create_top_up_intent(
+                wallet_id=wallet_id,
+                amount_fiat=Decimal("50"),
+                idempotency_key="expired-stripe-result",
+            )
+        async with get_session_factory()() as session:
+            await session.execute(
+                sa_update(IdempotencyRecordModel)
+                .where(IdempotencyRecordModel.wallet_id == wallet_id)
+                .values(created_at=utc_now() - timedelta(hours=24))
+            )
+            await session.commit()
+        with pytest.raises(IdempotencyInProgressError):
+            await integration.create_top_up_intent(
+                wallet_id=wallet_id,
+                amount_fiat=Decimal("50"),
+                idempotency_key="expired-stripe-result",
+            )
+
+    mock_create.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_rejects_unusable_idempotency_key_before_stripe(
+    client, sponsor_wallet, api_headers
+):
+    """A key the gateway cannot honor must not open a PaymentIntent.
+
+    Treating it as an unkeyed top-up would silently drop the retry protection
+    the client asked for.
+    """
+    wallet_id = sponsor_wallet["wallet_id"]
+    too_long = "k" * 129
+    integration = StripeIntegration()
+
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        response = await client.post(
+            f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=50.0",
+            headers={**api_headers, "Idempotency-Key": too_long},
+        )
+        with pytest.raises(InvalidIdempotencyKeyError):
+            await integration.create_top_up_intent(
+                wallet_id=wallet_id,
+                amount_fiat=Decimal("50"),
+                idempotency_key=" ",
+            )
+
+    assert response.status_code == 400
+    mock_create.assert_not_called()
 
 
 @pytest.mark.anyio

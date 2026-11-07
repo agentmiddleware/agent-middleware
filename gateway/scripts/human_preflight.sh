@@ -20,6 +20,7 @@ NC='\033[0m'
 http_code() {
   local path="$1"
   curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 3 --max-time 10 \
+    --noproxy '*' \
     "${API_URL}${path}" 2>/dev/null || echo "000"
 }
 
@@ -41,7 +42,7 @@ check_http() {
   fi
 }
 
-deps_json="$(curl -sS --connect-timeout 3 --max-time 15 "${API_URL}/health/dependencies" 2>/dev/null || true)"
+deps_json="$(curl -sS --noproxy '*' --connect-timeout 3 --max-time 15 "${API_URL}/health/dependencies" 2>/dev/null || true)"
 if [[ -z "$deps_json" ]]; then
   echo -e "${RED}FAILED${NC} to fetch /health/dependencies"
   exit 1
@@ -131,6 +132,10 @@ import json
 import os
 import sys
 import urllib.request
+
+urllib.request.install_opener(
+    urllib.request.build_opener(urllib.request.ProxyHandler({}))
+)
 
 base = os.environ['API_URL'].rstrip('/')
 

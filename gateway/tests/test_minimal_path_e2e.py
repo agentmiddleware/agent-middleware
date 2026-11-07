@@ -29,11 +29,7 @@ import httpx
 import pytest
 from mcp import ClientSession
 
-# streamablehttp_client is soft-deprecated in newer SDKs, but its replacement
-# (streamable_http_client) does not exist at the mcp>=1.28.1 floor and takes a
-# pre-built httpx client instead of headers. Keep the entry point that spans
-# the pinned range.
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from tests.test_trust_helpers import provision_agent_wallet
 
@@ -127,10 +123,15 @@ def wallet(live_server):
 @pytest.mark.anyio
 async def test_minimal_viable_path(live_server, wallet):
     headers = {**wallet["agent_headers"], "Idempotency-Key": f"e2e-{uuid.uuid4().hex}"}
-    async with streamablehttp_client(f"{live_server}/mcp", headers=headers) as (
-        read,
-        write,
-        _,
+    async with (
+        httpx.AsyncClient(
+            headers=headers, timeout=httpx.Timeout(30, read=300)
+        ) as http_client,
+        streamable_http_client(f"{live_server}/mcp", http_client=http_client) as (
+            read,
+            write,
+            _,
+        ),
     ):
         async with ClientSession(read, write) as session:
             await session.initialize()

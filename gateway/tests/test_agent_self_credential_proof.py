@@ -199,3 +199,37 @@ def test_scope_denial_without_signed_structured_evidence_fails(
     assert code == 1, out
     assert "ALL INVARIANTS HELD" not in out
     assert f"[FAIL] {failed_check}" in out
+
+
+@pytest.mark.parametrize(
+    ("base_url", "marker"),
+    [
+        ("http://evil.example", "loopback-only"),
+        ("https://evil.example", "loopback-only"),
+        ("http://alice:s3cr3t@127.0.0.1:8000", "embedded credentials"),
+    ],
+)
+def test_refuses_non_loopback_before_any_request(
+    base_url: str,
+    marker: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class Boom:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError(
+                "HTTP client constructed before the target was checked"
+            )
+
+    monkeypatch.setattr(proof.httpx, "AsyncClient", Boom)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["agent_self_credential_proof.py", "--base-url", base_url],
+    )
+
+    assert proof.main() == 2
+    captured = capsys.readouterr()
+    assert marker in captured.err
+    assert "s3cr3t" not in captured.err
+    assert "s3cr3t" not in captured.out

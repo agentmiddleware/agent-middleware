@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Exercise a sandbox payout through the real gateway and offline verifier."""
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ import os
 import secrets
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +19,6 @@ from cryptography.hazmat.primitives.serialization import (
     NoEncryption,
     PrivateFormat,
 )
-
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_DIR = Path(__file__).resolve().parent
@@ -57,9 +55,8 @@ def configure_sandbox(database: Path) -> str:
 sys.path.insert(0, str(ROOT / "gateway"))
 sys.path.insert(0, str(ROOT / "sdk" / "python" / "src"))
 
-import httpx  # noqa: E402
-
-from b2a_sdk.receipt_verifier import (  # noqa: E402
+import httpx
+from b2a_sdk.receipt_verifier import (
     key_set_from_document,
     verify_bundle,
 )
@@ -179,7 +176,7 @@ async def run(admin_key: str) -> tuple[dict[str, Any], dict[str, Any], int]:
                     "scopes": [f"tool:{TOOL}:invoke", "billing:charge"],
                     "max_credits": 1,
                     "expires_at": (
-                        datetime.now(timezone.utc) + timedelta(minutes=5)
+                        datetime.now(UTC) + timedelta(minutes=5)
                     ).isoformat(),
                 },
                 {**admin_headers, "Idempotency-Key": "sandbox-permit-4417"},

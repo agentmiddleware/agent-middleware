@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Middleware API</title>
+  <desc id="desc">Authorize one agent action. Retry with the same key, no new dispatch.</desc>
+  <!-- Source for social-card.png. Every color is a styles.css token (ink,
+       panel, rule, text, text-dim, brass); the typefaces are the site's own —
+       Instrument Serif for the headline, IBM Plex Mono for the labels.
+       Regenerate the PNG with render_social_card.py so those faces render
+       from the vendored fonts rather than a viewer's fallbacks. -->
+  <defs>
+    <!-- The glow sits at the top so the bottom row stays pure ink; the
+         renderer probes that row to confirm the viewport covered the card. -->
+    <radialGradient id="glow" cx="0.72" cy="-0.15" r="0.85">
+      <stop offset="0" stop-color="#121a30"/>
+      <stop offset="0.55" stop-color="#121a30" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#0b1020" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="#0b1020"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- Brand row: the nav's gold mark and mono wordmark. -->
+  <rect x="64" y="66" width="12" height="12" rx="2" fill="#f0b43c"/>
+  <text x="92" y="78" fill="#9ca8cb" font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="18" font-weight="600" letter-spacing="0.5">Agent Middleware API</text>
+
+  <!-- Headline. -->
+  <g fill="#e9edf8" font-family="'Instrument Serif', Georgia, 'Times New Roman', serif" font-size="92" font-weight="400" letter-spacing="-1">
+    <text x="64" y="226">Authorize one agent action.</text>
+    <text x="64" y="318">Retry with the same key.</text>
+    <text x="64" y="410">No new dispatch.</text>
+  </g>
+
+  <rect x="64" y="470" width="1072" height="1" fill="#34457a" fill-opacity="0.7"/>
+
+  <g font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="17" font-weight="500" letter-spacing="2" fill="#e9edf8">
+    <text x="64" y="528">SCOPED AUTHORITY</text>
+    <text x="410" y="528">IDEMPOTENT METERING</text>
+    <text x="820" y="528">SIGNED RECEIPTS</text>
+  </g>
+  <g fill="#f0b43c">
+    <rect x="364" y="518" width="8" height="8" rx="2"/>
+    <rect x="774" y="518" width="8" height="8" rx="2"/>
+  </g>
+
+  <g font-family="'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace" font-size="16" fill="#9ca8cb">
+    <text x="64" y="580">www.agentmiddleware.dev</text>
+    <text x="1136" y="580" text-anchor="end">One tool design partner pilot</text>
+  </g>
+</svg>

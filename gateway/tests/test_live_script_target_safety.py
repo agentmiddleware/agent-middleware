@@ -94,18 +94,42 @@ def test_multiple_trailing_dns_root_dots_are_rejected() -> None:
 def test_canonical_production_requires_confirmation() -> None:
     with pytest.raises(LiveTargetError, match="--confirm-production"):
         resolve_live_target(
-            "https://API.THISISATEST.TECH.:443/",
+            "https://API.AGENTMIDDLEWARE.DEV.:443/",
             confirm_production=False,
             environ={},
         )
 
     assert (
         resolve_live_target(
-            "https://API.THISISATEST.TECH.:443/",
+            "https://API.AGENTMIDDLEWARE.DEV.:443/",
             confirm_production=True,
             environ={},
         )
-        == "https://api.thisisatest.tech"
+        == "https://api.agentmiddleware.dev"
+    )
+
+
+def test_production_hosts_require_confirmation_regardless_of_port() -> None:
+    with pytest.raises(LiveTargetError, match="--confirm-production"):
+        resolve_live_target(
+            "https://api.agentmiddleware.dev:8443",
+            confirm_production=False,
+            environ={},
+        )
+    with pytest.raises(LiveTargetError, match="--confirm-production"):
+        resolve_live_target(
+            "https://api.thisisatest.tech:8443",
+            confirm_production=False,
+            environ={},
+        )
+
+    assert (
+        resolve_live_target(
+            "https://api.agentmiddleware.dev:8443",
+            confirm_production=True,
+            environ={},
+        )
+        == "https://api.agentmiddleware.dev:8443"
     )
 
 
@@ -208,7 +232,7 @@ REJECTED_CONFIGURATIONS = (
         id="multiple-trailing-root-dots",
     ),
     pytest.param(
-        ["--api-url", "https://api.thisisatest.tech"],
+        ["--api-url", "https://api.agentmiddleware.dev"],
         None,
         CANARY_KEY,
         id="production-without-confirmation",
@@ -299,7 +323,16 @@ def test_script_cli_target_overrides_env_and_key_is_not_printed(
         created_with: list[str] = []
 
         class FakeAsyncClient:
-            def __init__(self, *, base_url: str, timeout: int) -> None:
+            def __init__(
+                self,
+                *,
+                base_url: str,
+                timeout: int,
+                trust_env: bool,
+                follow_redirects: bool,
+            ) -> None:
+                assert trust_env is False
+                assert follow_redirects is False
                 created_with.append(base_url)
 
             async def __aenter__(self) -> object:
@@ -422,10 +455,15 @@ def _load_battery(
         pytest.param("", [], id="empty-target"),
         pytest.param("http://staging.example.test", [], id="remote-cleartext"),
         pytest.param(
-            "https://api.thisisatest.tech", [], id="production-without-confirmation"
+            "https://api.agentmiddleware.dev", [], id="production-without-confirmation"
         ),
         pytest.param(
-            "https://API.THISISATEST.TECH./", [], id="production-alias-unconfirmed"
+            "https://api.thisisatest.tech",
+            [],
+            id="legacy-production-without-confirmation",
+        ),
+        pytest.param(
+            "https://API.AGENTMIDDLEWARE.DEV./", [], id="production-alias-unconfirmed"
         ),
         pytest.param(
             "https://user:password@staging.example.test",
@@ -490,9 +528,9 @@ def test_adversarial_battery_requires_bootstrap_key_before_any_request(
             id="cli-overrides-environment",
         ),
         pytest.param(
-            "https://api.thisisatest.tech",
+            "https://api.agentmiddleware.dev",
             ["--confirm-production"],
-            "https://api.thisisatest.tech",
+            "https://api.agentmiddleware.dev",
             id="confirmed-production",
         ),
     ],
@@ -530,3 +568,16 @@ def test_adversarial_battery_import_reads_no_target_or_key(
 
     assert module.API_URL == ""
     assert module.BOOTSTRAP_KEY is None
+
+
+def test_require_loopback_origin_rejects_remote_and_credentials() -> None:
+    from scripts.live_script_target import require_loopback_origin
+
+    assert require_loopback_origin("http://127.0.0.1:8000") == "http://127.0.0.1:8000"
+    assert require_loopback_origin("http://localhost:8000/") == "http://localhost:8000"
+    assert require_loopback_origin("http://[::1]:8000") == "http://[::1]:8000"
+    for remote in ("https://example.com", "http://example.com"):
+        with pytest.raises(LiveTargetError, match="loopback-only"):
+            require_loopback_origin(remote)
+    with pytest.raises(LiveTargetError, match="embedded credentials"):
+        require_loopback_origin("http://alice:s3cr3t@127.0.0.1:8000")

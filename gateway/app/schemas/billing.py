@@ -817,7 +817,10 @@ class APIKeyResponse(BaseModel):
     created_at: datetime
     expires_at: datetime | None = None
     max_uses: int | None = None
-    use_count: int = 0
+    use_count: int = Field(
+        default=0,
+        description="Bounded-key budget uses, not total calls. See api_key_usage_daily.",
+    )
 
 
 class APIKeyWithSecret(BaseModel):

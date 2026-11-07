@@ -70,11 +70,11 @@ def _load_retry_module() -> types.ModuleType:
             def __init__(self, *args, **kwargs):
                 raise AssertionError("network stub must not be used in tests")
 
-        def _streamablehttp_client(*args, **kwargs):  # pragma: no cover
+        def _streamable_http_client(*args, **kwargs):  # pragma: no cover
             raise AssertionError("network stub must not be used in tests")
 
         mcp.ClientSession = _ClientSession
-        stream_pkg.streamablehttp_client = _streamablehttp_client
+        stream_pkg.streamable_http_client = _streamable_http_client
         for name, mod in (
             ("mcp", mcp),
             ("mcp.client", client_pkg),

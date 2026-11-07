@@ -30,7 +30,7 @@ automatically on first run.
 ## 1. Boot the trust plane (~2 minutes)
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware/gateway
 make quickstart
 ```
@@ -53,6 +53,12 @@ Three things worth knowing about what just started:
 - **The server binds loopback only**, because self-serve key minting is
   enabled. This posture is for a machine you control; production-like
   deployments refuse to boot with these flags set.
+- **The demo flags are on here and off everywhere else.** This server
+  boots with `ENABLE_STANDARD_MCP_ENDPOINT=true` (so step 10 can use
+  `POST /mcp`) and `ENABLE_DOGFOOD_TOOL=true` (so there is one real tool
+  to call). Both default to false, and the configured upstream
+  integration (`MCP_UPSTREAM_*`) stays disabled until an operator sets
+  it, so a stock deploy answers 404 on `POST /mcp` by design.
 
 Leave the server running and do the rest **in a second terminal**, from the
 gateway directory (the same directory where you ran `make quickstart`):
@@ -237,8 +243,12 @@ curl -s -X POST "$API_URL/v1/audit/verify-chain" \
 ```
 
 `"valid": true` with a non-zero `checked_events` means the recorded history
-hash-links end to end; an edited or deleted event would surface as
-`"valid": false` with the broken link named in `broken_event_id`.
+hash-links across the span the call walked; an edited or deleted event would
+surface as `"valid": false` with the broken link named in `broken_event_id`.
+One call walks at most 1000 events. `"complete": true` means it reached the
+end of the chain; if it is `false`, repeat the call with
+`{"after_seq": <next_after_seq>, "after_event_id": <next_after_event_id>}`
+until it is `true`.
 
 ## 7. Overspend on purpose (~2 minutes)
 

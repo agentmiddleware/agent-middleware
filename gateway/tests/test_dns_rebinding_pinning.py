@@ -14,15 +14,24 @@ address to prove the validated IP is the one connected to.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 import httpx
+from fastapi import FastAPI
 
 from app.core import url_guard
+from app.core.auth import AuthContext, get_auth_context
+from app.core.config import get_settings
 from app.core.url_guard import check_outbound_url, pin_outbound_url
+from app.routers.awi_enhanced import router as awi_enhanced_router
+from app.services import awi_session
 from app.services.awi_playwright_bridge import (
     AWIPlaywrightBridge,
     BridgeSession,
+    NavigationBlocked,
 )
 from app.services.behavioral_sandbox import BehavioralSandboxEngine
 
@@ -114,6 +123,56 @@ class TestPinOutboundUrl:
         assert await check_outbound_url("https://example.com/page") is None
 
 
+class TestPrivateTargetsAllowed:
+    """``ALLOW_PRIVATE_NETWORK_TARGETS`` returns no pin; callers dial by name."""
+
+    @pytest.mark.anyio
+    async def test_pin_returns_no_address_when_private_targets_allowed(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", True)
+
+        async def resolver(_host):
+            raise AssertionError("allowed private mode must not resolve")
+
+        result = await pin_outbound_url("http://localhost:9/mock", resolver=resolver)
+        assert result == (None, None)
+
+    @pytest.mark.anyio
+    async def test_sandbox_reaches_local_mock_server_without_a_pin(
+        self, engine, monkeypatch
+    ):
+        """The unpinned path still connects: a real localhost server answers."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", True)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            result = await engine._execute_http_proxy(
+                "http_get",
+                {"url": f"http://localhost:{server.server_address[1]}/mock"},
+                False,
+                5,
+                network_access=True,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert result["success"] is True, result
+        assert result["output"]["status_code"] == 204
+
+
 class TestSandboxRebindingPinning:
     @pytest.mark.anyio
     async def test_connects_to_pinned_address_despite_rebinding(
@@ -176,6 +235,16 @@ class TestSandboxRebindingPinning:
 
 class TestBrowserNavigationRevalidation:
     @pytest.mark.anyio
+    async def test_create_session_rejects_private_preflight(self, bridge, monkeypatch):
+        async def resolve(_host):
+            return _addrinfo(_PRIVATE)
+
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        with pytest.raises(NavigationBlocked, match="private_address_blocked"):
+            await bridge.create_session("https://example.com/")
+        assert bridge._sessions == {}
+
+    @pytest.mark.anyio
     async def test_goto_refuses_after_rebinding(self, bridge, session, monkeypatch):
         resolve_calls: list = []
         _rebinding_resolve_factory(monkeypatch, resolve_calls)
@@ -222,3 +291,70 @@ class TestBrowserNavigationRevalidation:
         session._page = page
         await bridge._navigate_to(session, "https://example.com/")
         assert page.goto_calls == ["https://example.com/"]
+
+    @pytest.mark.anyio
+    async def test_create_session_fails_and_unregisters_on_blocked_navigation(
+        self, bridge, monkeypatch
+    ):
+        """A rebound target must fail create_session, not return a blank session.
+
+        The pre-flight check sees the public address; the last-moment check in
+        ``_navigate_to`` sees the rebound private one. The session used to be
+        returned (and attach_dom_bridge reported "attached") with an open
+        context on a blank page.
+        """
+        resolve_calls: list = []
+        _rebinding_resolve_factory(monkeypatch, resolve_calls)
+        page = _RecordingPage()
+        page.close = AsyncMock()
+        context = SimpleNamespace(close=AsyncMock())
+
+        async def no_playwright():
+            bridge._playwright_initialized = True
+
+        async def fake_context(session, headless, viewport):
+            session._page = page
+            session._context = context
+            session.browser_context_id = "fake-context"
+
+        monkeypatch.setattr(bridge, "_init_playwright", no_playwright)
+        monkeypatch.setattr(bridge, "_create_browser_context", fake_context)
+
+        with pytest.raises(ValueError, match="navigation blocked"):
+            await bridge.create_session("https://example.com/")
+        assert len(resolve_calls) == 2
+        assert page.goto_calls == []
+        page.close.assert_awaited_once()
+        context.close.assert_awaited_once()
+        assert bridge._sessions == {}
+
+    @pytest.mark.anyio
+    async def test_attach_reports_blocked_navigation(self, monkeypatch):
+        manager = SimpleNamespace(
+            get_session=AsyncMock(return_value=SimpleNamespace(wallet_id=None)),
+            attach_dom_bridge=AsyncMock(
+                side_effect=NavigationBlocked(
+                    "navigation blocked (private_address_blocked)"
+                )
+            ),
+        )
+        monkeypatch.setattr(awi_session, "get_awi_session_manager", lambda: manager)
+        app = FastAPI()
+        app.include_router(awi_enhanced_router)
+        app.dependency_overrides[get_auth_context] = lambda: AuthContext(
+            source="api_key", raw_key="synthetic", is_bootstrap_admin=True
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/awi/dom/attach", json={"session_id": "existing-session"}
+            )
+
+        assert response.status_code == 403
+        assert response.json()["detail"]["error"] == "navigation_blocked"
+        assert manager.get_session.await_count == 1
+        manager.attach_dom_bridge.assert_awaited_once_with(
+            session_id="existing-session", target_url=None
+        )

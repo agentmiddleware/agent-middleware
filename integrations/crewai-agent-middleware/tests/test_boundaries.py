@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
+from b2a_sdk.errors import AuthenticationError, DeliveryUncertainError
 
 from crewai_b2a import B2AClient, CrewAIB2ATool
 
@@ -85,21 +86,9 @@ def _tool(transport: httpx.MockTransport, **kwargs) -> tuple[CrewAIB2ATool, B2AC
 
 
 def _shutdown(tool: CrewAIB2ATool, client: B2AClient) -> None:
-    """Close the HTTP client on the loop that used it, then stop that loop."""
-    loop = getattr(tool, "_sync_loop", None)
-    if loop is not None and not loop.is_closed():
-        try:
-            loop.run_until_complete(client.close())
-        except RuntimeError:
-            pass
-    closer = getattr(tool, "close", None)
-    if callable(closer):
-        closer()
-        return
-    try:
-        asyncio.run(client.close())
-    except RuntimeError:
-        pass
+    """Close the sync runner and the separately borrowed client."""
+    tool.close()
+    asyncio.run(client.close())
 
 
 def test_api_key_is_not_visible_in_repr_or_dump():
@@ -143,7 +132,13 @@ def test_sync_run_calls_the_api_twice_without_a_running_loop():
             return httpx.Response(200, json=_invoke_response())
         return httpx.Response(404, json={"detail": "missing"})
 
-    tool, client = _tool(httpx.MockTransport(handler))
+    transport = httpx.MockTransport(handler)
+    tool, client = _tool(transport)
+    # Borrowed clients stay on their owner's loop; the sync path owns its client.
+    tool._sync_client = B2AClient(
+        api_key="test-key", base_url="https://middleware.test", transport=transport
+    )
+    tool.sync_client_factory = lambda: tool._sync_client
     call = {
         "operation": "call_tool",
         "tool_name": "partner.search",
@@ -328,19 +323,19 @@ async def test_delivery_uncertain_keeps_the_receipt_id():
 
     tool, client = _tool(httpx.MockTransport(handler))
     try:
-        result = await tool._arun(
-            operation="call_tool",
-            tool_name="partner.search",
-            idempotency_key="invoke-uncertain",
-            permit_idempotency_key="permit-uncertain",
-            arguments={},
-        )
+        with pytest.raises(DeliveryUncertainError) as exc_info:
+            await tool._arun(
+                operation="call_tool",
+                tool_name="partner.search",
+                idempotency_key="invoke-uncertain",
+                permit_idempotency_key="permit-uncertain",
+                arguments={},
+            )
     finally:
         await client.close()
 
-    assert result.startswith("Error:")
-    assert "delivery_uncertain" in result
-    assert "receipt-delivery_uncertain" in result
+    assert str(exc_info.value) == "delivery_uncertain"
+    assert exc_info.value.receipt_id == "receipt-delivery_uncertain"
 
 
 @pytest.mark.asyncio
@@ -361,13 +356,14 @@ async def test_auth_failure_does_not_invoke_or_stick():
 
     tool, client = _tool(httpx.MockTransport(handler))
     try:
-        denied = await tool._arun(
-            operation="call_tool",
-            tool_name="partner.search",
-            idempotency_key="invoke-auth",
-            permit_idempotency_key="permit-auth",
-            arguments={},
-        )
+        with pytest.raises(AuthenticationError, match="invalid api key"):
+            await tool._arun(
+                operation="call_tool",
+                tool_name="partner.search",
+                idempotency_key="invoke-auth",
+                permit_idempotency_key="permit-auth",
+                arguments={},
+            )
         retried = await tool._arun(
             operation="call_tool",
             tool_name="partner.search",
@@ -378,7 +374,6 @@ async def test_auth_failure_does_not_invoke_or_stick():
     finally:
         await client.close()
 
-    assert denied == "Error: invalid api key"
     assert invokes["n"] == 1
     assert permits["n"] == 2
     assert "receipt-success" in retried
@@ -458,7 +453,10 @@ async def test_balance_and_discovery_use_this_tools_identity(monkeypatch):
 
     class _CaptureClient(real_client):
         def __init__(
-            self, api_key: str, base_url: str = "https://api.thisisatest.tech", **kwargs
+            self,
+            api_key: str,
+            base_url: str = "https://api.agentmiddleware.dev",
+            **kwargs,
         ):
             captured["constructed_key"] = api_key
             captured["constructed_url"] = base_url
@@ -680,3 +678,8 @@ async def test_copied_tool_does_not_spend_the_original_permit_on_another_wallet(
         "permit_idempotency_key reused" in moved
         or ("wallet-2", "permit-wallet-2") in invokes
     )
+
+
+def test_base_url_defaults_to_the_production_api():
+    tool = CrewAIB2ATool(api_key="tenant-a-key", wallet_id="wallet-1")
+    assert tool.base_url == "https://api.agentmiddleware.dev"

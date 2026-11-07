@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -122,6 +122,17 @@ class IdempotencyConflictError(RuntimeError):
 
 class IdempotencyInProgressError(RuntimeError):
     """Raised when an idempotency key is already executing without a result."""
+
+
+class IdempotencyFenceLostError(IdempotencyInProgressError):
+    """The fencing record named by ``fence`` is gone or now belongs to another
+    holder, so the new record was not written. Callers treat it as in progress:
+    the current holder owns the work."""
+
+
+# (endpoint, idempotency_key, record_id) of a lock row the writer must still
+# own, in the same wallet, for a new record to be inserted.
+IdempotencyFence = tuple[str, str, str]
 
 
 class IdempotencyCreationDisabledError(RuntimeError):
@@ -488,7 +499,20 @@ class IdempotencyService:
         wait_timeout_seconds: float = 0.0,
         poll_interval_seconds: float = 0.05,
         allow_new_record: bool = True,
+        fence: IdempotencyFence | None = None,
     ) -> IdempotencyBegin:
+        """Claim (or replay) one idempotency record.
+
+        ``fence`` makes creating a NEW record conditional on the caller still
+        owning a lock row: inside the same transaction as the insert, the
+        fence row is claimed with a conditional no-op ``UPDATE`` that matches
+        only our open lock row (rowcount 1). The write takes the PostgreSQL
+        row lock and the SQLite database write lock until commit, so a
+        concurrent stale-lock takeover cannot delete it in between on either
+        backend; SQLite ignores ``FOR UPDATE``, so it is not relied on. A missing or
+        re-issued fence row raises :class:`IdempotencyFenceLostError` and
+        nothing is written. Replaying an existing record is not fenced.
+        """
         if wait_timeout_seconds < 0 or poll_interval_seconds <= 0:
             raise ValueError("idempotency_wait_invalid")
         request_hash = sha256_hex(request_payload)
@@ -524,6 +548,41 @@ class IdempotencyService:
 
             if not allow_new_record:
                 raise IdempotencyCreationDisabledError("idempotency_creation_disabled")
+
+            if fence is not None:
+                fence_endpoint, fence_key, fence_record_id = fence
+                # Claim the fence with a conditional write, not SELECT ...
+                # FOR UPDATE (SQLite ignores FOR UPDATE). The no-op UPDATE
+                # matches only while our lock row is still ours and open; it
+                # takes the PostgreSQL row lock and the SQLite write lock in
+                # this transaction, so a stale-lock takeover (DELETE) cannot
+                # land before this insert commits. rowcount 0 => lost.
+                try:
+                    claimed = await session.execute(
+                        update(IdempotencyRecordModel)
+                        .where(
+                            *_idempotency_predicates(
+                                wallet_id, fence_endpoint, fence_key
+                            ),
+                            col(IdempotencyRecordModel.record_id) == fence_record_id,
+                            col(IdempotencyRecordModel.response_json).is_(None),
+                        )
+                        .values(request_hash=IdempotencyRecordModel.request_hash)
+                        .execution_options(synchronize_session=False)
+                    )
+                except OperationalError as exc:
+                    # SQLite lock timeout while another writer (e.g. a
+                    # takeover) holds the database: the current holder owns
+                    # the work, so this is retryable in-progress, not a 500.
+                    if "database is locked" not in str(exc):
+                        raise
+                    await session.rollback()
+                    raise IdempotencyInProgressError(
+                        "idempotency_in_progress"
+                    ) from None
+                if cast(Any, claimed).rowcount != 1:
+                    await session.rollback()
+                    raise IdempotencyFenceLostError("idempotency_in_progress")
 
             record = IdempotencyRecordModel(
                 record_id=f"idm-{uuid.uuid4().hex[:16]}",
@@ -620,6 +679,7 @@ class IdempotencyService:
         request_payload: dict[str, Any],
         allow_new_record: bool = True,
         compatible_request_payload: dict[str, Any] | None = None,
+        fence: IdempotencyFence | None = None,
     ) -> IdempotencyReplay | None:
         """Replay an explicitly supplied historical shape without writing that shape."""
         begun = await self.begin_with_compatible_record(
@@ -629,6 +689,7 @@ class IdempotencyService:
             request_payload=request_payload,
             allow_new_record=allow_new_record,
             compatible_request_payload=compatible_request_payload,
+            fence=fence,
         )
         return begun.replay
 
@@ -641,6 +702,7 @@ class IdempotencyService:
         request_payload: dict[str, Any],
         allow_new_record: bool = True,
         compatible_request_payload: dict[str, Any] | None = None,
+        fence: IdempotencyFence | None = None,
     ) -> IdempotencyBegin:
         """Keep the granted identity while permitting historical-shape replay."""
         try:
@@ -650,6 +712,7 @@ class IdempotencyService:
                 idempotency_key=idempotency_key,
                 request_payload=request_payload,
                 allow_new_record=allow_new_record,
+                fence=fence,
             )
         except IdempotencyConflictError as conflict:
             if compatible_request_payload is None:

@@ -44,12 +44,25 @@ The extra pins `mcp` below 2.x, which renamed the class the server imports:
 python -m pip install -e './sdk/python[mcp]'
 ```
 
+`mcp serve` sends each tool call through the gateway's standard `POST /mcp`
+`tools/call` flow. Authenticate with a wallet-scoped `B2A_API_KEY`; the gateway
+mints a bounded permit for the call. The tool does not accept `permit_id`.
+Supply `io.agentmiddleware/idempotency_key` in the request `_meta` using a
+stable logical call ID, such as the LLM `tool_call.id`. The bridge forwards it
+verbatim as `Idempotency-Key` and refuses keys that are not printable ASCII or
+have leading or trailing whitespace.
+A retry with the same idempotency key must return the original receipt instead
+of dispatching again. The gateway also reuses the original permit for that
+key. Calls without a caller key get a new permit and cannot be safely retried
+as the same logical call. Action-bound tools that require trusted issuance
+return `action_permit_required` on this flow.
+
 ### Historical release
 
 Version `0.4.0` was released under
-[`python-sdk-v0.4.0`](https://github.com/PetrefiedThunder/agent-middleware/releases/tag/python-sdk-v0.4.0)
+[`python-sdk-v0.4.0`](https://github.com/agentmiddleware/agent-middleware-api/releases/tag/python-sdk-v0.4.0)
 with the
-[`b2a_sdk-0.4.0-py3-none-any.whl`](https://github.com/PetrefiedThunder/agent-middleware/releases/download/python-sdk-v0.4.0/b2a_sdk-0.4.0-py3-none-any.whl)
+[`b2a_sdk-0.4.0-py3-none-any.whl`](https://github.com/agentmiddleware/agent-middleware-api/releases/download/python-sdk-v0.4.0/b2a_sdk-0.4.0-py3-none-any.whl)
 wheel.
 
 The linked 0.4.0 wheel predates the `amw` import and CLI. Install this checkout
@@ -111,6 +124,9 @@ result as `receipt.request_key` and `client.last_request_key`. The client sets
 `last_request_key` before dispatch. Keep the key because
 a retry with the same key returns the original receipt instead of dispatching again.
 The request key is client metadata and is not a field in the signed receipt JSON.
+For distinct LLM tool calls, pass each stable `tool_call.id` as `key`; the
+argument-derived default can give separate calls with identical arguments
+the same key.
 
 ## Governed tool call
 
@@ -163,12 +179,14 @@ Callers must provide nonblank idempotency keys when creating permits and
 invoking tools. Reusing a key with a different request raises
 `IdempotencyConflictError`.
 
-For governed tool calls, `request_key(tool, args, business_id=...)` makes a
-stable key from strict JSON arguments. `request_key.explain(...)` shows which
-argument fields were used or dropped. Pass the result as `idempotency_key`,
-or use `idempotency_key="auto"` with `business_id` on `invoke_tool`. See the
-[request keys guide](../../gateway/docs/concepts/request-keys.md) for the
-derivation rule and retry limits.
+For governed LLM tool calls, the caller or orchestrator should pass a stable
+logical operation ID, such as `tool_call.id`, as `idempotency_key`. Keep that
+ID and the full request unchanged for retries. `request_key(...)` and
+`idempotency_key="auto"` derive keys from arguments;
+use them only when those inputs uniquely identify one intended action.
+`request_key.explain(...)` shows which fields the helper uses or drops. See
+the [request keys guide](../../gateway/docs/concepts/request-keys.md) for
+gateway retry behavior and error shapes.
 
 The client defaults to `http://localhost:8000`, never a hosted server.
 Pass `base_url` explicitly for any other deployment.
@@ -300,8 +318,8 @@ Legacy `charge()` and `@billable` calls made without an idempotency key are
 not replay-safe: retrying one whose response was lost bills the wallet again.
 Unkeyed `charge()` calls now emit a `UserWarning` to say so.
 Pass `charge(..., idempotency_key="...")`, or give `@billable` /
-`@combined` an `idempotency_key_factory` that derives the same key from the
-call's arguments on every retry, and the server replays the original charge
+`@combined` an `idempotency_key_factory` that returns the same caller-owned
+operation key on every retry, and the server replays the original charge
 instead of debiting twice. A key reused for a different charge raises
 `IdempotencyConflictError`.
 

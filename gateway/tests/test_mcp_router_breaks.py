@@ -212,7 +212,13 @@ async def test_tool_call_without_session_does_not_skip_auth_or_crash(
 
     forged = await client.post(
         "/mcp",
-        json={**call, "id": 8},
+        # Distinct arguments: an identical un-keyed call would replay the
+        # first receipt under the derived retry key (SEL-484).
+        json={
+            **call,
+            "id": 8,
+            "params": {"name": TOOL, "arguments": {"text": "run-2"}},
+        },
         headers={**wallet_headers, "Mcp-Session-Id": "forged-session"},
     )
     assert forged.status_code < 500, forged.text
@@ -220,7 +226,7 @@ async def test_tool_call_without_session_does_not_skip_auth_or_crash(
         forged.json()["result"]["receipt"]["wallet_id"]
         == (provisioned["agent_wallet_id"])
     )
-    assert effect_tool == [{"text": "run"}, {"text": "run"}]
+    assert effect_tool == [{"text": "run"}, {"text": "run-2"}]
 
     for bad_id in (None, True, [], {}):
         body: dict[str, Any] = {
@@ -232,7 +238,7 @@ async def test_tool_call_without_session_does_not_skip_auth_or_crash(
             body["id"] = bad_id
         refused = await client.post("/mcp", json=body, headers=wallet_headers)
         assert refused.status_code < 500, refused.text
-    assert effect_tool == [{"text": "run"}, {"text": "run"}]
+    assert effect_tool == [{"text": "run"}, {"text": "run-2"}]
 
 
 @pytest.mark.anyio

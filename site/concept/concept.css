@@ -1,0 +1,7 @@
+/* Archived particle-wave study. The shared stylesheet owns the palette,
+   typography, hero, navigation, buttons, footer, and accessibility controls.
+   Keep only the study's content measure here to avoid visual drift. */
+
+.concept-sub {
+  max-width: 46ch;
+}

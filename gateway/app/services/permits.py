@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 from sqlalchemy import case, func, or_, select, update as sa_update
@@ -36,7 +36,35 @@ from app.services.ownership import (
     require_permit_issuer,
     require_permit_party,
 )
-from app.services.signing_keys import get_signing_key_service, sha256_hex
+from app.services.wallet_hierarchy import wallet_strictly_governs
+import hashlib
+
+from app.services.jcs import CanonicalizationError
+from app.services.signing_keys import (
+    get_signing_key_service,
+    legacy_canonical_json,
+    sha256_hex,
+)
+
+if TYPE_CHECKING:
+    from app.services.mcp_dispatch_reconciliation import UpstreamDispatchStatusLookup
+
+
+def register_permit_upstream_status_lookup(
+    upstream_origin: str, lookup: UpstreamDispatchStatusLookup
+) -> None:
+    """Register a read-only async action-permit lookup in the MCP registry.
+
+    The origin must exactly match the stored dispatch origin. Action-permit
+    attempts must match on invocation_id: forwarded_idempotency_key is None.
+    Delegated registration validates async callables and replaces prior lookups.
+    This helper does not reconcile budgets or write or update receipts.
+    """
+    # Local import avoids the reconciliation service's PermitService import cycle.
+    from app.services.mcp_dispatch_reconciliation import register_upstream_status_lookup
+
+    register_upstream_status_lookup(upstream_origin, lookup)
+
 
 logger = logging.getLogger(__name__)
 
@@ -521,9 +549,13 @@ class PermitService:
         # Sign the same dict verify reconstructs. Building it twice let a
         # field added on one path only keep verifying in tests that never
         # round-tripped a freshly minted permit.
-        signature, key_id, _ = await get_signing_key_service().sign_payload(
-            self._unsigned_payload(model)
-        )
+        try:
+            signature, key_id, _ = await get_signing_key_service().sign_payload(
+                self._unsigned_payload(model)
+            )
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            # New signatures are JCS-only; non-I-JSON values must not 500.
+            raise PermitError("permit_canonicalization_invalid") from exc
         model.signature = signature
         model.key_id = key_id
         async with factory() as session:
@@ -533,9 +565,17 @@ class PermitService:
         return permit_model_to_response(model)
 
     async def revoke_permit(
-        self, permit_id: str, *, caller: CallerIdentity
+        self,
+        permit_id: str,
+        *,
+        caller: CallerIdentity,
+        allow_ancestor: bool = False,
     ) -> PermitResponse:
         """Revoke an active permit.
+
+        The issuer wallet may revoke. With ``allow_ancestor`` (set only by the
+        revoke route), a strict ancestor of the issuer wallet may too; the
+        hierarchy is re-checked here so the service does not trust the route.
 
         The write matches only ``status = 'active'``. A repeat call, or a call
         against a permit that is already expired or exhausted, returns the
@@ -546,11 +586,22 @@ class PermitService:
             owner = await session.get(PermitModel, permit_id)
             if owner is None:
                 raise PermitError("permit_not_found")
-            require_permit_issuer(
-                caller,
-                issuer_wallet_id=owner.issuer_wallet_id,
-                error=PermitAccessDeniedError,
-            )
+            try:
+                require_permit_issuer(
+                    caller,
+                    issuer_wallet_id=owner.issuer_wallet_id,
+                    error=PermitAccessDeniedError,
+                )
+            except PermitAccessDeniedError:
+                if not (
+                    allow_ancestor
+                    and caller.wallet_id is not None
+                    and owner.issuer_wallet_id is not None
+                    and await wallet_strictly_governs(
+                        session, caller.wallet_id, owner.issuer_wallet_id
+                    )
+                ):
+                    raise
             # Guarded write, same shape as the budget reservation: a second
             # caller cannot overwrite revoked_at after the status has left
             # active, including when the two calls overlap.
@@ -952,6 +1003,18 @@ class PermitService:
         # reported as allowed and later subtracted from spent_credits.
         if not _storable_reservation_amount(estimated_credits):
             return PermitValidation(False, "permit_credits_invalid", model)
+        # Verify the signature before reading any permit content. Every check
+        # below reads permit fields (status, binding, allowed_tools, scopes,
+        # budgets) and some echo them back in denial details, so a forged or
+        # tampered row must be rejected before any of it is trusted or
+        # disclosed.
+        if not await self.verify_signature(model, session=session):
+            return PermitValidation(
+                False,
+                "permit_signature_invalid",
+                model,
+                {"key_id": model.key_id},
+            )
         now = utc_now()
         if model.status != "active":
             return PermitValidation(
@@ -1109,13 +1172,6 @@ class PermitService:
                     {"field": hit, "forbidden_fields": forbidden},
                 )
 
-        if not await self.verify_signature(model, session=session):
-            return PermitValidation(
-                False,
-                "permit_signature_invalid",
-                model,
-                {"key_id": model.key_id},
-            )
         return PermitValidation(True, None, model)
 
     @staticmethod
@@ -2239,7 +2295,15 @@ class PermitService:
         payload = dict(PermitService._unsigned_payload(model))
         payload["alg"] = "Ed25519"
         payload["kid"] = model.key_id
-        payload["payload_hash"] = sha256_hex(payload)
+        # Same soft embed as receipts: JCS-rejected historical fields must not
+        # abort rebuild before legacy verify candidates run.
+        try:
+            payload["payload_hash"] = sha256_hex(payload)
+        except (CanonicalizationError, TypeError, ValueError):
+            body = {k: v for k, v in payload.items() if k != "payload_hash"}
+            payload["payload_hash"] = hashlib.sha256(
+                legacy_canonical_json(body).encode("utf-8")
+            ).hexdigest()
         return payload
 
     async def verify_signature(
@@ -2248,7 +2312,13 @@ class PermitService:
         *,
         session: AsyncSession | None = None,
     ) -> bool:
-        payload = self._verification_payload(model)
+        # A row whose signed fields cannot even be rebuilt (for example a
+        # partial action contract) cannot carry a valid signature. Fail
+        # closed instead of raising, now that this runs before other checks.
+        try:
+            payload = self._verification_payload(model)
+        except ValueError:
+            return False
         return await get_signing_key_service().verify_payload(
             payload,
             signature=model.signature,

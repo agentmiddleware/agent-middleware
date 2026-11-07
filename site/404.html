@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Page not found | Agent Middleware API</title>
+    <meta name="description" content="That page does not exist on this site." />
+    <meta name="robots" content="noindex, follow" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/fonts.css?v=@@FONTS_CSS_VERSION@@" />
+    <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
+    <script src="/a11y-preload.js?v=gateway-19"></script>
+    @@VERCEL_ANALYTICS_SCRIPTS@@
+    <script defer src="/analytics.js?v=gateway-19"></script>
+    <script defer src="/utm-capture.js?v=utm-1"></script>
+    <script defer src="/a11y.js?v=gateway-19"></script>
+  </head>
+  <body class="site-light">
+    <a class="skip-link" href="#main">Skip to content</a>
+    @@SITE_NAV@@
+
+    <main id="main">
+      <section class="section" aria-labelledby="notfound-title">
+        <p class="section-kicker">404 / Not found</p>
+        <h1 id="notfound-title">That page is not here.</h1>
+        <p>
+          The URL you asked for does not exist on this site. Nothing was
+          denied and nothing failed.
+        </p>
+        <div class="machine-links">
+          <a href="/"><span>Overview</span><code>/</code></a>
+          <a href="/proof/"
+            ><span>Receipt proof and offline verifier</span><code>/proof/</code></a
+          >
+          <a href="/#quickstart"
+            ><span>Quickstart</span><code>/#quickstart</code></a
+          >
+          <a href="/llms.txt"
+            ><span>Agent instructions</span><code>/llms.txt</code></a
+          >
+        </div>
+      </section>
+    </main>
+
+    @@SITE_FOOTER@@
+  </body>
+</html>

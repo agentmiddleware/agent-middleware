@@ -5,15 +5,23 @@ Handles API key creation, rotation, and revocation for compromised wallets.
 Supports automatic rotation on suspicious activity detection.
 
 Architecture:
-1. Keys are stored hashed (SHA-256) in the database
+1. Keys are stored as salted scrypt hashes keyed by a server pepper
+   (API_KEY_HASH_PEPPER) and found by a non-secret indexed lookup id; there
+   is no unkeyed fallback (see docs/api-key-hashing.md)
 2. Only the key prefix and masked key are ever shown
 3. Rotation creates new key and optionally revokes old ones
 4. Emergency revocation immediately invalidates all keys
 """
 
+import asyncio
+import base64
 import hashlib
 import hmac
 import json
+import threading
+import time
+from collections import OrderedDict
+import os
 import secrets
 import logging
 from datetime import datetime, timedelta
@@ -24,7 +32,10 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
+from ..core import product_analytics
+from ..core.config import get_settings
 from ..core.time import to_naive_utc, utc_now
+from ..core.trust_mode import is_production_like_environment
 from ..db.database import get_session_factory
 from ..db.models import (
     APIKeyModel,
@@ -39,8 +50,18 @@ from ..schemas.billing import (
 
 logger = logging.getLogger(__name__)
 
+# Wallets nest via parent_wallet_id (sponsor -> agent -> child agent); the
+# root walk is capped so a corrupt cycle cannot loop forever.
+# Bound on parent_wallet_id hops when resolving an account root. Shared with
+# migration 055's backfill (055_wallet_product_activation.MAX_WALLET_DEPTH).
+_MAX_WALLET_DEPTH = 64
+
 API_KEY_LENGTH = 32
 API_KEY_PREFIX_LENGTH = 8
+# Non-secret lookup id: "b2a_" plus 12 random characters (72 bits) of the key.
+# The remaining ~31 characters (~184 bits) stay secret. Stored and indexed so
+# a slow, salted hash can be verified against a single row.
+API_KEY_LOOKUP_LENGTH = 16
 
 
 def _demo_attribution_field(
@@ -92,6 +113,205 @@ class InvalidRotationRequestError(APIKeyError):
     pass
 
 
+API_KEY_HASH_PEPPER_ENV = "API_KEY_HASH_PEPPER"
+
+
+class APIKeyHashingUnavailable(RuntimeError):
+    """Raised when a production-like environment has no API-key pepper."""
+
+
+# Fixed, PUBLIC pepper used only when ENVIRONMENT is local-compatible and no
+# pepper is configured, so local dev and tests need no secret. It is never
+# used in production-like environments, which require API_KEY_HASH_PEPPER.
+DEV_API_KEY_HASH_PEPPER = b"amw-local-dev-api-key-pepper-not-a-secret"
+
+
+def _configured_pepper() -> bytes | None:
+    """The server pepper: process env first, then Settings (``.env``).
+
+    An explicitly empty environment value masks dotenv and cached Settings;
+    production then fails closed instead of reviving a stale pepper.
+    Settings holds it as a SecretStr so it is masked in any settings dump.
+    It is never logged.
+    """
+    value = (
+        os.environ[API_KEY_HASH_PEPPER_ENV]
+        if API_KEY_HASH_PEPPER_ENV in os.environ
+        else get_settings().API_KEY_HASH_PEPPER.get_secret_value()
+    ).strip()
+    return value.encode("utf-8") if value else None
+
+
+def _dev_pepper_allowed() -> bool:
+    return not is_production_like_environment(get_settings().ENVIRONMENT)
+
+
+def _api_key_hash_pepper() -> bytes | None:
+    """Pepper to use, or None when a production-like env has none (fail closed)."""
+    pepper = _configured_pepper()
+    if pepper is not None:
+        return pepper
+    if _dev_pepper_allowed():
+        return DEV_API_KEY_HASH_PEPPER
+    return None
+
+
+def api_key_hashing_configured() -> bool:
+    return _api_key_hash_pepper() is not None
+
+
+def validate_api_key_hashing_config() -> None:
+    """Startup guard: production-like environments refuse to boot unpeppered."""
+    if not api_key_hashing_configured():
+        raise APIKeyHashingUnavailable(
+            f"{API_KEY_HASH_PEPPER_ENV} must be set in production-like "
+            "environments. See docs/api-key-hashing.md."
+        )
+
+
+# scrypt cost: N=2**14, r=8, p=1 (16 MiB, the RFC 7914 interactive setting).
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_DKLEN = 32
+_SCRYPT_MAXMEM = 64 * 1024 * 1024
+_SALT_BYTES = 16
+_HASH_SCHEME = "scrypt"
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _unb64(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _scrypt(
+    pepper: bytes, salt: bytes, presented_key: str, n: int, r: int, p: int
+) -> bytes:
+    # The pepper is part of the salt, so a database dump alone cannot be
+    # attacked offline; the per-row random salt makes every hash unique.
+    return hashlib.scrypt(
+        presented_key.encode("utf-8"),
+        salt=pepper + salt,
+        n=n,
+        r=r,
+        p=p,
+        maxmem=_SCRYPT_MAXMEM,
+        dklen=_SCRYPT_DKLEN,
+    )
+
+
+def _encode_hash(salt: bytes, derived: bytes) -> str:
+    return f"{_HASH_SCHEME}${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}${_b64(salt)}${_b64(derived)}"
+
+
+def _verify_hash(pepper: bytes, stored: str, presented_key: str) -> bool:
+    """Constant-time check of ``presented_key`` against a stored scrypt hash."""
+    try:
+        scheme, n, r, p, salt_text, derived_text = stored.split("$")
+        if scheme != _HASH_SCHEME:
+            return False
+        salt, expected = _unb64(salt_text), _unb64(derived_text)
+        derived = _scrypt(pepper, salt, presented_key, int(n), int(r), int(p))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(derived, expected)
+
+
+def api_key_lookup_id(full_key: str) -> str:
+    """Non-secret, indexed lookup id for ``full_key`` (its first 16 chars)."""
+    return full_key[:API_KEY_LOOKUP_LENGTH]
+
+
+def hash_api_key(full_key: str) -> str:
+    """Salted, peppered scrypt hash of ``full_key`` in PHC-like text form.
+
+    Production-like environments without a pepper fail closed.
+    """
+    pepper = _api_key_hash_pepper()
+    if pepper is None:
+        raise APIKeyHashingUnavailable(
+            f"{API_KEY_HASH_PEPPER_ENV} is not set; refusing to hash API keys."
+        )
+    salt = secrets.token_bytes(_SALT_BYTES)
+    return _encode_hash(
+        salt, _scrypt(pepper, salt, full_key, _SCRYPT_N, _SCRYPT_R, _SCRYPT_P)
+    )
+
+
+class _VerifiedKeyCache:
+    """Bounded TTL cache of recent successful scrypt verifications.
+
+    Entries are keyed by the stored row hash (already non-reversible) and hold
+    a cheap verifier of the presented key: scrypt at minimal cost salted with
+    a per-process random secret that is never persisted or logged. A hit
+    still requires the presented key to match that verifier and the same
+    pepper to be in use, and the row is still read from the database on every
+    request, so revocation, expiry and use limits apply immediately. Only the
+    expensive KDF is skipped.
+    """
+
+    def __init__(self, max_entries: int = 4096, ttl_seconds: float = 60.0) -> None:
+        self._max = max_entries
+        self._ttl = ttl_seconds
+        self._secret = secrets.token_bytes(32)
+        self._entries: OrderedDict[str, tuple[float, bytes, bytes]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _fast(self, presented_key: str) -> bytes:
+        return hashlib.scrypt(
+            presented_key.encode("utf-8"), salt=self._secret, n=2, r=1, p=1, dklen=32
+        )
+
+    def hit(self, stored_hash: str, pepper: bytes, presented_key: str) -> bool:
+        with self._lock:
+            entry = self._entries.get(stored_hash)
+            if entry is None:
+                return False
+            expires, cached_pepper, verifier = entry
+            if expires < time.monotonic():
+                del self._entries[stored_hash]
+                return False
+        return hmac.compare_digest(cached_pepper, pepper) and hmac.compare_digest(
+            verifier, self._fast(presented_key)
+        )
+
+    def remember(self, stored_hash: str, pepper: bytes, presented_key: str) -> None:
+        verifier = self._fast(presented_key)
+        with self._lock:
+            self._entries[stored_hash] = (
+                time.monotonic() + self._ttl,
+                pepper,
+                verifier,
+            )
+            self._entries.move_to_end(stored_hash)
+            while len(self._entries) > self._max:
+                self._entries.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+_verified_keys = _VerifiedKeyCache()
+
+
+def clear_verified_key_cache() -> None:
+    _verified_keys.clear()
+
+
+async def _verify_presented_key(pepper: bytes, stored: str, presented_key: str) -> bool:
+    if _verified_keys.hit(stored, pepper, presented_key):
+        return True
+    # hashlib.scrypt releases the GIL; keep the event loop free while it runs.
+    ok = await asyncio.to_thread(_verify_hash, pepper, stored, presented_key)
+    if ok:
+        _verified_keys.remember(stored, pepper, presented_key)
+    return ok
+
+
 def generate_api_key() -> tuple[str, str, str]:
     """
     Generate a new API key.
@@ -100,7 +320,7 @@ def generate_api_key() -> tuple[str, str, str]:
         tuple: (full_key, key_hash, key_prefix)
     """
     full_key = f"b2a_{secrets.token_urlsafe(API_KEY_LENGTH)}"
-    key_hash = hashlib.sha256(full_key.encode()).hexdigest()
+    key_hash = hash_api_key(full_key)
     key_prefix = full_key[:API_KEY_PREFIX_LENGTH]
     return full_key, key_hash, key_prefix
 
@@ -202,7 +422,7 @@ class APIKeyService:
                 if wallet.tenant:
                     tenant = wallet.tenant
 
-        full_key, key_hash, key_prefix = generate_api_key()
+        full_key, key_hash, key_prefix = await asyncio.to_thread(generate_api_key)
         key_id = f"key_{uuid4().hex[:12]}"
         now = utc_now()
         expires_at = None
@@ -214,6 +434,7 @@ class APIKeyService:
             key_id=key_id,
             wallet_id=wallet_id,
             key_hash=key_hash,
+            key_lookup=api_key_lookup_id(full_key),
             key_prefix=key_prefix,
             status=APIKeyStatus.ACTIVE.value,
             metadata_json=json.dumps({"name": key_name}),
@@ -452,28 +673,36 @@ class APIKeyService:
             return None
 
         key_prefix = api_key[:API_KEY_PREFIX_LENGTH]
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        pepper = _api_key_hash_pepper()
+        if pepper is None:
+            # Fail closed: a production-like process without a pepper
+            # authenticates nothing (startup also refuses to boot).
+            logger.error("API key hashing is not configured; rejecting key")
+            return None
+        if len(api_key) <= API_KEY_LOOKUP_LENGTH:
+            return None
+        lookup_id = api_key_lookup_id(api_key)
 
         async with self._session_factory()() as session:
-            # Look up by the indexed full digest, not the prefix alone: the
-            # prefix is "b2a_" plus four random characters and is not unique,
-            # so two live keys sharing it are expected at a few thousand keys
-            # (and can be ground out deliberately by any caller able to mint
-            # keys). A prefix-only lookup then returned several rows and
-            # failed every request for both keys with a 500.
+            # A slow salted hash cannot be searched, so find candidate rows by
+            # the indexed, non-secret lookup id and verify each with scrypt.
+            # The id carries 72 random bits, so more than one live row is
+            # practically impossible; checking all candidates keeps a
+            # collision from turning into a 500.
             result = await session.execute(
                 select(APIKeyModel).where(
-                    col(APIKeyModel.key_hash) == key_hash,
+                    col(APIKeyModel.key_lookup) == lookup_id,
                     col(APIKeyModel.key_prefix) == key_prefix,
                     col(APIKeyModel.status) == APIKeyStatus.ACTIVE.value,
                 )
             )
-            key = result.scalar_one_or_none()
+            key = None
+            for candidate in result.scalars().all():
+                if await _verify_presented_key(pepper, candidate.key_hash, api_key):
+                    key = candidate
+                    break
 
             if not key:
-                return None
-
-            if not hmac.compare_digest(key.key_hash, key_hash):
                 return None
 
             if not consume:
@@ -483,6 +712,15 @@ class APIKeyService:
             expires_at = key.expires_at
             if expires_at and expires_at < now:
                 return None
+
+            # Detect a first use from the pre-read; first_used_at itself is
+            # still set by the single guarded update below (one commit).
+            unused_at_read = key.first_used_at is None
+            first_use_values: dict[str, Any] = {
+                "first_used_at": func.coalesce(
+                    APIKeyModel.first_used_at, to_naive_utc(now)
+                )
+            }
 
             if key.max_uses is not None:
                 # Guarded increment: the WHERE clause makes concurrent
@@ -507,9 +745,7 @@ class APIKeyService:
                     .values(
                         use_count=APIKeyModel.use_count + 1,
                         last_used_at=to_naive_utc(now),
-                        first_used_at=func.coalesce(
-                            APIKeyModel.first_used_at, to_naive_utc(now)
-                        ),
+                        **first_use_values,
                     )
                     .execution_options(synchronize_session=False)
                 )
@@ -529,9 +765,7 @@ class APIKeyService:
                     )
                     .values(
                         last_used_at=to_naive_utc(now),
-                        first_used_at=func.coalesce(
-                            APIKeyModel.first_used_at, to_naive_utc(now)
-                        ),
+                        **first_use_values,
                     )
                     .execution_options(synchronize_session=False)
                 )
@@ -539,7 +773,75 @@ class APIKeyService:
                 if (cast(Any, used).rowcount or 0) == 0:
                     return None
 
+            if unused_at_read:
+                await self._claim_account_activation(session, key)
+
         return key
+
+    async def _claim_account_activation(
+        self, session: AsyncSession, key: APIKeyModel
+    ) -> None:
+        """Claim the account's activation once and fire ``activation``.
+
+        The account is the root wallet, found by walking ``parent_wallet_id``.
+        The claim is a conditional UPDATE on
+        ``wallets.product_activated_at IS NULL``, so concurrent first uses of
+        the same key or of different keys on one account win it exactly once.
+        This runs only on a key's first use. Never raises: activation must not
+        affect authentication.
+        """
+        try:
+            root_id = await self._root_wallet_id(session, key.wallet_id)
+            if root_id is None:
+                logger.debug("product_activation_root_unresolved")
+                return
+            claimed = await session.execute(
+                update(WalletModel)
+                .where(
+                    col(WalletModel.wallet_id) == root_id,
+                    col(WalletModel.product_activated_at).is_(None),
+                )
+                .values(product_activated_at=to_naive_utc(utc_now()))
+                .execution_options(synchronize_session=False)
+            )
+            await session.commit()
+            if (cast(Any, claimed).rowcount or 0) == 1:
+                product_analytics.track_activation(
+                    root_id, key_id=key.key_id, wallet_id=key.wallet_id
+                )
+        except Exception as exc:  # noqa: BLE001 - must never fail auth
+            await session.rollback()
+            logger.debug("product_activation_claim_failed error=%s", type(exc).__name__)
+
+    @staticmethod
+    async def _root_wallet_id(session: AsyncSession, wallet_id: str) -> str | None:
+        """Walk parent_wallet_id to the root, or None if it cannot be proven.
+
+        Returns None (and the caller skips the claim) when the chain is deeper
+        than ``_MAX_WALLET_DEPTH``, contains a cycle, or reaches a row this
+        session cannot read (missing, or hidden by a child-scoped RLS policy).
+        Never returns an intermediate wallet as the account.
+        """
+        current = wallet_id
+        seen = {current}
+        for _ in range(_MAX_WALLET_DEPTH + 1):
+            row = (
+                await session.execute(
+                    select(col(WalletModel.parent_wallet_id)).where(
+                        col(WalletModel.wallet_id) == current
+                    )
+                )
+            ).first()
+            if row is None:
+                return None
+            parent = row[0]
+            if not parent:
+                return current
+            if parent in seen:
+                return None
+            seen.add(parent)
+            current = parent
+        return None
 
     async def rotate_key(
         self,
@@ -662,7 +964,7 @@ class APIKeyService:
                     except json.JSONDecodeError:
                         pass
 
-            full_key, key_hash, key_prefix = generate_api_key()
+            full_key, key_hash, key_prefix = await asyncio.to_thread(generate_api_key)
             new_key_id = f"key_{uuid4().hex[:12]}"
             new_key_prefix = key_prefix
 
@@ -670,6 +972,7 @@ class APIKeyService:
                 key_id=new_key_id,
                 wallet_id=wallet_id,
                 key_hash=key_hash,
+                key_lookup=api_key_lookup_id(full_key),
                 key_prefix=new_key_prefix,
                 status=APIKeyStatus.ACTIVE.value,
                 expires_at=inherited_expires_at,
@@ -948,12 +1251,15 @@ class APIKeyService:
                     emergency_allowed_tools_json = donor.allowed_tools_json
                     emergency_tenant = wallet.tenant or donor.tenant
 
-                full_key, key_hash, key_prefix = generate_api_key()
+                full_key, key_hash, key_prefix = await asyncio.to_thread(
+                    generate_api_key
+                )
                 new_key_id = f"key_{uuid4().hex[:12]}"
                 emergency_key = APIKeyModel(
                     key_id=new_key_id,
                     wallet_id=wallet_id,
                     key_hash=key_hash,
+                    key_lookup=api_key_lookup_id(full_key),
                     key_prefix=key_prefix,
                     status=APIKeyStatus.ACTIVE.value,
                     metadata_json=json.dumps({"name": "emergency_key"}),

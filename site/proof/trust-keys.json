@@ -1,0 +1,29 @@
+{
+  "alg": "Ed25519",
+  "canonicalization": "awi-canonical-json/1",
+  "issuer": "https://api.thisisatest.tech",
+  "keys": [
+    {
+      "activated_at": "2026-08-04T22:05:03.643601",
+      "alg": "Ed25519",
+      "created_at": "2026-08-04T22:05:03.643721",
+      "jwk": {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "railway-prod-ed25519",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "Jz0qKne203qeJVhzLD5KG1RbyazNKPYDRJWotdcCUjU"
+      },
+      "kid": "railway-prod-ed25519",
+      "public_key_b64": "Jz0qKne203qeJVhzLD5KG1RbyazNKPYDRJWotdcCUjU=",
+      "retired_at": null,
+      "status": "active"
+    }
+  ],
+  "schema_version": "1.0",
+  "verification": {
+    "note": "Verify signature over the bundle's `signing_input` bytes with the key whose `kid` matches. Reading a receipt requires authorization; verifying one you were given does not.",
+    "portable_receipt": "/v1/receipts/{receipt_id}/portable"
+  }
+}

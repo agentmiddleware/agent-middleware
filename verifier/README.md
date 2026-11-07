@@ -6,13 +6,14 @@ A receipt is only "verifiable without us" if anyone can check it with no account
 no network call to the issuer, and no gateway code. Two independent
 implementations do that:
 
-| Language | Where | Entry point |
+| Language | Receipts | Permits |
 |---|---|---|
-| Python | [`../sdk/python/`](../sdk/python/) | `b2a-verify-receipt` CLI, or `b2a_sdk.receipt_verifier.verify_bundle` |
-| TypeScript | [`../sdk/typescript/`](../sdk/typescript/) | `verifyBundle` in `src/verify.ts` |
+| Python ([`../sdk/python/`](../sdk/python/)) | `b2a_sdk.receipt_verifier.verify_bundle` (`b2a-verify-receipt` CLI) | `b2a_sdk.receipt_verifier.verify_permit_bundle` |
+| TypeScript ([`../sdk/typescript/`](../sdk/typescript/)) | `verifyBundle` in `src/verify.ts` | `verifyPermitBundle` in `src/verify.ts` |
 
 Neither imports the gateway. Both pass the shared vectors in
-[`../spec/test-vectors/`](../spec/test-vectors/).
+[`../spec/test-vectors/`](../spec/test-vectors/) (`receipts.json` and
+`permits.json`).
 
 ```bash
 # Python, from the repository root

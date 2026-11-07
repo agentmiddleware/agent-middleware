@@ -427,6 +427,73 @@ def test_sanitize_url_for_record_strips_credentials():
         assert secret not in sanitized
 
 
+def test_sanitize_url_for_record_keeps_ipv6_host():
+    """An IPv6 origin must stay bracketed so the transcript URL still parses."""
+    from urllib.parse import urlparse
+
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    from live_loop_proof import _sanitize_url_for_record
+
+    bare = _sanitize_url_for_record("http://[::1]:8000/base")
+    assert bare == "http://[::1]:8000/base"
+    parsed = urlparse(bare)
+    assert parsed.hostname == "::1"
+    assert parsed.port == 8000
+
+    secret = _sanitize_url_for_record(
+        "http://alice:s3cr3t@[::1]:8000/base?token=t0ken#frag"
+    )
+    assert secret == "http://[::1]:8000/base"
+    parsed_secret = urlparse(secret)
+    assert parsed_secret.hostname == "::1"
+    assert parsed_secret.port == 8000
+    for leak in ("alice", "s3cr3t", "t0ken"):
+        assert leak not in secret
+
+
+def test_live_loop_proof_refuses_credential_in_url(tmp_path):
+    """A loopback host with a password in the URL is still a secret leak."""
+    out = tmp_path / "out"
+    result = _run_proof_script(
+        "--api-url",
+        "http://alice:s3cr3t@127.0.0.1:9",
+        "--output-dir",
+        str(out),
+    )
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "embedded credentials" in result.stderr
+    assert "s3cr3t" not in result.stderr
+    assert "s3cr3t" not in result.stdout
+    assert not out.exists()
+
+
+def test_trust_keys_fetch_stays_on_origin(tmp_path):
+    """The public key fetch is unauthenticated, but it must not follow a proxy."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import live_loop_proof
+
+    seen: dict = {}
+
+    def fake_get(url, **kwargs):
+        seen["url"] = url
+        seen["trust_env"] = kwargs.get("trust_env")
+        seen["follow_redirects"] = kwargs.get("follow_redirects")
+        return httpx.Response(200, text="{}")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(live_loop_proof.httpx, "get", fake_get)
+    client = httpx.Client(base_url="http://127.0.0.1:8000")
+    try:
+        live_loop_proof.ProofRun(client, tmp_path).trust_keys()
+    finally:
+        monkeypatch.undo()
+        client.close()
+
+    assert seen["trust_env"] is False
+    assert seen["follow_redirects"] is False
+    assert seen["url"].endswith("/.well-known/trust-keys.json")
+
+
 def test_live_loop_proof_script(quickstart_server, tmp_path):
     """The one-command live proof drives every stage and writes the bundle.
 

@@ -40,6 +40,7 @@ from .core.health import (
     build_public_dependency_report,
     check_redis_liveness,
     check_database_readiness,
+    check_signing_key_readiness,
     check_mqtt_readiness,
     gather_dependency_report,
 )
@@ -1335,6 +1336,10 @@ async def health_ready():
 
     checks["database"] = await check_database_readiness()
     if checks["database"]["status"] != "up":
+        all_healthy = False
+
+    checks["signing_key"] = await check_signing_key_readiness()
+    if checks["signing_key"]["status"] != "up":
         all_healthy = False
 
     return JSONResponse(

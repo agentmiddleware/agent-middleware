@@ -32,6 +32,7 @@ from .sentinel_target import (
 from .trust_mode import is_production_like_environment
 from ..services.signing_keys import (
     SigningKeyError,
+    get_signing_key_service,
     validate_signing_key_configuration,
 )
 
@@ -466,6 +467,10 @@ async def _check_signing_key() -> dict[str, Any]:
             "error": "signing_key_unavailable",
         }
 
+    row_problem = await _configured_key_row_problem()
+    if row_problem is not None:
+        return {"status": "down", "state": "unusable", "error": row_problem}
+
     if state == "ephemeral":
         return {
             "status": "up",
@@ -473,6 +478,54 @@ async def _check_signing_key() -> dict[str, Any]:
             "reason": "trust mode disabled; process-ephemeral signing key",
         }
     return {"status": "up", "state": "loaded"}
+
+
+# Key row states that mean this replica cannot be trusted to sign. A missing
+# row is fine (the first signature creates it); an active row is fine.
+_UNUSABLE_KEY_ROW_STATUSES: dict[str, str] = {
+    "retired": "signing_key_retired",
+    "disabled": "signing_key_disabled",
+}
+
+
+async def _configured_key_row_problem() -> str | None:
+    """Read the configured key's row and name why it cannot sign, if it cannot.
+
+    Read-only: it never creates or reactivates the row, so a health probe can
+    not undo a retirement. A replica still configured with a retired or
+    disabled key id, or with key material that does not match its row, is
+    reported down, which takes it out of a readiness-gated rotation before it
+    reaches the charge. A row lookup that fails (for example the database is
+    down) is left to the postgres check rather than reported twice here.
+    """
+
+    try:
+        status = await get_signing_key_service().configured_key_status()
+    except SigningKeyError as exc:
+        if str(exc) == "signing_key_id_public_key_mismatch":
+            return "signing_key_id_public_key_mismatch"
+        return None
+    except Exception:
+        # Not reported down here (the postgres check owns a database outage),
+        # but never silent: a failure that is not the database would otherwise
+        # leave readiness "up" with no trace of why the row went unread.
+        logger.warning("signing key row check raised", exc_info=True)
+        return None
+    if status is None:
+        return None
+    return _UNUSABLE_KEY_ROW_STATUSES.get(status)
+
+
+async def check_signing_key_readiness() -> dict[str, Any]:
+    """``/health/ready`` entry for the signing key, shared with the full report.
+
+    Down when this replica's configured key cannot sign: invalid or missing key
+    material, or a key row that is retired, disabled or bound to other key
+    material. A load balancer that gates on readiness then stops sending
+    governed calls to a replica that would refuse them, or, while a retired
+    row can still be reactivated, would sign under a key the operator retired.
+    """
+    return await _run_check("signing_key", _check_signing_key)
 
 
 async def check_database_readiness() -> dict[str, Any]:

@@ -439,15 +439,16 @@ class SandboxEngine:
 
         if env.env_type == EnvironmentType.PATTERN:
             if action_type == "submit_transform":
-                # The guess must name the actual hidden rule, not just any
-                # known transform word: any keyword was accepted before, so a
-                # wrong answer (say "rotate" for a "mirror" rule) solved the
-                # puzzle and the score meant nothing.
+                # Require exactly the hidden transforms, including every step
+                # and rejecting additional transforms in keyword-stuffed guesses.
                 guess = str(action_value).lower()
-                expected = _expected_transform_keywords(env.hidden_rules)
-                if expected and all(
-                    any(alias in guess for alias in group) for group in expected
-                ):
+                expected = set(_expected_transform_keywords(env.hidden_rules))
+                named = {
+                    group
+                    for group in _TRANSFORM_KEYWORD_GROUPS
+                    if any(alias in guess for alias in group)
+                }
+                if expected and named == expected:
                     return 10.0, "Correct transformation detected!", True
                 return -1.0, "Incorrect transformation. Try another approach.", False
             return 0.5, "Observation recorded.", False

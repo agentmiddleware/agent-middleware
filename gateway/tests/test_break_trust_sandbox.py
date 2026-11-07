@@ -59,6 +59,34 @@ class TestPatternScoring:
         assert result.reward == 10.0
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("difficulty", ["easy", "medium", "hard", "extreme"])
+    @pytest.mark.parametrize("seed", range(10))
+    async def test_keyword_stuffed_guess_rejected_then_exact_guess_solves(
+        self, engine, difficulty, seed
+    ):
+        env = await engine.create_environment(
+            env_type="pattern", difficulty=difficulty, seed=seed, owner_wallet_id="w1"
+        )
+        result = await engine.submit_action(
+            env.env_id,
+            {
+                "type": "submit_transform",
+                "value": "rotate mirror increment color_swap invert shift",
+            },
+        )
+        assert result.done is False
+        assert result.reward == -1.0
+        assert env.state.solved is False
+
+        exact = await engine.submit_action(
+            env.env_id,
+            {"type": "submit_transform", "value": " ".join(env.hidden_rules)},
+        )
+        assert exact.done is True
+        assert exact.reward == 10.0
+        assert env.state.solved is True
+
+    @pytest.mark.anyio
     async def test_hard_rule_needs_every_transform_named(self, engine):
         env = await engine.create_environment(
             env_type="pattern", difficulty="hard", seed=1, owner_wallet_id="w1"

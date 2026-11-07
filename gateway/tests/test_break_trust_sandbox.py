@@ -37,7 +37,7 @@ class TestPatternScoring:
     @pytest.mark.anyio
     async def test_wrong_transform_guess_is_rejected(self, engine):
         env = await engine.create_environment(
-            env_type="pattern", difficulty="easy", seed=1, owner_wallet_id="w1"
+            env_type="pattern", difficulty="easy", seed=1
         )
         assert env.hidden_rules == ["Transform input grid by applying: mirror"]
         result = await engine.submit_action(
@@ -50,7 +50,7 @@ class TestPatternScoring:
     @pytest.mark.anyio
     async def test_correct_transform_guess_solves(self, engine):
         env = await engine.create_environment(
-            env_type="pattern", difficulty="easy", seed=1, owner_wallet_id="w1"
+            env_type="pattern", difficulty="easy", seed=1
         )
         result = await engine.submit_action(
             env.env_id, {"type": "submit_transform", "value": "mirror"}
@@ -65,7 +65,7 @@ class TestPatternScoring:
         self, engine, difficulty, seed
     ):
         env = await engine.create_environment(
-            env_type="pattern", difficulty=difficulty, seed=seed, owner_wallet_id="w1"
+            env_type="pattern", difficulty=difficulty, seed=seed
         )
         result = await engine.submit_action(
             env.env_id,
@@ -89,7 +89,7 @@ class TestPatternScoring:
     @pytest.mark.anyio
     async def test_hard_rule_needs_every_transform_named(self, engine):
         env = await engine.create_environment(
-            env_type="pattern", difficulty="hard", seed=1, owner_wallet_id="w1"
+            env_type="pattern", difficulty="hard", seed=1
         )
         partial = await engine.submit_action(
             env.env_id, {"type": "submit_transform", "value": "rotate"}
@@ -106,7 +106,7 @@ class TestApiMockScoring:
     @pytest.mark.anyio
     async def test_bogus_endpoints_never_solve(self, engine):
         env = await engine.create_environment(
-            env_type="api_mock", difficulty="easy", seed=1, owner_wallet_id="w1"
+            env_type="api_mock", difficulty="easy", seed=1
         )
         total = env.state.metadata["num_endpoints"]
         for _ in range(total + 5):
@@ -120,7 +120,7 @@ class TestApiMockScoring:
     @pytest.mark.anyio
     async def test_repeated_valid_endpoint_counts_once(self, engine):
         env = await engine.create_environment(
-            env_type="api_mock", difficulty="easy", seed=1, owner_wallet_id="w1"
+            env_type="api_mock", difficulty="easy", seed=1
         )
         real_path = env.state.metadata["mock_api"][0]["path"]
         for _ in range(env.state.metadata["num_endpoints"] + 2):
@@ -133,7 +133,7 @@ class TestApiMockScoring:
     @pytest.mark.anyio
     async def test_repeated_valid_endpoint_earns_no_extra_points(self, engine):
         env = await engine.create_environment(
-            env_type="api_mock", difficulty="easy", seed=1, owner_wallet_id="w1"
+            env_type="api_mock", difficulty="easy", seed=1
         )
         real_path = env.state.metadata["mock_api"][0]["path"]
         action = {"type": "call_endpoint", "value": real_path}
@@ -157,7 +157,7 @@ class TestApiMockScoring:
     @pytest.mark.anyio
     async def test_calling_every_real_endpoint_solves(self, engine):
         env = await engine.create_environment(
-            env_type="api_mock", difficulty="easy", seed=1, owner_wallet_id="w1"
+            env_type="api_mock", difficulty="easy", seed=1
         )
         result = None
         for endpoint in env.state.metadata["mock_api"]:
@@ -175,7 +175,7 @@ class TestNavigationTyping:
     @pytest.mark.anyio
     async def test_boolean_move_is_rejected(self, engine):
         env = await engine.create_environment(
-            env_type="navigation", difficulty="easy", seed=0, owner_wallet_id="w1"
+            env_type="navigation", difficulty="easy", seed=0
         )
         assert 1 in env.state.metadata["visible_edges"].get("0", [])
         result = await engine.submit_action(env.env_id, {"type": "move", "value": True})
@@ -185,7 +185,7 @@ class TestNavigationTyping:
     @pytest.mark.anyio
     async def test_integer_move_still_works(self, engine):
         env = await engine.create_environment(
-            env_type="navigation", difficulty="easy", seed=0, owner_wallet_id="w1"
+            env_type="navigation", difficulty="easy", seed=0
         )
         neighbors = env.state.metadata["visible_edges"]["0"]
         result = await engine.submit_action(
@@ -204,6 +204,9 @@ class TestAmbiguousNumericHosts:
             "http://0x7f.0.0.1/",
             "http://0x7f000001/",
             "http://2130706433/",
+            "http://134744072/",
+            "http://127.0x0.0.1/",
+            "http://0x7f.0x0.0x0.0x1/",
         ],
     )
     async def test_ambiguous_numeric_forms_fail_closed_without_dns(
@@ -216,16 +219,23 @@ class TestAmbiguousNumericHosts:
         assert await check_outbound_url(url) == "private_address_blocked"
 
     @pytest.mark.anyio
-    async def test_ordinary_hostname_still_uses_dns(self, monkeypatch):
+    @pytest.mark.parametrize("host", ["example.com", "0xabc.de", "0x123.be"])
+    @pytest.mark.parametrize(
+        ("address", "reason"),
+        [("93.184.216.34", None), ("127.0.0.1", "private_address_blocked")],
+    )
+    async def test_ordinary_hostname_still_uses_dns(
+        self, monkeypatch, host, address, reason
+    ):
         seen = []
 
         async def resolve(host):
             seen.append(host)
-            return [(None, None, None, None, ("93.184.216.34", 0))]
+            return [(None, None, None, None, (address, 0))]
 
         monkeypatch.setattr(url_guard, "_resolve_host", resolve)
-        assert await check_outbound_url("https://example.com/page") is None
-        assert seen == ["example.com"]
+        assert await check_outbound_url(f"https://{host}/page") == reason
+        assert seen == [host]
 
 
 @pytest.mark.proof

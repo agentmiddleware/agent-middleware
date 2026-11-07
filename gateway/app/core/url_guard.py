@@ -177,8 +177,9 @@ def is_ambiguous_ipv4_literal(host: str) -> bool:
 # leading zeros (octal on glibc, decimal elsewhere), and 0x hex forms. The
 # guard and the fetching client may resolve these differently, so they fail
 # closed here instead of depending on this platform's getaddrinfo.
-_NUMERIC_LITERAL_RE = re.compile(r"[0-9]+(?:\.[0-9]+)*")
-_HEX_LITERAL_RE = re.compile(r"0[xX][0-9a-fA-F.]+")
+_NUMERIC_LITERAL_RE = re.compile(
+    r"(?:[0-9]+|0[xX][0-9a-fA-F]+)(?:\.(?:[0-9]+|0[xX][0-9a-fA-F]+))*"
+)
 
 
 def _address_blocked(address: str) -> bool:
@@ -192,12 +193,12 @@ def _address_blocked(address: str) -> bool:
 def _is_ambiguous_numeric_literal(host: str) -> bool:
     """True when the host looks like an IP literal strict parsing rejects.
 
-    Only all-digit dotted forms and 0x hex forms qualify, so ordinary
-    hostnames (which always carry a non-numeric label, such as ``007.com``)
-    still take the DNS path. A match that ``ipaddress`` also accepts is a
+    Each dotted component must be digits or explicitly prefixed 0x hex.
+    Ordinary hostnames such as ``007.com`` and ``0xabc.de`` still take the
+    DNS path. A match that ``ipaddress`` also accepts is a
     real literal and is handled by the address check above, not here.
     """
-    if not (_NUMERIC_LITERAL_RE.fullmatch(host) or _HEX_LITERAL_RE.fullmatch(host)):
+    if _NUMERIC_LITERAL_RE.fullmatch(host) is None:
         return False
     try:
         ipaddress.ip_address(host)

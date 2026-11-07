@@ -136,6 +136,11 @@ unreleased.
   402 response with valid x402 headers is parsed as a payment requirement, not
   a billing error. `InsufficientFundsError` is raised only when the response
   body signals `insufficient_funds`.
+- **`@billable` and `@combined` with an `idempotency_key_factory`**: a factory
+  that returns `None` now raises `ValueError` before any charge and before the
+  decorated function runs. Previously `None` reached `charge()`, which minted a
+  fresh key, so a retry was billed again. Calling `charge(idempotency_key=None)`
+  directly is unchanged.
 
 ### Deprecations
 

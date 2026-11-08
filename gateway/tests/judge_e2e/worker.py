@@ -15,10 +15,13 @@ from dataclasses import asdict
 
 
 def serve(connection, database_url: str, signing_key: str) -> None:
+    """Run isolated gateway with test configuration and no network access."""
     # Configure before importing the application, without loading dotenv files.
     from app.core import config
 
     class LocalSettings(config.Settings):
+        """Test-only settings that ignore environment and dotenv sources."""
+
         @classmethod
         def settings_customise_sources(
             cls,
@@ -33,6 +36,7 @@ def serve(connection, database_url: str, signing_key: str) -> None:
             return (init_settings,)
 
     def reject_network(*args, **kwargs):
+        """Prevent any network socket connections during tests."""
         raise AssertionError("judge worker forbids network connections")
 
     socket.socket.connect = reject_network
@@ -58,6 +62,7 @@ def serve(connection, database_url: str, signing_key: str) -> None:
 
 
 async def _run(connection) -> None:
+    """Handle requests from test fixture until stop or error."""
     from httpx import ASGITransport, AsyncClient
     from sqlalchemy import select
 
@@ -79,12 +84,14 @@ async def _run(connection) -> None:
     from app.services.upstream_mcp import UpstreamMcpResult
 
     class Echo:
+        """Test executor that echoes messages and supports fault injection."""
         dispatches = 0
         kill_during_dispatch = False
 
         async def call_tool(
             self, arguments, *, invocation_id, idempotency_key, before_dispatch
         ):
+            """Echo the message argument or block for kill fault injection."""
             await before_dispatch()
             self.dispatches += 1
             if self.kill_during_dispatch:

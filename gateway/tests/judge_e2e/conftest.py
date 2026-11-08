@@ -19,7 +19,10 @@ from tests.judge_e2e.worker import serve
 
 
 class Judge:
+    """Test fixture controlling an isolated gateway worker for judge e2e tests."""
+
     def __init__(self, database: Path):
+        """Initialize judge with isolated database and fresh signing key."""
         self.database_url = f"sqlite+aiosqlite:///{database}"
         self._signing_key = base64.b64encode(
             Ed25519PrivateKey.generate().private_bytes(
@@ -30,6 +33,7 @@ class Judge:
         self.start()
 
     def start(self):
+        """Start the worker process and wait for ready signal."""
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         self.process = context.Process(
@@ -46,15 +50,18 @@ class Judge:
             raise
 
     def receive(self):
+        """Wait for and return the next message from the worker."""
         if not self.connection.poll(45):
             raise AssertionError("judge worker did not respond within 45 seconds")
         return self.connection.recv()
 
     def rpc(self, operation, **kwargs):
+        """Send an operation to the worker and return its response."""
         self.connection.send({"operation": operation, **kwargs})
         return self.receive()
 
     def issue(self):
+        """Create a demo permit and store its credentials."""
         response = self.request("POST", "/v1/demo/keys", authenticated=False, json={})
         assert response["status"] == 201
         self._demo = response["body"]
@@ -64,6 +71,7 @@ class Judge:
         return self._demo["permit_id"]
 
     def request(self, method, url, *, authenticated=True, **kwargs):
+        """Make an HTTP request through the worker."""
         headers = kwargs.pop("headers", {})
         if authenticated:
             headers = {"X-API-Key": self._demo["api_key"], **headers}
@@ -78,6 +86,7 @@ class Judge:
         permit_id=None,
         **kwargs,
     ):
+        """Invoke the echo tool with the demo permit."""
         return self.request(
             "POST",
             "/mcp/messages",
@@ -99,6 +108,7 @@ class Judge:
         )
 
     def snapshot(self):
+        """Return current wallet and permit state."""
         return self.rpc(
             "snapshot",
             wallet_id=self._demo["wallet_id"],
@@ -106,6 +116,7 @@ class Judge:
         )
 
     def export(self, receipt_id):
+        """Fetch portable receipt bundle and trust keys for offline verification."""
         response = self.request("GET", f"/v1/receipts/{receipt_id}/portable")
         assert response["status"] == 200
         public = self.request(
@@ -115,6 +126,7 @@ class Judge:
         return response["body"], public["body"]
 
     def kill(self):
+        """Forcibly terminate the worker process."""
         self.process.kill()
         self.process.join(10)
         assert not self.process.is_alive()
@@ -122,6 +134,7 @@ class Judge:
         self.connection.close()
 
     def close(self):
+        """Stop the worker gracefully or forcibly and close the connection."""
         if self.process.is_alive():
             self.connection.send({"operation": "stop"})
             self.process.join(10)

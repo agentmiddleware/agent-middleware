@@ -85,6 +85,7 @@ async def _run(connection) -> None:
 
     class Echo:
         """Test executor that echoes messages and supports fault injection."""
+
         dispatches = 0
         kill_during_dispatch = False
 

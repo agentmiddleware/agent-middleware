@@ -20,6 +20,7 @@ consequential MCP tool behind a governed boundary. Start with the
 | Rotate or revoke API keys | [API key rotation](api-key-rotation.md) |
 | Configure API-key hashing (pepper) | [API key hashing](api-key-hashing.md) |
 | Plan a design-partner evaluation | [Design partner guide](../DESIGN_PARTNER_GUIDE.md) |
+| Record pilot scope, baseline, evidence, and buyer decision | [Pilot evaluation packet](pilot-evaluation-packet.md) |
 | Tell plain pytest, Postgres, and live runs apart | [Test tiers](TESTING_TIERS.md) |
 | Contribute to the repository | [Contributing guide](../../CONTRIBUTING.md) |
 | Review GitHub organization and repository settings | [GitHub organization configuration](github-org-configuration.md) |

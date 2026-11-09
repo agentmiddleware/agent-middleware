@@ -285,9 +285,9 @@ jobs:
           if [ "${{ matrix.project }}" = "gateway" ]; then
             # Shared-runner scheduling can add a few ms to the ACP wall-clock
             # median. The separate trust gate still checks its strict 45 ms bound.
-            ACP_CHECKOUT_MEDIAN_BUDGET_S=0.055 uv run --no-sync pytest -q -m "not production_trust" -n auto --timeout 300 &&
+            ACP_CHECKOUT_MEDIAN_BUDGET_S=0.055 uv run --no-sync pytest -q -m "not production_trust" -n auto --timeout 300 --ignore=tests/judge_e2e &&
             TRUST_MODE_ENABLED=true ALLOW_LEGACY_UNPERMITTED_MCP=false ENABLE_PROOF_SURFACES=false \
-              uv run --no-sync pytest -q -m production_trust --timeout 300
+              uv run --no-sync pytest -q -m production_trust --timeout 300 --ignore=tests/judge_e2e
           else
             uv run --no-sync pytest -q
           fi
@@ -305,6 +305,29 @@ jobs:
           tar -xzf "$RUNNER_TEMP"/amw-sdist/amw_sdk-*.tar.gz -C "$RUNNER_TEMP/amw-sdist"
           test ! -e "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests/test_receipt_vectors.py
           uv run --no-sync pytest --collect-only -qq "$RUNNER_TEMP"/amw-sdist/amw_sdk-*/tests
+
+  judge-e2e:
+    name: M1 external judge / gateway
+    # Always exercise the judge path, independently of project/path filters.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Run serial local judge harness
+        run: >-
+          uv run --directory gateway --no-project --isolated --python 3.12
+          --with-requirements requirements.txt
+          --with-editable '../sdk/python[verify]'
+          --with "pytest==${PYTEST_VERSION}"
+          python -m pytest tests/judge_e2e -q -rs --tb=short
 
   framework-integrations:
     name: Framework integrations
@@ -675,7 +698,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [lint, detect, python, framework-integrations, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [lint, detect, python, judge-e2e, framework-integrations, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

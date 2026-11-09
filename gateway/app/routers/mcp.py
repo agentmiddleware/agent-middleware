@@ -118,6 +118,7 @@ from ..trust import (
     PermitError,
     PolicyDecision,
     ReceiptWriteContendedError,
+    SigningKeyUnavailableError,
     evaluate_tool_invocation,
     evaluate_wallet_policy,
     get_agent_money,
@@ -128,6 +129,7 @@ from ..trust import (
     get_permit_service,
     get_quote_service,
     get_receipt_service,
+    get_signing_key_service,
     permit_constraints_snapshot,
     recipient_binding_matches,
     record_audit_event,
@@ -456,6 +458,7 @@ _PUBLIC_REASON_MESSAGES: dict[str, str] = {
         "audit_chain_head_contention",
         "receipt_write_contended",
         "permit_write_contended",
+        "signing_key_unavailable",
         "tool_execution_failed",
     )
 }
@@ -468,6 +471,7 @@ _PUBLIC_MESSAGE_BY_EXC_TYPE: dict[type[BaseException], str] = {
     AuditChainContendedError: "audit_chain_head_contention",
     ReceiptWriteContendedError: "receipt_write_contended",
     PermitWriteContendedError: "permit_write_contended",
+    SigningKeyUnavailableError: SigningKeyUnavailableError.reason,
     ToolPermissionDenied: "Permission denied",
     PermissionError: "Permission denied",
     ToolExecutionError: "tool_execution_failed",
@@ -832,7 +836,12 @@ async def handle_messages(
             AuditChainContendedError,
             ReceiptWriteContendedError,
             PermitWriteContendedError,
+            SigningKeyUnavailableError,
         ) as e:
+            # SigningKeyUnavailableError joins this family because it is only
+            # raised before anything is begun or charged: retrying the same key
+            # on a replica whose signing key can sign is safe.
+            #
             # All five mean the same thing to a caller: nothing terminal was
             # recorded, retry the same idempotency key. -32005 is this
             # surface's retryable code. The public message is a canned string
@@ -1185,6 +1194,12 @@ async def _execute_registered_tool(
     Those coordinates name whichever row holds them now; only the granted id
     names ours.
     """
+    # Refuse before anything is begun, reserved or charged when this replica's
+    # configured signing key cannot sign. Every governed outcome past the
+    # charge needs a signed audit event and receipt; finding out there leaves
+    # a debited wallet with no evidence. Here it costs the caller one retry,
+    # on a replica whose key can sign, with nothing recorded.
+    await get_signing_key_service().assert_ready_to_sign()
     owned_record: dict[str, Any] = {}
     try:
         return await _execute_registered_tool_inner(
@@ -3168,7 +3183,18 @@ async def _execute_registered_tool_inner(
                         ok=False,
                         error="refund_failed",
                         metadata={
-                            "receipt_id": receipt_payload["receipt_id"],
+                            "receipt_id": (
+                                receipt_payload["receipt_id"]
+                                if receipt_payload is not None
+                                else None
+                            ),
+                            # Only an unsigned receipt adds a key, so the
+                            # signed case keeps its existing audit shape.
+                            **(
+                                {"receipt_status": "unsigned"}
+                                if receipt_payload is None
+                                else {}
+                            ),
                             "permit_id": permit_model.permit_id,
                             "ledger_entry_id": charge_result.entry_id,
                             "credits": str(credits_charged),
@@ -4521,8 +4547,13 @@ async def _finalize_unrefunded_failure(
     response_hash_override: str | None = None,
     approval_id: str | None = None,
     counterparty: str | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Persist the signed failure and its exact-once operator work item.
+
+    The receipt payload is ``None`` when the receipt could not be signed (the
+    signing key became unusable after the call was admitted). The work item is
+    recorded all the same, marked ``receipt_status: unsigned``, and a replica
+    whose key can sign signs the receipt later.
 
     Both call sites reach here having already charged the caller, run the tool
     and failed the refund, so this is unconditionally a post-effects site --
@@ -4565,6 +4596,13 @@ async def _finalize_unrefunded_failure(
         # losses at the other post-effects sites, and it still may not be
         # called retryable: the charge stands and the tool already ran.
         raise _receipt_contention_after_effects() from exc
+    if receipt is None:
+        logger.error(
+            "mcp_refund_reconciliation_receipt_unsigned ledger_entry_id=%s wallet_id=%s",
+            ledger_entry_id,
+            wallet_id,
+        )
+        return None, reconciliation
     receipt_payload = _receipt_response_payload(receipt)
     return receipt_payload, reconciliation
 
@@ -5228,6 +5266,7 @@ _INVOKE_PUBLIC_MESSAGE_BY_TYPE: tuple[tuple[type[BaseException], str], ...] = (
     (AuditChainContendedError, "audit_chain_head_contention"),
     (ReceiptWriteContendedError, "receipt_write_contended"),
     (PermitWriteContendedError, "permit_write_contended"),
+    (SigningKeyUnavailableError, SigningKeyUnavailableError.reason),
     (ToolPermissionDenied, "Permission denied"),
     (PermissionError, "Permission denied"),
     (ToolExecutionError, "tool_execution_failed"),
@@ -5392,8 +5431,9 @@ async def invoke_tool(
         AuditChainContendedError,
         ReceiptWriteContendedError,
         PermitWriteContendedError,
+        SigningKeyUnavailableError,
     ) as exc:
-        # Same five-way retryable family as /mcp/messages: the caller may
+        # Same retryable family as /mcp/messages: the caller may
         # retry the same idempotency key. A pre-effect
         # ReceiptWriteContendedError that reached here without this entry fell
         # through to except Exception and answered 200 isError internal_error,

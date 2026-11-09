@@ -4357,7 +4357,7 @@
           "Trust Signing Keys"
         ],
         "summary": "Get Active Signing Key",
-        "description": "Return public metadata for the active transaction-evidence signing key.",
+        "description": "Return public metadata for the active transaction-evidence signing key.\n\nA replica whose configured key cannot sign (retired, disabled, bound to\nother key material) answers 503 ``signing_key_unavailable``, the same\nreason the governed paths give, rather than an unclassified 500. The\nunderlying reason stays in the server log.",
         "operationId": "get_active_signing_key_v1_signing_keys_active_get",
         "security": [
           {

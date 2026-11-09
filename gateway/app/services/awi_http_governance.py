@@ -41,7 +41,12 @@ from app.services.idempotency import (
 from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from app.services.receipts import get_receipt_service
-from app.services.signing_keys import canonical_json, sha256_hex
+from app.services.signing_keys import (
+    SigningKeyUnavailableError,
+    canonical_json,
+    get_signing_key_service,
+    sha256_hex,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +453,23 @@ async def _admit_awi_http_governed(ctx: AwiHttpGovernedContext) -> None:
 
     permits = get_permit_service()
     idem = get_idempotency_service()
+    # Refuse before the reservation and the charge when this replica's signing
+    # key cannot sign: the receipt written after the callback needs it, and
+    # finding out there would leave a debited wallet with no receipt. Nothing
+    # is reserved yet, so the begun record is released for a retry.
+    try:
+        await get_signing_key_service().assert_ready_to_sign()
+    except SigningKeyUnavailableError as exc:
+        await idem.abandon(
+            wallet_id=ctx.wallet_id,
+            endpoint=ctx.endpoint,
+            idempotency_key=ctx.idempotency_key,
+            expected_record_id=ctx.record_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={"error": exc.reason, "tool": ctx.tool_name},
+        ) from exc
     try:
         await permits.reserve_budget(
             ctx.permit_id,

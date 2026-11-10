@@ -11,7 +11,7 @@ the legacy `amount` alias when both differ, `charge()` now raises
 `IdempotencyConflictError` for every 409 response, and
 `B2AEdgeClient.execute_awi_action()` requires a permit and key.
 `parse_402_response()` always sets the two amounts equal, so its normal path
-is unchanged. The tag is not cut by this change. `python-v0.5.0` is still a
+is unchanged. The tag is not cut by this change. `python-sdk-v0.5.0` is still a
 release decision.
 
 ### Distribution name

@@ -9,7 +9,6 @@ on:
       - 'gateway/requirements.txt'
       - 'sdk/python/pyproject.toml'
       - 'sdk/typescript/package-lock.json'
-      - 'site/package-lock.json'
       - '.github/workflows/sbom.yml'
   workflow_dispatch:
 
@@ -67,10 +66,8 @@ jobs:
           npm ci
           cd ../..
           
-          # Install site dependencies
-          cd site
-          npm ci
-          cd ..
+          # Site has no npm dependencies (static build via Python)
+          # Skip npm install for site
 
       - name: Generate SBOM
         run: |
@@ -91,11 +88,6 @@ jobs:
           syft scan dir:sdk/typescript/node_modules \
             --output spdx-json=sbom-sdk-typescript-spdx.json \
             --output cyclonedx-json=sbom-sdk-typescript-cyclonedx.json
-          
-          # Scan site node_modules
-          syft scan dir:site/node_modules \
-            --output spdx-json=sbom-site-spdx.json \
-            --output cyclonedx-json=sbom-site-cyclonedx.json
           
           # Merge all SPDX SBOMs into one comprehensive SBOM
           jq -s '
@@ -138,14 +130,12 @@ jobs:
           gateway_count=$(jq '.packages | length' sbom-gateway-spdx.json)
           sdk_python_count=$(jq '.packages | length' sbom-sdk-python-spdx.json)
           sdk_ts_count=$(jq '.packages | length' sbom-sdk-typescript-spdx.json)
-          site_count=$(jq '.packages | length' sbom-site-spdx.json)
           total_count=$(jq '.packages | length' sbom-spdx.json)
           
           echo "=== SBOM Package Counts ==="
           echo "Gateway (Python):      $gateway_count packages"
           echo "SDK (Python):          $sdk_python_count packages"
           echo "SDK (TypeScript):      $sdk_ts_count packages"
-          echo "Site:                  $site_count packages"
           echo "Total (merged):        $total_count packages"
           echo ""
           echo "SPDX SBOM size:        $(wc -c < sbom-spdx.json) bytes"

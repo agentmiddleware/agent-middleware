@@ -1,0 +1,190 @@
+name: SBOM Generation
+
+on:
+  push:
+    tags:
+      - 'python-sdk-v*'
+  pull_request:
+    paths:
+      - 'gateway/requirements.txt'
+      - 'sdk/python/pyproject.toml'
+      - 'sdk/typescript/package-lock.json'
+      - '.github/workflows/sbom.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  generate-sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Install Syft
+        run: |
+          SYFT_VERSION="1.19.0"
+          curl -sSfL "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz" \
+            -o syft.tar.gz
+          tar -xzf syft.tar.gz syft
+          sudo mv syft /usr/local/bin/
+          syft version
+
+      - name: Install Python dependencies
+        run: |
+          # Install gateway dependencies
+          cd gateway
+          uv venv .venv-sbom
+          uv pip install --python .venv-sbom -r requirements.txt -e "../sdk/python[verify]"
+          cd ..
+          
+          # Install SDK dependencies  
+          cd sdk/python
+          uv venv .venv-sbom
+          uv pip install --python .venv-sbom -e ".[verify,mcp]"
+          cd ../..
+
+      - name: Install npm dependencies
+        run: |
+          # Install TypeScript SDK dependencies
+          cd sdk/typescript
+          npm ci
+          cd ../..
+          
+          # Site has no npm dependencies (static build via Python)
+          # Skip npm install for site
+
+      - name: Generate SBOM
+        run: |
+          # Generate comprehensive SBOM covering installed Python packages and npm packages.
+          # Scan installed virtual environments to capture resolved transitive dependencies.
+          
+          # Scan gateway Python environment
+          syft scan dir:gateway/.venv-sbom \
+            --output spdx-json=sbom-gateway-spdx.json \
+            --output cyclonedx-json=sbom-gateway-cyclonedx.json
+          
+          # Scan SDK Python environment
+          syft scan dir:sdk/python/.venv-sbom \
+            --output spdx-json=sbom-sdk-python-spdx.json \
+            --output cyclonedx-json=sbom-sdk-python-cyclonedx.json
+          
+          # Scan TypeScript SDK node_modules
+          syft scan dir:sdk/typescript/node_modules \
+            --output spdx-json=sbom-sdk-typescript-spdx.json \
+            --output cyclonedx-json=sbom-sdk-typescript-cyclonedx.json
+          
+          # Merge all SPDX SBOMs into one comprehensive SBOM
+          jq -s '
+            {
+              name: "agent-middleware",
+              spdxVersion: .[0].spdxVersion,
+              dataLicense: .[0].dataLicense,
+              SPDXID: .[0].SPDXID,
+              creationInfo: .[0].creationInfo,
+              packages: ([.[].packages // []] | add),
+              relationships: ([.[].relationships // []] | add),
+              files: ([.[].files // []] | add)
+            }
+          ' sbom-*-spdx.json > sbom-spdx.json
+          
+          # Merge all CycloneDX SBOMs
+          jq -s '
+            {
+              bomFormat: .[0].bomFormat,
+              specVersion: .[0].specVersion,
+              serialNumber: .[0].serialNumber,
+              version: 1,
+              metadata: .[0].metadata,
+              components: ([.[].components // []] | add | unique_by(.name + "@" + .version))
+            }
+          ' sbom-*-cyclonedx.json > sbom-cyclonedx.json
+
+      - name: Verify and report SBOM
+        run: |
+          if [ ! -s sbom-spdx.json ]; then
+            echo "Error: SPDX SBOM file is empty or missing"
+            exit 1
+          fi
+          if [ ! -s sbom-cyclonedx.json ]; then
+            echo "Error: CycloneDX SBOM file is empty or missing"
+            exit 1
+          fi
+          
+          # Count packages per component
+          gateway_count=$(jq '.packages | length' sbom-gateway-spdx.json)
+          sdk_python_count=$(jq '.packages | length' sbom-sdk-python-spdx.json)
+          sdk_ts_count=$(jq '.packages | length' sbom-sdk-typescript-spdx.json)
+          total_count=$(jq '.packages | length' sbom-spdx.json)
+          
+          echo "=== SBOM Package Counts ==="
+          echo "Gateway (Python):      $gateway_count packages"
+          echo "SDK (Python):          $sdk_python_count packages"
+          echo "SDK (TypeScript):      $sdk_ts_count packages"
+          echo "Total (merged):        $total_count packages"
+          echo ""
+          echo "SPDX SBOM size:        $(wc -c < sbom-spdx.json) bytes"
+          echo "CycloneDX SBOM size:   $(wc -c < sbom-cyclonedx.json) bytes"
+          
+          if [ "$total_count" -lt 20 ]; then
+            echo "::warning::Expected at least 20 packages, found only $total_count"
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-artifacts
+          path: |
+            sbom-spdx.json
+            sbom-cyclonedx.json
+          retention-days: 90
+
+  publish-sbom:
+    name: Publish SBOM to Release
+    needs: generate-sbom
+    if: startsWith(github.ref, 'refs/tags/python-sdk-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom-artifacts
+
+      - name: Create GitHub Release with SBOM
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          # Check if release already exists
+          if gh release view "$TAG_NAME" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists, uploading SBOM assets"
+            gh release upload "$TAG_NAME" \
+              sbom-spdx.json \
+              sbom-cyclonedx.json \
+              --repo "${{ github.repository }}" \
+              --clobber
+          else
+            echo "Creating release $TAG_NAME with SBOM assets"
+            gh release create "$TAG_NAME" \
+              sbom-spdx.json \
+              sbom-cyclonedx.json \
+              --repo "${{ github.repository }}" \
+              --title "Python SDK $TAG_NAME" \
+              --notes "SBOM files for $TAG_NAME release"
+          fi

@@ -213,8 +213,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: false
       - name: Install
+        env:
+          PROJECT: ${{ matrix.project }}
         run: |
-          if [ "${{ matrix.project }}" = "gateway" ]; then
+          if [ "$PROJECT" = "gateway" ]; then
             # The gateway is an application, not a wheel: install its pinned requirements
             # plus the in-repo SDK it imports.
             uv venv
@@ -233,9 +235,11 @@ jobs:
           uv run --no-sync ruff format --check .
       - name: Type check (mypy, if configured)
         if: matrix.python-version == '3.12'
+        env:
+          PROJECT: ${{ matrix.project }}
         run: |
           if grep -q '^\[tool\.mypy\]' pyproject.toml 2>/dev/null || [ -f mypy.ini ]; then
-            if [ "${{ matrix.project }}" = "sdk/python" ]; then
+            if [ "$PROJECT" = "sdk/python" ]; then
               uv pip install -e ".[mcp]"
             fi
             uv pip install "mypy==${MYPY_VERSION}" && uv run --no-sync mypy .
@@ -280,9 +284,11 @@ jobs:
           trap - EXIT
           "${hook[@]}" --all-files
       - name: Test (pytest)
+        env:
+          PROJECT: ${{ matrix.project }}
         run: |
           set +e
-          if [ "${{ matrix.project }}" = "gateway" ]; then
+          if [ "$PROJECT" = "gateway" ]; then
             # Shared-runner scheduling can add a few ms to the ACP wall-clock
             # median. The separate trust gate still checks its strict 45 ms bound.
             ACP_CHECKOUT_MEDIAN_BUDGET_S=0.055 uv run --no-sync pytest -q -m "not production_trust" -n auto --timeout 300 &&
@@ -293,7 +299,7 @@ jobs:
           fi
           rc=$?
           # exit code 5 = no tests collected; don't fail packages that have none yet
-          if [ "$rc" -eq 5 ]; then echo "::notice::no tests in ${{ matrix.project }}"; exit 0; fi
+          if [ "$rc" -eq 5 ]; then echo "::notice::no tests in $PROJECT"; exit 0; fi
           exit $rc
       - name: Offline verifier vectors
         if: matrix.project == 'sdk/python' && matrix.python-version == '3.12'

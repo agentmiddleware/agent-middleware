@@ -249,14 +249,36 @@ class TestOutboundUrlGuard:
         assert await check_outbound_url(url) == "private_address_blocked"
 
     @pytest.mark.anyio
-    async def test_public_legacy_ipv4_ignores_hostile_dns(self, monkeypatch):
-        """134744072 is 8.8.8.8. The browser connects there without DNS."""
+    async def test_public_legacy_ipv4_fails_closed_before_dns(self, monkeypatch):
+        """Even a public address in ambiguous numeric form is refused before DNS."""
 
-        async def resolve(_host):
+        dns_calls = []
+
+        async def resolve(host):
+            dns_calls.append(host)
             return [(None, None, None, None, ("127.0.0.1", 0))]
 
+        monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", False)
         monkeypatch.setattr(url_guard, "_resolve_host", resolve)
-        assert await check_outbound_url("http://134744072/") is None
+        assert (
+            await check_outbound_url("http://134744072/") == "private_address_blocked"
+        )
+        assert dns_calls == []
+
+    @pytest.mark.anyio
+    async def test_public_canonical_ipv4_ignores_hostile_dns(self, monkeypatch):
+        """A canonical public literal stays pinned without consulting hostile DNS."""
+
+        dns_calls = []
+
+        async def resolve(host):
+            dns_calls.append(host)
+            return [(None, None, None, None, ("127.0.0.1", 0))]
+
+        monkeypatch.setattr(get_settings(), "ALLOW_PRIVATE_NETWORK_TARGETS", False)
+        monkeypatch.setattr(url_guard, "_resolve_host", resolve)
+        assert await url_guard.pin_outbound_url("http://8.8.8.8/") == (None, "8.8.8.8")
+        assert dns_calls == []
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(

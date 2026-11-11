@@ -41,6 +41,7 @@ TRUST_COVERAGE_TESTS=(
   tests/test_policy_bundles.py
   tests/test_policy_decisions.py
   tests/test_evidence_bundle.py
+  tests/test_refund_amount_evidence.py
   tests/test_preflight.py
   tests/test_governed_metering.py
   tests/test_billing.py

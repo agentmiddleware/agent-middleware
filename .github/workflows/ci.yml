@@ -659,10 +659,17 @@ jobs:
           node-version: ${{ matrix.node-version }}
           package-manager-cache: false
       - name: Test (node --test)
-        # Same command as site/README.md, from the repository root. An
-        # unmatched glob stays literal and fails, so the job cannot pass with
-        # no suites.
-        run: node --test site/test_*.mjs
+        # Same suites as the command in site/README.md, from the repository
+        # root. node --test exits 0 when its pattern matches no file, so fail
+        # here if the suites were moved or renamed.
+        run: |
+          shopt -s nullglob
+          suites=(site/test_*.mjs)
+          if [ "${#suites[@]}" -eq 0 ]; then
+            echo "::error::no site/test_*.mjs suites found"
+            exit 1
+          fi
+          node --test "${suites[@]}"
 
   trust_release_gate:
     # Non-required while trust coverage and committed OpenAPI parity fail.

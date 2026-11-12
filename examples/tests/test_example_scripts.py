@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import dry_run_example
+import httpx
 import mcp_tool_example
 import pytest
 
@@ -131,3 +132,35 @@ def test_retry_tool_error_returns_nonzero(
     monkeypatch.setenv("AGENT_API_KEY", "local-test-key")
     monkeypatch.setattr(call_with_retry, "call_once", fake)
     assert asyncio.run(call_with_retry.main()) == 1
+
+
+def _status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://127.0.0.1:9/v1/billing/wallets/sponsor")
+    return httpx.HTTPStatusError(
+        "error", request=request, response=httpx.Response(status, request=request)
+    )
+
+
+def test_dry_run_403_names_the_admin_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #361: a wallet-scoped key gets 403; say which key the script needs."""
+    hints = " ".join(dry_run_example._failure_hints(_status_error(403)))
+    assert "bootstrap admin key" in hints
+    assert "VALID_API_KEYS" in hints
+    assert "localhost:8000" not in hints
+
+
+def test_dry_run_connection_hint_uses_configured_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dry_run_example, "API_URL", "http://127.0.0.1:9")
+    hints = " ".join(dry_run_example._failure_hints(httpx.ConnectError("refused")))
+    assert "http://127.0.0.1:9" in hints
+    assert "localhost:8000" not in hints
+    not_found = " ".join(dry_run_example._failure_hints(_status_error(404)))
+    assert "ENABLE_PROOF_SURFACES=true" in not_found
+    assert "http://127.0.0.1:9" in not_found
+
+
+def test_dry_run_prints_server_initial_balance() -> None:
+    source = Path(dry_run_example.__file__).read_text()
+    assert "Initial virtual balance: {sim.initial_balance}" in source

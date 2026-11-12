@@ -77,15 +77,24 @@ integration path.
 
 **Run locally:**
 
+The script's first call creates a sponsor wallet, which is admin gated, so it
+needs a **bootstrap admin key**: a key listed in the server's `VALID_API_KEYS`.
+A wallet-scoped key, such as one from `make quickstart`, gets
+`403 admin_access_denied`. Use a local key you generated yourself, never a
+shared or production key.
+
 ```bash
 # Follow README.md "Run the API locally" first, then use local-only proof flags.
 export ENABLE_PROOF_SURFACES=true
+export VALID_API_KEYS=<bootstrap-admin-key>
 uv run --with-requirements requirements.txt uvicorn app.main:app \
   --host 127.0.0.1 --port 8000
 
 # In another shell
-B2A_API_KEY=<wallet-scoped-local-key> python examples/dry_run_example.py
+B2A_API_KEY=<bootstrap-admin-key> python examples/dry_run_example.py
 ```
+
+Set `B2A_API_URL` if the API is not at `http://localhost:8000`.
 
 **Note:** This example uses the **billing router**, which is a proof surface. Production-like deployments keep `ENABLE_PROOF_SURFACES=false`, so these endpoints return 404 unless explicitly enabled. See [docs/PROOF_SURFACES.md](../gateway/docs/PROOF_SURFACES.md).
 
@@ -143,6 +152,7 @@ this checkout. Do not show it as a buyer integration. Covered by
 | `ModuleNotFoundError: No module named 'b2a_sdk'` | SDK not installed or wrong Python path | Run `python -m pip install -e './sdk/python[dev]'` from the repo root |
 | `404 wallet_not_found` | Using a made-up wallet ID | Let the server create the wallet (as `dry_run_example.py` does) |
 | `404` on dry-run endpoints | Proof surfaces disabled | Start the API with `ENABLE_PROOF_SURFACES=true` |
+| `403` from `dry_run_example.py` | Wallet-scoped key instead of a bootstrap admin key | Use a key from the server's `VALID_API_KEYS` |
 | `Connection refused` | API not running | Start `uvicorn app.main:app` first |
 
 ---

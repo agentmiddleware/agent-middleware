@@ -115,7 +115,7 @@ PERMIT=$(curl -fsS -X POST "$API/v1/permits" \
 CALL_IDEM=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
 INVOKE=$(curl -fsS -X POST "$API/mcp/tools/partner.echo/invoke" \
   -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"partner.echo\",\"arguments\":{\"message\":\"hello from demo\"},\"mcpContext\":{\"wallet_id\":\"$WALLET\",\"permit_id\":\"$PERMIT\",\"idempotency_key\":\"$CALL_IDEM\"}}")
+  -d "{\"name\":\"partner.echo\",\"arguments\":{\"message\":\"hello from demo\"},\"mcp_context\":{\"wallet_id\":\"$WALLET\",\"permit_id\":\"$PERMIT\",\"idempotency_key\":\"$CALL_IDEM\"}}")
 RECEIPT=$(printf '%s' "$INVOKE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["receipt"]["receipt_id"])')
 
 # 3. Fetch the portable receipt and public trust keys.

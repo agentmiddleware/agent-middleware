@@ -280,3 +280,21 @@ test("utm-capture.js and demo-key.js share one classic-script global", () => {
   assert.equal(typeof listeners["get-demo-key"], "function");
   assert.equal(JSON.parse(session.get("amwDemoKeyUtm")).utm_source, "newsletter");
 });
+
+test("the REST invoke command sends its context as mcp_context", () => {
+  // POST /mcp/tools/{name}/invoke reads ToolCallRequest.mcp_context and
+  // ignores unknown keys, so a camelCase mcpContext would be dropped and the
+  // user's permit and request key would never reach the gateway.
+  const page = readFileSync(new URL("./demo-key/index.html", import.meta.url), "utf8");
+  const commands = page.match(/<code id="demo-commands">([\s\S]*?)<\/code>/)[1];
+  const invoke = commands.match(/INVOKE=\$\(curl[\s\S]*?-d "(.*)"\)/);
+  assert.ok(invoke, "invoke command not found");
+  const body = JSON.parse(invoke[1].replaceAll('\\"', '"'));
+  assert.deepEqual(Object.keys(body).sort(), ["arguments", "mcp_context", "name"]);
+  assert.deepEqual(Object.keys(body.mcp_context).sort(),
+    ["idempotency_key", "permit_id", "wallet_id"]);
+  const model = readFileSync(
+    new URL("../gateway/app/routers/mcp.py", import.meta.url), "utf8");
+  const request = model.match(/class ToolCallRequest\(BaseModel\):([\s\S]*?)\n\n\n/)[1];
+  assert.match(request, /\n    mcp_context: /);
+});

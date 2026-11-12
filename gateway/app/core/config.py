@@ -291,7 +291,9 @@ class Settings(BaseSettings):
     #
     # To run a local demo or a legacy integration without permits, set both
     # `TRUST_MODE_ENABLED=false` and `ALLOW_LEGACY_UNPERMITTED_MCP=true`
-    # explicitly in the environment. The startup banner in
+    # explicitly in the environment. Tools registered with `require_permit`
+    # (the dogfood tool, every upstream tool) still refuse an unpermitted call
+    # with `permit_required` in that posture. The startup banner in
     # `app.core.trust_mode.warn_if_trust_mode_permissive` makes it loud when
     # this opt-out is in effect, and the
     # `app.core.trust_mode.validate_trust_mode_guardrails` check refuses to

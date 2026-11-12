@@ -70,6 +70,13 @@ _TOP_UP_RETRY_MAX_AGE_SECONDS = 23 * 60 * 60
 _TOP_UP_RETRY_IDLE_SECONDS = 5 * 60
 
 
+class PaymentsNotConfiguredError(RuntimeError):
+    """No Stripe secret key is configured, so no fiat payment can be created."""
+
+    def __init__(self) -> None:
+        super().__init__("payments_not_configured")
+
+
 class StripeSettlementError(ValueError):
     """A verified Stripe event does not prove an acceptable top-up settlement."""
 
@@ -172,6 +179,13 @@ class StripeIntegration:
             validated_key = validate_client_idempotency_key(
                 idempotency_key, source=IDEMPOTENCY_KEY_HEADER_SOURCE
             )
+
+        # Refuse before an idempotency record exists. Without a key the Stripe
+        # SDK raises locally, after the record was opened and before it could
+        # be completed, which left the client's key stuck in progress. Same
+        # truth as /health/dependencies and discovery.
+        if not get_settings().STRIPE_SECRET_KEY:
+            raise PaymentsNotConfiguredError()
 
         replay_service = (
             get_idempotency_service() if validated_key is not None else None

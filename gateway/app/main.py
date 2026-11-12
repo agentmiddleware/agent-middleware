@@ -839,17 +839,19 @@ for router_module in CORE_TRUST_ROUTERS:
     )
 app.include_router(api_keys.admin_router)
 
-# Self-serve dev keys: the handler is triple-gated at runtime (its own
-# ENABLE_DEV_KEY_SELF_PROVISION flag answers 404, production-like environments
-# fail closed with 403, and cross-origin browser calls are refused), so the
-# route stays mounted for local flag flips — but it is only *advertised* in
-# the OpenAPI schema when the local opt-in flag is actually on. Production
-# cannot set the flag (validate_trust_mode_guardrails refuses to boot), so
-# the public spec never carries the path.
+# Self-serve dev keys: the route is triple-gated at runtime (while its
+# ENABLE_DEV_KEY_SELF_PROVISION flag is off it does not match, so it answers
+# like an unknown path; production-like environments fail closed with 403;
+# cross-origin browser calls are refused), so the route stays mounted for
+# local flag flips. It is only *advertised* in the OpenAPI schema when the
+# local opt-in flag is actually on. Production cannot set the flag
+# (validate_trust_mode_guardrails refuses to boot), so the public spec never
+# carries the path. Demo key issuance follows the same pattern under
+# ENABLE_DEMO_TENANT; its admin funnel report stays mounted and documented.
 app.include_router(
     dev_keys.router, include_in_schema=settings.ENABLE_DEV_KEY_SELF_PROVISION
 )
-app.include_router(demo_keys.router)
+app.include_router(demo_keys.router, include_in_schema=settings.ENABLE_DEMO_TENANT)
 app.include_router(demo_keys.admin_router)
 
 # Stripe webhooks answer only signed Stripe traffic; a deployment with no

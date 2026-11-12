@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from ..core.auth import AuthContext, get_auth_context
 from ..core import product_analytics
 from ..core.config import get_settings
+from ..core.flag_gated_route import flag_gated_route
 from ..core.rate_limiter import _client_id
 from ..services.demo_tenant import (
     DEMO_TENANT_LABEL,
@@ -29,7 +30,14 @@ from ..services.demo_tenant import (
 from ..services.demo_tenant_boundary import DemoPermitDenied, KeyAllowlistDenied
 from ..services.permits import PermitError
 
-router = APIRouter(prefix="/v1/demo", tags=["Demo"])
+# While ENABLE_DEMO_TENANT is off the issuance routes do not match at all, so
+# GET and POST /v1/demo/keys (any body, malformed JSON included) get the same
+# 404 as an unknown path. Funnel reporting on admin_router stays available.
+router = APIRouter(
+    prefix="/v1/demo",
+    tags=["Demo"],
+    route_class=flag_gated_route("ENABLE_DEMO_TENANT"),
+)
 admin_router = APIRouter(prefix="/v1/admin/demo-keys", tags=["Demo"])
 
 _UTM_MAX_LENGTH = 128

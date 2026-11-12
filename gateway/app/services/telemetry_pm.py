@@ -18,11 +18,13 @@ import hashlib
 import uuid
 import logging
 from collections import defaultdict
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, func, text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
@@ -34,7 +36,7 @@ from ..db.converters import (
     telemetry_event_to_model,
     telemetry_event_model_to_schema,
 )
-from ..db.database import get_session_factory, is_database_configured
+from ..db.database import get_engine, get_session_factory, is_database_configured
 from ..db.models import TelemetryEventModel
 from ..schemas.telemetry import (
     TelemetryEvent,
@@ -364,6 +366,17 @@ class EventStore:
 # ---------------------------------------------------------------------------
 
 
+_ANOMALIES_STATE_KEY = "telemetry.anomalies"
+
+# Advisory lock key (signed 64-bit) that serializes analysis passes across
+# gateway workers sharing one PostgreSQL database.
+_ANALYSIS_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"amw.telemetry.anomaly-analysis").digest()[:8],
+    "big",
+    signed=True,
+)
+
+
 @dataclass
 class AnomalyCandidate:
     """Internal anomaly representation before promotion to report."""
@@ -399,45 +412,78 @@ class AnomalyDetector:
         # telemetry, or an anomaly persisted before tenant scoping).
         self._owners: dict[str, str | None] = {}
         self._lock = asyncio.Lock()
-        self._init_lock = asyncio.Lock()
-        self._hydrated = False
         self._state = get_durable_state()
 
-    async def _hydrate_if_needed(self):
-        if self._hydrated:
+    async def _refresh(self) -> None:
+        """Replace the local anomalies with the shared durable copy.
+
+        Several gateway workers share one durable store, and each keeps its
+        own copy in memory. Reloading before every analysis pass and every
+        read means a worker sees the anomalies another worker recorded: it
+        continues them under the same id instead of minting a second one, and
+        an id returned by one worker resolves on all of them.
+
+        The load and the swap happen under ``_lock``, the lock ``_record``
+        holds while it writes, so a reload can never replace the local copy
+        with a payload read before that write.
+        """
+        if not self._state.enabled:
             return
 
-        async with self._init_lock:
-            if self._hydrated:
+        async with self._lock:
+            payload = await self._state.load_json(_ANOMALIES_STATE_KEY)
+            if not isinstance(payload, dict):
                 return
+            loaded: dict[str, AnomalyReport] = {}
+            owners: dict[str, str | None] = {}
+            for anomaly_id, record in payload.items():
+                try:
+                    loaded[anomaly_id] = AnomalyReport.model_validate(record)
+                except Exception:
+                    logger.exception(
+                        "Skipping corrupt telemetry anomaly: %s",
+                        anomaly_id,
+                    )
+                    continue
+                # A record without a valid owner fails closed to the
+                # unowned (bootstrap-admin-only) partition.
+                owner = record.get("owner") if isinstance(record, dict) else None
+                owners[anomaly_id] = owner if isinstance(owner, str) else None
+            self._anomalies = loaded
+            self._owners = owners
 
-            payload = await self._state.load_json("telemetry.anomalies")
-            if isinstance(payload, dict):
-                loaded: dict[str, AnomalyReport] = {}
-                owners: dict[str, str | None] = {}
-                for anomaly_id, record in payload.items():
-                    try:
-                        loaded[anomaly_id] = AnomalyReport.model_validate(record)
-                    except Exception:
-                        logger.exception(
-                            "Skipping corrupt telemetry anomaly: %s",
-                            anomaly_id,
-                        )
-                        continue
-                    # A record without a valid owner fails closed to the
-                    # unowned (bootstrap-admin-only) partition.
-                    owner = record.get("owner") if isinstance(record, dict) else None
-                    owners[anomaly_id] = owner if isinstance(owner, str) else None
-                self._anomalies = loaded
-                self._owners = owners
+    @asynccontextmanager
+    async def _analysis_turn(self) -> AsyncIterator[bool]:
+        """Yield whether this process may run an analysis pass now.
 
-            self._hydrated = True
+        The anomalies are one durable document, written whole. Two workers
+        that analyze at once would each read it, each add their own report,
+        and the later write would drop the earlier one. On PostgreSQL a
+        transaction-scoped advisory lock lets one worker at a time through;
+        a worker that does not get it skips the pass, since another worker
+        is already running the same analysis over the same events. The lock
+        is released when the transaction ends, including on a crash.
+
+        Other dialects have no advisory lock. SQLite is single-host and is
+        refused in production-like environments, so the pass runs unguarded.
+        """
+        engine = get_engine()
+        if engine is None or engine.dialect.name != "postgresql":
+            yield True
+            return
+
+        async with get_session_factory()() as session, session.begin():
+            acquired = await session.scalar(
+                text("SELECT pg_try_advisory_xact_lock(:key)"),
+                {"key": _ANALYSIS_LOCK_KEY},
+            )
+            yield bool(acquired)
 
     async def _persist_locked(self):
         if not self._state.enabled:
             return
         await self._state.save_json(
-            "telemetry.anomalies",
+            _ANOMALIES_STATE_KEY,
             {
                 k: {**v.model_dump(mode="json"), "owner": self._owners.get(k)}
                 for k, v in self._anomalies.items()
@@ -451,9 +497,17 @@ class AnomalyDetector:
         Strategies run separately over each owner partition with recent
         errors, so one tenant's events never feed another tenant's anomaly.
 
-        Call this periodically (e.g., every 60 seconds).
+        Call this periodically (e.g., every 60 seconds). Safe to call from
+        every gateway worker: passes are serialized across workers and each
+        one starts from the shared durable anomalies.
         """
-        await self._hydrate_if_needed()
+        async with self._analysis_turn() as acquired:
+            if not acquired:
+                return []
+            await self._refresh()
+            return await self._analyze_owners()
+
+    async def _analyze_owners(self) -> list[AnomalyReport]:
         reports: list[AnomalyReport] = []
 
         owners = await self._store.owners(
@@ -543,7 +597,7 @@ class AnomalyDetector:
         per_page: int = 50,
         owner: OwnerScope = ANY_OWNER,
     ) -> tuple[list[AnomalyReport], int]:
-        await self._hydrate_if_needed()
+        await self._refresh()
         anomalies = [
             a
             for anomaly_id, a in self._anomalies.items()
@@ -568,7 +622,7 @@ class AnomalyDetector:
         """Return ``(report, anomaly_owner)`` when the anomaly exists and is
         visible to ``owner``; otherwise ``None``, so a foreign anomaly is
         indistinguishable from a missing one."""
-        await self._hydrate_if_needed()
+        await self._refresh()
         report = self._anomalies.get(anomaly_id)
         anomaly_owner = self._owners.get(anomaly_id)
         if report is None or not _owner_visible(anomaly_owner, owner):

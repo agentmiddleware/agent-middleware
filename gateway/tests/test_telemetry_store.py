@@ -379,3 +379,96 @@ async def test_repeated_analysis_updates_an_ongoing_anomaly_instead_of_duplicati
     # The update is what got persisted.
     assert len(state.payload) == 1
     assert state.payload[first.anomaly_id]["event_count"] == 15
+
+
+@pytest.mark.anyio
+async def test_two_workers_sharing_a_store_keep_one_anomaly_under_one_id():
+    """Every gateway worker runs its own detector over the same durable
+    store. A worker that loaded the store while it was empty must still
+    continue the anomaly another worker recorded, not add a second one under
+    a new id and overwrite the first (#356)."""
+    store = EventStore()
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-1", OWNER_A)
+
+    state = _FakeDurableState()
+    worker_a = _detector(store, state)
+    worker_b = _detector(store, state)
+    # Both workers read the store before any anomaly exists.
+    assert (await worker_a.get_anomalies(owner=OWNER_A))[1] == 0
+    assert (await worker_b.get_anomalies(owner=OWNER_A))[1] == 0
+
+    [first] = await worker_a.analyze()
+    # The same condition, seen by the other worker, is not a new anomaly.
+    assert await worker_b.analyze() == []
+    assert list(state.payload) == [first.anomaly_id]
+
+    # An id handed out by one worker resolves on the other.
+    seen_by_b = await worker_b.get_anomaly(first.anomaly_id, owner=OWNER_A)
+    assert seen_by_b == first
+
+    # The other worker's update lands on the same report, and the first
+    # worker reads it back.
+    await store.ingest([_event(source="a-svc") for _ in range(3)], "b-2", OWNER_A)
+    [updated] = await worker_b.analyze()
+    assert updated.anomaly_id == first.anomaly_id
+    assert list(state.payload) == [first.anomaly_id]
+    reports, total = await worker_a.get_anomalies(owner=OWNER_A)
+    assert total == 1
+    assert reports[0].event_count == 15
+
+
+@pytest.mark.anyio
+async def test_one_worker_keeps_the_anomalies_another_worker_recorded():
+    """A worker's write carries the other workers' anomalies with it: it
+    starts from the shared store, not from what it loaded at startup."""
+    store = EventStore()
+    state = _FakeDurableState()
+    worker_a = _detector(store, state)
+    worker_b = _detector(store, state)
+    assert (await worker_a.get_anomalies())[1] == 0
+    assert (await worker_b.get_anomalies())[1] == 0
+
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-a", OWNER_A)
+    [report_a] = await worker_a.analyze()
+
+    await store.ingest([_event(source="b-svc") for _ in range(12)], "b-b", OWNER_B)
+    [report_b] = await worker_b.analyze()
+
+    assert set(state.payload) == {report_a.anomaly_id, report_b.anomaly_id}
+    assert await worker_b.get_anomaly(report_a.anomaly_id, owner=OWNER_A) == report_a
+    assert await worker_a.get_anomaly(report_b.anomaly_id, owner=OWNER_B) == report_b
+
+
+@pytest.mark.anyio
+async def test_analysis_pass_is_skipped_while_another_worker_holds_the_turn():
+    """A worker that does not get the cross-worker turn detects nothing and
+    writes nothing; the worker holding the turn covers the same events."""
+    from contextlib import asynccontextmanager
+
+    store = EventStore()
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-1", OWNER_A)
+
+    state = _FakeDurableState()
+    detector = _detector(store, state)
+
+    @asynccontextmanager
+    async def _turn_taken():
+        yield False
+
+    detector._analysis_turn = _turn_taken  # type: ignore[method-assign]
+    assert await detector.analyze() == []
+    assert state.payload is None
+    assert (await detector.get_anomalies(owner=OWNER_A))[1] == 0
+
+
+@pytest.mark.anyio
+async def test_analysis_turn_is_open_without_postgresql():
+    """The cross-worker lock is PostgreSQL-only. The suite's SQLite engine
+    has no advisory lock, so the pass runs unguarded."""
+    from app.db.database import get_engine
+
+    engine = get_engine()
+    assert engine is not None
+    assert engine.dialect.name != "postgresql"
+    async with AnomalyDetector(EventStore())._analysis_turn() as acquired:
+        assert acquired is True

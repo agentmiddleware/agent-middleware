@@ -719,13 +719,13 @@ async def test_argument_swap_after_approval_is_denied(
     permit = await _approval_permit(client, provisioned, idem_key="swap-permit-1")
 
     benign = _invoke_body(provisioned, permit, "swap-invoke-1")
-    benign["params"]["arguments"] = {"text": "benign — the human sees this"}
+    benign["params"]["arguments"] = {"message": "benign — the human sees this"}
     await _approve_pending(client, provisioned, fake, benign)
 
     # Same idempotency key, DIFFERENT arguments — must be denied before any
     # charge or execution (the exact bypass reproduced against a live Sentinel).
     malicious = _invoke_body(provisioned, permit, "swap-invoke-1")
-    malicious["params"]["arguments"] = {"text": "MALICIOUS — never approved"}
+    malicious["params"]["arguments"] = {"message": "MALICIOUS — never approved"}
     resp = await client.post(
         "/mcp/messages", json=malicious, headers=provisioned["agent_headers"]
     )
@@ -1120,7 +1120,7 @@ async def test_transient_create_with_different_args_gets_separate_approval(
     monkeypatch.setattr(fresh_service, "_persist", flaky_persist)
 
     body_x = _invoke_body(provisioned, permit, "transient-1")
-    body_x["params"]["arguments"] = {"text": "X the human reviews"}
+    body_x["params"]["arguments"] = {"message": "X the human reviews"}
     r1 = await client.post(
         "/mcp/messages", json=body_x, headers=provisioned["agent_headers"]
     )
@@ -1128,7 +1128,7 @@ async def test_transient_create_with_different_args_gets_separate_approval(
 
     # Attempt 2: SAME idempotency key, args Y. Persist now succeeds.
     body_y = _invoke_body(provisioned, permit, "transient-1")
-    body_y["params"]["arguments"] = {"text": "Y never reviewed"}
+    body_y["params"]["arguments"] = {"message": "Y never reviewed"}
     r2 = await client.post(
         "/mcp/messages", json=body_y, headers=provisioned["agent_headers"]
     )
@@ -1138,8 +1138,8 @@ async def test_transient_create_with_different_args_gets_separate_approval(
     # so Y is never bound to X's human decision.
     keys = {k for k, _ in dedup.creates}
     assert len(keys) == 2, dedup.creates
-    x_hash = invoke_request_hash(TOOL, {"text": "X the human reviews"}, Decimal("2"))
-    y_hash = invoke_request_hash(TOOL, {"text": "Y never reviewed"}, Decimal("2"))
+    x_hash = invoke_request_hash(TOOL, {"message": "X the human reviews"}, Decimal("2"))
+    y_hash = invoke_request_hash(TOOL, {"message": "Y never reviewed"}, Decimal("2"))
     assert x_hash != y_hash
 
 

@@ -131,3 +131,27 @@ def test_retry_tool_error_returns_nonzero(
     monkeypatch.setenv("AGENT_API_KEY", "local-test-key")
     monkeypatch.setattr(call_with_retry, "call_once", fake)
     assert asyncio.run(call_with_retry.main()) == 1
+
+
+def test_serve_awaits_the_async_server_inside_the_running_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #359: --serve runs under asyncio.run, so it must not call asyncio.run again."""
+    import b2a_sdk.mcp
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_serve_async(**kwargs: object) -> None:
+        asyncio.get_running_loop()
+        calls.append(kwargs)
+
+    def nested_serve(**kwargs: object) -> None:
+        asyncio.run(fake_serve_async(**kwargs))
+
+    monkeypatch.setenv("B2A_API_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(b2a_sdk.mcp, "serve_async", fake_serve_async)
+    monkeypatch.setattr(b2a_sdk.mcp, "serve", nested_serve)
+
+    asyncio.run(mcp_tool_example.main_serve())
+
+    assert calls == [{"transport": "stdio", "api_url": "http://127.0.0.1:9"}]

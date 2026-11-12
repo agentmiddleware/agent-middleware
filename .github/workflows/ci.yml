@@ -633,6 +633,37 @@ jobs:
       - name: Test
         run: $PM run --if-present test
 
+  site:
+    # The marketing site has no package manager dependencies: its suites use
+    # only Node built-ins and read the checked-in pages and scripts. They take
+    # well under a second, so every non-docs change runs them rather than
+    # path-filtering (some suites also read gateway sources).
+    name: Site tests / Node ${{ matrix.node-version }}
+    needs: detect
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          package-manager-cache: false
+      - name: Test (node --test)
+        # Same command as site/README.md, from the repository root. An
+        # unmatched glob stays literal and fails, so the job cannot pass with
+        # no suites.
+        run: node --test site/test_*.mjs
+
   trust_release_gate:
     # Non-required while trust coverage and committed OpenAPI parity fail.
     # Keep it out of CI result until both checks are green in CI and the
@@ -675,7 +706,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [lint, detect, python, framework-integrations, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [lint, detect, python, framework-integrations, typescript, site, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

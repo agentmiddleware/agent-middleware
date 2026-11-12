@@ -133,3 +133,27 @@ async def test_expiry_sweep_purges_memories(client, clean_database):
         f"/v1/awi/rag/memory/{memory_id}", headers=BOOTSTRAP_HEADERS
     )
     assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.parametrize("top_k", ["0", "-1", "21", "1000"])
+async def test_session_context_rejects_out_of_range_top_k(
+    client, clean_database, top_k
+):
+    actor, sid, _ = await _session_with_memory(client)
+    resp = await client.get(
+        f"/v1/awi/rag/context/{sid}",
+        params={"top_k": top_k},
+        headers=actor["agent_headers"],
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize("top_k", ["1", "20"])
+async def test_session_context_accepts_top_k_bounds(client, clean_database, top_k):
+    actor, sid, _ = await _session_with_memory(client)
+    resp = await client.get(
+        f"/v1/awi/rag/context/{sid}",
+        params={"top_k": top_k},
+        headers=actor["agent_headers"],
+    )
+    assert resp.status_code == 200, resp.text

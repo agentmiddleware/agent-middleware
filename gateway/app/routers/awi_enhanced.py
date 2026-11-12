@@ -15,7 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 
 from ..core.auth import AuthContext, get_auth_context
@@ -1137,7 +1137,8 @@ async def delete_memory(
 async def get_session_context(
     session_id: str,
     session_type: str | None = None,
-    top_k: int = 3,
+    # Same bounds as RAGQueryRequest.top_k on /rag/query.
+    top_k: int = Query(default=3, ge=1, le=20),
     auth: AuthContext = Depends(get_auth_context),
 ):
     """

@@ -131,6 +131,17 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
                 pass
 
 
+_SIGNING_ENV_HELP = """\
+environment:
+  Replay receipts are signed with the gateway trust signing key:
+    TRUST_SIGNING_PRIVATE_KEY_B64  base64 Ed25519 private key
+    TRUST_SIGNING_KEY_ID           key id published in keys.json
+                                   (default local-dev-ed25519)
+  The key is required while TRUST_MODE_ENABLED is true, the default. With
+  TRUST_MODE_ENABLED=false a throwaway key is generated for this run only.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="amw-replay",
@@ -138,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
             "Re-decide recorded gateway calls under a new policy bundle. "
             "Never executes a tool or contacts any server."
         ),
+        epilog=_SIGNING_ENV_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--bundle", required=True, help="New policy bundle JSON")
     parser.add_argument(
@@ -181,7 +194,15 @@ def main(argv: list[str] | None = None) -> int:
         calls = load_recorded_calls(args.calls, recorded_keys=recorded_keys)
         bundle = load_policy_bundle(args.bundle)
         result = replay_calls(calls, bundle)
-    except (ValueError, SigningKeyError, OSError) as exc:
+    except SigningKeyError as exc:
+        print(f"amw-replay: {exc}", file=sys.stderr)
+        print(
+            "amw-replay: set TRUST_SIGNING_PRIVATE_KEY_B64 and TRUST_SIGNING_KEY_ID "
+            "(see amw-replay --help)",
+            file=sys.stderr,
+        )
+        return 2
+    except (ValueError, OSError) as exc:
         print(f"amw-replay: {exc}", file=sys.stderr)
         return 2
 

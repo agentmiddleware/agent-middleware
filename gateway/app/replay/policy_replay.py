@@ -159,6 +159,23 @@ class RecordedCall:
 class PolicyBundle:
     document: dict[str, Any]
     models: tuple[PolicyBundleModel, ...]
+    #: Per model (same order): True when the bundle document states
+    #: ``risk_tier`` for that policy. A policy that omits it still carries the
+    #: ``medium`` default, which ``evaluate_policy_models`` enforces against a
+    #: recorded tier, but only a stated ceiling makes a missing tier an
+    #: unknown input. Empty means every ceiling counts as stated (fail closed
+    #: for bundles built by hand).
+    risk_tier_explicit: tuple[bool, ...] = ()
+
+    def states_risk_tier(self, model: PolicyBundleModel) -> bool:
+        if not self.risk_tier_explicit:
+            return True
+        for candidate, explicit in zip(
+            self.models, self.risk_tier_explicit, strict=True
+        ):
+            if candidate is model:
+                return explicit
+        return True
 
     @property
     def bundle_hash(self) -> str:
@@ -410,6 +427,7 @@ def load_policy_bundle(path: str | Path) -> PolicyBundle:
     if not isinstance(policies, list) or not policies:
         raise ReplayError("bundle has no policies")
     models: list[PolicyBundleModel] = []
+    risk_tier_explicit: list[bool] = []
     for index, policy in enumerate(policies):
         if not isinstance(policy, dict):
             raise ReplayError(f"bundle policy {index} must be an object")
@@ -456,19 +474,29 @@ def load_policy_bundle(path: str | Path) -> PolicyBundle:
             is_active=_policy_bool(policy, "is_active", default=True),
         )
         models.append(model)
-    return PolicyBundle(document=document, models=tuple(models))
+        risk_tier_explicit.append("risk_tier" in policy)
+    return PolicyBundle(
+        document=document,
+        models=tuple(models),
+        risk_tier_explicit=tuple(risk_tier_explicit),
+    )
 
 
 def _unknown_inputs(
     call: RecordedCall,
     models: Sequence[PolicyBundleModel],
+    bundle: PolicyBundle,
 ) -> list[str]:
     """Recorded inputs an applicable policy needs but the call lacks.
 
-    ``require_real_effects`` needs ``simulation``, any ``risk_tier`` ceiling
-    needs ``risk_tier`` (an unstated tier still defaults to ``medium``, which
-    is a ceiling like any other), and ``max_cost_per_action`` or
+    ``require_real_effects`` needs ``simulation``, a ``risk_tier`` ceiling
+    the bundle states needs ``risk_tier``, and ``max_cost_per_action`` or
     ``daily_spend_limit`` needs ``credits_authorized``.
+
+    The gateway never signs a requested tier into receipts, and its invoke
+    paths evaluate policy with no tier, so the implicit ``medium`` default is
+    never compared there either. Treating that default as unknown made every
+    real recorded allow replay as a deny. A stated ceiling still fails closed.
     """
     payload = call.payload
     unknown: list[str] = []
@@ -478,7 +506,7 @@ def _unknown_inputs(
     ):
         unknown.append("simulation")
     if (
-        any(m.risk_tier is not None for m in models)
+        any(m.risk_tier is not None and bundle.states_risk_tier(m) for m in models)
         and payload.get("risk_tier") is None
     ):
         unknown.append("risk_tier")
@@ -502,7 +530,7 @@ def _decide(
         for model in bundle.models
         if model.is_active and (not model.wallet_id or model.wallet_id == wallet_id)
     ]
-    unevaluated = _unknown_inputs(call, models)
+    unevaluated = _unknown_inputs(call, models, bundle)
     outcome = call.payload["outcome"]
     reason = call.payload.get("reason_code")
 

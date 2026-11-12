@@ -367,3 +367,74 @@ def test_unevaluable_schema_is_skipped_not_a_client_error() -> None:
         "input_schema": {"type": "not-a-type"},
     }
     validate_local_tool_arguments(invalid, {"anything": 1})
+
+
+def _model_backed_local_tools() -> list[tuple[str, Any, Any]]:
+    from app.services.mcp_phase9_tools import MCP_PHASE9_TOOLS
+
+    tools = [
+        (tool["service_id"], tool["func"], tool["input_model"])
+        for tool in MCP_PHASE9_TOOLS
+    ]
+    tools.append(
+        (
+            dogfood_tool.DOGFOOD_TOOL_ID,
+            dogfood_tool._write_note,
+            dogfood_tool._WriteNoteArguments,
+        )
+    )
+    return tools
+
+
+@pytest.mark.parametrize(
+    ("service_id", "func", "input_model"),
+    _model_backed_local_tools(),
+    ids=lambda value: value if isinstance(value, str) else "",
+)
+def test_input_model_names_every_required_handler_argument(
+    service_id: str, func: Any, input_model: Any
+) -> None:
+    """The enforced schema must admit every argument the handler requires.
+
+    The advertised schema is closed (``additionalProperties: false``), so a
+    required handler argument the input model leaves out could never be
+    passed once arguments are validated.
+    """
+    import inspect
+
+    from app.services.service_registry import pydantic_to_mcp_schema
+
+    schema = pydantic_to_mcp_schema(input_model)
+    assert schema is not None
+    required_by_handler = {
+        param.name
+        for param in inspect.signature(func).parameters.values()
+        if param.default is inspect.Parameter.empty
+        and param.kind
+        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    }
+    missing = required_by_handler - set(schema["properties"])
+    assert not missing, f"{service_id} schema omits {sorted(missing)}"
+
+
+def test_awi_dom_state_accepts_its_session_id() -> None:
+    from app.services.mcp_phase9_tools import MCP_PHASE9_TOOLS
+    from app.services.service_registry import pydantic_to_mcp_schema
+    from app.services.tool_arguments import (
+        ToolArgumentsInvalid,
+        validate_local_tool_arguments,
+    )
+
+    tool = next(t for t in MCP_PHASE9_TOOLS if t["service_id"] == "awi_dom_state")
+    service = {
+        "service_id": "awi_dom_state",
+        "execution_backend": "local",
+        "input_schema": pydantic_to_mcp_schema(tool["input_model"]),
+    }
+    validate_local_tool_arguments(
+        service, {"session_id": "dom-session", "representation_type": "summary"}
+    )
+    with pytest.raises(ToolArgumentsInvalid) as refused:
+        validate_local_tool_arguments(service, {"representation_type": "summary"})
+    assert refused.value.argument == "session_id"
+    assert refused.value.violation == "required"

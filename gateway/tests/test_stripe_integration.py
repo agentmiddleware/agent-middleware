@@ -51,6 +51,19 @@ def _configured_webhook_secret(monkeypatch):
     monkeypatch.setattr(get_settings(), "STRIPE_WEBHOOK_SECRET", "whsec_test_stripe")
 
 
+@pytest.fixture(autouse=True)
+def _configured_stripe_secret(monkeypatch):
+    """Mark Stripe as configured for this module's mocked-SDK tests.
+
+    Top-up prepare refuses with payments_not_configured when no secret key is
+    set. These tests mock stripe.PaymentIntent, so any non-empty value works;
+    the unconfigured refusal is pinned by its own test, which clears it.
+    """
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "STRIPE_SECRET_KEY", "configured-in-tests")
+
+
 @pytest.fixture
 async def sponsor_wallet(client, api_headers):
     """Create a sponsor wallet for testing."""
@@ -629,6 +642,98 @@ async def test_prepare_top_up_rejects_unusable_idempotency_key_before_stripe(
 
     assert response.status_code == 400
     mock_create.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_without_stripe_key_refuses_and_leaves_key_free(
+    client, sponsor_wallet, api_headers, monkeypatch
+):
+    """No Stripe key is a stable refusal, not the SDK's text (#345).
+
+    The refusal comes before the idempotency record is opened, so a retry
+    with the same key gets the same answer instead of 409 in progress, and
+    nothing is credited.
+    """
+    from sqlalchemy import func, select
+
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "STRIPE_SECRET_KEY", "")
+    wallet_id = sponsor_wallet["wallet_id"]
+    url = f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=5.0"
+    headers = {**api_headers, "Idempotency-Key": "topup-unconfigured-1"}
+
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        first = await client.post(url, headers=headers)
+        retry = await client.post(url, headers=headers)
+
+    for response in (first, retry):
+        assert response.status_code == 503, response.text
+        detail = response.json()["detail"]
+        assert detail["error"] == "payments_not_configured"
+        assert "stripe.com" not in detail["message"].lower()
+    mock_create.assert_not_called()
+
+    async with get_session_factory()() as session:
+        records = await session.scalar(
+            select(func.count())
+            .select_from(IdempotencyRecordModel)
+            .where(IdempotencyRecordModel.idempotency_key == "topup-unconfigured-1")
+        )
+    assert records == 0
+    wallet = await client.get(f"/v1/billing/wallets/{wallet_id}", headers=api_headers)
+    assert wallet.json()["balance"] == sponsor_wallet["balance"]
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_stripe_error_does_not_echo_provider_text(
+    client, sponsor_wallet, api_headers
+):
+    """A Stripe SDK error answers with a stable code, not the SDK message."""
+    wallet_id = sponsor_wallet["wallet_id"]
+    provider_text = "provider-side detail meant for the operator"
+
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.side_effect = stripe.AuthenticationError(provider_text)
+        response = await client.post(
+            f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=5.0",
+            headers=api_headers,
+        )
+
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"]["error"] == "payment_provider_error"
+    assert provider_text not in response.text
+
+
+@pytest.mark.anyio
+async def test_prepare_top_up_stripe_request_error_stays_400_without_sdk_text(
+    client, sponsor_wallet, api_headers
+):
+    """Stripe refusing the request itself is a caller error: 400, Stripe's
+    stable code, and not the SDK's message."""
+    wallet_id = sponsor_wallet["wallet_id"]
+    provider_text = "provider-side detail about the amount"
+
+    with patch(
+        "app.services.stripe_integration.stripe.PaymentIntent.create"
+    ) as mock_create:
+        mock_create.side_effect = stripe.InvalidRequestError(
+            provider_text, param="amount", code="amount_too_small"
+        )
+        response = await client.post(
+            f"/v1/billing/top-up/prepare?wallet_id={wallet_id}&amount_fiat=0.01",
+            headers=api_headers,
+        )
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["error"] == "topup_prepare_error"
+    assert detail["provider_code"] == "amount_too_small"
+    assert provider_text not in response.text
 
 
 @pytest.mark.anyio

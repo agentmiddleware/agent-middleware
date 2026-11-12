@@ -294,7 +294,13 @@ async def test_top_up_prepare_denies_foreign_wallet_key(client, api_headers):
 
 
 @pytest.mark.anyio
-async def test_top_up_prepare_scoped_key_succeeds_for_own_sponsor(client, api_headers):
+async def test_top_up_prepare_scoped_key_succeeds_for_own_sponsor(
+    client, api_headers, monkeypatch
+):
+    from app.core.config import get_settings
+
+    # The SDK is mocked below; any non-empty key marks payments as configured.
+    monkeypatch.setattr(get_settings(), "STRIPE_SECRET_KEY", "configured-in-tests")
     sponsor = await client.post(
         "/v1/billing/wallets/sponsor",
         json={

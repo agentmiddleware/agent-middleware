@@ -11,8 +11,11 @@ Core routes do not pay merchants out. ACP checkout, on the expansion
 router, charges a Stripe Shared Payment Token and mints no credits.
 """
 
+import logging
 from decimal import Decimal
 from typing import ClassVar, cast
+
+import stripe
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -43,7 +46,10 @@ from ..services.idempotency import (
 from ..services.policies import evaluate_wallet_policy
 from ..services.velocity_monitor import WalletFrozenError
 from ..services.wallet_engine import CrossTenantTransferError, WalletExpiredError
-from ..services.stripe_integration import get_stripe_integration
+from ..services.stripe_integration import (
+    PaymentsNotConfiguredError,
+    get_stripe_integration,
+)
 from ..services.shadow_ledger import SimulatedChargeResult, get_shadow_ledger
 from ..services.acp_bridge import (
     ACPBridgeError,
@@ -213,6 +219,8 @@ async def _enforce_billing_policy(
         )
     return estimated_cost, policy.policy_id, policy.evaluated_constraints
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/v1/billing",
@@ -1046,6 +1054,42 @@ async def prepare_top_up(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": str(e), "message": str(e)},
+        ) from e
+    except PaymentsNotConfiguredError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "payments_not_configured",
+                "message": "Fiat top-ups are not available on this deployment.",
+            },
+        ) from e
+    except (stripe.InvalidRequestError, stripe.CardError) as e:
+        # Stripe refused the request itself (for example an amount under its
+        # minimum): a caller error, so keep 400. Pass Stripe's stable code
+        # rather than the SDK's text, which is written for the key holder.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "topup_prepare_error",
+                "message": "The payment provider rejected the top-up request.",
+                "provider_code": e.code,
+            },
+        ) from e
+    except stripe.StripeError as e:
+        # Authentication, connection, rate limit, or provider failures. The
+        # SDK's text is for the operator holding the Stripe key, not for the
+        # API caller; log the error type and answer with a stable code.
+        logger.warning(
+            "top-up prepare failed at the payment provider for wallet %s: %s",
+            wallet_id,
+            type(e).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": "payment_provider_error",
+                "message": "The payment provider did not accept the request.",
+            },
         ) from e
     except Exception as e:
         raise HTTPException(

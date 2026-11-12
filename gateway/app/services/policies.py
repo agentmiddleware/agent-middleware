@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.core.time import utc_now
 from app.db.database import get_session_factory
-from app.db.models import PolicyBundleModel
+from app.db.models import PolicyBundleModel, WalletModel
 from app.schemas.policies import (
     PolicyBundleCreate,
     PolicyBundlePatch,
@@ -35,6 +35,14 @@ class PolicyEvaluation:
     reason: str
     policy_id: str | None
     evaluated_constraints: dict[str, Any]
+
+
+class PolicyWalletNotFoundError(LookupError):
+    """The bundle names a wallet that does not exist."""
+
+    def __init__(self, wallet_id: str) -> None:
+        self.wallet_id = wallet_id
+        super().__init__(f"Wallet {wallet_id} not found")
 
 
 class _CorruptPolicyListError(ValueError):
@@ -146,6 +154,10 @@ async def create_policy_bundle(request: PolicyBundleCreate) -> PolicyBundleRespo
     )
     factory = get_session_factory()
     async with factory() as session:
+        # Check before the insert so an unknown wallet is a 404, not the
+        # foreign key failing the INSERT as a 500.
+        if await session.get(WalletModel, request.wallet_id) is None:
+            raise PolicyWalletNotFoundError(request.wallet_id)
         session.add(model)
         await session.commit()
         await session.refresh(model)

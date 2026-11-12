@@ -203,9 +203,11 @@ async def main_generate():
 
 async def main_serve():
     """Run standalone MCP server."""
-    from b2a_sdk.mcp import serve
+    from b2a_sdk.mcp import serve_async
 
-    serve(
+    # main_serve already runs inside asyncio.run(), so await the async server.
+    # The sync serve() wrapper would start a second event loop and fail.
+    await serve_async(
         transport="stdio",
         api_url=os.getenv("B2A_API_URL", "http://localhost:8000"),
     )

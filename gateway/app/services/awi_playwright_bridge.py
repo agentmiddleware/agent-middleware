@@ -215,6 +215,12 @@ class ExecutionResult:
     error: Optional[str] = None
     elements_found: dict[str, int] = field(default_factory=dict)
     duration_ms: int = 0
+    #: Stable failure code for receipts; ``error`` is free text and may carry
+    #: ids. One of ``dom_session_not_found``, ``no_page_available`` or
+    #: ``dom_command_failed``; None on success.
+    error_code: Optional[str] = None
+    #: False only when no command could have reached a browser page.
+    dispatched: bool = True
 
 
 class AWIPlaywrightBridge:
@@ -719,6 +725,21 @@ class AWIPlaywrightBridge:
                 new_url=None,
                 new_title=None,
                 error=f"Session {session_id} not found",
+                error_code="dom_session_not_found",
+                dispatched=False,
+            )
+
+        if commands and not session._page:
+            # _execute_single_command refuses every command without a page
+            # before touching anything, so nothing can have run.
+            return ExecutionResult(
+                success=False,
+                commands_executed=0,
+                new_url=session.current_url,
+                new_title=session.page_title,
+                error=f"No page available for session {session.session_id}",
+                error_code="no_page_available",
+                dispatched=False,
             )
 
         start_time = utc_now()
@@ -745,6 +766,7 @@ class AWIPlaywrightBridge:
             new_title=session.page_title,
             error=error,
             duration_ms=duration_ms,
+            error_code=None if error is None else "dom_command_failed",
         )
 
     # ─────────────────────────────────────────────────────────────────────────

@@ -730,6 +730,17 @@ async def sync_dom(
             else {}
         )
 
+        error = execution.error
+        effect_status = None
+        if not execution.success:
+            # Lead with a fixed code, as /execute does with dom_bridge_failed:
+            # the receipt's reason_code is the text before the first colon,
+            # and the bridge's free text can carry the session id.
+            code = getattr(execution, "error_code", None) or "dom_sync_failed"
+            error = f"{code}: {error}" if error else code
+            # Only a result that proves no command reached a page may refund.
+            dispatched = getattr(execution, "dispatched", True)
+            effect_status = "unknown" if dispatched else "not_dispatched"
         body = DOMSyncResponse(
             session_id=request.session_id,
             execution_id=str(uuid4()),
@@ -737,10 +748,10 @@ async def sync_dom(
             commands_generated=len(commands),
             commands_executed=execution.commands_executed,
             status="success" if execution.success else "error",
-            effect_status=None if execution.success else "unknown",
+            effect_status=effect_status,
             new_url=execution.new_url,
             state_representation=representation,
-            error=execution.error,
+            error=error,
         ).model_dump(mode="json")
         return await complete_awi_http_governed(
             gov,

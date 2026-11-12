@@ -1327,20 +1327,17 @@ async def test_foreign_rag_memory_is_indistinguishable_from_missing(
     assert owner_get.json()["memory_id"] == b_memory
     assert admin_get.status_code == 200, admin_get.text
 
-    # Once the owning session is gone the memory is admin-only, and a non-admin
-    # sees a plain 404 rather than an admin_access_denied 403.
+    # Deleting the owning session deletes its memories (issue 355), so the
+    # memory is gone for everyone, a bootstrap admin included, and nobody
+    # sees an admin_access_denied 403.
     destroyed = await client.delete(
         f"/v1/awi/sessions/{b['session_id']}", headers=b["agent_headers"]
     )
     assert destroyed.status_code == 204
-    for headers in (a["agent_headers"], b["agent_headers"]):
-        orphan = await client.get(f"/v1/awi/rag/memory/{b_memory}", headers=headers)
-        assert orphan.status_code == 404, orphan.text
-        assert orphan.json()["detail"]["error"] == "not_found"
-    admin_orphan = await client.get(
-        f"/v1/awi/rag/memory/{b_memory}", headers=BOOTSTRAP_HEADERS
-    )
-    assert admin_orphan.status_code == 200
+    for headers in (a["agent_headers"], b["agent_headers"], BOOTSTRAP_HEADERS):
+        gone = await client.get(f"/v1/awi/rag/memory/{b_memory}", headers=headers)
+        assert gone.status_code == 404, gone.text
+        assert gone.json()["detail"]["error"] == "not_found"
 
 
 @pytest.mark.proof

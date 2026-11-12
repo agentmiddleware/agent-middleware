@@ -748,7 +748,8 @@ async def test_the_messages_surface_never_tells_a_charged_call_to_retry(
     assert error["message"] != PermitWriteContendedError.reason, error
     # The caller's real answer and its receipt both survived. The
     # tool's own error stays server-side.
-    assert error["message"] == "internal_error", error
+    assert error["code"] == -32006, error
+    assert error["message"] == "tool_execution_failed", error
     assert "tool blew up" not in resp.text
     assert await _count_receipts() == 1
 

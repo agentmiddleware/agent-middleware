@@ -818,7 +818,7 @@ class TestMcpInvokeRoute:
 
             assert response.status_code == 200
             payload = response.json()
-            assert payload["error"]["code"] == -32603
+            assert payload["error"]["code"] == -32006
             assert payload["error"]["message"] == "tool_execution_failed"
             assert "boom" not in payload["error"]["message"]
             assert "boom" not in response.text
@@ -893,7 +893,7 @@ class TestMcpInvokeRoute:
 
             assert response.status_code == 200
             payload = response.json()
-            assert payload["error"]["code"] == -32603
+            assert payload["error"]["code"] == -32006
             # The tool's own text mimics a refusal code; the wrapped failure
             # is classified by type, so the mimic must not select the message.
             assert payload["error"]["message"] == "tool_execution_failed"

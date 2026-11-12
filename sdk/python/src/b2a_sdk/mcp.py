@@ -160,6 +160,19 @@ def generate_manifest(
     return manifest
 
 
+def _tool_input_schema(tool: dict[str, Any]) -> dict[str, Any]:
+    """Return the gateway tool's JSON Schema for its arguments.
+
+    Falls back to an open object when the manifest entry carries none.
+    """
+    schema = tool.get("inputSchema")
+    if not isinstance(schema, dict):
+        schema = tool.get("input_schema")
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        return {"type": "object", "properties": {}}
+    return schema
+
+
 def generate_standalone_server(
     output_path: str,
     title: str = "B2A MCP Server",
@@ -271,10 +284,26 @@ async def serve_async(
     """
     try:
         from mcp.server.fastmcp import Context, FastMCP
+        from mcp.server.fastmcp.tools import Tool
+        from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
         from mcp.types import CallToolResult, TextContent
+        from pydantic import ConfigDict
     except ImportError:
         print('Error: mcp package required. Install: pip install "amw-sdk[mcp]"')
         return
+
+    class GatewayArguments(ArgModelBase):
+        """Accept any argument object and hand it to the handler unchanged.
+
+        The gateway validates arguments against the tool's own schema, so the
+        bridge forwards them as sent instead of re-validating them against a
+        Python signature.
+        """
+
+        model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+
+        def model_dump_one_level(self) -> dict[str, Any]:
+            return {"arguments": dict(self.model_extra or {})}
 
     manifest = generate_manifest(api_url=api_url)
     tools = manifest.get("tools", [])
@@ -373,9 +402,12 @@ async def serve_async(
     for tool in tools:
         name = tool.get("name", "unknown")
         desc = tool.get("description", "")
+        input_schema = _tool_input_schema(tool)
 
-        async def create_handler(svc_id: str, svc_name: str):
-            async def handler(ctx: Context, **kwargs: dict[str, Any]) -> Any:
+        def create_handler(svc_id: str, schema: dict[str, Any]):
+            accepts_kwargs_argument = "kwargs" in schema.get("properties", {})
+
+            async def handler(ctx: Context, arguments: dict[str, Any]) -> Any:
                 meta = ctx.request_context.meta
                 metadata = (
                     meta.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -383,16 +415,30 @@ async def serve_async(
                     else {}
                 )
                 idempotency_key = metadata.get("io.agentmiddleware/idempotency_key")
+                # Bridges before issue #360 advertised one ``kwargs`` object.
+                # Keep unwrapping that shape for clients written against it.
+                legacy = arguments.get("kwargs")
+                if not accepts_kwargs_argument and len(arguments) == 1 and isinstance(legacy, dict):
+                    arguments = legacy
                 return await call_tool(
                     service_id=svc_id,
-                    input_data=kwargs.pop("kwargs", kwargs),
+                    input_data=arguments,
                     api_key=os.getenv("B2A_API_KEY", ""),
                     idempotency_key=idempotency_key,
                 )
 
             return handler
 
-        mcp.add_tool(await create_handler(name, desc), name=name, description=desc)
+        # Advertise the gateway's own input schema and forward arguments as
+        # sent. FastMCP would otherwise derive both from the handler signature.
+        mcp.add_tool(create_handler(name, input_schema), name=name, description=desc)
+        registered: Tool | None = mcp._tool_manager.get_tool(name)
+        if registered is None:
+            raise RuntimeError(f"FastMCP did not register tool {name!r}")
+        registered.parameters = input_schema
+        registered.fn_metadata = registered.fn_metadata.model_copy(
+            update={"arg_model": GatewayArguments}
+        )
 
     output = sys.stderr if transport == "stdio" else sys.stdout
     print(f"Starting MCP server with {len(tools)} tools...", file=output)

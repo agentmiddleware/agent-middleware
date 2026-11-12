@@ -110,7 +110,7 @@ class FakeTrustPlane:
             cached_text, receipt_id = self.by_key[key]
             if cached_text != text:
                 return httpx.Response(
-                    400, json={"detail": {"error": "idempotency_key_reused"}}
+                    409, json={"detail": {"error": "idempotency_key_reused"}}
                 )
             return httpx.Response(200, json={"receipt": {"receipt_id": receipt_id}})
         self.in_flight.add(key)

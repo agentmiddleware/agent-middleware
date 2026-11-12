@@ -233,7 +233,7 @@ async def run(base_url: str) -> int:
             f"/mcp/tools/{ALLOWED_TOOL}/invoke",
             json=invoke_body(wallet, permit, idem, "a different payload"),
         )
-        check("conflict rejected", r4.status_code == 400, f"HTTP {r4.status_code}")
+        check("conflict rejected", r4.status_code == 409, f"HTTP {r4.status_code}")
         check("no debit", len(await debits(cl, wallet)) == before)
 
         step(f"5. {BLOCKED_TOOL} is outside the permit and must be denied free")

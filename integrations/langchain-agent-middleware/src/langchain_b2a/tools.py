@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
+from ._permit_store import PermitStore
 from .client import B2AClient
 
 
@@ -25,6 +26,7 @@ def get_mcp_tools(
     wallet_id: str,
     permit_budget: Decimal = Decimal(100),
     permit_ttl_minutes: int = 30,
+    permit_store: PermitStore | None = None,
 ) -> list[BaseTool]:
     """Get LangChain tools from MCP registry via governed permit→invoke→receipt flow.
 
@@ -33,6 +35,9 @@ def get_mcp_tools(
         wallet_id: Wallet ID for billing
         permit_budget: Maximum credits per permit (default 100)
         permit_ttl_minutes: Permit lifetime in minutes (default 30)
+        permit_store: Durable permit request store, such as
+            ``JsonFilePermitStore``. Needed to replay a permit key after a
+            process restart.
 
     Returns:
         List of LangChain BaseTool instances
@@ -56,6 +61,7 @@ def get_mcp_tools(
             wallet_id=wallet_id,
             permit_budget=permit_budget,
             permit_ttl_minutes=permit_ttl_minutes,
+            permit_store=permit_store,
         )
     ]
 
@@ -66,6 +72,7 @@ def get_langgraph_tools(
     wallet_id: str,
     permit_budget: Decimal = Decimal(100),
     permit_ttl_minutes: int = 30,
+    permit_store: PermitStore | None = None,
 ) -> list[Callable]:
     """Get tools formatted for LangGraph via governed permit→invoke→receipt flow.
 
@@ -74,6 +81,9 @@ def get_langgraph_tools(
         wallet_id: Wallet ID for billing
         permit_budget: Maximum credits per permit (default 100)
         permit_ttl_minutes: Permit lifetime in minutes (default 30)
+        permit_store: Durable permit request store, such as
+            ``JsonFilePermitStore``. Needed to replay a permit key after a
+            process restart.
 
     Returns:
         List of callable tools compatible with LangGraph
@@ -91,4 +101,5 @@ def get_langgraph_tools(
         wallet_id=wallet_id,
         permit_budget=permit_budget,
         permit_ttl_minutes=permit_ttl_minutes,
+        permit_store=permit_store,
     )

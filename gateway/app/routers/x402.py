@@ -11,6 +11,7 @@ from app.core.auth import AuthContext, get_auth_context
 from app.routers.http_idempotency import resolve_idempotency_key_lines
 from app.core.time import utc_now
 from app.core.wallet_resolution import resolve_wallet_id
+from app.services.agent_money import get_agent_money
 from app.services.x402_engine import (
     X402Error,
     X402SettlementUncertainError,
@@ -176,6 +177,11 @@ async def settle_payment_required(
     idempotency_key = resolve_idempotency_key_lines(
         idempotency_key_lines, required=True
     )
+    # The idempotency row's wallet_id references wallets. Opening one for an
+    # unknown wallet fails the foreign key and answers 500, so resolve the
+    # wallet first, as the charge and transfer routes do.
+    if await get_agent_money().get_wallet(wallet_id) is None:
+        raise HTTPException(status_code=404, detail="wallet_not_found")
 
     idem = get_idempotency_service()
     try:

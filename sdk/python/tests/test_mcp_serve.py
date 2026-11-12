@@ -76,7 +76,7 @@ def _call_handler(handler, server, meta, key=None):
     meta.clear()
     if key is not None:
         meta[_META_KEY] = key
-    return asyncio.run(handler(ctx=server.get_context(), kwargs={"query": "sample"}))
+    return asyncio.run(handler(ctx=server.get_context(), arguments={"query": "sample"}))
 
 
 @pytest.mark.parametrize("transport", ["stdio", "sse"])
@@ -115,7 +115,7 @@ def test_serve_async_registers_tool_and_starts_transport(monkeypatch, tmp_path, 
     ]
     assert "permit_id" not in registered_tools[0].inputSchema["properties"]
     assert "idempotency_key" not in registered_tools[0].inputSchema["properties"]
-    assert registered_tools[0].inputSchema["properties"]["kwargs"]["type"] == "object"
+    assert registered_tools[0].inputSchema == {"type": "object", "properties": {}}
     if transport == "sse":
         assert server.settings.port == 8765
 
@@ -222,18 +222,14 @@ def test_serve_async_tool_invokes_gateway_with_arguments(
     assert len(registered) == 1
     assert len(started) == 1
     if "result" in body:
-        result = asyncio.run(
-            started[0].call_tool("partner.search", {"kwargs": {"query": "sample"}})
-        )
+        result = asyncio.run(started[0].call_tool("partner.search", {"query": "sample"}))
         if legacy_result_format:
             assert json.loads(result[0].text) == body["result"]
         else:
             assert result.isError is False
             assert result.content[0].text == "ok"
     else:
-        result = asyncio.run(
-            started[0].call_tool("partner.search", {"kwargs": {"query": "sample"}})
-        )
+        result = asyncio.run(started[0].call_tool("partner.search", {"query": "sample"}))
         assert result.isError is True
         if status_code >= 400 and "error" in body:
             assert result.structuredContent == body
@@ -275,7 +271,7 @@ def test_serve_async_repeats_caller_key_for_gateway_receipt_replay(monkeypatch, 
     _handler, requests, server, meta = _serve_tool_bridge(monkeypatch, tmp_path, respond)
     key = "00000000-0000-4000-8000-000000000003"
     meta[_META_KEY] = key
-    arguments = {"kwargs": {"query": "sample"}}
+    arguments = {"query": "sample"}
     first = asyncio.run(server.call_tool("partner.search", arguments))
     replay = asyncio.run(server.call_tool("partner.search", arguments))
 
@@ -329,7 +325,7 @@ def test_registered_tool_keeps_retry_metadata_separate_from_tool_inputs(monkeypa
     monkeypatch.setattr(fastmcp, "run_stdio_async", run_stdio)
 
     asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
-    arguments = {"kwargs": {"query": "sample", "idempotency_key": "tool-input"}}
+    arguments = {"query": "sample", "idempotency_key": "tool-input"}
     for _ in range(2):
         result = asyncio.run(servers[0].call_tool("partner.search", arguments))
         assert result.isError is False
@@ -414,7 +410,7 @@ def test_serve_async_rejects_edge_whitespace_idempotency_key(monkeypatch, tmp_pa
     with pytest.raises(ValueError, match="leading or trailing whitespace"):
         _call_handler(handler, server, meta, key)
     with pytest.raises(tool_error, match="leading or trailing whitespace"):
-        asyncio.run(server.call_tool("partner.search", {"kwargs": {"query": "sample"}}))
+        asyncio.run(server.call_tool("partner.search", {"query": "sample"}))
     assert requests == []
 
 
@@ -427,7 +423,7 @@ def test_serve_async_sends_interior_space_idempotency_key_exactly(monkeypatch, t
 
     _handler, requests, server, meta = _serve_tool_bridge(monkeypatch, tmp_path, respond)
     meta[_META_KEY] = "order 42 retry"
-    result = asyncio.run(server.call_tool("partner.search", {"kwargs": {"query": "sample"}}))
+    result = asyncio.run(server.call_tool("partner.search", {"query": "sample"}))
 
     assert result.isError is False
     assert len(requests) == 1
@@ -532,7 +528,7 @@ def test_serve_async_keyed_gateway_5xx_returns_retryable_structured_error(
     }
 
     direct = _call_handler(handler, server, meta, "invoke-123")
-    via_fastmcp = asyncio.run(server.call_tool("partner.search", {"kwargs": {"query": "sample"}}))
+    via_fastmcp = asyncio.run(server.call_tool("partner.search", {"query": "sample"}))
 
     for result in (direct, via_fastmcp):
         assert result.isError is True
@@ -573,7 +569,7 @@ def test_serve_async_unkeyed_gateway_5xx_is_not_retryable(monkeypatch, tmp_path)
     }
 
     direct = _call_handler(handler, server, meta)
-    via_fastmcp = asyncio.run(server.call_tool("partner.search", {"kwargs": {"query": "sample"}}))
+    via_fastmcp = asyncio.run(server.call_tool("partner.search", {"query": "sample"}))
 
     for result in (direct, via_fastmcp):
         assert result.isError is True
@@ -618,7 +614,7 @@ def test_serve_async_uncertain_gateway_response_preserves_retry_safety(
 
     handler, requests, server, meta = _serve_tool_bridge(monkeypatch, tmp_path, respond)
     direct = _call_handler(handler, server, meta, key)
-    via_fastmcp = asyncio.run(server.call_tool("partner.search", {"kwargs": {"query": "sample"}}))
+    via_fastmcp = asyncio.run(server.call_tool("partner.search", {"query": "sample"}))
 
     for result in (direct, via_fastmcp):
         assert result.isError is True
@@ -641,3 +637,123 @@ def test_serve_async_uncertain_gateway_response_preserves_retry_safety(
             assert "hint" not in result.structuredContent
     assert len(requests) == 2
     assert [request.headers.get("Idempotency-Key") for request in requests] == [key, key]
+
+
+_NOTES_SCHEMA = {
+    "type": "object",
+    "properties": {"text": {"type": "string"}},
+    "required": [],
+    "additionalProperties": False,
+}
+
+
+def _bridge_with_manifest(monkeypatch, tmp_path, tools):
+    """Start serve_async with ``tools`` as the manifest; return server and requests."""
+    fastmcp = pytest.importorskip("mcp.server.fastmcp").FastMCP
+    httpx = pytest.importorskip("httpx")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("B2A_API_KEY", "test-key")
+    monkeypatch.setattr(mcp, "generate_manifest", lambda **kwargs: {"tools": tools})
+    servers = []
+    requests = []
+
+    async def run_stdio(self):
+        servers.append(self)
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            200, json={"result": {"content": [{"type": "text", "text": "ok"}], "isError": False}}
+        )
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda: client_type(transport=httpx.MockTransport(respond))
+    )
+    monkeypatch.setattr(fastmcp, "run_stdio_async", run_stdio)
+    asyncio.run(mcp.serve_async(api_url="https://unused.invalid"))
+    return servers[0], requests
+
+
+def _client_calls(server, name, calls):
+    """Call ``name`` once per argument object through an in-memory MCP client."""
+    memory = pytest.importorskip("mcp.shared.memory")
+
+    async def drive():
+        async with memory.create_connected_server_and_client_session(server._mcp_server) as client:
+            return [await client.call_tool(name, arguments) for arguments in calls]
+
+    return asyncio.run(drive())
+
+
+def test_mcp_client_sees_gateway_schema_and_calls_with_its_arguments(monkeypatch, tmp_path):
+    """Issue #360: a standard MCP client uses the gateway tool's own inputSchema."""
+    memory = pytest.importorskip("mcp.shared.memory")
+    server, requests = _bridge_with_manifest(
+        monkeypatch,
+        tmp_path,
+        [{"name": "partner.notes.write", "description": "Write", "inputSchema": _NOTES_SCHEMA}],
+    )
+
+    async def drive():
+        async with memory.create_connected_server_and_client_session(server._mcp_server) as client:
+            listed = await client.list_tools()
+            result = await client.call_tool(
+                "partner.notes.write",
+                {"text": "hi"},
+                meta={_META_KEY: "order-360"},
+            )
+            return listed, result
+
+    listed, result = asyncio.run(drive())
+
+    assert [tool.inputSchema for tool in listed.tools] == [_NOTES_SCHEMA]
+    assert result.isError is False
+    assert len(requests) == 1
+    assert requests[0].headers["Idempotency-Key"] == "order-360"
+    assert json.loads(requests[0].content)["params"] == {
+        "name": "partner.notes.write",
+        "arguments": {"text": "hi"},
+    }
+
+
+def test_bridge_forwards_arguments_without_revalidating(monkeypatch, tmp_path):
+    server, requests = _bridge_with_manifest(
+        monkeypatch,
+        tmp_path,
+        [{"name": "partner.notes.write", "description": "Write", "inputSchema": _NOTES_SCHEMA}],
+    )
+
+    _client_calls(server, "partner.notes.write", [{"text": "hi", "extra": 1}, {}])
+
+    assert [json.loads(r.content)["params"]["arguments"] for r in requests] == [
+        {"text": "hi", "extra": 1},
+        {},
+    ]
+
+
+def test_bridge_still_unwraps_legacy_kwargs_wrapper(monkeypatch, tmp_path):
+    server, requests = _bridge_with_manifest(
+        monkeypatch,
+        tmp_path,
+        [{"name": "partner.notes.write", "description": "Write", "inputSchema": _NOTES_SCHEMA}],
+    )
+
+    _client_calls(server, "partner.notes.write", [{"kwargs": {"text": "hi"}}])
+
+    assert json.loads(requests[0].content)["params"]["arguments"] == {"text": "hi"}
+
+
+def test_bridge_keeps_a_real_kwargs_argument(monkeypatch, tmp_path):
+    schema = {"type": "object", "properties": {"kwargs": {"type": "object"}}}
+    server, requests = _bridge_with_manifest(
+        monkeypatch,
+        tmp_path,
+        [{"name": "partner.kw", "description": "Kw", "inputSchema": schema}],
+    )
+
+    _client_calls(server, "partner.kw", [{"kwargs": {"a": 1}}])
+    listed = asyncio.run(server.list_tools())
+
+    assert listed[0].inputSchema == schema
+    assert json.loads(requests[0].content)["params"]["arguments"] == {"kwargs": {"a": 1}}

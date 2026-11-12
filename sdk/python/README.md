@@ -45,7 +45,10 @@ python -m pip install -e './sdk/python[mcp]'
 ```
 
 `mcp serve` sends each tool call through the gateway's standard `POST /mcp`
-`tools/call` flow. Authenticate with a wallet-scoped `B2A_API_KEY`; the gateway
+`tools/call` flow. Each tool advertises the gateway's own `inputSchema`, so call
+it with the tool's arguments directly, for example `{"text": "hi"}` for
+`partner.notes.write`. The bridge forwards them unchanged and the gateway
+validates them. Authenticate with a wallet-scoped `B2A_API_KEY`; the gateway
 mints a bounded permit for the call. The tool does not accept `permit_id`.
 Supply `io.agentmiddleware/idempotency_key` in the request `_meta` using a
 stable logical call ID, such as the LLM `tool_call.id`. The bridge forwards it

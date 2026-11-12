@@ -354,8 +354,15 @@ def describe_permissive_trust_mode(
     if not trust_mode_enabled:
         parts.append("TRUST_MODE_ENABLED=false (no permit validation)")
     if allow_legacy_unpermitted_mcp:
+        # Narrower than "ungoverned calls accepted" (#352): a tool registered
+        # with require_permit (the dogfood tool, every upstream tool, the
+        # Phase 9 tools) still refuses an unpermitted call with
+        # permit_required in this posture.
         parts.append(
-            "ALLOW_LEGACY_UNPERMITTED_MCP=true (ungoverned MCP calls accepted)"
+            "ALLOW_LEGACY_UNPERMITTED_MCP=true (unpermitted MCP calls accepted "
+            "only for tools registered without require_permit; permit-required "
+            "tools, including the dogfood and upstream tools, still refuse "
+            "them with permit_required)"
         )
     return "; ".join(parts)
 
@@ -367,7 +374,8 @@ def warn_if_trust_mode_permissive(settings: Settings) -> None:
     production-like environments the validator has already refused to boot
     under a permissive posture, so this only fires in local/dev/test
     environments that explicitly opted out — exactly when we want a visible
-    reminder that ungoverned MCP calls are accepted.
+    reminder that unpermitted MCP calls are accepted for tools that do not
+    require a permit.
     """
     description = describe_permissive_trust_mode(
         trust_mode_enabled=settings.TRUST_MODE_ENABLED,

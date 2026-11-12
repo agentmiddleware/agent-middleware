@@ -181,6 +181,7 @@ class WalletEngine:
         require_balance: Decimal | None = None,
         require_child_cap_for: Decimal | None = None,
         require_spendable: bool = False,
+        require_not_closed: bool = False,
     ) -> bool:
         """Move a wallet balance with a guarded UPDATE, never a write-back.
 
@@ -232,6 +233,16 @@ class WalletEngine:
                 cast(
                     ColumnElement[bool],
                     cast(Any, WalletModel.status).in_(tuple(SPENDABLE_WALLET_STATUSES)),
+                )
+            )
+
+        if require_not_closed:
+            # A closed wallet is terminal: nothing can charge, reclaim, or
+            # transfer out of it, so a credit landing there is stranded.
+            guards.append(
+                cast(
+                    ColumnElement[bool],
+                    WalletModel.status != WalletStatus.CLOSED.value,
                 )
             )
 
@@ -980,6 +991,13 @@ class WalletEngine:
                     raise ValueError(
                         f"Source wallet is {source.status} and cannot transfer credits"
                     )
+                # A closed wallet is terminal (reclaim, charge, and transfer
+                # out all refuse it), so credits sent there could never be
+                # recovered. Refuse before the debit rather than strand them.
+                if dest.status == WalletStatus.CLOSED.value:
+                    raise ValueError(
+                        "Destination wallet is closed and cannot receive credits"
+                    )
                 await self.ensure_wallet_not_expired(session, source)
                 if (
                     source.wallet_type == WalletType.CHILD.value
@@ -1018,15 +1036,33 @@ class WalletEngine:
                     )
                 # The debit is already applied in this transaction, so a credit
                 # that matches no row would leave the transfer reporting success
-                # with the credits on neither side. Only ``wallet_id`` guards
-                # this write, so a miss means the destination row is gone --
-                # abort rather than commit half a transfer.
+                # with the credits on neither side. The write is guarded on the
+                # destination still being open (a reclaim can close it after
+                # the read above, since FOR UPDATE is a no-op on SQLite), so a
+                # miss means the row is gone or now closed -- abort rather than
+                # commit half a transfer.
                 if not await self._apply_balance_delta(
                     session,
                     dest,
                     balance_delta=amount,
                     lifetime_credits_delta=amount,
+                    require_not_closed=True,
                 ):
+                    # Read the status with a query: when the row is gone the
+                    # instance could not be refreshed and is left expired, so
+                    # touching ``dest.status`` would try to lazy-load it.
+                    dest_status = await session.scalar(
+                        select(cast(Any, WalletModel.status)).where(
+                            cast(
+                                ColumnElement[bool],
+                                WalletModel.wallet_id == to_wallet_id,
+                            )
+                        )
+                    )
+                    if dest_status == WalletStatus.CLOSED.value:
+                        raise ValueError(
+                            "Destination wallet is closed and cannot receive credits"
+                        )
                     raise self._wallet_not_found_error(to_wallet_id)
 
                 # Create ledger entries on both sides

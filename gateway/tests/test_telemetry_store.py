@@ -349,3 +349,33 @@ async def test_persisted_anomaly_without_owner_is_admin_only():
         assert await detector.get_anomaly(anomaly_id) is not None
     assert (await detector.get_anomalies(owner=OWNER_A))[1] == 0
     assert (await detector.get_anomalies())[1] == 2
+
+
+@pytest.mark.anyio
+async def test_repeated_analysis_updates_an_ongoing_anomaly_instead_of_duplicating():
+    """The background loop calls analyze() every interval. A condition that
+    persists across passes is one anomaly, updated in place, not a new
+    anomaly per pass (#356)."""
+    store = EventStore()
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-1", OWNER_A)
+
+    state = _FakeDurableState()
+    detector = _detector(store, state)
+    [first] = await detector.analyze()
+    # Nothing changed: no new or updated report.
+    assert await detector.analyze() == []
+
+    await store.ingest([_event(source="a-svc") for _ in range(3)], "b-2", OWNER_A)
+    [updated] = await detector.analyze()
+    assert updated.anomaly_id == first.anomaly_id
+    assert updated.event_count == 15
+    assert updated.summary.startswith("15/15 errors")
+    assert updated.first_seen == first.first_seen
+    assert updated.last_seen >= first.last_seen
+
+    reports, total = await detector.get_anomalies(owner=OWNER_A)
+    assert total == 1
+    assert reports[0].event_count == 15
+    # The update is what got persisted.
+    assert len(state.payload) == 1
+    assert state.payload[first.anomaly_id]["event_count"] == 15

@@ -468,30 +468,73 @@ class AnomalyDetector:
             ):
                 candidate = await detect(owner)
                 if candidate:
-                    reports.append(await self._record(candidate, owner))
+                    report = await self._record(candidate, owner)
+                    if report is not None:
+                        reports.append(report)
 
         return reports
 
     async def _record(
         self, candidate: AnomalyCandidate, owner: str | None
-    ) -> AnomalyReport:
-        anomaly_id = f"anom-{uuid.uuid4().hex[:8]}"
-        report = AnomalyReport(
-            anomaly_id=anomaly_id,
-            severity=candidate.severity,
-            category=candidate.category,
-            summary=candidate.summary,
-            affected_endpoints=candidate.affected_endpoints,
-            event_count=len(candidate.event_ids),
-            first_seen=candidate.first_seen,
-            last_seen=candidate.last_seen,
-        )
+    ) -> AnomalyReport | None:
+        """Record ``candidate`` for ``owner``.
+
+        A condition that is still in progress is the same anomaly, not a new
+        one: when ``owner`` already has an anomaly of the same category over
+        the same endpoints whose window overlaps the candidate's, that report
+        is updated in place. Returns the new or updated report, or ``None``
+        when the existing report already reflects the candidate.
+        """
         async with self._lock:
+            existing_id = self._ongoing_anomaly_id(candidate, owner)
+            if existing_id is not None:
+                current = self._anomalies[existing_id]
+                updated = current.model_copy(
+                    update={
+                        "severity": candidate.severity,
+                        "summary": candidate.summary,
+                        "event_count": len(candidate.event_ids),
+                        "first_seen": min(current.first_seen, candidate.first_seen),
+                        "last_seen": max(current.last_seen, candidate.last_seen),
+                    }
+                )
+                if updated == current:
+                    return None
+                self._anomalies[existing_id] = updated
+                await self._persist_locked()
+                return updated
+
+            anomaly_id = f"anom-{uuid.uuid4().hex[:8]}"
+            report = AnomalyReport(
+                anomaly_id=anomaly_id,
+                severity=candidate.severity,
+                category=candidate.category,
+                summary=candidate.summary,
+                affected_endpoints=candidate.affected_endpoints,
+                event_count=len(candidate.event_ids),
+                first_seen=candidate.first_seen,
+                last_seen=candidate.last_seen,
+            )
             self._anomalies[anomaly_id] = report
             self._owners[anomaly_id] = owner
             await self._persist_locked()
         logger.warning(f"Anomaly detected: [{report.severity}] {report.summary}")
         return report
+
+    def _ongoing_anomaly_id(
+        self, candidate: AnomalyCandidate, owner: str | None
+    ) -> str | None:
+        """Id of ``owner``'s anomaly that ``candidate`` continues, if any."""
+        endpoints = sorted(candidate.affected_endpoints)
+        for anomaly_id, report in self._anomalies.items():
+            if (
+                self._owners.get(anomaly_id) == owner
+                and report.category == candidate.category
+                and sorted(report.affected_endpoints) == endpoints
+                and report.last_seen >= candidate.first_seen
+            ):
+                return anomaly_id
+        return None
 
     async def get_anomalies(
         self,
@@ -755,15 +798,26 @@ class AutonomousPM:
         self.pr_generator = AutoPRGenerator(git_remote, branch_prefix)
         self._analysis_task: asyncio.Task | None = None
 
+    @property
+    def background_analysis_running(self) -> bool:
+        return self._analysis_task is not None and not self._analysis_task.done()
+
     async def start_background_analysis(self, interval_seconds: int = 60):
-        """Start periodic anomaly analysis in the background."""
+        """Start periodic anomaly analysis in the background.
+
+        A no-op while a previous loop is still running.
+        """
+        if self.background_analysis_running:
+            return
 
         async def _loop():
             while True:
                 try:
                     new_anomalies = await self.detector.analyze()
                     if new_anomalies:
-                        logger.info(f"Detected {len(new_anomalies)} new anomalies")
+                        logger.info(
+                            f"Detected or updated {len(new_anomalies)} anomalies"
+                        )
                 except Exception as e:
                     logger.error(f"Anomaly analysis error: {e}")
                 await asyncio.sleep(interval_seconds)
@@ -774,5 +828,12 @@ class AutonomousPM:
         )
 
     async def stop_background_analysis(self):
-        if self._analysis_task:
-            self._analysis_task.cancel()
+        """Cancel the background loop and wait for it to finish."""
+        task, self._analysis_task = self._analysis_task, None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass

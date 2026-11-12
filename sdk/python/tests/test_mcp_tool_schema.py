@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import json
 from typing import Any, Literal, Optional
 
 import pytest
@@ -108,3 +109,35 @@ def test_unannotated_parameter_stays_string(registrations: list[dict[str, Any]])
         return value
 
     assert registrations[0]["input_schema"]["properties"] == {"value": {"type": "string"}}
+
+
+class Blob(enum.Enum):
+    RAW = b"raw"
+
+
+def test_literal_enum_members_become_their_values(
+    registrations: list[dict[str, Any]],
+) -> None:
+    @mcp_tool(service_id="literal-enum")
+    async def tool(
+        mode: Literal[Mode.FAST],
+        mixed: Literal[Mode.SLOW, "auto", 3, None] = "auto",
+    ) -> dict:
+        return {}
+
+    schema = registrations[0]["input_schema"]
+    assert schema["properties"]["mode"] == {"enum": ["fast"]}
+    assert schema["properties"]["mixed"] == {"enum": ["slow", "auto", 3, None]}
+    assert json.loads(json.dumps(schema)) == schema
+
+
+def test_values_json_cannot_hold_fall_back_to_any(
+    registrations: list[dict[str, Any]],
+) -> None:
+    @mcp_tool(service_id="non-json-values")
+    async def tool(blob: Blob, raw: Literal[b"raw"], member: Literal[Blob.RAW]) -> dict:
+        return {}
+
+    schema = registrations[0]["input_schema"]
+    assert schema["properties"] == {"blob": {}, "raw": {}, "member": {}}
+    assert json.loads(json.dumps(schema)) == schema

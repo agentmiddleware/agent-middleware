@@ -16,6 +16,7 @@ import contextvars
 import enum
 import functools
 import inspect
+import json
 import time
 import traceback
 import types
@@ -111,6 +112,21 @@ _JSON_SCHEMA_SCALARS: dict[Any, str] = {
 }
 
 
+def _json_schema_enum(values: Any) -> dict[str, Any]:
+    """Build an ``enum`` fragment from literal values or enum members.
+
+    Enum members contribute their ``.value``. If any value still cannot be
+    written as JSON, the fragment is ``{}`` (any value) so the schema stays
+    serializable.
+    """
+    choices = [value.value if isinstance(value, enum.Enum) else value for value in values]
+    try:
+        json.dumps(choices)
+    except (TypeError, ValueError):
+        return {}
+    return {"enum": choices}
+
+
 def _json_schema_for_hint(hint: Any) -> dict[str, Any]:
     """Map a Python type annotation to a JSON Schema fragment.
 
@@ -124,12 +140,12 @@ def _json_schema_for_hint(hint: Any) -> dict[str, Any]:
     if hasattr(hint, "model_json_schema"):
         return cast(dict[str, Any], hint.model_json_schema())
     if isinstance(hint, type) and issubclass(hint, enum.Enum):
-        return {"enum": [member.value for member in hint]}
+        return _json_schema_enum(hint)
 
     origin = get_origin(hint)
     args = get_args(hint)
     if origin is Literal:
-        return {"enum": list(args)}
+        return _json_schema_enum(args)
     if origin is Union or origin is types.UnionType:
         options = [_json_schema_for_hint(arg) for arg in args]
         if any(option == {} for option in options):

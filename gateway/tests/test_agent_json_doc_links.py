@@ -57,7 +57,9 @@ async def _manifest_links(client: AsyncClient) -> set[str]:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("proof_surfaces", ["false", "true"])
-async def test_every_advertised_doc_link_resolves(posture, proof_surfaces):
+async def test_every_advertised_doc_link_resolves(
+    clean_database, posture, proof_surfaces
+):
     posture(
         ENABLE_PROOF_SURFACES=proof_surfaces,
         ENABLE_DEV_KEY_SELF_PROVISION="true",
@@ -78,7 +80,7 @@ async def test_every_advertised_doc_link_resolves(posture, proof_surfaces):
 
 
 @pytest.mark.anyio
-async def test_awi_guide_is_not_served_without_proof_surfaces(posture):
+async def test_awi_guide_is_not_served_without_proof_surfaces(clean_database, posture):
     posture(ENABLE_PROOF_SURFACES="false")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

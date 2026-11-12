@@ -9,9 +9,10 @@ one.
 
 Local-only by three independent layers, mirroring STATIC_DEV_API_KEYS:
 
-- ``ENABLE_DEV_KEY_SELF_PROVISION`` defaults false and the route answers 404
-  until an operator turns it on, so the surface is never advertised by
-  accident.
+- ``ENABLE_DEV_KEY_SELF_PROVISION`` defaults false and, until an operator
+  turns it on, the route does not match: every request gets the same 404 as
+  an unknown path, whatever its method or body, so the surface is never
+  advertised by accident.
 - Production-like environments refuse to boot with the flag set
   (``validate_trust_mode_guardrails``), and the handler independently fails
   closed with 403 there, so the endpoint stays unreachable in production
@@ -42,14 +43,19 @@ from pydantic import BaseModel, Field
 from ..core import product_analytics
 from ..core.browser_origin import validate_browser_origin
 from ..core.config import get_settings
+from ..core.flag_gated_route import flag_gated_route
 from ..core.trust_mode import is_production_like_environment
 from ..services.agent_money import get_agent_money
 from ..services.api_key_service import get_api_key_service
 from ..services.ownership import CallerIdentity
 
+# While ENABLE_DEV_KEY_SELF_PROVISION is off the route does not match at all,
+# so every request (any method, any body, malformed JSON) gets the same 404 as
+# an unknown path instead of a 422 that describes the request schema.
 router = APIRouter(
     prefix="/v1/dev-keys",
     tags=["Development"],
+    route_class=flag_gated_route("ENABLE_DEV_KEY_SELF_PROVISION"),
 )
 
 MAX_BUDGET_CREDITS = Decimal("100000")

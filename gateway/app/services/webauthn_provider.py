@@ -348,6 +348,40 @@ class WebAuthnProvider:
             },
         }
 
+    def precheck_response(
+        self,
+        challenge_id: str,
+        credential: dict[str, Any],
+    ) -> WebAuthnChallenge:
+        """Run the checks that need no assertion work and change no state.
+
+        Raises ``ValueError`` for an unknown, already settled or expired
+        challenge, or a credential with no id. Nothing is recorded, so the
+        caller can treat these rejections as known failures that did no
+        work. :meth:`verify_response` runs the same checks first.
+        """
+        challenge = self._challenges.get(challenge_id)
+
+        if not challenge:
+            raise ValueError("Challenge not found")
+
+        if challenge.status == ChallengeStatus.VERIFIED:
+            raise ValueError("Challenge already verified")
+
+        if challenge.status == ChallengeStatus.EXPIRED:
+            raise ValueError("Challenge expired")
+
+        if challenge.status == ChallengeStatus.FAILED:
+            raise ValueError("Challenge verification previously failed")
+
+        if utc_now() > challenge.expires_at:
+            raise ValueError("Challenge expired")
+
+        if not credential.get("id", ""):
+            raise ValueError("Missing credential ID")
+
+        return challenge
+
     async def verify_response(
         self,
         challenge_id: str,
@@ -366,27 +400,18 @@ class WebAuthnProvider:
         Raises:
             ValueError: If challenge is invalid, expired, or credential verification fails.
         """
-        challenge = self._challenges.get(challenge_id)
-
-        if not challenge:
-            raise ValueError("Challenge not found")
-
-        if challenge.status == ChallengeStatus.VERIFIED:
-            raise ValueError("Challenge already verified")
-
-        if challenge.status == ChallengeStatus.EXPIRED:
-            raise ValueError("Challenge expired")
-
-        if challenge.status == ChallengeStatus.FAILED:
-            raise ValueError("Challenge verification previously failed")
-
-        if utc_now() > challenge.expires_at:
-            challenge.status = ChallengeStatus.EXPIRED
-            raise ValueError("Challenge expired")
-
+        try:
+            challenge = self.precheck_response(challenge_id, credential)
+        except ValueError:
+            stale = self._challenges.get(challenge_id)
+            if (
+                stale is not None
+                and stale.status == ChallengeStatus.PENDING
+                and utc_now() > stale.expires_at
+            ):
+                stale.status = ChallengeStatus.EXPIRED
+            raise
         credential_id = credential.get("id", "")
-        if not credential_id:
-            raise ValueError("Missing credential ID")
 
         verified, new_sign_count = await self._verify_authenticator_assertion(
             challenge, credential

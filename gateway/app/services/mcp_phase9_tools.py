@@ -24,7 +24,7 @@ from ..schemas.awi_enhanced import (
     PasskeyVerifyRequest,
     DOMBridgeSessionRequest,
     DOMSyncRequest,
-    DOMStateRequest,
+    DOMStateToolArguments,
     DOMActionPreviewRequest,
     MemoryIndexRequest,
     RAGQueryRequest,
@@ -256,7 +256,7 @@ MCP_PHASE9_TOOLS: list[Phase9ToolDef] = [
         "credits_per_unit": 2.0,
         "unit_name": "query",
         "func": awi_dom_state,
-        "input_model": DOMStateRequest,
+        "input_model": DOMStateToolArguments,
         "require_permit": True,
     },
     {

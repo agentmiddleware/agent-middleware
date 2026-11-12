@@ -13,12 +13,24 @@ Telemetry is scheduled as a background task for non-blocking execution.
 
 import asyncio
 import contextvars
+import enum
 import functools
 import inspect
 import time
 import traceback
-from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, ParamSpec, TypeVar, cast, get_type_hints
+import types
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from typing import (
+    Any,
+    Literal,
+    ParamSpec,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from .client import B2AClient, DryRunSimulation
 
@@ -89,6 +101,60 @@ def _notify_registration(
             pass
 
 
+_JSON_SCHEMA_SCALARS: dict[Any, str] = {
+    str: "string",
+    int: "integer",
+    float: "number",
+    bool: "boolean",
+    bytes: "string",
+    type(None): "null",
+}
+
+
+def _json_schema_for_hint(hint: Any) -> dict[str, Any]:
+    """Map a Python type annotation to a JSON Schema fragment.
+
+    Unknown annotations map to ``{}`` (any value) so the emitted schema stays
+    valid JSON Schema instead of carrying a Python type name.
+    """
+    if hint is Any or hint is object:
+        return {}
+    if hint in _JSON_SCHEMA_SCALARS:
+        return {"type": _JSON_SCHEMA_SCALARS[hint]}
+    if hasattr(hint, "model_json_schema"):
+        return cast(dict[str, Any], hint.model_json_schema())
+    if isinstance(hint, type) and issubclass(hint, enum.Enum):
+        return {"enum": [member.value for member in hint]}
+
+    origin = get_origin(hint)
+    args = get_args(hint)
+    if origin is Literal:
+        return {"enum": list(args)}
+    if origin is Union or origin is types.UnionType:
+        options = [_json_schema_for_hint(arg) for arg in args]
+        if any(option == {} for option in options):
+            return {}
+        return {"anyOf": options}
+    if hint in (list, tuple, set, frozenset) or (
+        isinstance(origin, type) and issubclass(origin, (list, tuple, set, frozenset, Sequence))
+    ):
+        schema: dict[str, Any] = {"type": "array"}
+        if origin is tuple and args and args[-1] is not Ellipsis:
+            schema["prefixItems"] = [_json_schema_for_hint(arg) for arg in args]
+            schema["minItems"] = schema["maxItems"] = len(args)
+        elif args:
+            schema["items"] = _json_schema_for_hint(args[0])
+        return schema
+    if hint is dict or (isinstance(origin, type) and issubclass(origin, Mapping)):
+        schema = {"type": "object"}
+        if len(args) == 2:
+            schema["additionalProperties"] = _json_schema_for_hint(args[1])
+        return schema
+    if hasattr(hint, "schema") and callable(hint.schema):
+        return cast(dict[str, Any], hint.schema())
+    return {}
+
+
 def _extract_schema_from_func(func: Callable) -> tuple[dict | None, dict | None]:
     """Extract input/output schemas from a function signature."""
     try:
@@ -102,16 +168,14 @@ def _extract_schema_from_func(func: Callable) -> tuple[dict | None, dict | None]
             if param_name in ("self", "cls"):
                 continue
 
+            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                continue
+
             hint = hints.get(param_name)
             if hint is None:
                 properties[param_name] = {"type": "string"}
-            elif hasattr(hint, "model_json_schema"):
-                properties[param_name] = hint.model_json_schema()
-            elif hasattr(hint, "schema"):
-                properties[param_name] = hint.schema()
             else:
-                type_str = getattr(hint, "__name__", str(hint))
-                properties[param_name] = {"type": type_str}
+                properties[param_name] = _json_schema_for_hint(hint)
 
             if param.default is inspect.Parameter.empty:
                 required.append(param_name)

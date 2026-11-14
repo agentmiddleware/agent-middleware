@@ -1,104 +1,48 @@
-"""A permit key replays the original permit after a process restart (#363).
+"""A restarted process sends the stored permit body again (#363).
 
-The fake trust plane below keeps the first body it saw under each permit key
-and answers 409 ``idempotency_key_reused`` to a different body, as the real
-``POST /v1/permits`` does. A "restart" is a fresh tool instance.
+These tests cover the client side only: which ``POST /v1/permits`` body each
+process puts on the wire, and what is on disk before it leaves. The transport
+below drops every request, so no permit, receipt, ledger entry or signature is
+written here. The replay itself (same permit, same receipt, one debit) is
+proven against the real application in
+``gateway/tests/test_wrapper_permit_restart.py``.
+
+A "restart" is a fresh tool instance on the same store file.
 """
 
 import json
-from datetime import UTC, datetime
 from decimal import Decimal
 
 import httpx
 import pytest
-from b2a_sdk import IdempotencyConflictError
+from b2a_sdk import TransportError
 
 from langchain_b2a import B2AClient, JsonFilePermitStore
 from langchain_b2a._tools import create_mcp_tool
 
+PERMIT_KEY = "permit-key-1"
 
-class FakeTrustPlane:
+
+class DroppedConnection:
+    """Records each permit body, then drops the connection."""
+
     def __init__(self) -> None:
-        self.permit_bodies: dict[str, bytes] = {}
-        self.permit_posts: list[bytes] = []
-        self.fail_permits = False
-
-    def permit_payload(self) -> dict:
-        return {
-            "permit_id": "permit-1",
-            "issuer_wallet_id": "wallet-1",
-            "subject_wallet_id": "wallet-1",
-            "subject_key_id": "key-1",
-            "scopes": ["tool:partner.search:invoke", "billing:charge"],
-            "allowed_tools": ["partner.search"],
-            "max_credits": "100",
-            "spent_credits": "0",
-            "expires_at": datetime.now(UTC).isoformat(),
-            "nonce": "nonce-1",
-            "status": "active",
-            "signature": "sig-permit-1",
-            "key_id": "key-1",
-            "issued_at": datetime.now(UTC).isoformat(),
-            "revoked_at": None,
-        }
-
-    def receipt_payload(self) -> dict:
-        return {
-            "receipt_id": "receipt-success",
-            "permit_id": "permit-1",
-            "wallet_id": "wallet-1",
-            "key_id": "key-1",
-            "tool": "partner.search",
-            "request_hash": "request-hash",
-            "response_hash": "response-hash",
-            "ledger_entry_id": "ledger-1",
-            "dispatch_attempt_id": "dispatch-1",
-            "credits_authorized": "2",
-            "credits_charged": "2",
-            "outcome": "success",
-            "audit_event_id": "audit-1",
-            "created_at": datetime.now(UTC).isoformat(),
-            "signature": "sig-success",
-            "signature_key_id": "signing-key-1",
-        }
+        self.permit_bodies: list[dict] = []
+        self.on_permit = None
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/v1/permits":
-            self.permit_posts.append(request.content)
-            if self.fail_permits:
-                raise httpx.ConnectError("connection dropped", request=request)
-            key = request.headers["idempotency-key"]
-            first = self.permit_bodies.setdefault(key, request.content)
-            if json.loads(first) != json.loads(request.content):
-                return httpx.Response(
-                    409,
-                    json={
-                        "error": "idempotency_key_reused",
-                        "message": "idempotency_key_reused",
-                    },
-                )
-            return httpx.Response(201, json=self.permit_payload())
-        if request.url.path == "/mcp/messages":
-            body = json.loads(request.content)
-            return httpx.Response(
-                200,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": body["id"],
-                    "result": {
-                        "content": [{"type": "text", "text": "{}"}],
-                        "structuredContent": {},
-                        "isError": False,
-                        "receipt": self.receipt_payload(),
-                    },
-                },
-            )
-        return httpx.Response(404)
+        assert request.url.path == "/v1/permits", "nothing follows a lost permit"
+        assert request.headers["idempotency-key"] == PERMIT_KEY
+        self.permit_bodies.append(json.loads(request.content))
+        if self.on_permit is not None:
+            self.on_permit(self.permit_bodies[-1])
+        raise httpx.ConnectError("connection dropped", request=request)
 
 
-def _tool(server: FakeTrustPlane, **kwargs):
-    client = B2AClient(api_key="test-key", transport=httpx.MockTransport(server.handler))
-    return client, create_mcp_tool(client, wallet_id="wallet-1", **kwargs)
+def _tool(wire: DroppedConnection, **kwargs):
+    client = B2AClient(api_key="test-key", transport=httpx.MockTransport(wire.handler))
+    terms = {"wallet_id": "wallet-1", **kwargs}
+    return client, create_mcp_tool(client, **terms)
 
 
 async def _call(pair) -> str:
@@ -108,7 +52,7 @@ async def _call(pair) -> str:
             {
                 "tool_name": "partner.search",
                 "idempotency_key": "call-key-1",
-                "permit_idempotency_key": "permit-key-1",
+                "permit_idempotency_key": PERMIT_KEY,
                 "arguments": {"q": "x"},
             }
         )
@@ -116,42 +60,52 @@ async def _call(pair) -> str:
         await client.close()
 
 
+async def _attempt(pair) -> None:
+    """One process whose permit request is lost in transit."""
+    with pytest.raises(TransportError):
+        await _call(pair)
+
+
 @pytest.mark.asyncio
-async def test_restart_with_store_replays_the_same_permit_body(tmp_path):
-    server = FakeTrustPlane()
+async def test_restart_with_store_sends_the_same_permit_body(tmp_path):
+    wire = DroppedConnection()
     path = tmp_path / "permits.json"
 
-    first = await _call(_tool(server, permit_store=JsonFilePermitStore(path)))
-    second = await _call(_tool(server, permit_store=JsonFilePermitStore(path)))
+    await _attempt(_tool(wire, permit_store=JsonFilePermitStore(path)))
+    await _attempt(_tool(wire, permit_store=JsonFilePermitStore(path)))
 
+    assert len(wire.permit_bodies) == 2
+    assert wire.permit_bodies[0] == wire.permit_bodies[1]
+
+
+@pytest.mark.asyncio
+async def test_restart_without_store_sends_a_new_expiry_under_the_same_key():
+    wire = DroppedConnection()
+
+    await _attempt(_tool(wire))
+    await _attempt(_tool(wire))
+
+    first, second = wire.permit_bodies
+    assert first["expires_at"] != second["expires_at"]
+    first.pop("expires_at")
+    second.pop("expires_at")
     assert first == second
-    assert len(server.permit_posts) == 2
-    assert json.loads(server.permit_posts[0]) == json.loads(server.permit_posts[1])
 
 
 @pytest.mark.asyncio
-async def test_restart_without_store_still_conflicts():
-    server = FakeTrustPlane()
-    await _call(_tool(server))
-    with pytest.raises(IdempotencyConflictError):
-        await _call(_tool(server))
-
-
-@pytest.mark.asyncio
-async def test_body_is_stored_before_a_lost_permit_response(tmp_path):
-    server = FakeTrustPlane()
+async def test_body_is_stored_before_the_request_leaves(tmp_path):
+    wire = DroppedConnection()
     path = tmp_path / "permits.json"
-    server.fail_permits = True
-    with pytest.raises(Exception):  # noqa: B017 - any transport failure
-        await _call(_tool(server, permit_store=JsonFilePermitStore(path)))
-    assert path.exists()
+    stored_at_send: list[dict] = []
 
-    server.fail_permits = False
-    await _call(_tool(server, permit_store=JsonFilePermitStore(path)))
+    def read_store(_body: dict) -> None:
+        record = JsonFilePermitStore(path).get(PERMIT_KEY)
+        stored_at_send.append(record["request"])
 
-    assert {json.dumps(json.loads(body)) for body in server.permit_posts} == {
-        json.dumps(json.loads(server.permit_posts[0]))
-    }
+    wire.on_permit = read_store
+    await _attempt(_tool(wire, permit_store=JsonFilePermitStore(path)))
+
+    assert stored_at_send == wire.permit_bodies
 
 
 @pytest.mark.asyncio
@@ -160,13 +114,11 @@ async def test_body_is_stored_before_a_lost_permit_response(tmp_path):
     [("permit_budget", Decimal(50)), ("wallet_id", "wallet-2")],
 )
 async def test_restart_with_changed_terms_is_refused_before_the_network(tmp_path, change, value):
-    server = FakeTrustPlane()
+    wire = DroppedConnection()
     path = tmp_path / "permits.json"
-    await _call(_tool(server, permit_store=JsonFilePermitStore(path)))
+    await _attempt(_tool(wire, permit_store=JsonFilePermitStore(path)))
 
-    client = B2AClient(api_key="test-key", transport=httpx.MockTransport(server.handler))
-    terms = {"wallet_id": "wallet-1", change: value}
-    tool = create_mcp_tool(client, permit_store=JsonFilePermitStore(path), **terms)
+    changed = _tool(wire, permit_store=JsonFilePermitStore(path), **{change: value})
     with pytest.raises(ValueError, match="different permit terms"):
-        await _call((client, tool))
-    assert len(server.permit_posts) == 1
+        await _call(changed)
+    assert len(wire.permit_bodies) == 1

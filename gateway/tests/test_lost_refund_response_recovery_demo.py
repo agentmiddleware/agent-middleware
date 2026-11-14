@@ -31,6 +31,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def restore_service_registry():
+    from app.services import service_registry
+
+    registry = service_registry._service_registry
+    yield
+    service_registry._service_registry = registry
+
+
 def _reset_in_process_singletons() -> None:
     """Drop process-local service objects so the next call reloads from SQLite."""
     from app.core.config import get_settings
@@ -112,7 +121,9 @@ async def _wallet_refund_rows(wallet_id: str) -> list[LedgerEntryModel]:
 
 
 @pytest.mark.anyio
-async def test_lost_refund_response_recovery_demo(tmp_path, clean_database):
+async def test_lost_refund_response_recovery_demo(
+    tmp_path, clean_database, restore_service_registry
+):
     """Upstream refund commits, response is lost, retry after restart is one effect."""
     from app.main import app
 

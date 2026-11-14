@@ -9,6 +9,7 @@ from typing import Any
 from b2a_sdk.models import PermitRequest
 from langchain_core.tools import StructuredTool
 
+from ._permit_store import PermitStore, permit_record, request_from_record, same_terms
 from .client import B2AClient
 
 # Same limit the shared client and the server enforce.
@@ -79,6 +80,7 @@ def create_mcp_tool(
     wallet_id: str,
     permit_budget: Decimal = Decimal(100),
     permit_ttl_minutes: int = 30,
+    permit_store: PermitStore | None = None,
 ) -> StructuredTool:
     """Create a LangChain tool that calls MCP endpoints via governed permit→invoke→receipt flow.
 
@@ -87,6 +89,10 @@ def create_mcp_tool(
         wallet_id: Wallet ID for billing
         permit_budget: Maximum credits per permit (default 100)
         permit_ttl_minutes: Permit lifetime in minutes (default 30)
+        permit_store: Keeps each permit request body under its permit key.
+            Pass a durable one, such as ``JsonFilePermitStore``, to replay a
+            permit after a process restart. Without it, a new process that
+            reuses a permit key gets ``idempotency_key_reused``.
     """
     _require_wallet_id(wallet_id)
     _require_permit_budget(permit_budget)
@@ -130,19 +136,27 @@ def create_mcp_tool(
 
         # Snapshot before awaiting creation, including a response lost after
         # acceptance. Concurrent coroutines also see this same request body.
+        # The permit store carries that body across a process restart.
+        fresh = PermitRequest(
+            issuer_wallet_id=wallet_id,
+            subject_wallet_id=wallet_id,
+            max_credits=permit_budget,
+            expires_at=datetime.now(UTC) + timedelta(minutes=permit_ttl_minutes),
+            allowed_tools=[tool_name],
+            scopes=[f"tool:{tool_name}:invoke", "billing:charge"],
+        )
         request = permit_requests.get(permit_idempotency_key)
+        if request is None and permit_store is not None:
+            record = permit_store.get(permit_idempotency_key)
+            if record is not None:
+                request = request_from_record(record)
         if request is None:
-            request = PermitRequest(
-                issuer_wallet_id=wallet_id,
-                subject_wallet_id=wallet_id,
-                max_credits=permit_budget,
-                expires_at=datetime.now(UTC) + timedelta(minutes=permit_ttl_minutes),
-                allowed_tools=[tool_name],
-                scopes=[f"tool:{tool_name}:invoke", "billing:charge"],
-            )
-            permit_requests[permit_idempotency_key] = request
-        elif request.allowed_tools != [tool_name]:
+            request = fresh
+            if permit_store is not None:
+                permit_store.put(permit_idempotency_key, permit_record(request, permit_ttl_minutes))
+        elif not same_terms(request, fresh):
             raise ValueError("permit_idempotency_key reused with different permit terms")
+        permit_requests[permit_idempotency_key] = request
 
         if permit_idempotency_key in permit_cache:
             permit_id = permit_cache[permit_idempotency_key]
@@ -206,6 +220,7 @@ def create_langgraph_tools(
     wallet_id: str,
     permit_budget: Decimal = Decimal(100),
     permit_ttl_minutes: int = 30,
+    permit_store: PermitStore | None = None,
 ) -> list[Callable]:
     """Get tools formatted for LangGraph ReAct agents."""
     return [
@@ -214,6 +229,7 @@ def create_langgraph_tools(
             wallet_id=wallet_id,
             permit_budget=permit_budget,
             permit_ttl_minutes=permit_ttl_minutes,
+            permit_store=permit_store,
         ),
         create_wallet_tool(client, wallet_id=wallet_id),
     ]

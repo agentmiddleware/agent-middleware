@@ -24,8 +24,6 @@ Usage:
 import asyncio
 import os
 
-import httpx
-
 try:
     from b2a_sdk import AgentMiddlewareClient
     from b2a_sdk.decorators import billable
@@ -35,6 +33,9 @@ except ImportError as exc:
         "python -m pip install -e './sdk/python[dev]'"
     ) from exc
 
+# httpx is a dependency of b2a_sdk, so it is imported after the guard above:
+# a checkout without the SDK gets the install hint, not a bare import error.
+import httpx
 
 API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
 

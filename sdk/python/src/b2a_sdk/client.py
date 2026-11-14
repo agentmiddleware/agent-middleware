@@ -109,10 +109,13 @@ class DryRunSimulation:
         client: AgentMiddlewareClient,
         wallet_id: str,
         session_id: str | None = None,
+        initial_balance: float | None = None,
     ):
         self._client = client
         self.wallet_id = wallet_id
         self.session_id = session_id
+        # Virtual balance the server reported when the session started.
+        self.initial_balance = initial_balance
         self._charges: list[dict] = []
         self._total_cost = 0.0
         self._would_succeed = True
@@ -1003,11 +1006,13 @@ class AgentMiddlewareClient:
         response.raise_for_status()
         session_data = response.json()
         session_id = session_data.get("session_id")
+        virtual_balance = session_data.get("virtual_balance")
 
         sim = DryRunSimulation(
             client=self,
             wallet_id=wallet_id,
             session_id=session_id,
+            initial_balance=float(virtual_balance) if virtual_balance is not None else None,
         )
         sim._active = True
 

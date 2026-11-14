@@ -11,9 +11,14 @@ affecting real wallet balances or triggering velocity monitoring.
    do not mount it. Run the API with ``ENABLE_PROOF_SURFACES=true`` or every
    call here returns 404. See ``docs/PROOF_SURFACES.md``.
 
+The first call, ``POST /v1/billing/wallets/sponsor``, is admin gated, so
+``B2A_API_KEY`` must be a bootstrap admin key (one of the server's
+``VALID_API_KEYS``). A wallet-scoped key gets ``403 admin_access_denied``.
+
 Usage:
-    ENABLE_PROOF_SURFACES=true uvicorn app.main:app     # in another shell
-    B2A_API_KEY=<bootstrap-key> python examples/dry_run_example.py
+    ENABLE_PROOF_SURFACES=true VALID_API_KEYS=<bootstrap-admin-key> \
+        uvicorn app.main:app                          # in another shell
+    B2A_API_KEY=<bootstrap-admin-key> python examples/dry_run_example.py
 """
 
 import asyncio
@@ -28,10 +33,15 @@ except ImportError as exc:
         "python -m pip install -e './sdk/python[dev]'"
     ) from exc
 
+# httpx is a dependency of b2a_sdk, so it is imported after the guard above:
+# a checkout without the SDK gets the install hint, not a bare import error.
+import httpx
+
+API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
 
 b2a = AgentMiddlewareClient(
     api_key=os.getenv("B2A_API_KEY", "test-key"),
-    base_url=os.getenv("B2A_API_URL", "http://localhost:8000"),
+    base_url=API_URL,
 )
 
 
@@ -87,7 +97,7 @@ async def demo_simulation():
 
     async with b2a.simulate_session(wallet_id=wallet_id) as sim:
         print(f"\nSession started: {sim.session_id}")
-        print(f"Initial virtual balance: {sim.total_cost} credits")
+        print(f"Initial virtual balance: {sim.initial_balance} credits")
 
         result1 = await generate_video_hook("https://example.com/video1.mp4")
         print("\n1. Simulated generate_video:")
@@ -172,10 +182,28 @@ async def main() -> int:
         await demo_simulation()
     except Exception as e:  # noqa: BLE001 - display unexpected demo failures
         print(f"\nError: {e}")
-        print("Make sure the B2A API is running at http://localhost:8000")
-        print("Or set B2A_API_URL environment variable.")
+        for line in _failure_hints(e):
+            print(line)
         return 1
     return 0
+
+
+def _failure_hints(error: Exception) -> list[str]:
+    """Explain the likely fix for a failed run, using the configured API URL."""
+    status = (
+        error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None
+    )
+    if status in (401, 403):
+        return [
+            "This example needs a bootstrap admin key (one of the server's VALID_API_KEYS)",
+            "in B2A_API_KEY. A wallet-scoped key cannot create a sponsor wallet.",
+        ]
+    if status == 404:
+        return [f"Start the API at {API_URL} with ENABLE_PROOF_SURFACES=true."]
+    return [
+        f"Make sure the B2A API is running at {API_URL}",
+        "Or set the B2A_API_URL environment variable.",
+    ]
 
 
 if __name__ == "__main__":

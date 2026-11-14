@@ -72,11 +72,16 @@ async def test_every_advertised_doc_link_resolves(
         if proof_surfaces == "true":
             assert "/docs/awi-adoption-guide.md" in links
         broken = {}
+        uncacheable = []
         for link in sorted(links):
             resp = await client.get(link)
             if resp.status_code != 200:
                 broken[link] = resp.status_code
+            elif "no-store" in resp.headers.get("cache-control", ""):
+                uncacheable.append(link)
         assert broken == {}
+        # Advertised docs are public discovery: agents may cache them.
+        assert uncacheable == []
 
 
 @pytest.mark.anyio

@@ -50,8 +50,10 @@ async def _manifest_links(client: AsyncClient) -> set[str]:
     links.update(_doc_links(manifest.json()))
     for path in ("/v1/discover", "/v1/discover/awi"):
         resp = await client.get(path, headers=ADMIN)
-        if resp.status_code == 200:
-            links.update(_doc_links(resp.json()))
+        # Both answer 200 in either posture; a 401 or 500 here must not
+        # quietly drop that source's links from the walk.
+        assert resp.status_code == 200, (path, resp.status_code)
+        links.update(_doc_links(resp.json()))
     return links
 
 

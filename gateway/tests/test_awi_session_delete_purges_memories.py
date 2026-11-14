@@ -35,7 +35,7 @@ async def client():
         yield client
 
 
-async def _session_with_memory(client):
+async def _session_with_memory(client, tag: str = ""):
     actor = await provision_agent_wallet(client)
     wallet = actor["agent_wallet_id"]
     permit = await create_tool_permit(
@@ -44,7 +44,7 @@ async def _session_with_memory(client):
         key_id=actor["key_id"],
         tool_name="awi_memory_index",
         max_credits=50,
-        idem_key="permit-memory-purge",
+        idem_key=f"permit-memory-purge{tag}",
     )
     created = await client.post(
         "/v1/awi/sessions",
@@ -65,7 +65,7 @@ async def _session_with_memory(client):
             **actor["agent_headers"],
             "X-Wallet-Id": wallet,
             "X-Permit-Id": permit["permit_id"],
-            "Idempotency-Key": "memory-purge-index",
+            "Idempotency-Key": f"memory-purge-index{tag}",
         },
     )
     assert indexed.status_code == 201, indexed.text
@@ -133,6 +133,48 @@ async def test_expiry_sweep_purges_memories(client, clean_database):
         f"/v1/awi/rag/memory/{memory_id}", headers=BOOTSTRAP_HEADERS
     )
     assert resp.status_code == 404, resp.text
+
+
+async def test_expiry_sweep_keeps_only_the_session_whose_purge_failed(
+    client, clean_database, monkeypatch
+):
+    _, failing_sid, failing_memory = await _session_with_memory(client, "-a")
+    _, other_sid, other_memory = await _session_with_memory(client, "-b")
+    manager = get_awi_session_manager()
+    rag = get_awi_rag_engine()
+
+    # Sweep anything already expired so the count below is exact.
+    await manager.cleanup_expired_async()
+
+    for sid in (failing_sid, other_sid):
+        session = await manager.get_session(sid)
+        session.updated_at = datetime.now(timezone.utc) - timedelta(
+            seconds=session.timeout_seconds + 1
+        )
+
+    real_purge = rag.delete_session_memories
+
+    async def purge_fails_for_one(session_id):
+        if session_id == failing_sid:
+            raise RuntimeError("synthetic purge failure")
+        return await real_purge(session_id)
+
+    monkeypatch.setattr(rag, "delete_session_memories", purge_fails_for_one)
+    result = await manager.cleanup_expired_async()
+
+    assert result == {"sessions_removed": 1}
+    assert await manager.get_session(other_sid) is None
+    assert await rag.get_memory(other_memory) is None
+    assert await manager.get_session(failing_sid) is not None
+    assert await rag.get_memory(failing_memory) is not None
+
+    # The next sweep retries the purge once it works again.
+    monkeypatch.undo()
+    result = await manager.cleanup_expired_async()
+
+    assert result == {"sessions_removed": 1}
+    assert await manager.get_session(failing_sid) is None
+    assert await rag.get_memory(failing_memory) is None
 
 
 @pytest.mark.parametrize("top_k", ["0", "-1", "21", "1000"])

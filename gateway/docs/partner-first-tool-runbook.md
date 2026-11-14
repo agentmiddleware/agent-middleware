@@ -143,7 +143,8 @@ exactly-once side effects.
 7. Call the out-of-scope tool under the same permit → deny (`permit_tool_not_allowed`).
 8. Call `YOUR_TOOL_ID` with no permit → deny (`permit_required`).
 9. Force a post-dispatch timeout → signed `delivery_uncertain`, charge retained,
-   and no automatic retry.
+   and no automatic retry. Use the [operator resolution runbook](operator-resolution-runbook.md)
+   if authoritative upstream evidence later becomes available.
 10. **Partner verifies the receipt offline, in their own environment.** Export
     the portable bundle and the public key set, then verify with no gateway
     access and no credentials:

@@ -1694,7 +1694,23 @@ class PermitService:
                     # reservation that no longer exists. This pre-check is the
                     # contract; the guarded claim below is the once-only gate.
                     if attempt.state != "returned_error":
-                        raise PermitError("dispatch_budget_release_state_invalid")
+                        from app.db.models import LedgerEntryModel
+                        from app.services.receipt_resolutions import (
+                            operator_refund_authorized,
+                        )
+
+                        refund = await session.get(
+                            LedgerEntryModel, f"refund-{attempt.ledger_entry_id}"
+                        )
+                        if (
+                            attempt.state != "delivery_uncertain"
+                            or not await operator_refund_authorized(session, attempt_id)
+                            or refund is None
+                            or refund.wallet_id != attempt.wallet_id
+                            or refund.action != "refund"
+                            or refund.correlation_id != attempt.ledger_entry_id
+                        ):
+                            raise PermitError("dispatch_budget_release_state_invalid")
                     if attempt.budget_released_at is not None:
                         return False
                     now = utc_now()

@@ -84,7 +84,7 @@ def test_missing_objects_are_recreated_with_main_shape(tmp_path, monkeypatch):
             conn.execute(text(f"DROP TABLE {name}"))
     engine.dispose()
 
-    _run(command.upgrade, config, "head")
+    _run(command.upgrade, config, "053_repair_api_lineage")
     shape, views = _shape(sync_url)
     assert shape == expected[0]
     assert VIEW in views

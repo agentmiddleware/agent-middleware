@@ -1864,6 +1864,7 @@ class PermitService:
             IdempotencyRecordModel,
             LedgerEntryModel,
             ReceiptModel,
+            ReceiptResolutionModel,
         )
 
         receipt_rows = (
@@ -1902,7 +1903,8 @@ class PermitService:
                 ledger_entry_id,
                 _wallet_id,
             ) in receipt_rows
-            if outcome == "failed_unrefunded" and ledger_entry_id is not None
+            if outcome in {"failed_unrefunded", "delivery_uncertain"}
+            and ledger_entry_id is not None
         ]
         exact_refunded_ledger_ids: set[str] = set()
         if pending_ledger_ids:
@@ -1937,7 +1939,8 @@ class PermitService:
                     ledger_entry_id,
                     wallet_id,
                 ) in receipt_rows
-                if outcome == "failed_unrefunded" and ledger_entry_id is not None
+                if outcome in {"failed_unrefunded", "delivery_uncertain"}
+                and ledger_entry_id is not None
             }
             exact_refunded_ledger_ids = {
                 correlation_id
@@ -1997,6 +2000,26 @@ class PermitService:
                     and state.get("ledger_entry_id") == failed_receipt_by_id[receipt_id]
                 ):
                     resolved_receipt_ids.add(receipt_id)
+        # Signed intent alone is insufficient: require the exact durable refund.
+        for receipt_id, outcome, _credits, ledger_id, _wallet in receipt_rows:
+            if (
+                outcome != "delivery_uncertain"
+                or ledger_id not in exact_refunded_ledger_ids
+            ):
+                continue
+            resolution = await session.scalar(
+                select(ReceiptResolutionModel).where(
+                    ReceiptResolutionModel.receipt_id == receipt_id,
+                    cast(
+                        ColumnElement[bool],
+                        ReceiptResolutionModel.outcome == "confirmed_not_delivered",
+                    ),
+                )
+            )
+            if resolution is not None:
+                evidence = json.loads(resolution.evidence or "{}")
+                if evidence.get("refund_entry_id") == f"refund-{ledger_id}":
+                    resolved_receipt_ids.add(receipt_id)
         consumed_decimal = sum(
             (
                 Decimal(str(credits))
@@ -2007,7 +2030,10 @@ class PermitService:
                     _ledger_entry_id,
                     _wallet_id,
                 ) in receipt_rows
-                if outcome in {"success", "delivery_uncertain", "response_rejected"}
+                if (
+                    outcome in {"success", "delivery_uncertain", "response_rejected"}
+                    and receipt_id not in resolved_receipt_ids
+                )
                 or (
                     outcome == "failed_unrefunded"
                     and receipt_id not in resolved_receipt_ids

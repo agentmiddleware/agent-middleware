@@ -252,7 +252,10 @@ async def test_inconclusive_writes_no_resolution(
 
 
 @pytest.mark.anyio
-async def test_fixture_lookup_success_and_stable_retry(client, clean_database):
+@pytest.mark.parametrize(
+    "origin", ["https://partner.example", "HTTPS://PARTNER.EXAMPLE:443/"]
+)
+async def test_fixture_lookup_success_and_stable_retry(client, clean_database, origin):
     seed, receipt = await uncertain(client, "operator-lookup")
     calls = []
 
@@ -263,9 +266,9 @@ async def test_fixture_lookup_success_and_stable_retry(client, clean_database):
         return httpx.Response(200, json={"status": "executed", "token": "test-token"})
 
     service.register_receipt_status_lookup(
-        "https://partner.example",
+        origin,
         service.RefundFixtureStatusLookup(
-            "https://partner.example",
+            origin,
             "test-token",
             transport=httpx.MockTransport(handler),
         ),
@@ -518,3 +521,114 @@ async def test_fixture_adapter_inconclusive(client, clean_database, answer):
     assert response.status_code == 409
     assert response.json()["detail"] == "resolution_inconclusive"
     assert await _ledger_counts(seed.wallet_id) == (1, 0)
+
+
+@pytest.mark.anyio
+async def test_no_attempt_refund_rejected_before_intent(client, clean_database):
+    from app.db.models import ReceiptModel
+
+    seed, receipt = await uncertain(client, "operator-no-attempt")
+    async with get_session_factory()() as session:
+        model = await session.get(ReceiptModel, receipt.receipt_id)
+        model.dispatch_attempt_id = None
+        model.idempotency_record_id = None
+        session.add(model)
+        await session.commit()
+    response = await client.post(
+        f"/v1/admin/receipts/{receipt.receipt_id}/resolution",
+        headers=BOOTSTRAP_HEADERS,
+        json=body("confirmed_not_delivered", refund=True),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "resolution_refund_unsupported"
+    assert await _ledger_counts(seed.wallet_id) == (1, 0)
+    async with get_session_factory()() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(ReceiptResolutionModel)
+            )
+            == 0
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("complete", [False, True])
+async def test_budget_reconcile_requires_completed_operator_refund(
+    client, clean_database, monkeypatch, complete
+):
+    from datetime import timedelta
+    from decimal import Decimal
+    from app.core.time import utc_now
+    from app.db.models import PermitModel
+    from app.services.permits import get_permit_service
+
+    seed, receipt = await uncertain(client, f"operator-budget-{complete}")
+    if not complete:
+
+        async def fail(**kwargs):
+            raise RuntimeError("interrupted refund")
+
+        monkeypatch.setattr(get_agent_money(), "refund_charge", fail)
+    response = await client.post(
+        f"/v1/admin/receipts/{receipt.receipt_id}/resolution",
+        headers=BOOTSTRAP_HEADERS,
+        json=body("confirmed_not_delivered", refund=True),
+    )
+    assert response.status_code == (200 if complete else 503)
+    async with get_session_factory()() as session:
+        permit = await session.get(PermitModel, seed.permit_id)
+        expected = Decimal("0") if complete else receipt.credits_charged
+        assert permit.spent_credits == expected
+        permit.expires_at = utc_now() - timedelta(hours=1)
+        permit.updated_at = utc_now() - timedelta(hours=1)
+        session.add(permit)
+        await session.commit()
+    await get_permit_service().reconcile_budgets(idle_seconds=1)
+    async with get_session_factory()() as session:
+        permit = await session.get(PermitModel, seed.permit_id)
+        assert permit.spent_credits == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "reason", ["dispatch_permit_missing", "dispatch_approval_binding_mismatch"]
+)
+async def test_lookup_context_conflict_is_audited_inconclusive(
+    client, clean_database, monkeypatch, reason
+):
+    from app.services.mcp_dispatch_attempts import (
+        DispatchAttemptConflictError,
+        get_mcp_dispatch_attempt_service,
+    )
+
+    seed, receipt = await uncertain(client, f"operator-context-{reason}")
+
+    async def fail(*args):
+        raise DispatchAttemptConflictError(reason)
+
+    monkeypatch.setattr(get_mcp_dispatch_attempt_service(), "get_context", fail)
+    response = await client.post(
+        f"/v1/admin/receipts/{receipt.receipt_id}/resolution",
+        headers=BOOTSTRAP_HEADERS,
+        json=body(lookup=True),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "resolution_inconclusive"
+    assert await _ledger_counts(seed.wallet_id) == (1, 0)
+    async with get_session_factory()() as session:
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(ReceiptResolutionModel)
+            )
+            == 0
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(ControlPlaneAuditEventModel)
+                .where(
+                    ControlPlaneAuditEventModel.event == "receipt.resolution.attempt"
+                )
+            )
+            == 1
+        )

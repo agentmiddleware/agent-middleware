@@ -23,6 +23,7 @@ from app.schemas.resolutions import ResolutionRequest
 from app.services.agent_money import get_agent_money
 from app.services.idempotency import ACTION_MCP_IDEMPOTENCY_ENDPOINT
 from app.services.mcp_dispatch_attempts import (
+    DispatchAttemptConflictError,
     get_mcp_dispatch_attempt_service,
 )
 from app.services.mcp_dispatch_reconciliation import (
@@ -46,7 +47,23 @@ _LOOKUPS: dict[str, ReceiptStatusLookup] = {}
 def register_receipt_status_lookup(origin: str, lookup: ReceiptStatusLookup) -> None:
     """Explicit startup opt-in only. No adapter is registered by default."""
     _require_async_lookup(lookup)
-    _LOOKUPS[origin] = lookup
+    _LOOKUPS[_normalize_origin(origin)] = lookup
+
+
+def _normalize_origin(origin: str) -> str:
+    url = httpx.URL(origin)
+    if (
+        url.scheme not in {"http", "https"}
+        or not url.host
+        or url.userinfo
+        or url.query
+        or url.fragment
+        or url.path not in {"", "/"}
+    ):
+        raise ValueError("fixture origin must be an origin without credentials")
+    if (url.scheme, url.port) in {("http", 80), ("https", 443)}:
+        url = url.copy_with(port=None)
+    return str(url).rstrip("/")
 
 
 class RefundFixtureStatusLookup:
@@ -64,22 +81,12 @@ class RefundFixtureStatusLookup:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        url = httpx.URL(origin)
-        if (
-            url.scheme not in {"http", "https"}
-            or not url.host
-            or url.userinfo
-            or url.query
-            or url.fragment
-            or url.path not in {"", "/"}
-        ):
-            raise ValueError("fixture origin must be an origin without credentials")
-        self._origin = origin.rstrip("/")
+        self._origin = _normalize_origin(origin)
         self._token = token
         self._transport = transport
 
     async def __call__(self, query: UpstreamDispatchStatusQuery) -> str | None:
-        if query.upstream_origin.rstrip("/") != self._origin:
+        if _normalize_origin(query.upstream_origin) != self._origin:
             return None
         async with httpx.AsyncClient(
             transport=self._transport,
@@ -168,6 +175,8 @@ async def resolve_receipt(
         ):
             raise ReceiptResolutionError("resolution_dispatch_linkage_invalid")
         if request.refund_credits:
+            if attempt is None:
+                raise ReceiptResolutionError("resolution_refund_unsupported")
             debit = (
                 await session.get(LedgerEntryModel, receipt.ledger_entry_id)
                 if receipt.ledger_entry_id
@@ -195,12 +204,13 @@ async def resolve_receipt(
     existing = await get_resolution(receipt_id)
     if request.use_lookup and existing is None:
         assert attempt is not None
-        context = (
-            await get_mcp_dispatch_attempt_service().get_context(attempt.attempt_id)
-            if attempt
-            else None
-        )
-        lookup = _LOOKUPS.get(attempt.upstream_origin) if attempt else None
+        try:
+            context = await get_mcp_dispatch_attempt_service().get_context(
+                attempt.attempt_id
+            )
+        except DispatchAttemptConflictError:
+            raise ReceiptResolutionError("resolution_inconclusive") from None
+        lookup = _LOOKUPS.get(_normalize_origin(attempt.upstream_origin))
         if context is None or lookup is None:
             raise ReceiptResolutionError("resolution_inconclusive")
         query = UpstreamDispatchStatusQuery(

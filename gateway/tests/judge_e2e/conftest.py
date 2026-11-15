@@ -19,7 +19,10 @@ from tests.judge_e2e.worker import serve
 
 
 class Judge:
+    """Control an isolated gateway worker and its runtime-issued demo authority."""
+
     def __init__(self, database: Path):
+        """Initialize the local database connection and start the worker."""
         self.database_url = f"sqlite+aiosqlite:///{database}"
         self._signing_key = base64.b64encode(
             Ed25519PrivateKey.generate().private_bytes(
@@ -30,6 +33,7 @@ class Judge:
         self.start()
 
     def start(self):
+        """Start the worker and wait for its ready event."""
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         self.process = context.Process(
@@ -46,15 +50,18 @@ class Judge:
             raise
 
     def receive(self):
+        """Receive a worker response within the timeout."""
         if not self.connection.poll(45):
             raise AssertionError("judge worker did not respond within 45 seconds")
         return self.connection.recv()
 
     def rpc(self, operation, **kwargs):
+        """Send a worker operation and return its response."""
         self.connection.send({"operation": operation, **kwargs})
         return self.receive()
 
     def issue(self):
+        """Request and retain demo authority issued by the gateway."""
         response = self.request("POST", "/v1/demo/keys", authenticated=False, json={})
         assert response["status"] == 201
         self._demo = response["body"]
@@ -64,6 +71,7 @@ class Judge:
         return self._demo["permit_id"]
 
     def request(self, method, url, *, authenticated=True, **kwargs):
+        """Send an ASGI request with optional demo authentication."""
         headers = kwargs.pop("headers", {})
         if authenticated:
             headers = {"X-API-Key": self._demo["api_key"], **headers}
@@ -78,6 +86,7 @@ class Judge:
         permit_id=None,
         **kwargs,
     ):
+        """Invoke the echo tool with the current demo authority."""
         return self.request(
             "POST",
             "/mcp/messages",
@@ -99,6 +108,7 @@ class Judge:
         )
 
     def snapshot(self):
+        """Read persisted state and the worker dispatch count."""
         return self.rpc(
             "snapshot",
             wallet_id=self._demo["wallet_id"],
@@ -106,6 +116,7 @@ class Judge:
         )
 
     def export(self, receipt_id):
+        """Export a portable receipt and the public trust key document."""
         response = self.request("GET", f"/v1/receipts/{receipt_id}/portable")
         assert response["status"] == 200
         public = self.request(
@@ -115,6 +126,7 @@ class Judge:
         return response["body"], public["body"]
 
     def kill(self):
+        """Kill the worker and verify abnormal process termination."""
         self.process.kill()
         self.process.join(10)
         assert not self.process.is_alive()
@@ -122,6 +134,7 @@ class Judge:
         self.connection.close()
 
     def close(self):
+        """Stop the worker and close its pipe."""
         if self.process.is_alive():
             self.connection.send({"operation": "stop"})
             self.process.join(10)
@@ -134,6 +147,7 @@ class Judge:
 
 @pytest.fixture
 def judge():
+    """Provide a worker backed by a disposable local database."""
     # Keep all test-owned files inside the new path and remove them even on
     # failure. No credentials or portable receipts are written to this folder.
     with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:

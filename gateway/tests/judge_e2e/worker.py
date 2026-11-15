@@ -15,10 +15,13 @@ from dataclasses import asdict
 
 
 def serve(connection, database_url: str, signing_key: str) -> None:
+    """Configure and run a gateway worker with network access disabled."""
     # Configure before importing the application, without loading dotenv files.
     from app.core import config
 
     class LocalSettings(config.Settings):
+        """Load only explicit local test settings and model defaults."""
+
         @classmethod
         def settings_customise_sources(
             cls,
@@ -28,11 +31,13 @@ def serve(connection, database_url: str, signing_key: str) -> None:
             dotenv_settings,
             file_secret_settings,
         ):
+            """Exclude environment, dotenv, and file secret settings sources."""
             # Only explicit test configuration and model defaults. Never load
             # inherited credentials, dotenv files, or file secret sources.
             return (init_settings,)
 
     def reject_network(*args, **kwargs):
+        """Reject socket connection attempts from the worker."""
         raise AssertionError("judge worker forbids network connections")
 
     socket.socket.connect = reject_network
@@ -58,6 +63,7 @@ def serve(connection, database_url: str, signing_key: str) -> None:
 
 
 async def _run(connection) -> None:
+    """Serve pipe commands against the local ASGI application."""
     from httpx import ASGITransport, AsyncClient
     from sqlalchemy import select
 
@@ -79,12 +85,15 @@ async def _run(connection) -> None:
     from app.services.upstream_mcp import UpstreamMcpResult
 
     class Echo:
+        """Execute local echo calls with an optional dispatch checkpoint pause."""
+
         dispatches = 0
         kill_during_dispatch = False
 
         async def call_tool(
             self, arguments, *, invocation_id, idempotency_key, before_dispatch
         ):
+            """Record dispatch and return the canonical echo result."""
             await before_dispatch()
             self.dispatches += 1
             if self.kill_during_dispatch:

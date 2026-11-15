@@ -6,6 +6,7 @@ from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
 
 
 def test_demo_permit_dispatch_replay_and_offline_verification(judge):
+    """Verify demo dispatch, idempotent replay, and offline receipt validation."""
     permit_id = judge.issue()
     initial = judge.snapshot()
     assert initial["permit_status"] == "active"

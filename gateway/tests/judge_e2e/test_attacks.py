@@ -12,6 +12,7 @@ from b2a_sdk.receipt_verifier import (
 
 
 def test_conflicting_payload_cannot_reuse_a_completed_key(judge):
+    """Verify conflicting input cannot reuse a completed idempotency key."""
     judge.issue()
     first = judge.call()
     assert first["status"] == 200
@@ -29,6 +30,7 @@ def test_conflicting_payload_cannot_reuse_a_completed_key(judge):
 
 @pytest.mark.parametrize("attack", ["anonymous", "tool_scope", "budget"])
 def test_guardrails_deny_before_dispatch_or_money(judge, attack):
+    """Verify authority and budget denials leave execution state unchanged."""
     judge.issue()
     if attack == "budget":
         # Spend the issued cap using genuine product-generated operations.
@@ -60,6 +62,7 @@ def test_guardrails_deny_before_dispatch_or_money(judge, attack):
 
 
 def test_offline_tamper_and_unknown_key_fail_closed(judge):
+    """Verify offline validation rejects tampering and unknown signing keys."""
     judge.issue()
     first = judge.call()
     receipt_id = first["body"]["result"]["receipt"]["receipt_id"]
@@ -79,6 +82,7 @@ def test_offline_tamper_and_unknown_key_fail_closed(judge):
 
 
 def test_permit_replay_from_another_demo_wallet_is_denied(judge):
+    """Verify a permit cannot authorize another demo wallet."""
     first_permit = judge.issue()
     judge.issue()
     before = judge.snapshot()

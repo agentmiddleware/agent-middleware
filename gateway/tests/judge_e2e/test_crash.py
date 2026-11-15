@@ -7,6 +7,7 @@ from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
 
 
 def test_kill_mid_dispatch_recovers_one_signed_uncertain_receipt(judge):
+    """Verify crash recovery retains one charge and one uncertain receipt."""
     judge.issue()
     initial = judge.snapshot()
     # call() returns the checkpoint event while the actual request is blocked

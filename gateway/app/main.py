@@ -1340,8 +1340,6 @@ async def health_ready():
     from app.core.runtime_degradation import get_runtime_degradation
 
     degradation = get_runtime_degradation()
-    if degradation["degraded"]:
-        all_healthy = False
 
     return JSONResponse(
         status_code=200 if all_healthy else 503,

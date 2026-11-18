@@ -282,11 +282,13 @@ async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
     """
     from types import SimpleNamespace
 
-    settings = get_settings()
-    # Simulate production-like with the opt-out
-    monkeypatch.setattr(settings, "ENVIRONMENT", "prod-test")
-    monkeypatch.setattr(settings, "REDIS_URL", "")
-    monkeypatch.setattr(settings, "ALLOW_IN_MEMORY_STORE", True)
+    # Clear settings cache and use environment variables for proper test isolation
+    get_settings.cache_clear()
+
+    # Simulate production-like with the opt-out via environment
+    monkeypatch.setenv("ENVIRONMENT", "prod-test")
+    monkeypatch.setenv("REDIS_URL", "")
+    monkeypatch.setenv("ALLOW_IN_MEMORY_STORE", "true")
 
     # Mock state store to return healthy
     async def mock_state_health():

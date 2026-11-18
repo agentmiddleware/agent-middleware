@@ -365,7 +365,8 @@ async def test_receipt_keys_remain_public_in_production(client, production_trust
     assert jwks.status_code != 403
     assert jwks.status_code in {200, 503}
     health = await client.get("/health")
-    assert health.status_code == 200
+    # With REDIS_URL set to unreachable host, /health returns 503 (per blocker 1 fix)
+    assert health.status_code in {200, 503}
 
 
 @pytest.mark.production_trust

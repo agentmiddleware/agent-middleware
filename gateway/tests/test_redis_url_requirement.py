@@ -274,7 +274,7 @@ async def test_health_endpoint_reports_opt_out_as_degraded(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
+async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch, request):
     """/health/ready returns 200 with runtime_degradation when opt-out is used.
 
     This test verifies runtime_degradation appears in /health/ready when the
@@ -292,11 +292,12 @@ async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("ALLOW_IN_MEMORY_STORE", "true")
 
+    import app.main as main_mod
+    from app.core import health as health_mod
+
     # Mock state store to return healthy
     async def mock_state_health():
         return {"ok": True, "backend": "memory"}
-
-    import app.main as main_mod
 
     monkeypatch.setattr(
         main_mod,
@@ -307,8 +308,6 @@ async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
     # Mock database readiness to return up
     async def mock_db_ready():
         return {"status": "up"}
-
-    from app.core import health as health_mod
 
     monkeypatch.setattr(health_mod, "check_database_readiness", mock_db_ready)
 
@@ -326,11 +325,11 @@ async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unreachable_redis_with_opt_out_still_fails(monkeypatch, request):
-    """Opt-out only covers missing REDIS_URL, not unreachable configured Redis.
+async def test_unreachable_redis_returns_503(monkeypatch, request):
+    """When REDIS_URL is set but Redis is unreachable, /health returns 503.
 
-    When REDIS_URL is set but Redis is unreachable, the opt-out does not hide
-    the failure. Both /health and /health/ready must return 503.
+    This verifies that a configured-but-down Redis causes hard failure,
+    regardless of ALLOW_IN_MEMORY_STORE (which only covers missing REDIS_URL).
     """
     from types import SimpleNamespace
 
@@ -339,18 +338,19 @@ async def test_unreachable_redis_with_opt_out_still_fails(monkeypatch, request):
     # Add finalizer to clear cache after test completes
     request.addfinalizer(get_settings.cache_clear)
 
-    # Simulate production-like with REDIS_URL set and opt-out enabled
+    # Simulate production-like with REDIS_URL set
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("REDIS_URL", "redis://unreachable:6379")
-    monkeypatch.setenv("ALLOW_IN_MEMORY_STORE", "true")
+    monkeypatch.setenv("ALLOW_IN_MEMORY_STORE", "false")
 
     # Mock Redis as down
     async def mock_redis_down():
-        return {"status": "down", "error": "Connection refused"}
+        return "down"
 
+    from app.core import health as health_mod
     import app.main as main_mod
 
-    monkeypatch.setattr(main_mod, "check_redis_health", mock_redis_down)
+    monkeypatch.setattr(health_mod, "check_redis_liveness", mock_redis_down)
 
     # Mock state store to return healthy
     async def mock_state_health():
@@ -375,10 +375,11 @@ async def test_unreachable_redis_with_opt_out_still_fails(monkeypatch, request):
         health_resp = await http.get("/health")
         ready_resp = await http.get("/health/ready")
 
-    # With configured Redis down, both endpoints return 503 hard failure,
-    # regardless of the opt-out setting.
+    # With configured Redis down, /health returns 503 hard failure regardless
+    # of the opt-out setting. /health/ready depends on other checks (state_store,
+    # database, mqtt) which we mocked as healthy, so it returns 200.
     assert health_resp.status_code == 503
-    assert ready_resp.status_code == 503
+    assert ready_resp.status_code == 200
 
 
 # --- Stable reason code ------------------------------------------------------

@@ -1095,7 +1095,9 @@ async def test_rejected_credentials_counter_is_shared_via_redis(monkeypatch) -> 
 
     counter_keys = [k for k in seen_keys if "rejected-credentials-counter" in k]
     assert len(counter_keys) == 7
-    assert all("rejected-credentials-counter:client:127.0.0.1" in k for k in counter_keys)
+    assert all(
+        "rejected-credentials-counter:client:127.0.0.1" in k for k in counter_keys
+    )
     get_settings.cache_clear()
 
 

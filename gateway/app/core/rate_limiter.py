@@ -370,9 +370,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Rejected credentials counter: client -> count (in-memory fallback)
         self._rejected_credentials_count: dict[str, int] = defaultdict(int)
-        self.rejected_credentials_ceiling = (
-            cfg.RATE_LIMIT_REJECTED_CREDENTIALS_CEILING
-        )
+        self.rejected_credentials_ceiling = cfg.RATE_LIMIT_REJECTED_CREDENTIALS_CEILING
         self.rejected_credentials_delay = (
             cfg.RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS
         )
@@ -703,9 +701,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         namespace = _limiter_namespace()
         return f"{namespace}:{_REJECTED_CREDENTIALS_COUNTER_PREFIX}:client:{client_id}"
 
-    async def _increment_rejected_credentials_counter(
-        self, client_id: str
-    ) -> int:
+    async def _increment_rejected_credentials_counter(self, client_id: str) -> int:
         """Increment the rejected credentials counter and return the new count.
 
         Shared via Redis when available; otherwise counted in memory per process.
@@ -731,9 +727,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 self._rejected_credentials_count[client_id] += 1
                 return self._rejected_credentials_count[client_id]
 
-    async def _check_rejected_credentials_ceiling(
-        self, client_id: str
-    ) -> bool:
+    async def _check_rejected_credentials_ceiling(self, client_id: str) -> bool:
         """Check if the client has exceeded the rejected credentials ceiling.
 
         Returns True if the ceiling is exceeded and the response should be delayed.

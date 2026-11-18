@@ -69,6 +69,7 @@ def in_memory_store_allowed_in_production_like() -> bool:
     as degraded.
     """
     from .config import get_settings
+
     settings = get_settings()
     return bool(
         is_production_like_environment(settings.ENVIRONMENT)

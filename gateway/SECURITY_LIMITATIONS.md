@@ -162,7 +162,7 @@ repo; do not Redeploy from GitHub source).
   process memory: each worker and replica keeps its own counters, so every
   limit is multiplied by the process count. The runtime reports this instead
   of looking healthy: `/health/dependencies` shows `runtime_degradation.degraded`
-  as `true` with the stable reason `in_memory_store_allowed_in_production`,
+  as `true` with the stable reason `rate_limiter_redis_not_configured`,
   and the app logs one startup warning with the same reason per process.
 - All Phase 9 AWI MCP tools always require signed permits (`requirePermit` in
   `/mcp/tools.json`), even if legacy unpermitted MCP is enabled. Those stubs

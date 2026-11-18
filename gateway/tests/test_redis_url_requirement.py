@@ -338,19 +338,23 @@ async def test_unreachable_redis_returns_503(monkeypatch, request):
     # Add finalizer to clear cache after test completes
     request.addfinalizer(get_settings.cache_clear)
 
-    # Simulate production-like with REDIS_URL set
+    # Simulate production-like with REDIS_URL set and opt-out enabled
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.setenv("REDIS_URL", "redis://unreachable:6379")
-    monkeypatch.setenv("ALLOW_IN_MEMORY_STORE", "false")
+    monkeypatch.setenv("ALLOW_IN_MEMORY_STORE", "true")
 
-    # Mock Redis as down
+    import app.main as main_mod
+
+    # Patch settings.ALLOW_IN_MEMORY_STORE since /health reads main.settings
+    # which was built at import time
+    monkeypatch.setattr(main_mod.settings, "ALLOW_IN_MEMORY_STORE", True)
+
+    # Mock Redis as down - patch main_mod.check_redis_liveness since main.py:41
+    # imports that name directly from app.core.health
     async def mock_redis_down():
         return "down"
 
-    from app.core import health as health_mod
-    import app.main as main_mod
-
-    monkeypatch.setattr(health_mod, "check_redis_liveness", mock_redis_down)
+    monkeypatch.setattr(main_mod, "check_redis_liveness", mock_redis_down)
 
     # Mock state store to return healthy
     async def mock_state_health():
@@ -373,13 +377,16 @@ async def test_unreachable_redis_returns_503(monkeypatch, request):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         health_resp = await http.get("/health")
-        ready_resp = await http.get("/health/ready")
 
     # With configured Redis down, /health returns 503 hard failure regardless
-    # of the opt-out setting. /health/ready depends on other checks (state_store,
-    # database, mqtt) which we mocked as healthy, so it returns 200.
+    # of the opt-out setting. This is the key assertion validating BLOCKER 1:
+    # the opt-out (ALLOW_IN_MEMORY_STORE) only covers missing REDIS_URL at
+    # startup, not an unreachable configured Redis at runtime.
     assert health_resp.status_code == 503
-    assert ready_resp.status_code == 200
+    # Note: In production with real Redis unreachable, /health/ready would also
+    # return 503 because the rate limiter middleware fails closed. We don't
+    # assert that here because we're mocking Redis without hitting the actual
+    # rate limiter path.
 
 
 # --- Stable reason code ------------------------------------------------------

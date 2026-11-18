@@ -20,9 +20,9 @@
          first paint. Same contract as every other page. -->
     <script src="/a11y-preload.js?v=gateway-19"></script>
     <script defer src="/wave.js?v=gateway-20"></script>
-    @@VERCEL_ANALYTICS_SCRIPTS@@
-    <script defer src="/analytics.js?v=gateway-19"></script>
-    <script defer src="/utm-capture.js?v=utm-1"></script>
+    @@POSTHOG_CONFIG@@
+    <script defer src="/analytics.js?v=posthog-1"></script>
+    <script defer src="/utm-capture.js?v=utm-2"></script>
     <script defer src="/a11y.js?v=gateway-19"></script>
   </head>
   <body class="site-light">
@@ -52,7 +52,7 @@
             class="button button-primary"
             href="mailto:@@PUBLIC_CONTACT_EMAIL@@"
             aria-label="Contact us by email (opens your mail app)"
-            data-analytics-event="email_click"
+            data-analytics-event="email_click" data-cta-id="concept-contact-email"
             >Contact us</a
           >
         </div>

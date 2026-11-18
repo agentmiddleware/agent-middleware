@@ -62,9 +62,9 @@
     <link rel="stylesheet" href="/fonts.css?v=@@FONTS_CSS_VERSION@@" />
     <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
     <script src="/a11y-preload.js?v=gateway-19"></script>
-    @@VERCEL_ANALYTICS_SCRIPTS@@
-    <script defer src="/analytics.js?v=gateway-19"></script>
-    <script defer src="/utm-capture.js?v=utm-1"></script>
+    @@POSTHOG_CONFIG@@
+    <script defer src="/analytics.js?v=posthog-1"></script>
+    <script defer src="/utm-capture.js?v=utm-2"></script>
     <script defer src="/pilot-fit.js?v=pilot-3"></script>
     <script defer src="/a11y.js?v=gateway-19"></script>
   </head>
@@ -132,13 +132,13 @@
             <a
               class="button button-primary"
               href="@@PILOT_EMAIL_HREF@@"
-              data-analytics-event="email_click"
+              data-analytics-event="email_click" data-cta-id="pilot-intake-email"
               aria-label="Start a pilot by email (opens your mail app)"
               >Start a pilot by email</a
             >
             <a
               href="mailto:@@PUBLIC_CONTACT_EMAIL@@"
-              data-analytics-event="email_click"
+              data-analytics-event="email_click" data-cta-id="pilot-contact-email"
               >Email @@PUBLIC_CONTACT_EMAIL@@</a
             >
             <!-- booking:start -->
@@ -146,7 +146,7 @@
               href="@@PUBLIC_BOOKING_URL@@"
               target="_blank"
               rel="noopener noreferrer"
-              data-analytics-event="booking_click"
+              data-analytics-event="booking_click" data-cta-id="pilot-booking"
               aria-label="Book a call if your scenario needs one (opens in a new tab)"
               >Book a call if your scenario needs one <span aria-hidden="true">↗</span></a
             >

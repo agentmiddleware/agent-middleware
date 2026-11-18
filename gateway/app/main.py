@@ -1287,10 +1287,17 @@ async def health():
     redis_status = await check_redis_liveness()
     degradation = get_runtime_degradation()
 
-    # Redis down is a hard failure (503). Runtime degradation (opt-out) does
-    # not fail liveness: return 200 with status="degraded" in body.
-    hard_failure = redis_status == "down"
-    status = "healthy" if (redis_status != "down" and not degradation["degraded"]) else "degraded"
+    # Redis down is a hard failure (503) UNLESS the opt-out is used. With
+    # ALLOW_IN_MEMORY_STORE=true, Redis down is soft degradation (200), not
+    # hard failure. Runtime degradation (opt-out) does not fail liveness:
+    # return 200 with status="degraded" in body.
+    allow_opt_out = settings.ALLOW_IN_MEMORY_STORE
+    hard_failure = redis_status == "down" and not allow_opt_out
+    status = (
+        "healthy"
+        if (redis_status != "down" and not degradation["degraded"])
+        else "degraded"
+    )
 
     return JSONResponse(
         status_code=503 if hard_failure else 200,
@@ -1350,10 +1357,23 @@ async def health_ready():
 
     degradation = get_runtime_degradation()
 
+    # Determine status: hard check failures take precedence and return 503.
+    # Otherwise, runtime_degradation makes it degraded (200), and passing
+    # all checks makes it ready (200).
+    if not all_healthy:
+        status = "not_ready"
+        status_code = 503
+    elif degradation["degraded"]:
+        status = "degraded"
+        status_code = 200
+    else:
+        status = "ready"
+        status_code = 200
+
     return JSONResponse(
-        status_code=200 if all_healthy else 503,
+        status_code=status_code,
         content={
-            "status": "ready" if all_healthy else "not_ready",
+            "status": status,
             "version": settings.APP_VERSION,
             "checks": checks,
             "runtime_degradation": degradation,

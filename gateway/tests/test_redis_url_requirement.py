@@ -27,7 +27,9 @@ from app.core.trust_mode import (
 from app.main import app
 
 # Test constants
-VALID_SIGNING_PRIVATE_KEY_B64 = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY="  # base64 of 32 bytes
+VALID_SIGNING_PRIVATE_KEY_B64 = (
+    "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY="  # base64 of 32 bytes
+)
 VALID_PRODUCTION_DATABASE_URL = "postgresql://user:pass@db.internal:5432/prod"
 
 
@@ -273,20 +275,48 @@ async def test_health_endpoint_reports_opt_out_as_degraded(monkeypatch):
 
 @pytest.mark.anyio
 async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
-    """/health/ready returns 200 with runtime_degradation when opt-out is used."""
+    """/health/ready returns 200 with runtime_degradation when opt-out is used.
+
+    This test verifies runtime_degradation appears in /health/ready when the
+    in-memory store opt-out is used in production-like environment.
+    """
+    from types import SimpleNamespace
+
     settings = get_settings()
-    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    # Simulate production-like with the opt-out
+    monkeypatch.setattr(settings, "ENVIRONMENT", "prod-test")
     monkeypatch.setattr(settings, "REDIS_URL", "")
     monkeypatch.setattr(settings, "ALLOW_IN_MEMORY_STORE", True)
-    # Production needs DATABASE_URL for durable state (postgres auto-detection)
-    monkeypatch.setattr(settings, "DATABASE_URL", VALID_PRODUCTION_DATABASE_URL)
+
+    # Mock state store to return healthy
+    async def mock_state_health():
+        return {"ok": True, "backend": "memory"}
+
+    import app.main as main_mod
+
+    monkeypatch.setattr(
+        main_mod,
+        "get_durable_state",
+        lambda: SimpleNamespace(health_report=mock_state_health),
+    )
+
+    # Mock database readiness to return up
+    async def mock_db_ready():
+        return {"status": "up"}
+
+    from app.core import health as health_mod
+
+    monkeypatch.setattr(health_mod, "check_database_readiness", mock_db_ready)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         resp = await http.get("/health/ready")
 
+    # With degradation present but no hard failures, /health/ready returns 200
+    # with status "degraded" and runtime_degradation listing the opt-out reason.
     assert resp.status_code == 200
     body = resp.json()
+    assert body["status"] == "degraded"
     assert body["runtime_degradation"]["degraded"] is True
     assert REASON_IN_MEMORY_STORE_ALLOWED in body["runtime_degradation"]["reasons"]
 
@@ -352,7 +382,7 @@ def test_prod_prefix_environment_triggers_check():
 
 def test_typo_environment_does_not_trigger_check():
     """A typo like 'produciton' is treated as production-like (non-empty, not in local list).
-    
+
     This is intentional: unknown environments are treated as production-like for safety.
     """
     with pytest.raises(TrustModeGuardrailError, match="REDIS_URL is required"):

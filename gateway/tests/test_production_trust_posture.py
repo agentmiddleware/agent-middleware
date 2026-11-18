@@ -52,8 +52,10 @@ _PROD_TRUST_ENV = {
     # SELECT ... FOR UPDATE on SQLite, which the money and permit paths rely on.
     "DATABASE_URL": "postgresql+asyncpg://user:pw@db.internal:5432/trust",
     # Production-like environments require REDIS_URL for shared rate limiting
-    # and state (per issue #288).
+    # and state (per issue #288). Tests use ALLOW_IN_MEMORY_STORE=true to permit
+    # booting with the in-memory store since no actual Redis is available.
     "REDIS_URL": "redis://redis.internal:6379/0",
+    "ALLOW_IN_MEMORY_STORE": "true",
 }
 
 
@@ -140,6 +142,7 @@ def test_production_trust_flags_are_strict(production_trust_flags):
         webauthn_allow_mock=cfg.WEBAUTHN_ALLOW_MOCK,
         enable_proof_surfaces=cfg.ENABLE_PROOF_SURFACES,
         database_url=cfg.DATABASE_URL,
+        allow_in_memory_store=cfg.ALLOW_IN_MEMORY_STORE,
     )
     assert (
         describe_permissive_trust_mode(
@@ -207,7 +210,11 @@ async def probe():
 asyncio.run(probe())
 """
     env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
-    env.update(_PROD_TRUST_ENV)
+    # Start with _PROD_TRUST_ENV but remove REDIS_URL since no actual Redis
+    # is available in the subprocess. ALLOW_IN_MEMORY_STORE permits this.
+    prod_env = dict(_PROD_TRUST_ENV)
+    del prod_env["REDIS_URL"]
+    env.update(prod_env)
     env.update(
         ENVIRONMENT=environment,
         ENABLE_PROOF_SURFACES=proof_surfaces,
@@ -216,8 +223,8 @@ asyncio.run(probe())
         MCP_UPSTREAM_TOOL_NAME="pay",
         MCP_UPSTREAM_PUBLIC_TOOL_ID="partner.pay",
         MCP_UPSTREAM_BEARER_TOKEN="synthetic-fixture-token",
-        # STATE_BACKEND=memory is not allowed in production-like environments
-        STATE_BACKEND="redis",
+        # Allow in-memory store since no actual Redis is available in test subprocess
+        ALLOW_IN_MEMORY_STORE="true",
         VALID_API_KEYS="test-key",
     )
     result = subprocess.run(

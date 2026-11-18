@@ -181,7 +181,6 @@
       "Copy was unavailable. Copy Key and Wallet separately."));
   for (const [buttonId, codeId] of [
     ["home-hero-python-copy", "home-hero-python"],
-    ["home-hero-curl-copy", "home-hero-curl"],
   ]) {
     const button = byId(buttonId);
     const code = byId(codeId);

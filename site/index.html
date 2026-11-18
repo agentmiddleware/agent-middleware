@@ -306,11 +306,9 @@ amw verify --bundle receipt.json --keys trust-keys.json --expect-issuer https://
       <section class="home-v2-section home-v2-how" id="how-it-works" aria-labelledby="how-title" data-wave="order">
         <div class="home-v2-section-heading"><p>How it works</p><h2 id="how-title">From demo key to checked receipt</h2></div>
         <ul class="home-v2-steps">
-          <li>Get a demo key and save the API key and wallet ID.</li>
-          <li id="quickstart">Set the key and wallet ID in the Python commands above, then run the example.</li>
-          <li>The first call creates a permit and prints the receipt ID.</li>
-          <li>For an accepted request key on the configured upstream tool, a retry with the same key returns the original receipt instead of dispatching again.</li>
-          <li>Check the receipt signature offline. <a href="/proof/">See a published sample and verifier.</a></li>
+          <li>Get a demo key using the quickstart commands above.</li>
+          <li id="quickstart">Install the SDK with <code>pip install amw-sdk</code>.</li>
+          <li>Follow the verification commands above to check the published sample receipt offline. <a href="/proof/">See the sample and verifier.</a></li>
         </ul>
       </section>
 

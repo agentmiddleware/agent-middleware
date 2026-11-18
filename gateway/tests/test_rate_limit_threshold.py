@@ -1389,3 +1389,63 @@ async def test_redis_fallback_marks_runtime_degradation(monkeypatch) -> None:
 
     get_settings.cache_clear()
     reset_runtime_degradation()
+
+
+@pytest.mark.anyio
+async def test_rejected_credentials_counter_10k_cap() -> None:
+    """In-memory counter evicts oldest entry when exceeding 10k cap."""
+    import time
+
+    from app.core.rate_limiter import RateLimitMiddleware
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    limited._redis_url = ""
+    
+    # Directly fill the counter to the cap
+    now = time.time()
+    for i in range(10000):
+        client_id = f"10.0.{i // 256}.{i % 256}"
+        limited._rejected_credentials_count[client_id] = (1, now)
+
+    assert len(limited._rejected_credentials_count) == 10000
+    first_key = next(iter(limited._rejected_credentials_count))
+
+    # Evict should remove the first (oldest) entry
+    async with limited._lock:
+        limited._evict_lru_rejected_credentials()
+
+    assert len(limited._rejected_credentials_count) < 10000
+    assert first_key not in limited._rejected_credentials_count
+
+    # Add one more to trigger eviction during real use
+    limited._rejected_credentials_count.clear()
+    for i in range(10000):
+        client_id = f"192.168.{i // 256}.{i % 256}"
+        limited._rejected_credentials_count[client_id] = (1, now)
+
+    assert len(limited._rejected_credentials_count) == 10000
+    first_key = next(iter(limited._rejected_credentials_count))
+
+    # One more addition should evict the first
+    limited._rejected_credentials_count["10.10.10.10"] = (1, now)
+    async with limited._lock:
+        limited._evict_lru_rejected_credentials()
+
+    assert len(limited._rejected_credentials_count) == 10000
+    assert first_key not in limited._rejected_credentials_count
+    assert "10.10.10.10" in limited._rejected_credentials_count
+
+
+@pytest.mark.anyio
+async def test_rejected_credentials_delay_le_10_validation(monkeypatch) -> None:
+    """Config le=10 validation rejects delay > 10 seconds."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "10.5")
+
+    with pytest.raises(ValueError, match="less than or equal to 10"):
+        get_settings.cache_clear()
+        get_settings()
+
+    get_settings.cache_clear()

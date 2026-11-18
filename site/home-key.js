@@ -26,11 +26,8 @@
   }
 
   function fillQuickstart(template, data) {
-    return template
-      .replace("export AMW_API_KEY='YOUR_DEMO_KEY'", () =>
-        `export AMW_API_KEY=${shellQuote(data.api_key)}`)
-      .replace("export AMW_WALLET_ID='YOUR_WALLET_ID'", () =>
-        `export AMW_WALLET_ID=${shellQuote(data.wallet_id)}`);
+    return template.replace(/^AMW_DEMO_KEY=.*$/m, () =>
+      `AMW_DEMO_KEY=${shellQuote(data.api_key)} &&`);
   }
 
   function showPanel() {

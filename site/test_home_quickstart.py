@@ -1,9 +1,10 @@
-"""Exercise the homepage demo against the actual published proof files."""
+"""Check the homepage quickstart without minting keys or calling the gateway."""
 
 import json
 import re
 import shlex
 import socket
+from html import unescape
 from pathlib import Path
 
 from amw.cli import main
@@ -52,12 +53,94 @@ def test_homepage_demo_verifies_offline_and_rejects_tampering(
     assert main(args) != 0
 
 
-def test_homepage_install_is_visible_without_javascript():
+def test_homepage_demo_key_quickstart_order_and_package():
     html = (SITE / "index.html").read_text()
     section = re.search(
         r'<section[^>]+id="pip-quickstart".*?</section>', html, re.DOTALL
     )[0]
-    assert "pip install amw-sdk\n" in section
-    assert 'python -c "import amw; print(amw.__version__)"' in section
+    block = re.search(
+        r'<pre id="home-hero-python"[^>]*><code>(.*?)</code>', section, re.DOTALL
+    )[1]
+    commands = unescape(block).splitlines()
+    assert len(commands) == 3
+    assert commands[0].startswith("AMW_DEMO_KEY=$(")
+    assert commands[0].endswith(") &&")
+    curl, extraction = commands[0][len("AMW_DEMO_KEY=$(") : -len(") &&")].split(
+        " | ", 1
+    )
+    assert shlex.split(curl) == [
+        "curl",
+        "-X",
+        "POST",
+        "https://api.agentmiddleware.dev/v1/demo/keys",
+        "-fsS",
+    ]
+    assert shlex.split(extraction) == [
+        "jq",
+        "-er",
+        ".api_key | strings | select(length > 0)",
+    ]
+    assert commands[1] == 'export AMW_API_KEY="$AMW_DEMO_KEY" &&'
+    assert shlex.split(commands[2]) == ["pip", "install", "amw-sdk"]
+    assert not re.search(r"pip install (?:['\"])?agent-middleware\b", html)
+    assert "python examples/" not in section
+    assert "does not yet include a retry example" in section
     assert "hidden" not in section
+    assert 'aria-label="Copy quickstart commands"' in section
     assert 'href="#safe-demo"' in html
+
+    doc = (SITE.parent / "docs" / "three-minute-quickstart.md").read_text()
+    assert unescape(block) in doc
+    assert "does not yet include a retry example" in doc
+    assert "python examples/" not in doc
+    assert not re.search(r"pip install (?:['\"])?agent-middleware\b", doc)
+
+
+def test_homepage_tabs_badges_and_evidence_links():
+    html = (SITE / "index.html").read_text()
+    hero = re.search(r'<header class="hero-v2".*?</header>', html, re.DOTALL)[0]
+    tabs = re.findall(r'<a[^>]*role="tab"[^>]*>(.*?)</a>', hero)
+    assert tabs == ["Quickstart (Demo Key)"]
+    assert 'aria-selected="true" aria-controls="home-quickstart-panel"' in hero
+    assert 'id="home-quickstart-panel" role="tabpanel"' in hero
+    assert "Competition Demo" not in hero
+    assert "<video" not in hero
+    badges = re.search(r'<ul class="hero-v2-badges".*?</ul>', hero, re.DOTALL)[0]
+    assert re.findall(r"<li>(.*?)</li>", badges) == [
+        "Offline verifiable",
+        "At most one debit per accepted idempotency key",
+        "Demo key, no email",
+    ]
+    for url in (
+        "https://agentmiddleware.dev/proof",
+        "https://api.agentmiddleware.dev/health/dependencies",
+        "https://api.agentmiddleware.dev/openapi.json",
+    ):
+        assert f'href="{url}"' in hero
+
+
+def test_homepage_primary_cta_is_quickstart_not_clone():
+    html = (SITE / "index.html").read_text()
+    primary_actions = re.findall(
+        r'<(?:a|button)[^>]*class="[^"]*hero-v2-action-primary[^>]*>.*?</(?:a|button)>',
+        html,
+        re.DOTALL,
+    )
+    assert len(primary_actions) == 1
+    assert 'href="#pip-quickstart"' in primary_actions[0]
+    assert "clone" not in primary_actions[0].lower()
+    assert "git clone" not in html
+    assert re.search(
+        r'<a class="hero-v2-action hero-v2-action-secondary" '
+        r'href="https://github.com/agentmiddleware/agent-middleware"[^>]*>Clone the source',
+        html,
+    )
+
+
+def test_homepage_and_quickstart_avoid_unsupported_guarantee():
+    for path in (
+        SITE / "index.html",
+        SITE.parent / "docs" / "three-minute-quickstart.md",
+    ):
+        copy = unescape(path.read_text())
+        assert not re.search(r"exactly[\s\-‐-―]+once", copy, re.IGNORECASE)

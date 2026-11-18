@@ -56,7 +56,7 @@ When the gateway reserved budget and prepared to dispatch, the receipt records:
 - **`delivery_uncertain`**: a transport failure occurred after the send attempt; the gateway cannot confirm whether the tool received the request. Receipt `outcome` is `delivery_uncertain` (charge retained).
 - **`response_rejected`**: the tool replied but the gateway rejected the response as invalid. Receipt `outcome` is `response_rejected` (charge retained).
 
-**Outcomes that prove the tool received the request**: `success` (the tool returned a non-error response), `failed_refunded` (the tool returned `isError: true`), and `response_rejected` (the tool replied but the gateway rejected the response). **For `denied`, `insufficient_funds`, and `delivery_uncertain` outcomes, no field proves the tool received the request.** The `dispatch_claimed` state and `dispatched_at` timestamp prove only that the gateway acquired the right to send and recorded that acquisition before attempting the send.
+**Outcomes that prove the tool received the request**: `success` (the tool returned a non-error response) and `response_rejected` (the tool replied but the gateway rejected the response). **`failed_refunded` proves reception only when the tool itself returned `isError: true`; the receipt cannot distinguish this from pre-dispatch failures (`gateway/app/services/mcp_dispatch_attempts.py:1701-1714` sets `returned_error` before send).** For `denied`, `insufficient_funds`, and `delivery_uncertain` outcomes, no field proves the tool received the request. The `dispatch_claimed` state and `dispatched_at` timestamp prove only that the gateway acquired the right to send and recorded that acquisition before attempting the send.
 
 ### Signature and provenance
 
@@ -273,7 +273,7 @@ The receipt boundary is:
 
 The receipt does **not** prove:
 
-1. The upstream tool received the request for `denied`, `insufficient_funds`, or `delivery_uncertain` outcomes. (`success`, `failed_refunded`, and `response_rejected` do prove the tool received the request, since the tool must have received it to respond.)
+1. The upstream tool received the request for `denied`, `insufficient_funds`, `delivery_uncertain`, or all `failed_refunded` outcomes. Only `success` and `response_rejected` always prove the tool received the request. `failed_refunded` proves reception only when the tool itself returned `isError: true`, but the receipt cannot distinguish that from pre-dispatch failures that also become `failed_refunded`.
 2. The tool's side effect happened
 3. The side effect happened exactly once (tool must honor forwarded idempotency key)
 4. The tool's full response (only `response_hash` is recorded)

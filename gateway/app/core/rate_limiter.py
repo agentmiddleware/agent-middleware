@@ -34,6 +34,9 @@ from .trust_mode import is_production_like_environment
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# Max concurrent delayed requests for rejected credentials ceiling
+MAX_CONCURRENT_DELAYED_REQUESTS = 100
+
 # Bound every Redis round trip. Without these, a connection left half-open by a
 # Redis restart blocks commands indefinitely, and the cached client is never
 # replaced. health_check_interval makes redis-py PING an idle connection before
@@ -179,7 +182,7 @@ def rate_limit_discovery() -> dict[str, Any]:
         "rejected_credentials_delay_seconds": (
             cfg.RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS
         ),
-        "rejected_credentials_concurrent_delay_cap": 100,  # Same as RateLimitMiddleware._max_concurrent_delayed_requests
+        "rejected_credentials_concurrent_delay_cap": MAX_CONCURRENT_DELAYED_REQUESTS,
         "rejected_credentials_counter_scope": (
             "shared_redis" if cfg.REDIS_URL.strip() else "per_process"
         ),
@@ -382,7 +385,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
         # Cap on concurrent delayed requests to avoid resource exhaustion
         self._concurrent_delayed_requests = 0
-        self._max_concurrent_delayed_requests = 100  # Same as discovery payload
+        self._max_concurrent_delayed_requests = MAX_CONCURRENT_DELAYED_REQUESTS
         self._delayed_requests_lock = asyncio.Lock()
 
     def _fail_closed_on_redis_outage(self) -> bool:
@@ -734,17 +737,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         for k in expired_keys:
             del self._rejected_credentials_count[k]
 
-    def _evict_lru_rejected_credentials(self) -> None:
-        """Evict the oldest entry when the in-memory counter exceeds max size.
-
-        OrderedDict maintains insertion order; oldest is first. Called with self._lock held.
-        """
-        if (
-            len(self._rejected_credentials_count)
-            >= self._rejected_credentials_max_entries
-        ):
-            self._rejected_credentials_count.popitem(last=False)
-
     async def _check_and_increment_rejected_credentials(
         self, client_id: str
     ) -> tuple[int, bool]:
@@ -759,7 +751,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             now = time.time()
             async with self._lock:
                 self._sweep_expired_rejected_credentials(now)
-                self._evict_lru_rejected_credentials()
+                # Only evict if we're adding a NEW entry and at cap
+                if (
+                    client_id not in self._rejected_credentials_count
+                    and len(self._rejected_credentials_count)
+                    >= self._rejected_credentials_max_entries
+                ):
+                    self._rejected_credentials_count.popitem(last=False)
                 if client_id in self._rejected_credentials_count:
                     count, window_start = self._rejected_credentials_count[client_id]
                     # Check if window expired
@@ -798,7 +796,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             now = time.time()
             async with self._lock:
                 self._sweep_expired_rejected_credentials(now)
-                self._evict_lru_rejected_credentials()
+                # Only evict if we're adding a NEW entry and at cap
+                if (
+                    client_id not in self._rejected_credentials_count
+                    and len(self._rejected_credentials_count)
+                    >= self._rejected_credentials_max_entries
+                ):
+                    self._rejected_credentials_count.popitem(last=False)
                 if client_id in self._rejected_credentials_count:
                     count, window_start = self._rejected_credentials_count[client_id]
                     # Check if window expired

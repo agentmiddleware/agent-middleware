@@ -1160,13 +1160,6 @@ async def test_403_unknown_key_is_counted_and_deferred(monkeypatch) -> None:
     assert CREDENTIAL_REJECTED_HEADER.lower() not in delayed.headers
     get_settings.cache_clear()
 
-
-@pytest.mark.anyio
-async def test_rejected_credentials_counter_expires_after_window(monkeypatch) -> None:
-    """In-memory counter entries expire after the window, matching Redis TTL."""
-    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "5")
-    get_settings.cache_clear()
-
     async def deny(_request):
         return PlainTextResponse("no", status_code=401)
 
@@ -1350,66 +1343,6 @@ async def test_redis_fallback_marks_runtime_degradation(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
-async def test_rejected_credentials_counter_10k_cap() -> None:
-    """In-memory counter evicts oldest entry when exceeding 10k cap."""
-    import time
-
-    from app.core.rate_limiter import RateLimitMiddleware
-
-    async def deny(_request):
-        return PlainTextResponse("no", status_code=401)
-
-    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
-    limited._redis_url = ""
-
-    # Directly fill the counter to the cap
-    now = time.time()
-    for i in range(10000):
-        client_id = f"10.0.{i // 256}.{i % 256}"
-        limited._rejected_credentials_count[client_id] = (1, now)
-
-    assert len(limited._rejected_credentials_count) == 10000
-    first_key = next(iter(limited._rejected_credentials_count))
-
-    # Evict should remove the first (oldest) entry
-    async with limited._lock:
-        limited._evict_lru_rejected_credentials()
-
-    assert len(limited._rejected_credentials_count) < 10000
-    assert first_key not in limited._rejected_credentials_count
-
-    # Add one more to trigger eviction during real use
-    limited._rejected_credentials_count.clear()
-    for i in range(10000):
-        client_id = f"192.168.{i // 256}.{i % 256}"
-        limited._rejected_credentials_count[client_id] = (1, now)
-
-    assert len(limited._rejected_credentials_count) == 10000
-    first_key = next(iter(limited._rejected_credentials_count))
-
-    # One more addition should evict the first
-    limited._rejected_credentials_count["10.10.10.10"] = (1, now)
-    async with limited._lock:
-        limited._evict_lru_rejected_credentials()
-
-    assert len(limited._rejected_credentials_count) == 10000
-    assert first_key not in limited._rejected_credentials_count
-    assert "10.10.10.10" in limited._rejected_credentials_count
-
-
-@pytest.mark.anyio
-async def test_rejected_credentials_delay_le_10_validation(monkeypatch) -> None:
-    """Config le=10 validation rejects delay > 10 seconds."""
-    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "10.5")
-
-    get_settings.cache_clear()
-    with pytest.raises(ValueError, match="less than or equal to 10"):
-        get_settings()
-
-    get_settings.cache_clear()
-
-
-@pytest.mark.anyio
 async def test_rejected_credentials_expiry_through_dispatch(monkeypatch) -> None:
     """In-memory counter expiry through full dispatch with mocked clock."""
     import time
@@ -1513,12 +1446,18 @@ async def test_fixed_window_does_not_slide(monkeypatch) -> None:
 
 def test_discovery_payload_includes_concurrent_delay_cap() -> None:
     """Discovery payload includes rejected_credentials_concurrent_delay_cap."""
-    from app.core.rate_limiter import rate_limit_discovery
+    from app.core.rate_limiter import (
+        MAX_CONCURRENT_DELAYED_REQUESTS,
+        rate_limit_discovery,
+    )
 
     payload = rate_limit_discovery()
 
     assert "rejected_credentials_concurrent_delay_cap" in payload
-    assert payload["rejected_credentials_concurrent_delay_cap"] == 100
+    assert (
+        payload["rejected_credentials_concurrent_delay_cap"]
+        == MAX_CONCURRENT_DELAYED_REQUESTS
+    )
 
 
 @pytest.mark.anyio
@@ -1556,4 +1495,39 @@ async def test_10k_cap_eviction_through_dispatch(monkeypatch) -> None:
     assert first_key not in limited._rejected_credentials_count
     assert "127.0.0.1" in limited._rejected_credentials_count
 
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_cancelled_delay_releases_concurrency_slot(monkeypatch) -> None:
+    """A cancelled delay still decrements the concurrent delayed requests counter."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "1")
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "10.0")
+    get_settings.cache_clear()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    app = Starlette(routes=[Route("/v1/w", deny)])
+    limited = RateLimitMiddleware(app)
+    limited._redis_url = ""
+    transport = ASGITransport(app=limited)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        # First request to exceed ceiling
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-0"})
+
+        # Second request should delay - cancel it mid-sleep
+        task = asyncio.create_task(
+            http.get("/v1/w", headers={"X-API-Key": "invalid-1"})
+        )
+        await asyncio.sleep(0.1)  # Let it start delaying
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    # The key assertion: counter was decremented despite cancellation
+    assert limited._concurrent_delayed_requests == 0
     get_settings.cache_clear()

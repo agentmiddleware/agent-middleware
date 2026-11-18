@@ -178,7 +178,8 @@ async def main() -> int:
                 keys_resp = await client.get("/.well-known/trust-keys.json")
 
                 # Verify the receipt offline with Receipt.verify().
-                receipt = Receipt.from_dict(bundle_resp.json())
+                # from_dict takes the receipt from the MCP response, verify takes the bundle.
+                receipt = Receipt.from_dict(receipt_dict)
                 verification = receipt.verify(
                     bundle=bundle_resp.json(), keys=keys_resp.json()
                 )

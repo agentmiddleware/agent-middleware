@@ -17,6 +17,10 @@ from dataclasses import asdict
 def serve(connection, database_url: str, signing_key: str) -> None:
     """Configure and run a gateway worker with network access disabled."""
     # Configure before importing the application, without loading dotenv files.
+    # Clear environment to avoid cached settings at import time.
+    os.environ.clear()
+    os.environ["ALLOW_METADATA_CREATE_ALL"] = "true"
+
     from app.core import config
 
     class LocalSettings(config.Settings):
@@ -42,7 +46,6 @@ def serve(connection, database_url: str, signing_key: str) -> None:
 
     socket.socket.connect = reject_network
     socket.socket.connect_ex = reject_network
-    os.environ["ALLOW_METADATA_CREATE_ALL"] = "true"
     settings = LocalSettings(
         _env_file=None,
         DATABASE_URL=database_url,
@@ -58,16 +61,23 @@ def serve(connection, database_url: str, signing_key: str) -> None:
         TRUST_SIGNING_PRIVATE_KEY_B64=signing_key,
         RATE_LIMIT_PER_MINUTE=1000000,
     )
+    config.get_settings.cache_clear()
     config.get_settings = lambda: settings
-    asyncio.run(_run(connection))
+    asyncio.run(_run(connection, settings))
 
 
-async def _run(connection) -> None:
+async def _run(connection, settings) -> None:
     """Serve pipe commands against the local ASGI application."""
     from httpx import ASGITransport, AsyncClient
     from sqlalchemy import select
 
+    from app.core.config import get_settings
     from app.db.database import close_db, get_session_factory, init_db
+
+    active_settings = get_settings()
+    assert active_settings is settings
+    assert active_settings.ENVIRONMENT == "test"
+    assert active_settings.TRUST_MODE_ENABLED is True
     from app.db.models import (
         IdempotencyRecordModel,
         LedgerEntryModel,

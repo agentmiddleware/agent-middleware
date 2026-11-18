@@ -1,9 +1,18 @@
 """Authority and evidence attacks against runtime-issued demo authority."""
 
+import base64
 import json
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
 
+from b2a_sdk.jcs import dumps_text
 from b2a_sdk.receipt_verifier import (
     VerificationStatus,
     key_set_from_document,
@@ -16,16 +25,22 @@ def test_conflicting_payload_cannot_reuse_a_completed_key(judge):
     judge.issue()
     first = judge.call()
     assert first["status"] == 200
-    receipt_id = first["body"]["result"]["receipt"]["receipt_id"]
-    before = judge.snapshot()
+    first_receipt_id = first["body"]["result"]["receipt"]["receipt_id"]
+    first_snapshot = judge.snapshot()
     conflict = judge.call(message="conflicting input")
     assert conflict["status"] == 200
     assert conflict["body"]["error"]["message"] == "idempotency_key_reused"
-    after = judge.snapshot()
-    assert after["dispatches"] == after["debits"] == 1
-    assert after["balance"] == before["balance"]
-    assert after["spent"] == before["spent"]
-    assert judge.call()["body"]["result"]["receipt"]["receipt_id"] == receipt_id
+    after_conflict = judge.snapshot()
+    assert after_conflict["dispatches"] == after_conflict["debits"] == 1
+    assert after_conflict["balance"] == first_snapshot["balance"]
+    assert after_conflict["spent"] == first_snapshot["spent"]
+    replay = judge.call()
+    assert replay["status"] == 200
+    assert replay["body"]["result"]["receipt"]["receipt_id"] == first_receipt_id
+    after_replay = judge.snapshot()
+    assert after_replay["spent"] == first_snapshot["spent"]
+    assert after_replay["debits"] == first_snapshot["debits"]
+    assert replay["body"]["result"]["receipt"]["receipt_id"] == first_receipt_id
 
 
 @pytest.mark.parametrize("attack", ["anonymous", "tool_scope", "budget"])
@@ -69,14 +84,21 @@ def test_offline_tamper_and_unknown_key_fail_closed(judge):
     bundle, document = judge.export(receipt_id)
     judge.close()
     keys = key_set_from_document(document)
-    assert verify_bundle(bundle, keys).ok
+    original_result = verify_bundle(bundle, keys)
+    assert original_result.ok
     signed = json.loads(bundle["signing_input"])
     signed["outcome"] = "denied"
-    tampered = {**bundle, "signing_input": json.dumps(signed, sort_keys=True)}
+    tampered = {**bundle, "signing_input": dumps_text(signed)}
     result = verify_bundle(tampered, keys)
     assert result.status is VerificationStatus.INVALID
     assert result.is_tampered
-    unknown = verify_bundle(bundle, {})
+    other_private = Ed25519PrivateKey.generate()
+    other_public = other_private.public_key()
+    other_key_b64 = base64.b64encode(
+        other_public.public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ).decode()
+    other_keys = {"other-key-id": other_key_b64}
+    unknown = verify_bundle(bundle, other_keys)
     assert unknown.status is VerificationStatus.UNKNOWN_KEY
     assert not unknown.ok
 

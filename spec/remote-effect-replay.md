@@ -14,14 +14,15 @@ This is an R&D design note, not a product roadmap. No claims about future featur
 
 ### 1.1 Request Hash
 
-The gateway computes a SHA-256 hash of the canonical JSON request sent to the upstream tool.
+The gateway computes a SHA-256 hash over `{tool_name, arguments, wallet_id, permit_id}`, not the wire request bytes.
 
 **Code references:**
+- `gateway/app/routers/mcp.py:1572-1581` — constructs `effective_request_payload` from these four fields, then `effective_request_hash = sha256_hex(effective_request_payload)`
 - `gateway/app/services/receipts.py:171` — `ReceiptModel` includes `request_hash: str`
-- `gateway/app/services/receipts.py:208` — signed payload includes `"request_hash": model.request_hash`
+- `gateway/app/services/receipts.py:207` — signed payload includes `"request_hash": model.request_hash`
 - `spec/receipt-v0.1.md:39` — "Lowercase hex SHA-256 of the request and response values"
 
-The `request_hash` is signed into the receipt (line 208) and links the receipt to the specific request that was authorized and dispatched.
+The `request_hash` is signed into the receipt (line 207) and links the receipt to the logical invocation (tool name, arguments, wallet, permit), not transport framing.
 
 ### 1.2 Idempotency Key
 
@@ -29,7 +30,7 @@ Each governed call includes an idempotency key, which the gateway uses for repla
 
 **Code references:**
 - `gateway/app/services/receipts.py:165` — `ReceiptModel` includes `idempotency_record_id: str`
-- `gateway/app/services/receipts.py:36-37` — receipt signing optionally includes `idempotency_record_id` linkage
+- `gateway/app/services/receipts.py:225-226` — receipt signing optionally includes `idempotency_record_id` linkage (when `include_linkage` is true)
 - `spec/receipt-v0.1.md:36` — "The gateway's record for the idempotency key (the raw key is not signed). Omitted unless this signature included linkage"
 - `gateway/app/services/upstream_mcp.py:999-1011` — `_call_tool_once` requires `invocation_id` and `idempotency_key` before dispatch
 
@@ -52,8 +53,9 @@ The `dispatch_claim_hash` is a durable one-shot boundary proving a given invocat
 Receipts include several fields that bind the call to its execution:
 
 **Code references:**
-- `gateway/app/services/receipts.py:161-190` — `receipt_model_to_response` shows all signed fields
-- `spec/receipt-v0.1.md:30-50` — full signed payload specification
+- `gateway/app/services/receipts.py:161-190` — `receipt_model_to_response` shows all fields
+- `gateway/app/services/receipts.py:201-224` — `_verification_payload` constructs the signed payload
+- `spec/receipt-v0.1.md:30-56` — full signed payload specification
 - `gateway/app/services/receipts.py:208` — `"response_hash": model.response_hash` is signed as JSON `null` when there is no response, present otherwise
 
 Signed fields include:
@@ -64,9 +66,10 @@ Signed fields include:
 - `outcome` (one of `success`, `denied`, `insufficient_funds`, `failed_refunded`, `failed_unrefunded`, `delivery_uncertain`, `response_rejected`)
 - `credits_authorized`, `credits_charged` (metering)
 - `ledger_entry_id`, `audit_event_id` (internal linkage)
-- `created_at`, `gateway_build`, `enforcement_mode` (provenance)
+- `created_at` (timestamp)
+- `alg`, `kid` (signature metadata)
 
-Additional fields (when set): `permit_digest`, `approval_digest`, `counterparty`, `sequence`, `prev_receipt_digest`, `constraints_evaluated`, `reason_code`.
+Additional fields signed only when set (lines 218-224): `reason_code`, `enforcement_mode`, `gateway_build`, `permit_digest`, `approval_digest`, `counterparty`, `sequence`, `prev_receipt_digest`, `constraints_evaluated`.
 
 ### 1.5 Audit Chain
 
@@ -74,9 +77,9 @@ The gateway maintains a hash-chained audit log linking each call.
 
 **Code references:**
 - `gateway/app/services/audit_chain.py:27-60` — `audit_payload` constructs signed audit events
-- `gateway/app/services/audit_chain.py:143` — `model.previous_hash = previous_hash` chains each event to its predecessor
-- `gateway/app/services/audit_chain.py:150` — `model.chain_hash = sha256_hex(...)` commits the chain link
-- `gateway/app/services/receipts.py:180` — receipts include `audit_event_id` linking to the audit chain
+- `gateway/app/services/audit_chain.py:142` — `model.previous_hash = previous_hash` chains each event to its predecessor
+- `gateway/app/services/audit_chain.py:150-151` — `model.chain_hash = sha256_hex(...)` commits the chain link
+- `gateway/app/services/receipts.py:213` — receipts include `"audit_event_id": model.audit_event_id` in the signed payload
 
 The audit chain proves the temporal order of gateway-side events and provides tamper evidence for the gateway's own records.
 
@@ -94,8 +97,8 @@ The `result_json` column holds the tool's actual response. The `response_hash` i
 ## 2. What Is Missing for Remote Effect Replay
 
 A third-party verifier with only AMW's receipts and dispatch records can prove:
-1. What request the gateway **sent** (via `request_hash`)
-2. What response the gateway **received** (via `response_hash`)
+1. What logical invocation the gateway **recorded** (via `request_hash` over `{tool_name, arguments, wallet_id, permit_id}`)
+2. What response the gateway **stored** (via `response_hash`)
 3. That the gateway's internal records are consistent (via audit chain, permit/receipt digests, sequence numbers)
 
 A verifier **cannot** prove:

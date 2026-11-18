@@ -294,10 +294,10 @@ async def test_revoked_permit_produces_receipt(client, clean_database):
 
 @pytest.mark.xfail(strict=True, reason="Receipt in MCP error response is not in portable bundle format with signing_input")
 @pytest.mark.anyio
-async def test_revoked_permit_receipt_offline_verifiable(client, clean_database):
-    """A denial receipt from a revoked permit is offline-verifiable with the Python SDK."""
+async def test_revoked_permit_receipt_inline_not_verifiable(client, clean_database):
+    """Receipt in MCP error response lacks signing_input for offline verification."""
     provisioned = await provision_agent_wallet(client)
-    tool_name = "revoked-verify-tool"
+    tool_name = "revoked-inline-verify-tool"
     _register_test_tool(tool_name)
     
     try:
@@ -332,13 +332,13 @@ async def test_revoked_permit_receipt_offline_verifiable(client, clean_database)
         assert keys_resp.status_code == 200
         keys_doc = keys_resp.json()
         
-        # Verify with the Python SDK
+        # Try to verify with the Python SDK
         from b2a_sdk.receipt_verifier import verify_bundle, key_set_from_document
         
         key_set = key_set_from_document(keys_doc)
         result = verify_bundle(receipt, key_set)
         
-        # The signature should verify offline
+        # The inline receipt lacks signing_input so verification fails
         assert result.ok, f"Verification failed: {result.status} - {result.reason}"
         assert result.claims["outcome"] == "denied"
         assert result.claims["reason_code"] == "permit_revoked"
@@ -346,9 +346,146 @@ async def test_revoked_permit_receipt_offline_verifiable(client, clean_database)
         get_service_registry().unregister_local(tool_name)
 
 
+@pytest.mark.anyio
+async def test_portable_denial_receipt_offline_verifiable(client, clean_database):
+    """Portable bundle from GET /v1/receipts/{id}/portable is offline-verifiable."""
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "revoked-portable-verify-tool"
+    _register_test_tool(tool_name)
+    
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+        )
+        
+        # Revoke and invoke to get a denial receipt
+        await client.post(
+            f"/v1/permits/{permit['permit_id']}/revoke",
+            headers={"X-API-Key": "test-key"},
+        )
+        
+        call_resp = await client.post(
+            "/mcp/messages",
+            json=_mcp_call(
+                provisioned["agent_wallet_id"],
+                permit["permit_id"],
+                tool_name,
+                "revoked-call-portable-1",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert call_resp.status_code == 200
+        receipt_id = call_resp.json()["error"]["data"]["receipt"]["receipt_id"]
+        
+        # Fetch the portable bundle
+        portable_resp = await client.get(
+            f"/v1/receipts/{receipt_id}/portable",
+            headers=provisioned["agent_headers"],
+        )
+        assert portable_resp.status_code == 200
+        portable_bundle = portable_resp.json()
+        
+        # Get the public keys for verification
+        keys_resp = await client.get("/.well-known/trust-keys.json")
+        assert keys_resp.status_code == 200
+        keys_doc = keys_resp.json()
+        
+        # Verify with the Python SDK
+        from b2a_sdk.receipt_verifier import verify_bundle, key_set_from_document
+        
+        key_set = key_set_from_document(keys_doc)
+        result = verify_bundle(portable_bundle, key_set)
+        
+        # The portable bundle should verify offline
+        assert result.ok, f"Verification failed: {result.status} - {result.reason}"
+        assert result.claims["outcome"] == "denied"
+        assert result.claims["reason_code"] == "permit_revoked"
+        assert result.receipt_id == receipt_id
+    finally:
+        get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+async def test_tampered_portable_denial_receipt_rejected(client, clean_database):
+    """A tampered portable denial receipt bundle is rejected by offline verification."""
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "revoked-portable-tamper-tool"
+    _register_test_tool(tool_name)
+    
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+        )
+        
+        # Revoke and invoke
+        await client.post(
+            f"/v1/permits/{permit['permit_id']}/revoke",
+            headers={"X-API-Key": "test-key"},
+        )
+        
+        call_resp = await client.post(
+            "/mcp/messages",
+            json=_mcp_call(
+                provisioned["agent_wallet_id"],
+                permit["permit_id"],
+                tool_name,
+                "revoked-call-portable-2",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert call_resp.status_code == 200
+        receipt_id = call_resp.json()["error"]["data"]["receipt"]["receipt_id"]
+        
+        # Fetch the portable bundle
+        portable_resp = await client.get(
+            f"/v1/receipts/{receipt_id}/portable",
+            headers=provisioned["agent_headers"],
+        )
+        assert portable_resp.status_code == 200
+        portable_bundle = portable_resp.json()
+        
+        # Get the public keys
+        keys_resp = await client.get("/.well-known/trust-keys.json")
+        assert keys_resp.status_code == 200
+        keys_doc = keys_resp.json()
+        
+        # Tamper with the portable bundle
+        from b2a_sdk.receipt_verifier import verify_bundle, key_set_from_document
+        import copy
+        
+        key_set = key_set_from_document(keys_doc)
+        
+        # First verify the untampered bundle works
+        result = verify_bundle(portable_bundle, key_set)
+        assert result.ok, "Untampered bundle should verify"
+        
+        # Now tamper with fields in the signing_input (the canonical signed payload)
+        tampered = copy.deepcopy(portable_bundle)
+        
+        # Tamper with a field in signing_input - change the receipt_id
+        import json
+        signing_input = json.loads(tampered["signing_input"])
+        signing_input["receipt_id"] = "rcpt-tampered-000000000000"
+        tampered["signing_input"] = json.dumps(signing_input, separators=(",", ":"), sort_keys=True)
+        
+        tampered_result = verify_bundle(tampered, key_set)
+        # Verification should fail because signature doesn't match tampered signing_input
+        assert tampered_result.is_rejected or tampered_result.is_tampered, (
+            f"Tampered bundle should be rejected, got: {tampered_result.status} - {tampered_result.reason}"
+        )
+    finally:
+        get_service_registry().unregister_local(tool_name)
+
+
 @pytest.mark.xfail(strict=True, reason="Receipt in MCP error response is not in portable bundle format with signing_input")
 @pytest.mark.anyio
-async def test_tampered_denial_receipt_rejected(client, clean_database):
+async def test_tampered_inline_denial_receipt_rejected(client, clean_database):
     """A tampered denial receipt is rejected by offline verification."""
     provisioned = await provision_agent_wallet(client)
     tool_name = "revoked-tamper-tool"

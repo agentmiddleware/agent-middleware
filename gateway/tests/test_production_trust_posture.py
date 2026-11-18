@@ -216,7 +216,8 @@ asyncio.run(probe())
         MCP_UPSTREAM_TOOL_NAME="pay",
         MCP_UPSTREAM_PUBLIC_TOOL_ID="partner.pay",
         MCP_UPSTREAM_BEARER_TOKEN="synthetic-fixture-token",
-        STATE_BACKEND="memory",
+        # STATE_BACKEND=memory is not allowed in production-like environments
+        STATE_BACKEND="redis",
         VALID_API_KEYS="test-key",
     )
     result = subprocess.run(

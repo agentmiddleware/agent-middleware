@@ -328,6 +328,16 @@
       "permanent": true
     },
     {
+      "source": "/quickstart",
+      "destination": "/docs/three-minute-quickstart/",
+      "permanent": true
+    },
+    {
+      "source": "/quickstart/",
+      "destination": "/docs/three-minute-quickstart/",
+      "permanent": true
+    },
+    {
       "source": "/mcp/tools.json",
       "destination": "https://api.thisisatest.tech/mcp/tools.json",
       "permanent": false

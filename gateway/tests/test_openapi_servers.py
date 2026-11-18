@@ -6,7 +6,8 @@ now appears only with an explicit PUBLIC_URL. The localhost entry appears
 alongside an explicit public URL in local environments.
 """
 
-from app.main import build_openapi_servers
+from app.main import app, build_openapi_servers
+from fastapi.testclient import TestClient
 
 
 def _urls(servers):
@@ -32,3 +33,18 @@ def test_explicit_public_url_is_advertised():
 def test_explicit_public_url_alone_in_production():
     servers = build_openapi_servers("https://gateway.example-buyer.com", "production")
     assert _urls(servers) == ["https://gateway.example-buyer.com"]
+
+
+def test_openapi_json_endpoint_returns_200():
+    """Verify GET /openapi.json succeeds without RecursionError."""
+    client = TestClient(app)
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    schema = response.json()
+    assert schema.get("openapi") == "3.1.0"
+    # Verify default security requirement is present
+    assert "security" in schema
+    assert schema["security"] == [
+        {"APIKeyHeader": []},
+        {"HTTPBearer": []},
+    ]

@@ -623,24 +623,24 @@ def custom_openapi():
     """
     if app.openapi_schema:
         return app.openapi_schema
-    
-    openapi_schema = app.openapi()
-    
+
+    from fastapi.openapi.utils import get_openapi
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        servers=app.servers,
+    )
+
     # Add default security requirement (per-endpoint overrides already win)
     if "security" not in openapi_schema:
         openapi_schema["security"] = [
             {"APIKeyHeader": []},
             {"HTTPBearer": []},
         ]
-    
-    # Ensure servers use HTTPS when PUBLIC_URL is set
-    servers = openapi_schema.get("servers", [])
-    for server in servers:
-        url = server.get("url", "")
-        if url.startswith("http://") and url != "http://localhost:8000":
-            # Keep localhost as http for dev, but suggest https for others
-            pass
-    
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 

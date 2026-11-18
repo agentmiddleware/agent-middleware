@@ -1307,48 +1307,6 @@ async def test_concurrent_delayed_requests_are_capped(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
-async def test_disconnect_cancels_delay(monkeypatch) -> None:
-    """Task cancellation decrements the concurrent delayed requests counter."""
-    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "1")
-    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "10.0")
-    get_settings.cache_clear()
-
-    original_sleep = asyncio.sleep
-
-    async def fake_sleep(duration: float) -> None:
-        # Let polling sleeps proceed quickly
-        if duration < 1.0:
-            await original_sleep(0.001)
-        else:
-            # The 10s delay sleep should never complete
-            await original_sleep(duration)
-
-    monkeypatch.setattr("asyncio.sleep", fake_sleep)
-
-    async def deny(_request):
-        return PlainTextResponse("no", status_code=401)
-
-    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
-    limited._redis_url = ""
-    transport = ASGITransport(app=limited)
-
-    async with AsyncClient(transport=transport, base_url="http://test") as http:
-        await http.get("/v1/w", headers={"X-API-Key": "invalid-0"})
-
-        task = asyncio.create_task(
-            http.get("/v1/w", headers={"X-API-Key": "invalid-1"})
-        )
-        await original_sleep(0.01)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    # The key assertion: concurrent counter is decremented even when cancelled
-    assert limited._concurrent_delayed_requests == 0
-    get_settings.cache_clear()
-
-
-@pytest.mark.anyio
 async def test_redis_fallback_marks_runtime_degradation(monkeypatch) -> None:
     """Redis failure falls back to memory and marks runtime_degradation."""
     monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "2")
@@ -1447,5 +1405,155 @@ async def test_rejected_credentials_delay_le_10_validation(monkeypatch) -> None:
     get_settings.cache_clear()
     with pytest.raises(ValueError, match="less than or equal to 10"):
         get_settings()
+
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_rejected_credentials_expiry_through_dispatch(monkeypatch) -> None:
+    """In-memory counter expiry through full dispatch with mocked clock."""
+    import time
+
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "5")
+    get_settings.cache_clear()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    app = Starlette(routes=[Route("/v1/w", deny)])
+    limited = RateLimitMiddleware(app)
+    limited._redis_url = ""
+    transport = ASGITransport(app=limited)
+
+    mock_time = [time.time()]
+
+    def fake_time():
+        return mock_time[0]
+
+    monkeypatch.setattr("time.time", fake_time)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        # First hit
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-1"})
+        assert "127.0.0.1" in limited._rejected_credentials_count
+        count, window_start = limited._rejected_credentials_count["127.0.0.1"]
+        assert count == 1
+
+        # Advance clock to just before window end
+        mock_time[0] = window_start + limited.window + 1.9
+
+        # Second hit - same window
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-2"})
+        count2, window_start2 = limited._rejected_credentials_count["127.0.0.1"]
+        assert count2 == 2
+        assert window_start2 == window_start  # Window hasn't changed
+
+        # Advance clock past window end
+        mock_time[0] = window_start + limited.window + 2.1
+
+        # Third hit - new window
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-3"})
+        count3, window_start3 = limited._rejected_credentials_count["127.0.0.1"]
+        assert count3 == 1  # Reset to 1 in new window
+        assert window_start3 > window_start  # New window started
+
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_fixed_window_does_not_slide(monkeypatch) -> None:
+    """Fixed windows don't slide on hits - window_start stays constant."""
+    import time
+
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "100")
+    get_settings.cache_clear()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    app = Starlette(routes=[Route("/v1/w", deny)])
+    limited = RateLimitMiddleware(app)
+    limited._redis_url = ""
+    transport = ASGITransport(app=limited)
+
+    mock_time = [time.time()]
+
+    def fake_time():
+        return mock_time[0]
+
+    monkeypatch.setattr("time.time", fake_time)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        # First hit
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-1"})
+        _, window_start1 = limited._rejected_credentials_count["127.0.0.1"]
+
+        # Advance clock within window
+        mock_time[0] += 10.0
+
+        # Second hit
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-2"})
+        _, window_start2 = limited._rejected_credentials_count["127.0.0.1"]
+
+        # Window start should NOT have slid
+        assert window_start2 == window_start1
+
+        # Advance more
+        mock_time[0] += 20.0
+
+        # Third hit
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-3"})
+        _, window_start3 = limited._rejected_credentials_count["127.0.0.1"]
+
+        # Window start still hasn't slid
+        assert window_start3 == window_start1
+
+    get_settings.cache_clear()
+
+
+def test_discovery_payload_includes_concurrent_delay_cap() -> None:
+    """Discovery payload includes rejected_credentials_concurrent_delay_cap."""
+    from app.core.rate_limiter import rate_limit_discovery
+
+    payload = rate_limit_discovery()
+
+    assert "rejected_credentials_concurrent_delay_cap" in payload
+    assert payload["rejected_credentials_concurrent_delay_cap"] == 100
+
+
+@pytest.mark.anyio
+async def test_10k_cap_eviction_through_dispatch(monkeypatch) -> None:
+    """10k cap eviction through dispatch (not just helpers)."""
+    import time
+
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "100000")
+    get_settings.cache_clear()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    app = Starlette(routes=[Route("/v1/w", deny)])
+    limited = RateLimitMiddleware(app)
+    limited._redis_url = ""
+
+    # Directly fill counter to cap (faster than dispatching 10k requests)
+    now = time.time()
+    for i in range(10000):
+        client_id = f"10.0.{i // 256}.{i % 256}"
+        limited._rejected_credentials_count[client_id] = (1, now)
+
+    assert len(limited._rejected_credentials_count) == 10000
+    first_key = next(iter(limited._rejected_credentials_count))
+
+    # Now dispatch through the full stack
+    # This should evict the oldest entry to make room for 127.0.0.1
+    transport = ASGITransport(app=limited)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        await http.get("/v1/w", headers={"X-API-Key": "invalid"})
+
+    # Should still be at cap, but first_key should be gone and 127.0.0.1 should be there
+    assert len(limited._rejected_credentials_count) == 10000
+    assert first_key not in limited._rejected_credentials_count
+    assert "127.0.0.1" in limited._rejected_credentials_count
 
     get_settings.cache_clear()

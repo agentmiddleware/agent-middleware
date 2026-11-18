@@ -179,7 +179,7 @@ def rate_limit_discovery() -> dict[str, Any]:
         "rejected_credentials_delay_seconds": (
             cfg.RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS
         ),
-        "rejected_credentials_concurrent_delay_cap": 100,
+        "rejected_credentials_concurrent_delay_cap": 100,  # Same as RateLimitMiddleware._max_concurrent_delayed_requests
         "rejected_credentials_counter_scope": (
             "shared_redis" if cfg.REDIS_URL.strip() else "per_process"
         ),
@@ -382,7 +382,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         )
         # Cap on concurrent delayed requests to avoid resource exhaustion
         self._concurrent_delayed_requests = 0
-        self._max_concurrent_delayed_requests = 100
+        self._max_concurrent_delayed_requests = 100  # Same as discovery payload
         self._delayed_requests_lock = asyncio.Lock()
 
     def _fail_closed_on_redis_outage(self) -> bool:
@@ -716,16 +716,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         Fixed 62-second windows: entry expires when now >= window_start + window + 2.
         Called with self._lock held. Amortized: runs at most once per second.
+        Incremental: scans at most 100 entries from the front to avoid long lock hold.
         """
         if now - self._rejected_credentials_last_sweep < 1.0:
             return
         self._rejected_credentials_last_sweep = now
 
-        expired_keys = [
-            k
-            for k, (_, window_start) in self._rejected_credentials_count.items()
-            if now >= window_start + self.window + 2.0
-        ]
+        # Incremental sweep: check at most 100 oldest entries
+        checked = 0
+        expired_keys = []
+        for k, (_, window_start) in self._rejected_credentials_count.items():
+            if now >= window_start + self.window + 2.0:
+                expired_keys.append(k)
+            checked += 1
+            if checked >= 100:
+                break
         for k in expired_keys:
             del self._rejected_credentials_count[k]
 
@@ -1072,29 +1077,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                             apply_delay = False
                     if apply_delay:
                         try:
-                            # Race the delay against disconnect detection.
-                            sleep_task = asyncio.create_task(
-                                asyncio.sleep(self.rejected_credentials_delay)
-                            )
-
-                            async def poll_disconnect():
-                                while not await request.is_disconnected():
-                                    await asyncio.sleep(0.1)
-
-                            disconnect_task = asyncio.create_task(poll_disconnect())
-
-                            done, pending = await asyncio.wait(
-                                [sleep_task, disconnect_task],
-                                return_when=asyncio.FIRST_COMPLETED,
-                            )
-
-                            # Cancel the pending task
-                            for task in pending:
-                                task.cancel()
-                                try:
-                                    await task
-                                except asyncio.CancelledError:
-                                    pass
+                            await asyncio.sleep(self.rejected_credentials_delay)
                         finally:
                             async with self._delayed_requests_lock:
                                 self._concurrent_delayed_requests -= 1

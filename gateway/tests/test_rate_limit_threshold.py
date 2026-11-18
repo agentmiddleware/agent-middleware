@@ -1615,6 +1615,70 @@ async def test_10k_cap_repeat_hit_moves_to_end(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
+async def test_10k_cap_repeat_hit_fallback_path(monkeypatch) -> None:
+    """Redis failure fallback: repeat hit at 10k cap moves key to end without eviction."""
+    import time
+
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "100000")
+    get_settings.cache_clear()
+
+    class _FailingRedis:
+        async def incr(self, _key: str) -> int:
+            raise RuntimeError("Redis down")
+
+        async def expire(self, _key: str, _seconds: int) -> bool:
+            raise RuntimeError("Redis down")
+
+    async def _fake_redis():
+        return _FailingRedis()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    app = Starlette(routes=[Route("/v1/w", deny)])
+    limited = RateLimitMiddleware(app)
+    limited._get_redis = _fake_redis  # type: ignore[method-assign]
+
+    # Seed with 127.0.0.1 in the MIDDLE (not first), at 10k cap
+    now = time.time()
+    for i in range(5000):
+        client_id = f"10.0.{i // 256}.{i % 256}"
+        limited._rejected_credentials_count[client_id] = (1, now)
+
+    limited._rejected_credentials_count["127.0.0.1"] = (1, now)
+
+    for i in range(5000, 10000):
+        client_id = f"10.0.{i // 256}.{i % 256}"
+        limited._rejected_credentials_count[client_id] = (1, now)
+
+    assert len(limited._rejected_credentials_count) == 10001
+    # Trim to exactly 10k
+    limited._rejected_credentials_count.popitem(last=False)
+    assert len(limited._rejected_credentials_count) == 10000
+
+    first_key = next(iter(limited._rejected_credentials_count))
+    keys_before = set(limited._rejected_credentials_count.keys())
+    assert "127.0.0.1" in keys_before
+
+    # Send a 401 from 127.0.0.1 through the client (repeat hit - triggers fallback)
+    transport = ASGITransport(app=limited)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        response = await http.get("/v1/w", headers={"X-API-Key": "invalid"})
+        assert response.status_code == 401
+
+    # Assert size unchanged, no eviction, count incremented, and moved to end
+    assert len(limited._rejected_credentials_count) == 10000
+    keys_after = set(limited._rejected_credentials_count.keys())
+    assert keys_before == keys_after
+    assert first_key in keys_after  # Original first key survived
+    assert limited._rejected_credentials_count["127.0.0.1"][0] == 2  # Count incremented
+    last_key = list(limited._rejected_credentials_count.keys())[-1]
+    assert last_key == "127.0.0.1"  # Moved to end
+
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
 async def test_rejected_credentials_delay_le_10_validation(monkeypatch) -> None:
     """Config le=10 validation rejects delay > 10 seconds."""
     from pydantic_core import ValidationError
@@ -1662,33 +1726,6 @@ async def test_cancelled_delay_releases_concurrency_slot(monkeypatch) -> None:
 
         # Verify the task was actually cancelled
         assert task.cancelled()
-
-    # The key assertion: counter was decremented despite cancellation
-    assert limited._concurrent_delayed_requests == 0
-    get_settings.cache_clear()
-
-    async def deny(_request):
-        return PlainTextResponse("no", status_code=401)
-
-    app = Starlette(routes=[Route("/v1/w", deny)])
-    limited = RateLimitMiddleware(app)
-    limited._redis_url = ""
-    transport = ASGITransport(app=limited)
-
-    async with AsyncClient(transport=transport, base_url="http://test") as http:
-        # First request to exceed ceiling
-        await http.get("/v1/w", headers={"X-API-Key": "invalid-0"})
-
-        # Second request should delay - cancel it mid-sleep
-        task = asyncio.create_task(
-            http.get("/v1/w", headers={"X-API-Key": "invalid-1"})
-        )
-        await asyncio.sleep(0.1)  # Let it start delaying
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
 
     # The key assertion: counter was decremented despite cancellation
     assert limited._concurrent_delayed_requests == 0

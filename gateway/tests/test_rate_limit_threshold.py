@@ -1403,7 +1403,7 @@ async def test_rejected_credentials_counter_10k_cap() -> None:
 
     limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
     limited._redis_url = ""
-    
+
     # Directly fill the counter to the cap
     now = time.time()
     for i in range(10000):
@@ -1444,8 +1444,8 @@ async def test_rejected_credentials_delay_le_10_validation(monkeypatch) -> None:
     """Config le=10 validation rejects delay > 10 seconds."""
     monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "10.5")
 
+    get_settings.cache_clear()
     with pytest.raises(ValueError, match="less than or equal to 10"):
-        get_settings.cache_clear()
         get_settings()
 
     get_settings.cache_clear()

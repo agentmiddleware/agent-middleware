@@ -51,10 +51,10 @@ When the gateway reserved budget and prepared to dispatch, the receipt records:
 
 - **`prepared`** — permit budget reserved, not yet claimed for dispatch.
 - **`dispatch_claimed`** — the gateway acquired the durable one-shot send authority and set `dispatched_at` (`gateway/app/services/mcp_dispatch_attempts.py:1586-1653`). This timestamp is written BEFORE the actual `session.call_tool()` send (`gateway/app/services/upstream_mcp.py:1042-1054`), so `dispatch_claimed` proves the claim was acquired, not that the send completed.
-- **`succeeded`** — the upstream tool returned a non-error response (one with `isError` false or absent); `response_hash` records what the gateway received.
-- **`returned_error`** — the upstream tool returned an error response (one with `isError: true`); charge refunded (`gateway/app/services/upstream_mcp.py:1156-1157`).
-- **`delivery_uncertain`** — a transport failure occurred after `dispatched_at` was set; the gateway cannot confirm whether the tool received the request (charge retained).
-- **`response_rejected`** — the tool replied but the gateway rejected the response as invalid (charge retained).
+- **`succeeded`** — the upstream tool returned a non-error response (one with `isError` false or absent); `response_hash` records what the gateway received. Receipt `outcome` is `success`.
+- **`returned_error`** — the upstream tool returned an error response (one with `isError: true`). Receipt `outcome` is `failed_refunded` (charge refunded; `gateway/app/routers/mcp.py:3588,3954`).
+- **`delivery_uncertain`** — a transport failure occurred after the send attempt; the gateway cannot confirm whether the tool received the request. Receipt `outcome` is `delivery_uncertain` (charge retained).
+- **`response_rejected`** — the tool replied but the gateway rejected the response as invalid. Receipt `outcome` is `response_rejected` (charge retained).
 
 **No field in the receipt proves the upstream tool received the request.** The `dispatch_claimed` state and `dispatched_at` timestamp prove only that the gateway acquired the right to send and recorded that acquisition before attempting the send.
 
@@ -95,7 +95,10 @@ The gateway signs a receipt after it **sends** the request to the upstream tool.
 **Code references:**
 - `gateway/app/routers/mcp.py:3500-3750` — governed invoke path: dispatch, then finalize receipt
 - `gateway/app/services/upstream_mcp.py:UpstreamMcpAdapter.call_tool()` — sends the request and awaits the tool's response
-- `gateway/app/services/upstream_mcp.py:1156-1157` — responses with `isError: true` raise `UpstreamMcpReturnedError` and become `outcome="returned_error"` (refunded); responses without `isError` or with `isError: false` become `outcome="success"`
+- `gateway/app/services/upstream_mcp.py:1156-1157` — responses with `isError: true` raise `UpstreamMcpReturnedError`
+- `gateway/app/routers/mcp.py:3588` — `UpstreamMcpReturnedError` sets dispatch attempt state to `returned_error`
+- `gateway/app/routers/mcp.py:3954` — receipt `outcome` becomes `failed_refunded` (charge refunded)
+- Responses without `isError` or with `isError: false` become dispatch attempt state `succeeded` and receipt `outcome="success"`
 
 ### 2. The side effect happened exactly once
 
@@ -111,7 +114,7 @@ The receipt proves the gateway dispatched **at most once** under this idempotenc
 
 ### 3. The side effect was delivered
 
-A `delivery_uncertain` receipt proves the gateway sent the request but **could not confirm delivery**:
+A `delivery_uncertain` receipt means the gateway **attempted to send** the request but **could not confirm delivery**:
 
 - The upstream tool may have received and executed the request, then failed to send a response.
 - The upstream tool may never have received the request at all (network partition, upstream crash).
@@ -182,7 +185,7 @@ When a permit has `max_calls_per_tool` set (e.g., `{"stripe_refunds": 1}`), the 
 
 A `delivery_uncertain` receipt means:
 
-- The gateway sent the request (`dispatch_attempt_id` present, state `dispatch_claimed` or `dispatched`).
+- The gateway attempted to send the request (`dispatch_attempt_id` present, state `delivery_uncertain`).
 - The gateway **could not confirm** whether the upstream tool received and processed the request.
 - The charge is **retained** (not refunded), because the tool may have executed.
 - A retry **replays the same `delivery_uncertain` receipt**, never redispatches.

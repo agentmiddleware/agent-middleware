@@ -220,7 +220,7 @@ class AgentMiddlewareClient:
         headers = {
             "X-API-Key": api_key,
             "Content-Type": "application/json",
-            "User-Agent": "amw-sdk/0.5.0",
+            "User-Agent": "amw-sdk/0.5.1",
         }
         if bearer_token is not None:
             token = bearer_token.strip()

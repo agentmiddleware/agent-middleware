@@ -16,6 +16,7 @@ from pathlib import Path
 import dry_run_example
 import httpx
 import mcp_tool_example
+import one_tool_call
 import pytest
 
 _REPO_ROOT = Path(os.path.abspath(dry_run_example.__file__)).parents[1]
@@ -164,3 +165,30 @@ def test_dry_run_connection_hint_uses_configured_url(
 def test_dry_run_prints_server_initial_balance() -> None:
     source = Path(dry_run_example.__file__).read_text()
     assert "Initial virtual balance: {sim.initial_balance}" in source
+
+
+def test_one_tool_call_runs_without_error(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one_tool_call example must complete successfully and print expected output."""
+    # Isolate env changes and clear cached settings after the example runs
+    import sys
+    from importlib import reload
+
+    original_env = dict(os.environ)
+
+    try:
+        assert asyncio.run(one_tool_call.main()) == 0
+        out = capsys.readouterr().out
+        # Verify the output format matches the documented example exactly
+        assert "Receipt ID: rcpt-" in out
+        assert "Tool: partner.notes.write\n" in out
+        assert "Outcome: success\n" in out
+        assert "Credits charged: 2.00000000\n" in out
+        assert "Verification: valid\n" in out
+    finally:
+        # Restore environment and clear gateway module cache
+        os.environ.clear()
+        os.environ.update(original_env)
+        if "app.config" in sys.modules:
+            reload(sys.modules["app.config"])

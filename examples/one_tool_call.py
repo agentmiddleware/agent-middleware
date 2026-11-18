@@ -14,10 +14,10 @@ Run from the repository root:
 
 Expected output (receipt IDs differ on each run):
 
-    Receipt ID: rcpt-9f2c41a7b6e04d21
+    Receipt ID: rcpt-0d4e8c5a1b2f3967
     Tool: partner.notes.write
     Outcome: success
-    Credits charged: 1
+    Credits charged: 2
     Verification: valid
 
 The example runs the gateway in-process (SQLite, memory state) with one tool
@@ -27,6 +27,7 @@ The example runs the gateway in-process (SQLite, memory state) with one tool
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import secrets
 import sys
@@ -40,31 +41,25 @@ for path in (_REPO_ROOT / "sdk" / "python" / "src", _REPO_ROOT / "gateway"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from amw import Receipt, key_set_from_document
-
 
 async def main() -> int:
     """Start gateway, issue permit, call one tool, verify receipt."""
-    from app.db.database import close_db, init_db
-    from app.main import app
-    from app.partner_mcp import create_partner_mcp_app
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import (
-        Encoding,
-        NoEncryption,
-        PrivateFormat,
-    )
-    import base64
-    import httpx
-
-    # Configure in-process gateway with SQLite and a fresh Ed25519 key.
+    # Configure environment before any gateway imports.
     with tempfile.TemporaryDirectory(prefix=".one-tool-") as state:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            NoEncryption,
+            PrivateFormat,
+        )
+
         database = Path(state) / "gateway.db"
         signing_seed = Ed25519PrivateKey.generate().private_bytes(
             Encoding.Raw, PrivateFormat.Raw, NoEncryption()
         )
         admin_key = secrets.token_urlsafe(32)
-        partner_token = secrets.token_urlsafe(32)
         os.environ.update(
             {
                 "DATABASE_URL": f"sqlite+aiosqlite:///{database}",
@@ -75,23 +70,23 @@ async def main() -> int:
                 "TRUST_MODE_ENABLED": "true",
                 "TRUST_SIGNING_KEY_ID": "one-tool-ed25519",
                 "TRUST_SIGNING_PRIVATE_KEY_B64": base64.b64encode(signing_seed).decode(),
-                "PARTNER_MCP_BEARER_TOKEN": partner_token,
-                "PARTNER_MCP_ALLOWED_HOSTS": "localhost",
+                "ENABLE_DOGFOOD_TOOL": "true",  # Registers partner.notes.write
                 "ALLOW_LEGACY_UNPERMITTED_MCP": "false",
                 "MCP_UPSTREAM_ENABLED": "false",
             }
         )
 
+        # Import gateway modules after environment is configured.
+        from app.db.database import close_db, init_db
+        from app.main import app
+        from amw import Receipt, key_set_from_document
+        import httpx
+
         await init_db()
         try:
-            # Start the partner tool MCP server (provides partner.notes.write).
-            partner_app = create_partner_mcp_app(os.environ)
-            async with (
-                partner_app.router.lifespan_context(partner_app),
-                httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app), base_url="http://sandbox"
-                ) as client,
-            ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://sandbox"
+            ) as client:
                 # Create wallets and mint an API key.
                 admin = {"X-API-Key": admin_key}
                 run_id = secrets.token_hex(6)
@@ -127,7 +122,7 @@ async def main() -> int:
                 )
                 agent_key = key_resp.json()["api_key"]
 
-                # Issue a permit for one tool with a 2-credit budget.
+                # Issue a permit for one tool with a 3-credit budget.
                 tool_name = "partner.notes.write"
                 permit_resp = await client.post(
                     "/v1/permits",
@@ -137,14 +132,17 @@ async def main() -> int:
                         "subject_key_id": key_resp.json()["key_id"],
                         "allowed_tools": [tool_name],
                         "scopes": [f"tool:{tool_name}:invoke", "billing:charge"],
-                        "max_credits": 2,
-                        "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                        "max_credits": 3,
+                        "expires_at": (
+                            datetime.now(UTC) + timedelta(minutes=5)
+                        ).isoformat(),
                     },
                     headers={**admin, "Idempotency-Key": f"one-tool-permit-{run_id}"},
                 )
                 permit_id = permit_resp.json()["permit_id"]
 
                 # Call the tool once through the governed MCP endpoint.
+                # partner.notes.write argument is "text", not "note", and charges 2 credits.
                 call_resp = await client.post(
                     "/mcp/messages",
                     json={
@@ -153,7 +151,7 @@ async def main() -> int:
                         "method": "tools/call",
                         "params": {
                             "name": tool_name,
-                            "arguments": {"note": "one tool call example"},
+                            "arguments": {"text": "one tool call example"},
                             "mcpContext": {
                                 "wallet_id": wallet_id,
                                 "permit_id": permit_id,
@@ -168,8 +166,8 @@ async def main() -> int:
                     print(f"Tool call failed: {call_resp.json()}", file=sys.stderr)
                     return 1
 
-                # Extract and verify the receipt offline.
-                receipt_dict = result.get("meta", {}).get("io.agentmiddleware/receipt", {})
+                # Extract the receipt from the result.
+                receipt_dict = result.get("receipt", {})
                 receipt_id = receipt_dict.get("receipt_id")
 
                 # Fetch the portable bundle and trust keys for offline verification.
@@ -180,9 +178,10 @@ async def main() -> int:
                 keys_resp = await client.get("/.well-known/trust-keys.json")
 
                 # Verify the receipt offline with Receipt.verify().
-                receipt = Receipt.model_validate(bundle_resp.json())
-                key_set = key_set_from_document(keys_resp.json())
-                verification = receipt.verify(key_set)
+                receipt = Receipt.from_dict(bundle_resp.json())
+                verification = receipt.verify(
+                    bundle=bundle_resp.json(), keys=keys_resp.json()
+                )
 
                 # Print the result.
                 print(f"Receipt ID: {receipt_id}")

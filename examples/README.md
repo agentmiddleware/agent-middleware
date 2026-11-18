@@ -43,10 +43,10 @@ PYTHONPATH=../sdk/python/src uv run --no-project --isolated --python 3.12 \
 **Expected output:**
 
 ```text
-Receipt ID: rcpt-9f2c41a7b6e04d21
+Receipt ID: rcpt-0d4e8c5a1b2f3967
 Tool: partner.notes.write
 Outcome: success
-Credits charged: 1
+Credits charged: 2
 Verification: valid
 ```
 

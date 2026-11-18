@@ -46,7 +46,7 @@ PYTHONPATH=../sdk/python/src uv run --no-project --isolated --python 3.12 \
 Receipt ID: rcpt-0d4e8c5a1b2f3967
 Tool: partner.notes.write
 Outcome: success
-Credits charged: 2
+Credits charged: 2.00000000
 Verification: valid
 ```
 

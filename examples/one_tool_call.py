@@ -17,7 +17,7 @@ Expected output (receipt IDs differ on each run):
     Receipt ID: rcpt-0d4e8c5a1b2f3967
     Tool: partner.notes.write
     Outcome: success
-    Credits charged: 2
+    Credits charged: 2.00000000
     Verification: valid
 
 The example runs the gateway in-process (SQLite, memory state) with one tool

@@ -56,7 +56,7 @@ When the gateway reserved budget and prepared to dispatch, the receipt records:
 - **`delivery_uncertain`**: a transport failure occurred after the send attempt; the gateway cannot confirm whether the tool received the request. Receipt `outcome` is `delivery_uncertain` (charge retained).
 - **`response_rejected`**: the tool replied but the gateway rejected the response as invalid. Receipt `outcome` is `response_rejected` (charge retained).
 
-**No field in the receipt proves the upstream tool received the request.** The `dispatch_claimed` state and `dispatched_at` timestamp prove only that the gateway acquired the right to send and recorded that acquisition before attempting the send.
+**For non-success outcomes, no field in the receipt proves the upstream tool received the request.** A `success` outcome (dispatch state `succeeded`) proves the tool received the request and returned a non-error response. For other outcomes, the `dispatch_claimed` state and `dispatched_at` timestamp prove only that the gateway acquired the right to send and recorded that acquisition before attempting the send.
 
 ### Signature and provenance
 
@@ -135,7 +135,7 @@ The gateway records a SHA-256 digest of the **canonical** response (`response_ha
 
 **Code references:**
 - `gateway/app/services/receipts.py:574-590`: `response_hash_override` for linked dispatch results
-- `gateway/app/services/mcp_dispatch_attempts.py:765-785`: result storage bounds
+- `gateway/app/services/mcp_dispatch_attempts.py:342-361`: result storage bounds (`_bounded_result`)
 - `outcome="response_rejected"` when the gateway cannot store the response (`gateway/app/routers/mcp.py:3720-3740`)
 
 ## Special cases and boundaries
@@ -150,8 +150,8 @@ When a client retries with the **same idempotency key**, the gateway replays the
 
 **Code references:**
 - `gateway/app/services/idempotency.py:311-326`: `_replay_from_record()` returns the existing response
-- `gateway/app/services/idempotency.py:339`: raises `IdempotencyConflictError` if `request_hash` differs
-- Same-key replay is free (no charge) and instantaneous (no upstream call)
+- `gateway/app/services/idempotency.py:313`: raises `IdempotencyConflictError` if `request_hash` differs
+- Same-key replay is free (no charge) but not instantaneous: if the original request is still in progress, replay raises `IdempotencyInProgressError` and the client must poll (`gateway/app/services/idempotency.py:325`)
 
 ### New-key retry (fresh request)
 
@@ -273,7 +273,7 @@ The receipt boundary is:
 
 The receipt does **not** prove:
 
-1. The upstream tool received the request (except `success` outcomes)
+1. The upstream tool received the request (except for `success` outcomes, which do prove the tool received and responded)
 2. The tool's side effect happened
 3. The side effect happened exactly once (tool must honor forwarded idempotency key)
 4. The tool's full response (only `response_hash` is recorded)

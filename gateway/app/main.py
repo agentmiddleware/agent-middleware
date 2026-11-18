@@ -1286,12 +1286,12 @@ async def root(request: Request):
 async def health():
     redis_status = await check_redis_liveness()
     degradation = get_runtime_degradation()
-    
+
     # Redis down is a hard failure (503). Runtime degradation (opt-out) does
     # not fail liveness: return 200 with status="degraded" in body.
     hard_failure = redis_status == "down"
     status = "healthy" if (redis_status != "down" and not degradation["degraded"]) else "degraded"
-    
+
     return JSONResponse(
         status_code=503 if hard_failure else 200,
         content={

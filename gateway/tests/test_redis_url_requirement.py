@@ -22,6 +22,7 @@ from app.core.runtime_degradation import (
 from app.core.trust_mode import (
     TrustModeGuardrailError,
     validate_trust_mode_config,
+    validate_trust_mode_guardrails,
 )
 from app.main import app
 

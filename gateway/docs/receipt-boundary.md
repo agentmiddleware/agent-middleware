@@ -10,7 +10,7 @@ A signed gateway receipt (`app/services/receipts.py:ReceiptService.create_receip
 
 Every receipt records the exact request the gateway accepted:
 
-- **`request_hash`** — SHA-256 digest of the JCS-canonical request payload (`gateway/app/services/receipts.py:569`)
+- **`request_hash`** — SHA-256 digest of the JCS-canonical request payload (`gateway/app/services/receipts.py:568`)
 - **`tool`** — the tool name the request named
 - **`idempotency_record_id`** — the unique idempotency record that owns this execution (`gateway/app/services/idempotency.py:IdempotencyService.begin_with_record()`)
 
@@ -49,14 +49,14 @@ When the gateway reserved budget and prepared to dispatch, the receipt records:
 
 `dispatch_attempt_id` proves the gateway **atomically reserved permit budget** and created a `prepared` dispatch attempt (`gateway/app/services/mcp_dispatch_attempts.py:658-680`). The attempt's `state` field records what happened next:
 
-- **`prepared`** — permit budget reserved, dispatch not yet sent. The gateway has not sent the request to the upstream tool.
-- **`dispatch_claimed`** — the gateway acquired the one-shot send authority and recorded `dispatched_at` (`gateway/app/services/mcp_dispatch_attempts.py:1586-1700`). The request was sent.
-- **`succeeded`** — the upstream tool returned a non-error response; `response_hash` records what the gateway received.
-- **`returned_error`** — the upstream tool returned an error response (refunded).
-- **`delivery_uncertain`** — the gateway sent the request but could not confirm delivery (charge retained).
-- **`response_rejected`** — the tool replied but the gateway rejected the response (charge retained).
+- **`prepared`** — permit budget reserved, not yet claimed for dispatch.
+- **`dispatch_claimed`** — the gateway acquired the durable one-shot send authority and set `dispatched_at` (`gateway/app/services/mcp_dispatch_attempts.py:1586-1653`). This timestamp is written BEFORE the actual `session.call_tool()` send (`gateway/app/services/upstream_mcp.py:1042-1054`), so `dispatch_claimed` proves the claim was acquired, not that the send completed.
+- **`succeeded`** — the upstream tool returned a non-error response (one with `isError` false or absent); `response_hash` records what the gateway received.
+- **`returned_error`** — the upstream tool returned an error response (one with `isError: true`); charge refunded (`gateway/app/services/upstream_mcp.py:1156-1157`).
+- **`delivery_uncertain`** — a transport failure occurred after `dispatched_at` was set; the gateway cannot confirm whether the tool received the request (charge retained).
+- **`response_rejected`** — the tool replied but the gateway rejected the response as invalid (charge retained).
 
-The receipt's `dispatch_attempt_id` alone does **not** prove the request was sent. Check the attempt's `state`: only `dispatch_claimed` and the terminal states (`succeeded`, `returned_error`, `delivery_uncertain`, `response_rejected`) prove a send occurred.
+**No field in the receipt proves the upstream tool received the request.** The `dispatch_claimed` state and `dispatched_at` timestamp prove only that the gateway acquired the right to send and recorded that acquisition before attempting the send.
 
 ### Signature and provenance
 
@@ -95,7 +95,7 @@ The gateway signs a receipt after it **sends** the request to the upstream tool.
 **Code references:**
 - `gateway/app/routers/mcp.py:3500-3750` — governed invoke path: dispatch, then finalize receipt
 - `gateway/app/services/upstream_mcp.py:UpstreamMcpAdapter.call_tool()` — sends the request and awaits the tool's response
-- A successful tool response becomes `outcome="success"` regardless of the tool's internal outcome
+- `gateway/app/services/upstream_mcp.py:1156-1157` — responses with `isError: true` raise `UpstreamMcpReturnedError` and become `outcome="returned_error"` (refunded); responses without `isError` or with `isError: false` become `outcome="success"`
 
 ### 2. The side effect happened exactly once
 
@@ -201,7 +201,7 @@ When a permit is **revoked** while a call is in flight:
 - The charge is retained (the call was authorized when it started).
 - A subsequent retry with the revoked permit is **denied** before dispatch.
 
-**Unverified:** The exact revocation-race behavior. The code shows permits are checked at reservation time (`gateway/app/services/permits.py:PermitService.reserve_for_upstream_call()`), but whether an in-flight dispatch is interrupted or allowed to complete after revocation is not explicitly tested in the files read.
+**Unverified:** The exact revocation-race behavior. Permits are checked during atomic reservation (`gateway/app/services/mcp_dispatch_attempts.py:658-680`), but whether an in-flight dispatch is interrupted or allowed to complete after revocation is not explicitly tested in the files read.
 
 **Code references:**
 - `gateway/app/services/mcp_dispatch_attempts.py:658-680` — `McpDispatchAttemptService.authorize_reserve_and_prepare()` checks permit during atomic reservation
@@ -227,10 +227,13 @@ When a permit is **revoked** while a call is in flight:
 │   record_id         constraints                       + state  │
 │                                                                  │
 │  dispatch_attempt.state tells what happened:                    │
-│    prepared → budget reserved, not yet sent                     │
-│    dispatch_claimed → sent (has dispatched_at timestamp)        │
+│    prepared → budget reserved, not yet claimed                  │
+│    dispatch_claimed → claim acquired, dispatched_at written     │
+│       (timestamp set BEFORE actual send, per upstream_mcp.py)   │
 │    succeeded/returned_error/delivery_uncertain/response_rejected│
-│      → terminal (sent + outcome recorded)                       │
+│      → terminal (attempt reached an outcome)                    │
+│                                                                  │
+│  NO FIELD PROVES THE UPSTREAM TOOL RECEIVED THE REQUEST        │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
                                 │
@@ -260,7 +263,7 @@ The receipt boundary is:
 1. **Request admitted** — proved by `request_hash`, `idempotency_record_id`
 2. **Authorization decision** — proved by `permit_id`, `outcome`, `reason_code`
 3. **Charge applied** — proved by `ledger_entry_id`, `credits_charged`
-4. **Dispatch prepared** — proved by `dispatch_attempt_id` (check attempt's `state` to determine if sent: `dispatch_claimed` or terminal states prove send; `prepared` does not)
+4. **Dispatch attempt created** — proved by `dispatch_attempt_id`. Check the attempt's `state` field: `prepared` means budget reserved but not yet claimed; `dispatch_claimed` means the send authority was acquired and `dispatched_at` timestamp written (but this happens before the actual send); terminal states mean the attempt reached an outcome.
 5. **Gateway provenance** — proved by Ed25519 `signature`, `gateway_build`, `created_at`
 
 The receipt does **not** prove:

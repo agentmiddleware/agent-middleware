@@ -134,6 +134,13 @@ def test_retry_tool_error_returns_nonzero(
     assert asyncio.run(call_with_retry.main()) == 1
 
 
-def test_one_tool_call_runs_without_error() -> None:
-    """The one_tool_call example must complete successfully."""
+def test_one_tool_call_runs_without_error(capsys: pytest.CaptureFixture[str]) -> None:
+    """The one_tool_call example must complete successfully and print expected output."""
     assert asyncio.run(one_tool_call.main()) == 0
+    out = capsys.readouterr().out
+    # Verify the output format matches the documented example
+    assert "Receipt ID: rcpt-" in out
+    assert "Tool: partner.notes.write" in out
+    assert "Outcome: success" in out
+    assert "Credits charged: 2" in out
+    assert "Verification: valid" in out

@@ -40,14 +40,23 @@ The receipt records what was debited from the wallet:
 
 The presence of `ledger_entry_id` and nonzero `credits_charged` in a `success`, `delivery_uncertain`, or `response_rejected` receipt proves the gateway **charged** the wallet. Refunded failures carry zero `credits_charged`.
 
-### Dispatch happened
+### Dispatch prepared
 
-When the gateway sent a request upstream, the receipt records that dispatch:
+When the gateway reserved budget and prepared to dispatch, the receipt records:
 
 - **`dispatch_attempt_id`** — the durable dispatch-attempt row (`gateway/app/services/mcp_dispatch_attempts.py:McpDispatchAttemptService`)
 - **`response_hash`** — SHA-256 of the canonical response the gateway recorded, when one was received (`gateway/app/services/receipts.py:574-601`)
 
-The receipt proves the gateway **initiated dispatch** to the upstream tool. `dispatch_attempt_id` links to the attempt's state machine, which records whether the request was sent (`prepared`, `dispatch_claimed`) and whether a response came back.
+`dispatch_attempt_id` proves the gateway **atomically reserved permit budget** and created a `prepared` dispatch attempt (`gateway/app/services/mcp_dispatch_attempts.py:658-680`). The attempt's `state` field records what happened next:
+
+- **`prepared`** — permit budget reserved, dispatch not yet sent. The gateway has not sent the request to the upstream tool.
+- **`dispatch_claimed`** — the gateway acquired the one-shot send authority and recorded `dispatched_at` (`gateway/app/services/mcp_dispatch_attempts.py:1586-1700`). The request was sent.
+- **`succeeded`** — the upstream tool returned a non-error response; `response_hash` records what the gateway received.
+- **`returned_error`** — the upstream tool returned an error response (refunded).
+- **`delivery_uncertain`** — the gateway sent the request but could not confirm delivery (charge retained).
+- **`response_rejected`** — the tool replied but the gateway rejected the response (charge retained).
+
+The receipt's `dispatch_attempt_id` alone does **not** prove the request was sent. Check the attempt's `state`: only `dispatch_claimed` and the terminal states (`succeeded`, `returned_error`, `delivery_uncertain`, `response_rejected`) prove a send occurred.
 
 ### Signature and provenance
 
@@ -92,12 +101,12 @@ The gateway signs a receipt after it **sends** the request to the upstream tool.
 
 The receipt proves the gateway dispatched **at most once** under this idempotency key. It does not prove the upstream tool executed exactly once:
 
-- **Idempotency key forwarded** — The gateway forwards `io.agentmiddleware/idempotency_key` to the upstream tool (`gateway/app/services/upstream_mcp.py:640-650`). If the tool honors it, the side effect is deduplicated. If the tool does not, a network retry or failover may execute the side effect multiple times.
+- **Idempotency key forwarded** — The gateway forwards `io.agentmiddleware/idempotency_key` to the upstream tool (`gateway/app/services/upstream_mcp.py:1061-1062`). If the tool honors it, the side effect is deduplicated. If the tool does not, a network retry or failover may execute the side effect multiple times.
 - **No exactly-once guarantee** — The gateway's at-most-one-dispatch contract does not imply exactly-once execution of the tool's side effect. The tool owns that.
 
 **Code references:**
 - `gateway/app/services/idempotency.py:IdempotencyService.begin_with_record()` — claims one idempotency record
-- `gateway/app/services/mcp_dispatch_attempts.py:McpDispatchAttemptService.prepare_attempt()` — atomic permit reservation and dispatch preparation
+- `gateway/app/services/mcp_dispatch_attempts.py:658-680` — `McpDispatchAttemptService.authorize_reserve_and_prepare()` atomically reserves permit budget and creates the `prepared` attempt
 - `gateway/docs/failure-semantics.md` — "The gateway dispatches at most once per accepted request"
 
 ### 3. The side effect was delivered
@@ -159,13 +168,13 @@ When a client retries with a **different idempotency key**, the gateway treats i
 When a permit has `max_calls_per_tool` set (e.g., `{"stripe_refunds": 1}`), the gateway enforces **at most one dispatch per tool name** under that permit:
 
 - The first call to `stripe_refunds` is permitted and dispatched.
-- A second call (even with a different idempotency key) is **denied** with `permit_tool_call_limit_exceeded` before dispatch.
+- A second call (even with a different idempotency key) is **denied** with `permit_max_calls_exceeded` before dispatch.
 - The cap bounds **gateway dispatches**, not remote executions. If the upstream tool retries internally or the network duplicates the request, the tool may execute more than once.
 
 **Code references:**
-- `gateway/app/services/permits.py:1430-1460` — `_atomic_tool_call_reservation()` enforces per-tool caps
-- `gateway/app/services/permits.py:386-408` — `tool_call_counts_json` tracks calls per tool
-- `gateway/tests/test_permit_v2_constraints.py` — per-tool cap enforcement tests
+- `gateway/app/services/mcp_dispatch_attempts.py:658-680` — `McpDispatchAttemptService.authorize_reserve_and_prepare()` atomically reserves permit budget and creates the `prepared` attempt
+- `gateway/app/services/permits.py:777` — denial reason `permit_max_calls_exceeded`
+- `gateway/tests/test_permit_v2_constraints.py:163` — per-tool cap enforcement test
 
 **Unverified:** Whether a `max_calls_per_tool=1` permit guarantees at-most-one **remote execution** depends on whether the upstream tool honors the forwarded idempotency key. The receipt does not verify this.
 
@@ -195,7 +204,7 @@ When a permit is **revoked** while a call is in flight:
 **Unverified:** The exact revocation-race behavior. The code shows permits are checked at reservation time (`gateway/app/services/permits.py:PermitService.reserve_for_upstream_call()`), but whether an in-flight dispatch is interrupted or allowed to complete after revocation is not explicitly tested in the files read.
 
 **Code references:**
-- `gateway/app/services/permits.py:PermitService.reserve_for_upstream_call()` — atomic permit check and reservation
+- `gateway/app/services/mcp_dispatch_attempts.py:658-680` — `McpDispatchAttemptService.authorize_reserve_and_prepare()` checks permit during atomic reservation
 - `gateway/tests/test_permit_postgres_concurrency.py` — concurrency tests, but explicit revocation-during-dispatch not found
 - `gateway/failure_lab/scenarios/t08_permit_revocation_race.py` — exists but not read for this document
 
@@ -207,14 +216,21 @@ When a permit is **revoked** while a call is in flight:
 │                                                                  │
 │  ┌────────────┐   ┌─────────────┐   ┌─────────┐   ┌──────────┐│
 │  │  Request   │──▶│   Permit    │──▶│  Debit  │──▶│ Dispatch ││
-│  │  admitted  │   │   granted/  │   │ applied │   │   sent   ││
-│  │            │   │   denied    │   │         │   │          ││
+│  │  admitted  │   │   granted/  │   │ applied │   │ prepared ││
+│  │            │   │   denied    │   │         │   │ (budget  ││
+│  │            │   │             │   │         │   │ reserved)││
 │  └────────────┘   └─────────────┘   └─────────┘   └──────────┘│
 │       ▲                  ▲                ▲              ▲      │
 │       │                  │                │              │      │
 │   request_hash      permit_digest   ledger_entry_id  dispatch_ │
 │   idempotency_      outcome/reason  credits_charged  attempt_id│
-│   record_id         constraints                                │
+│   record_id         constraints                       + state  │
+│                                                                  │
+│  dispatch_attempt.state tells what happened:                    │
+│    prepared → budget reserved, not yet sent                     │
+│    dispatch_claimed → sent (has dispatched_at timestamp)        │
+│    succeeded/returned_error/delivery_uncertain/response_rejected│
+│      → terminal (sent + outcome recorded)                       │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
                                 │
@@ -244,7 +260,7 @@ The receipt boundary is:
 1. **Request admitted** — proved by `request_hash`, `idempotency_record_id`
 2. **Authorization decision** — proved by `permit_id`, `outcome`, `reason_code`
 3. **Charge applied** — proved by `ledger_entry_id`, `credits_charged`
-4. **Dispatch sent** — proved by `dispatch_attempt_id`, `response_hash`
+4. **Dispatch prepared** — proved by `dispatch_attempt_id` (check attempt's `state` to determine if sent: `dispatch_claimed` or terminal states prove send; `prepared` does not)
 5. **Gateway provenance** — proved by Ed25519 `signature`, `gateway_build`, `created_at`
 
 The receipt does **not** prove:

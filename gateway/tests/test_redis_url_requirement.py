@@ -345,18 +345,22 @@ def test_prod_prefix_environment_triggers_check():
 
 
 def test_typo_environment_does_not_trigger_check():
-    """A typo like 'produciton' is not production-like, boots normally."""
-    validate_trust_mode_guardrails(
-        Settings(
-            ENVIRONMENT="produciton",
-            TRUST_MODE_ENABLED=True,
-            TRUST_SIGNING_PRIVATE_KEY_B64=VALID_SIGNING_PRIVATE_KEY_B64,
-            ALLOW_LEGACY_UNPERMITTED_MCP=False,
-            ENABLE_PROOF_SURFACES=False,
-            DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
-            REDIS_URL="",
+    """A typo like 'produciton' is treated as production-like (non-empty, not in local list).
+    
+    This is intentional: unknown environments are treated as production-like for safety.
+    """
+    with pytest.raises(TrustModeGuardrailError, match="REDIS_URL is required"):
+        validate_trust_mode_guardrails(
+            Settings(
+                ENVIRONMENT="produciton",
+                TRUST_MODE_ENABLED=True,
+                TRUST_SIGNING_PRIVATE_KEY_B64=VALID_SIGNING_PRIVATE_KEY_B64,
+                ALLOW_LEGACY_UNPERMITTED_MCP=False,
+                ENABLE_PROOF_SURFACES=False,
+                DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
+                REDIS_URL="",
+            )
         )
-    )
 
 
 def test_allow_in_memory_store_parsed_from_environment():

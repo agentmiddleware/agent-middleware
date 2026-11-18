@@ -407,18 +407,26 @@ async def test_alg_none_token_rejected(iga_config, rsa_key):
     now = datetime.now(timezone.utc)
     # PyJWT library prevents creating actual alg=none tokens in encode(),
     # so construct one manually by base64-encoding header and payload.
-    header = base64.urlsafe_b64encode(
-        json.dumps({"alg": "none", "kid": KID}).encode()
-    ).rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(
-        json.dumps({
-            "iss": OKTA_ISS,
-            "aud": AUDIENCE,
-            "sub": "user-1",
-            "iat": int(now.timestamp()),
-            "exp": int((now + timedelta(seconds=300)).timestamp()),
-        }).encode()
-    ).rstrip(b"=").decode()
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "none", "kid": KID}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "iss": OKTA_ISS,
+                    "aud": AUDIENCE,
+                    "sub": "user-1",
+                    "iat": int(now.timestamp()),
+                    "exp": int((now + timedelta(seconds=300)).timestamp()),
+                }
+            ).encode()
+        )
+        .rstrip(b"=")
+        .decode()
+    )
     token = f"{header}.{payload}."
     with pytest.raises(IGAError) as excinfo:
         parse_enterprise_token(token)

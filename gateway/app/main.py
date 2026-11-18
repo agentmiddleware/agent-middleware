@@ -632,6 +632,9 @@ def custom_openapi():
         description=app.description,
         routes=app.routes,
         servers=app.servers,
+        license_info=app.license_info,
+        contact=app.contact,
+        terms_of_service=app.terms_of_service,
     )
 
     # Add default security requirement (per-endpoint overrides already win)

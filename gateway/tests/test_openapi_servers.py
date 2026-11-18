@@ -35,7 +35,7 @@ def test_explicit_public_url_alone_in_production():
     assert _urls(servers) == ["https://gateway.example-buyer.com"]
 
 
-def test_openapi_json_endpoint_returns_200():
+async def test_openapi_json_endpoint_returns_200(clean_database):
     """Verify GET /openapi.json succeeds without RecursionError."""
     client = TestClient(app)
     response = client.get("/openapi.json")

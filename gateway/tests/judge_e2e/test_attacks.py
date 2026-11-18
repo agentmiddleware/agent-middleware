@@ -57,7 +57,10 @@ def test_guardrails_deny_before_dispatch_or_money(judge, attack):
         assert response["body"]["error"]["message"] == "permit_budget_exceeded"
         assert succeeded == 5, f"expected 5 successful calls, got {succeeded}"
         from decimal import Decimal
-        assert Decimal(before["spent"]) == Decimal("5"), f"expected 5 credits spent, got {before['spent']}"
+
+        assert Decimal(before["spent"]) == Decimal("5"), (
+            f"expected 5 credits spent, got {before['spent']}"
+        )
     else:
         before = judge.snapshot()
         response = judge.call(

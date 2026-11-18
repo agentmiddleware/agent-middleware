@@ -22,7 +22,9 @@ from tests.judge_e2e.worker import serve
 def pytest_collection_modifyitems(config, items):
     """Skip judge_e2e tests under xdist unless explicitly requested."""
     if hasattr(config, "workerinput") and "JUDGE_E2E_XDIST" not in os.environ:
-        skip_xdist = pytest.mark.skip(reason="judge_e2e harness uses SIGKILL and is incompatible with xdist")
+        skip_xdist = pytest.mark.skip(
+            reason="judge_e2e harness uses SIGKILL and is incompatible with xdist"
+        )
         for item in items:
             item.add_marker(skip_xdist)
 

@@ -12,16 +12,16 @@ Run from the repository root:
       --with-editable '../sdk/python[verify]' \\
       python ../examples/one_tool_call.py
 
-Expected output (receipt IDs differ on each run):
+Output shape (receipt IDs vary per run; a real ID is rcpt- plus 16 hex):
 
-    Receipt ID: rcpt-0d4e8c5a1b2f3967
+    Receipt ID: rcpt-<16-hex-chars>
     Tool: partner.notes.write
     Outcome: success
     Credits charged: 2.00000000
     Verification: valid
 
 The example runs the gateway in-process (SQLite, memory state) with one tool
-(partner.notes.write) and verifies the receipt with no server call.
+(partner.notes.write) and verifies the receipt offline with no server call.
 """
 
 from __future__ import annotations
@@ -60,6 +60,7 @@ async def main() -> int:
             Encoding.Raw, PrivateFormat.Raw, NoEncryption()
         )
         admin_key = secrets.token_urlsafe(32)
+        notes_file = state / "dogfood_notes.jsonl"
         os.environ.update(
             {
                 "DATABASE_URL": f"sqlite+aiosqlite:///{database}",
@@ -71,6 +72,7 @@ async def main() -> int:
                 "TRUST_SIGNING_KEY_ID": "one-tool-ed25519",
                 "TRUST_SIGNING_PRIVATE_KEY_B64": base64.b64encode(signing_seed).decode(),
                 "ENABLE_DOGFOOD_TOOL": "true",  # Registers partner.notes.write
+                "DOGFOOD_NOTES_PATH": str(notes_file),  # Keep notes in temp directory
                 "ALLOW_LEGACY_UNPERMITTED_MCP": "false",
                 "MCP_UPSTREAM_ENABLED": "false",
             }

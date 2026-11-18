@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 REASON_RATE_LIMITER_MEMORY_FALLBACK = "rate_limiter_memory_fallback"
 REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED = "rate_limiter_redis_not_configured"
 REASON_DURABLE_STATE_MEMORY_FALLBACK = "durable_state_memory_fallback"
+REASON_IN_MEMORY_STORE_ALLOWED = "in_memory_store_allowed_in_production"
 
 _rate_limiter_memory_fallback = False
 _memory_only_limiter_warned = False
@@ -57,6 +58,21 @@ def rate_limiter_memory_only_in_production_like() -> bool:
     settings = get_settings()
     return bool(
         is_production_like_environment(settings.ENVIRONMENT)
+        and not settings.REDIS_URL.strip()
+    )
+
+
+def in_memory_store_allowed_in_production_like() -> bool:
+    """True when ALLOW_IN_MEMORY_STORE is set in production-like.
+
+    This opt-out allows the service to boot with no REDIS_URL but reports it
+    as degraded.
+    """
+    from .config import get_settings
+    settings = get_settings()
+    return bool(
+        is_production_like_environment(settings.ENVIRONMENT)
+        and settings.ALLOW_IN_MEMORY_STORE
         and not settings.REDIS_URL.strip()
     )
 
@@ -98,6 +114,7 @@ def get_runtime_degradation() -> dict[str, Any]:
     settings = get_settings()
     redis_configured = bool(settings.REDIS_URL.strip())
     memory_only = rate_limiter_memory_only_in_production_like()
+    in_memory_opt_in = in_memory_store_allowed_in_production_like()
     reasons: list[str] = []
     if _rate_limiter_memory_fallback:
         reasons.append(REASON_RATE_LIMITER_MEMORY_FALLBACK)
@@ -105,6 +122,8 @@ def get_runtime_degradation() -> dict[str, Any]:
         reasons.append(REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED)
     if _durable_state_fell_back:
         reasons.append(REASON_DURABLE_STATE_MEMORY_FALLBACK)
+    if in_memory_opt_in:
+        reasons.append(REASON_IN_MEMORY_STORE_ALLOWED)
     return {
         "degraded": bool(reasons),
         "reasons": reasons,
@@ -122,4 +141,5 @@ def get_runtime_degradation() -> dict[str, Any]:
             "fell_back_to_memory": _durable_state_fell_back,
             "intended_backend": _durable_state_intended,
         },
+        "in_memory_store_allowed": in_memory_opt_in,
     }

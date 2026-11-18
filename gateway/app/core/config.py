@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     REDIS_URL: str = ""
     SQLITE_URL: str = ""
+    # Allow in-memory store in production-like environments when REDIS_URL is
+    # not set. When true, the service boots but reports as degraded. Default
+    # false: production-like environments refuse to start without REDIS_URL.
+    ALLOW_IN_MEMORY_STORE: bool = False
     # PostgreSQL row-level security for wallet-scoped tables (migration
     # 048_tenant_rls), ported from the archived agent-middleware-api Settings
     # with the same name, default and validation. "off" (default): the

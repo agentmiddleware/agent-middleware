@@ -55,12 +55,13 @@ async def main() -> int:
             PrivateFormat,
         )
 
-        database = Path(state) / "gateway.db"
+        state_path = Path(state)
+        database = state_path / "gateway.db"
         signing_seed = Ed25519PrivateKey.generate().private_bytes(
             Encoding.Raw, PrivateFormat.Raw, NoEncryption()
         )
         admin_key = secrets.token_urlsafe(32)
-        notes_file = state / "dogfood_notes.jsonl"
+        notes_file = state_path / "dogfood_notes.jsonl"
         os.environ.update(
             {
                 "DATABASE_URL": f"sqlite+aiosqlite:///{database}",

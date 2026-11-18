@@ -67,6 +67,8 @@ def test_discovery_payload_matches_the_documented_120_default(monkeypatch) -> No
         {
             "RATE_LIMIT_PER_MINUTE": 120,
             "RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER": 20,
+            "RATE_LIMIT_REJECTED_CREDENTIALS_CEILING": 100,
+            "RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS": 2.0,
             "REDIS_URL": "",
         },
     )()
@@ -78,6 +80,8 @@ def test_discovery_payload_matches_the_documented_120_default(monkeypatch) -> No
     assert payload["burst_allowance"] == 0
     assert payload["unauthenticated_scope"] == "per_client_anonymous_bucket"
     assert payload["unauthenticated_global_multiplier"] == 20
+    assert payload["rejected_credentials_ceiling"] == 100
+    assert payload["rejected_credentials_delay_seconds"] == 2.0
 
 
 @pytest.mark.anyio
@@ -961,3 +965,166 @@ async def test_readiness_route_wide_budget_limits_a_distributed_flood() -> None:
     assert statuses[30:] == [429]
     # Another route is not charged to the readiness route-wide bucket.
     assert await _status_for(limiter, "/v1/discover", client="198.51.100.200") == 200
+
+
+# --- Deployment-wide rejected credentials ceiling (issue #276 part c) -------
+
+
+@pytest.mark.anyio
+async def test_under_ceiling_rejections_are_immediate(monkeypatch) -> None:
+    """Rejected credentials under the ceiling are answered without delay."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "10")
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "1.0")
+    get_settings.cache_clear()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    limited._redis_url = ""
+    transport = ASGITransport(app=limited)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        start = time.time()
+        responses = [
+            await http.get("/v1/w", headers={"X-API-Key": f"invalid-{i}"})
+            for i in range(10)
+        ]
+        elapsed = time.time() - start
+
+    assert all(r.status_code == 401 for r in responses)
+    assert elapsed < 5.0
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_over_ceiling_rejections_are_deferred(monkeypatch) -> None:
+    """Once the ceiling is exceeded, rejected credentials are delayed."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "2")
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "0.5")
+    get_settings.cache_clear()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    limited._redis_url = ""
+    transport = ASGITransport(app=limited)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        for i in range(2):
+            response = await http.get("/v1/w", headers={"X-API-Key": f"invalid-{i}"})
+            assert response.status_code == 401
+
+        start = time.time()
+        delayed = await http.get("/v1/w", headers={"X-API-Key": "invalid-over"})
+        elapsed = time.time() - start
+
+    assert delayed.status_code == 401
+    assert elapsed >= 0.4
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_valid_keys_from_throttled_address_are_not_blocked(
+    accepted_keys, monkeypatch
+) -> None:
+    """Valid keys work even when invalid keys from the same address are throttled."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "5")
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "1.0")
+    get_settings.cache_clear()
+
+    limited = RateLimitMiddleware(_governed_app(), requests_per_minute=20)
+    limited._redis_url = ""
+    transport = ASGITransport(app=limited)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        for i in range(6):
+            await http.get("/v1/wallets", headers={"X-API-Key": f"invalid-{i}"})
+
+        start = time.time()
+        valid_response = await http.get(
+            "/v1/wallets", headers={"X-API-Key": accepted_keys[0]}
+        )
+        elapsed = time.time() - start
+
+    assert valid_response.status_code == 200
+    assert elapsed < 0.5
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_rejected_credentials_counter_is_shared_via_redis(monkeypatch) -> None:
+    """The counter is shared when Redis is available (via test double)."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "5")
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "0.2")
+    get_settings.cache_clear()
+
+    seen_keys: list[str] = []
+
+    class _RecordingRedis:
+        def __init__(self) -> None:
+            self.counts: dict[str, int] = {}
+
+        async def incr(self, key: str) -> int:
+            seen_keys.append(key)
+            self.counts[key] = self.counts.get(key, 0) + 1
+            return self.counts[key]
+
+        async def expire(self, key: str, _seconds: int) -> bool:
+            return True
+
+        async def get(self, key: str) -> str | None:
+            return str(self.counts.get(key, 0)) if key in self.counts else None
+
+    fake = _RecordingRedis()
+
+    async def _fake_redis():
+        return fake
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    shared = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    shared._get_redis = _fake_redis  # type: ignore[method-assign]
+    transport = ASGITransport(app=shared)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        for i in range(7):
+            await http.get("/v1/w", headers={"X-API-Key": f"invalid-{i}"})
+
+    counter_keys = [k for k in seen_keys if "rejected-credentials-counter" in k]
+    assert len(counter_keys) == 7
+    assert all("rejected-credentials-counter:client:127.0.0.1" in k for k in counter_keys)
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_403_unknown_key_is_counted_and_deferred(monkeypatch) -> None:
+    """Unknown keys refused with 403 are counted and deferred over the ceiling."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "1")
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "0.5")
+    get_settings.cache_clear()
+
+    async def deny(_request):
+        return PlainTextResponse(
+            "no",
+            status_code=403,
+            headers={CREDENTIAL_REJECTED_HEADER: "1"},
+        )
+
+    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    limited._redis_url = ""
+    transport = ASGITransport(app=limited)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        await http.get("/v1/w", headers={"X-API-Key": "unknown-1"})
+
+        start = time.time()
+        delayed = await http.get("/v1/w", headers={"X-API-Key": "unknown-2"})
+        elapsed = time.time() - start
+
+    assert delayed.status_code == 403
+    assert elapsed >= 0.4
+    assert CREDENTIAL_REJECTED_HEADER.lower() not in delayed.headers
+    get_settings.cache_clear()

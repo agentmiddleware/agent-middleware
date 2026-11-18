@@ -98,6 +98,13 @@ _ANONYMOUS_BUCKET_PREFIX = "anonymous"
 _PREAUTH_BUCKET_PREFIX = "preauth:rejected-credentials"
 _PREAUTH_LIMIT_MULTIPLIER = 10
 
+# Deployment-wide counter for rejected credentials per client address. Once
+# the ceiling is exceeded, further rejected-key attempts are delayed before
+# the response instead of answered immediately. This bounds invalid-key
+# rotation without locking out valid database keys. Shared only when Redis
+# is available; otherwise each process counts its own.
+_REJECTED_CREDENTIALS_COUNTER_PREFIX = "rejected-credentials-counter"
+
 # Prefix hashed with a presented X-API-Key to name its bucket; see
 # _api_key_bucket.
 _API_KEY_BUCKET_DOMAIN = b"agent-middleware-api:rate-limit-bucket:v1\x00"
@@ -146,6 +153,14 @@ def rate_limit_discovery() -> dict[str, Any]:
     bucket (``rejected_credentials_scope``); see
     ``RateLimitMiddleware.dispatch``. An authenticated caller denied on scope
     is not: in a trust plane, denials are ordinary traffic.
+
+    Requests with rejected credentials are also counted against a deployment-wide
+    per-client-address ceiling (``rejected_credentials_ceiling``). Once that
+    ceiling is exceeded, further rejected-key attempts from the same address are
+    delayed before the response (``rejected_credentials_delay_seconds``) instead
+    of answered immediately. This bounds invalid-key rotation without locking out
+    valid database keys, which are never delayed. The counter is shared only when
+    Redis is available; otherwise each process counts its own.
     """
     cfg = get_settings()
     return {
@@ -160,6 +175,13 @@ def rate_limit_discovery() -> dict[str, Any]:
         ),
         "rejected_credentials_scope": "shared_per_client_bucket",
         "rejected_credentials_multiplier": _PREAUTH_LIMIT_MULTIPLIER,
+        "rejected_credentials_ceiling": cfg.RATE_LIMIT_REJECTED_CREDENTIALS_CEILING,
+        "rejected_credentials_delay_seconds": (
+            cfg.RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS
+        ),
+        "rejected_credentials_counter_scope": (
+            "shared_redis" if cfg.REDIS_URL.strip() else "per_process"
+        ),
         "burst_allowance": 0,
         "per_partner_override": False,
         "headers": [
@@ -332,10 +354,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app, requests_per_minute: int | None = None):
         super().__init__(app)
-        self.limit = requests_per_minute or settings.RATE_LIMIT_PER_MINUTE
+        cfg = get_settings()
+        self.limit = requests_per_minute or cfg.RATE_LIMIT_PER_MINUTE
         self.preauth_limit = self.limit * _PREAUTH_LIMIT_MULTIPLIER
         self.window = 60.0  # seconds
-        self._redis_url = settings.REDIS_URL.strip()
+        self._redis_url = cfg.REDIS_URL.strip()
         self._redis: redis.Redis | None = None
         self._redis_lock = asyncio.Lock()
         self._redis_warned = False
@@ -344,6 +367,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._requests: dict[str, list[float]] = defaultdict(list)
         self._lock = asyncio.Lock()
         self._last_sweep = 0.0
+
+        # Rejected credentials counter: client -> count (in-memory fallback)
+        self._rejected_credentials_count: dict[str, int] = defaultdict(int)
+        self.rejected_credentials_ceiling = (
+            cfg.RATE_LIMIT_REJECTED_CREDENTIALS_CEILING
+        )
+        self.rejected_credentials_delay = (
+            cfg.RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS
+        )
 
     def _fail_closed_on_redis_outage(self) -> bool:
         """Production-like + REDIS_URL configured → no silent memory fallback."""
@@ -666,6 +698,68 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             reset_in = max(1, int(oldest + self.window - now) + 1)
             return False, remaining, reset_in
 
+    def _rejected_credentials_counter_key(self, client_id: str) -> str:
+        """Name the deployment-wide counter for rejected credentials."""
+        namespace = _limiter_namespace()
+        return f"{namespace}:{_REJECTED_CREDENTIALS_COUNTER_PREFIX}:client:{client_id}"
+
+    async def _increment_rejected_credentials_counter(
+        self, client_id: str
+    ) -> int:
+        """Increment the rejected credentials counter and return the new count.
+
+        Shared via Redis when available; otherwise counted in memory per process.
+        The counter tracks the number of requests whose credentials were not
+        accepted within the current window.
+        """
+        counter_key = self._rejected_credentials_counter_key(client_id)
+        client = await self._get_redis()
+        if client is None:
+            async with self._lock:
+                self._rejected_credentials_count[client_id] += 1
+                return self._rejected_credentials_count[client_id]
+        try:
+            count = await self._incr_window(client, f"rate_limit:{counter_key}")
+            return count
+        except Exception:
+            logger.warning(
+                "Failed to increment rejected credentials counter; "
+                "falling back to in-memory count.",
+                exc_info=True,
+            )
+            async with self._lock:
+                self._rejected_credentials_count[client_id] += 1
+                return self._rejected_credentials_count[client_id]
+
+    async def _check_rejected_credentials_ceiling(
+        self, client_id: str
+    ) -> bool:
+        """Check if the client has exceeded the rejected credentials ceiling.
+
+        Returns True if the ceiling is exceeded and the response should be delayed.
+        """
+        counter_key = self._rejected_credentials_counter_key(client_id)
+        client = await self._get_redis()
+        if client is None:
+            async with self._lock:
+                count = self._rejected_credentials_count.get(client_id, 0)
+                return count >= self.rejected_credentials_ceiling
+        try:
+            count_str = await client.get(f"rate_limit:{counter_key}")
+            if count_str is None:
+                return False
+            count = int(count_str)
+            return count >= self.rejected_credentials_ceiling
+        except Exception:
+            logger.warning(
+                "Failed to check rejected credentials counter; "
+                "falling back to in-memory count.",
+                exc_info=True,
+            )
+            async with self._lock:
+                count = self._rejected_credentials_count.get(client_id, 0)
+                return count >= self.rejected_credentials_ceiling
+
     async def dispatch(self, request: Request, call_next) -> Response:
         # Public MCP is intentionally unauthenticated. Ignore caller-supplied
         # API-key headers there so rotating bogus values cannot mint fresh
@@ -895,8 +989,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # on the request was accepted. An authenticated caller denied on
             # scope hands its reservation back: in a trust plane, denials are
             # ordinary traffic, not abuse.
-            if _credentials_were_rejected(response):
+            credentials_rejected = _credentials_were_rejected(response)
+            if credentials_rejected:
                 keep_reservation = True
+                # Check if this client has already exceeded the ceiling before
+                # incrementing. If so, defer the rejection response. Valid keys
+                # are never delayed, even from a throttled address.
+                client_id = _client_id(request)
+                over_ceiling = await self._check_rejected_credentials_ceiling(client_id)
+                # Increment the deployment-wide rejected credentials counter.
+                # This tracks invalid-key rotation across the window.
+                await self._increment_rejected_credentials_counter(client_id)
+                if over_ceiling:
+                    await asyncio.sleep(self.rejected_credentials_delay)
 
             response.headers["X-RateLimit-Limit"] = str(self.limit)
             response.headers["X-RateLimit-Remaining"] = str(header_remaining)

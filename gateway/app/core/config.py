@@ -472,8 +472,10 @@ class Settings(BaseSettings):
     # This bounds invalid-key rotation without locking out valid database keys.
     RATE_LIMIT_REJECTED_CREDENTIALS_CEILING: int = Field(default=100, ge=1)
     # Delay in seconds before answering a rejected-key request once the ceiling
-    # is exceeded. Applied per request, not per window.
-    RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS: float = Field(default=2.0, ge=0.0)
+    # is exceeded. Applied per request, not per window. Capped at 10 seconds.
+    RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS: float = Field(
+        default=2.0, ge=0.0, le=10.0
+    )
 
     # --- LLM / AI Agent Intelligence ---
     # Provider: openai, azure, anthropic, ollama

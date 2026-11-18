@@ -1004,6 +1004,13 @@ async def test_over_ceiling_rejections_are_deferred(monkeypatch) -> None:
     monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "0.5")
     get_settings.cache_clear()
 
+    sleep_called = []
+
+    async def fake_sleep(duration: float) -> None:
+        sleep_called.append(duration)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
     async def deny(_request):
         return PlainTextResponse("no", status_code=401)
 
@@ -1016,12 +1023,10 @@ async def test_over_ceiling_rejections_are_deferred(monkeypatch) -> None:
             response = await http.get("/v1/w", headers={"X-API-Key": f"invalid-{i}"})
             assert response.status_code == 401
 
-        start = time.time()
         delayed = await http.get("/v1/w", headers={"X-API-Key": "invalid-over"})
-        elapsed = time.time() - start
 
     assert delayed.status_code == 401
-    assert elapsed >= 0.4
+    assert sleep_called == [0.5]
     get_settings.cache_clear()
 
 
@@ -1065,17 +1070,20 @@ async def test_rejected_credentials_counter_is_shared_via_redis(monkeypatch) -> 
     class _RecordingRedis:
         def __init__(self) -> None:
             self.counts: dict[str, int] = {}
+            self.expiries: dict[str, float] = {}
 
         async def incr(self, key: str) -> int:
             seen_keys.append(key)
+            now = time.time()
+            if key in self.expiries and self.expiries[key] <= now:
+                del self.counts[key]
+                del self.expiries[key]
             self.counts[key] = self.counts.get(key, 0) + 1
             return self.counts[key]
 
-        async def expire(self, key: str, _seconds: int) -> bool:
+        async def expire(self, key: str, seconds: int) -> bool:
+            self.expiries[key] = time.time() + seconds
             return True
-
-        async def get(self, key: str) -> str | None:
-            return str(self.counts.get(key, 0)) if key in self.counts else None
 
     fake = _RecordingRedis()
 
@@ -1108,6 +1116,13 @@ async def test_403_unknown_key_is_counted_and_deferred(monkeypatch) -> None:
     monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "0.5")
     get_settings.cache_clear()
 
+    sleep_called = []
+
+    async def fake_sleep(duration: float) -> None:
+        sleep_called.append(duration)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
     async def deny(_request):
         return PlainTextResponse(
             "no",
@@ -1121,12 +1136,234 @@ async def test_403_unknown_key_is_counted_and_deferred(monkeypatch) -> None:
 
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         await http.get("/v1/w", headers={"X-API-Key": "unknown-1"})
-
-        start = time.time()
         delayed = await http.get("/v1/w", headers={"X-API-Key": "unknown-2"})
-        elapsed = time.time() - start
 
     assert delayed.status_code == 403
-    assert elapsed >= 0.4
+    assert sleep_called == [0.5]
     assert CREDENTIAL_REJECTED_HEADER.lower() not in delayed.headers
     get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_rejected_credentials_counter_expires_after_window(monkeypatch) -> None:
+    """In-memory counter entries expire after the window, matching Redis TTL."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "5")
+    get_settings.cache_clear()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    limited._redis_url = ""
+    transport = ASGITransport(app=limited)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-1"})
+        assert "127.0.0.1" in limited._rejected_credentials_count
+
+        now = time.time()
+        client_id = "127.0.0.1"
+        count, expiry = limited._rejected_credentials_count[client_id]
+        assert expiry > now
+        assert expiry <= now + limited.window + 2.0
+
+        async with limited._lock:
+            limited._sweep_expired_rejected_credentials(expiry + 1.0)
+        assert client_id not in limited._rejected_credentials_count
+
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_rejected_credentials_counter_sharing_between_instances(
+    monkeypatch,
+) -> None:
+    """Two instances sharing Redis see the same counter."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "2")
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "0.2")
+    get_settings.cache_clear()
+
+    sleep_called = []
+
+    async def fake_sleep(duration: float) -> None:
+        sleep_called.append(duration)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+    class _SharedRedis:
+        def __init__(self) -> None:
+            self.counts: dict[str, int] = {}
+
+        async def incr(self, key: str) -> int:
+            self.counts[key] = self.counts.get(key, 0) + 1
+            return self.counts[key]
+
+        async def expire(self, key: str, _seconds: int) -> bool:
+            return True
+
+    fake = _SharedRedis()
+
+    async def _fake_redis():
+        return fake
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    instance_a = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    instance_a._get_redis = _fake_redis  # type: ignore[method-assign]
+    instance_b = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    instance_b._get_redis = _fake_redis  # type: ignore[method-assign]
+
+    transport_a = ASGITransport(app=instance_a)
+    transport_b = ASGITransport(app=instance_b)
+
+    async with (
+        AsyncClient(transport=transport_a, base_url="http://test") as http_a,
+        AsyncClient(transport=transport_b, base_url="http://test") as http_b,
+    ):
+        await http_a.get("/v1/w", headers={"X-API-Key": "invalid-1"})
+        await http_b.get("/v1/w", headers={"X-API-Key": "invalid-2"})
+
+        assert len(sleep_called) == 0
+
+        await http_a.get("/v1/w", headers={"X-API-Key": "invalid-3"})
+        assert sleep_called == [0.2]
+
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_concurrent_delayed_requests_are_capped(monkeypatch) -> None:
+    """Concurrent delayed requests are capped to prevent resource exhaustion."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "1")
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "0.1")
+    get_settings.cache_clear()
+
+    sleep_called = []
+    in_progress = []
+
+    original_sleep = asyncio.sleep
+
+    async def fake_sleep(duration: float) -> None:
+        in_progress.append(duration)
+        try:
+            await original_sleep(0.001)
+            sleep_called.append(duration)
+        finally:
+            in_progress.remove(duration)
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    limited._redis_url = ""
+    limited._max_concurrent_delayed_requests = 2
+    transport = ASGITransport(app=limited)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-0"})
+
+        tasks = [
+            asyncio.create_task(
+                http.get("/v1/w", headers={"X-API-Key": f"invalid-{i}"})
+            )
+            for i in range(1, 6)
+        ]
+        responses = await asyncio.gather(*tasks)
+
+    assert all(r.status_code == 401 for r in responses)
+    assert len(sleep_called) == 2
+    assert limited._concurrent_delayed_requests == 0
+
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_disconnect_cancels_delay(monkeypatch) -> None:
+    """Client disconnect stops the delay and decrements the concurrent counter."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "1")
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "10.0")
+    get_settings.cache_clear()
+
+    sleep_started = []
+    sleep_cancelled = []
+
+    original_sleep = asyncio.sleep
+
+    async def fake_sleep(duration: float) -> None:
+        sleep_started.append(duration)
+        try:
+            await original_sleep(duration)
+        except asyncio.CancelledError:
+            sleep_cancelled.append(duration)
+            raise
+
+    monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    limited._redis_url = ""
+    transport = ASGITransport(app=limited)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        await http.get("/v1/w", headers={"X-API-Key": "invalid-0"})
+
+        task = asyncio.create_task(
+            http.get("/v1/w", headers={"X-API-Key": "invalid-1"})
+        )
+        await original_sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert len(sleep_started) == 1
+    assert len(sleep_cancelled) == 1
+    assert limited._concurrent_delayed_requests == 0
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
+async def test_redis_fallback_marks_runtime_degradation(monkeypatch) -> None:
+    """Redis failure falls back to memory and marks runtime_degradation."""
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "2")
+    get_settings.cache_clear()
+
+    from app.core.runtime_degradation import (
+        get_runtime_degradation,
+        reset_runtime_degradation,
+    )
+
+    reset_runtime_degradation()
+
+    class _FailingRedis:
+        async def incr(self, _key: str) -> int:
+            raise RuntimeError("Redis down")
+
+        async def expire(self, _key: str, _seconds: int) -> bool:
+            raise RuntimeError("Redis down")
+
+    async def _fake_redis():
+        return _FailingRedis()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    limited = RateLimitMiddleware(Starlette(routes=[Route("/v1/w", deny)]))
+    limited._get_redis = _fake_redis  # type: ignore[method-assign]
+    transport = ASGITransport(app=limited)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        response = await http.get("/v1/w", headers={"X-API-Key": "invalid-1"})
+        assert response.status_code == 401
+
+    degradation = get_runtime_degradation()
+    assert degradation["degraded"]
+    assert "rejected_credentials_counter_memory_fallback" in degradation["reasons"]
+    assert degradation["rate_limiter"]["rejected_credentials_counter_fallback"]
+
+    get_settings.cache_clear()
+    reset_runtime_degradation()

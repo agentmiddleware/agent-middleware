@@ -24,6 +24,36 @@ not the supported design-partner deployment path.
 
 ## Available Examples
 
+### `one_tool_call.py` — Minimal permit for one tool call
+
+The smallest real example of a permit-governed tool invocation: start a local
+gateway, issue a permit scoped to one tool with a small budget, make a single
+tool call, then verify the receipt offline with `Receipt.verify()`.
+
+**Run:**
+
+```bash
+cd agent-middleware/gateway
+PYTHONPATH=../sdk/python/src uv run --no-project --isolated --python 3.12 \
+  --with-requirements requirements.txt \
+  --with-editable '../sdk/python[verify]' \
+  python ../examples/one_tool_call.py
+```
+
+**Expected output:**
+
+```text
+Receipt ID: rcpt-9f2c41a7b6e04d21
+Tool: partner.notes.write
+Outcome: success
+Credits charged: 1
+Verification: valid
+```
+
+Receipt IDs differ on each run. The example runs the gateway in-process
+(SQLite, memory state), uses one tool (`partner.notes.write`), and verifies
+the receipt with no server call.
+
 ### `mcp-client/call_with_retry.py` — Golden-path idempotent retry demo
 
 This is the one demo to show a buyer next to `make quickstart`: call a

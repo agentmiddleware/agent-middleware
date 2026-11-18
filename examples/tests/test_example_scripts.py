@@ -15,6 +15,7 @@ from pathlib import Path
 
 import dry_run_example
 import mcp_tool_example
+import one_tool_call
 import pytest
 
 _REPO_ROOT = Path(os.path.abspath(dry_run_example.__file__)).parents[1]
@@ -131,3 +132,8 @@ def test_retry_tool_error_returns_nonzero(
     monkeypatch.setenv("AGENT_API_KEY", "local-test-key")
     monkeypatch.setattr(call_with_retry, "call_once", fake)
     assert asyncio.run(call_with_retry.main()) == 1
+
+
+def test_one_tool_call_runs_without_error() -> None:
+    """The one_tool_call example must complete successfully."""
+    assert asyncio.run(one_tool_call.main()) == 0

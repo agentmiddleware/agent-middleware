@@ -26,7 +26,8 @@ def pytest_collection_modifyitems(config, items):
             reason="judge_e2e harness uses SIGKILL and is incompatible with xdist"
         )
         for item in items:
-            item.add_marker(skip_xdist)
+            if "judge_e2e" in str(item.fspath):
+                item.add_marker(skip_xdist)
 
 
 class Judge:

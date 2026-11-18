@@ -110,16 +110,19 @@ def test_permit_replay_from_another_demo_wallet_is_denied(judge):
     """Verify a permit cannot authorize another demo wallet."""
     first_permit = judge.issue()
     first_demo = judge._all_demos[0]
-    first_wallet_before = judge.snapshot(first_demo)
+    first_call = judge.call(key="wallet-a-call")
+    assert first_call["status"] == 200
+    assert "result" in first_call["body"]
+    first_wallet_after_call = judge.snapshot(first_demo)
     judge.issue()
     second_demo = judge._all_demos[1]
     second_wallet_before = judge.snapshot(second_demo)
-    response = judge.call(permit_id=first_permit)
+    response = judge.call(permit_id=first_permit, key="replay-from-b")
     assert response["status"] == 200
     assert response["body"]["error"]["message"] == "permit_wallet_mismatch"
     second_wallet_after = judge.snapshot(second_demo)
     for field in ("balance", "spent", "dispatches", "debits", "refunds"):
         assert second_wallet_after[field] == second_wallet_before[field], field
-    first_wallet_after = judge.snapshot(first_demo)
+    first_wallet_after_replay = judge.snapshot(first_demo)
     for field in ("balance", "spent", "dispatches", "debits", "refunds"):
-        assert first_wallet_after[field] == first_wallet_before[field], field
+        assert first_wallet_after_replay[field] == first_wallet_after_call[field], field

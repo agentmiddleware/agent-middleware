@@ -13,9 +13,11 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 import dry_run_example
 import mcp_tool_example
-import pytest
+import one_tool_call
 
 _REPO_ROOT = Path(os.path.abspath(dry_run_example.__file__)).parents[1]
 _SDK_SRC = _REPO_ROOT / "sdk" / "python" / "src"
@@ -131,6 +133,33 @@ def test_retry_tool_error_returns_nonzero(
     monkeypatch.setenv("AGENT_API_KEY", "local-test-key")
     monkeypatch.setattr(call_with_retry, "call_once", fake)
     assert asyncio.run(call_with_retry.main()) == 1
+
+
+def test_one_tool_call_runs_without_error(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one_tool_call example must complete successfully and print expected output."""
+    # Isolate env changes and clear cached settings after the example runs
+    import sys
+    from importlib import reload
+
+    original_env = dict(os.environ)
+
+    try:
+        assert asyncio.run(one_tool_call.main()) == 0
+        out = capsys.readouterr().out
+        # Verify the output format matches the documented example exactly
+        assert "Receipt ID: rcpt-" in out
+        assert "Tool: partner.notes.write\n" in out
+        assert "Outcome: success\n" in out
+        assert "Credits charged: 2.00000000\n" in out
+        assert "Verification: valid\n" in out
+    finally:
+        # Restore environment and clear gateway module cache
+        os.environ.clear()
+        os.environ.update(original_env)
+        if "app.config" in sys.modules:
+            reload(sys.modules["app.config"])
 
 
 def test_serve_awaits_the_async_server_inside_the_running_loop(

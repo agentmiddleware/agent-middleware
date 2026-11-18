@@ -51,6 +51,9 @@ _PROD_TRUST_ENV = {
     # validate_trust_mode_config refuses SQLite here: SQLAlchemy silently drops
     # SELECT ... FOR UPDATE on SQLite, which the money and permit paths rely on.
     "DATABASE_URL": "postgresql+asyncpg://user:pw@db.internal:5432/trust",
+    # Production-like environments require REDIS_URL for shared rate limiting
+    # and state (per issue #288).
+    "REDIS_URL": "redis://redis.internal:6379/0",
 }
 
 

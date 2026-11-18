@@ -39,7 +39,6 @@ from ..services.idempotency import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
     InvalidIdempotencyKeyError,
-    get_idempotency_service,
 )
 from ..services.policies import evaluate_wallet_policy
 from ..services.velocity_monitor import WalletFrozenError
@@ -314,7 +313,7 @@ async def create_agent_wallet(
     money: AgentMoney = Depends(get_agent_money),
 ):
     _require_wallet_access(auth, request.sponsor_wallet_id)
-    idempotency_key = resolve_idempotency_key_lines(idempotency_key_lines)
+    resolve_idempotency_key_lines(idempotency_key_lines)
     # Resolve the sponsor before opening an idempotency record: the record's
     # wallet_id references wallets, so beginning one for an unknown sponsor
     # would fail the foreign key and answer 500 where the unkeyed path answers
@@ -330,7 +329,7 @@ async def create_agent_wallet(
     # with the same Idempotency-Key and gets the original wallet back instead
     # of funding a second one and paying twice.
     guard, replay = await _begin_idempotency(
-        idempotency_key=idempotency_key,
+        idempotency_key_lines=idempotency_key_lines,
         wallet_id=request.sponsor_wallet_id,
         endpoint="/v1/billing/wallets/agent",
         request_payload=request.model_dump(mode="json"),
@@ -649,7 +648,7 @@ async def charge_wallet(
     money: AgentMoney = Depends(get_agent_money),
 ):
     wallet_id = resolve_wallet_id(wallet_id, auth)
-    idempotency_key = resolve_idempotency_key_lines(idempotency_key_lines)
+    resolve_idempotency_key_lines(idempotency_key_lines)
     category = service_category or service
     if not category:
         raise HTTPException(
@@ -686,50 +685,28 @@ async def charge_wallet(
 
     # Idempotency is opt-in via the Idempotency-Key header: a client that
     # retries a charge (e.g. after a timeout) with the same key gets the
-    # original outcome replayed instead of being billed twice.
-    idem = None
-    idem_key: str | None = None
-    if idempotency_key:
-        idem = get_idempotency_service()
-        idem_key = idempotency_key
-        try:
-            replay = await idem.begin(
-                wallet_id=wallet_id,
-                endpoint=endpoint,
-                idempotency_key=idem_key,
-                request_payload={
-                    "wallet_id": wallet_id,
-                    "service_category": category.value,
-                    "units": units,
-                    "request_path": request_path,
-                    "description": description,
-                },
-            )
-        except IdempotencyConflictError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"error": "idempotency_key_reused", "message": str(exc)},
-            ) from exc
-        except IdempotencyInProgressError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"error": "idempotency_in_progress", "message": str(exc)},
-            ) from exc
-        if replay is not None:
-            return JSONResponse(
-                status_code=replay.status_code, content=replay.response_json
-            )
+    # original outcome replayed instead of being billed twice. A header that
+    # is present but unusable is refused before the debit.
+    guard, replay = await _begin_idempotency(
+        idempotency_key_lines=idempotency_key_lines,
+        wallet_id=wallet_id,
+        endpoint=endpoint,
+        request_payload={
+            "wallet_id": wallet_id,
+            "service_category": category.value,
+            "units": units,
+            "request_path": request_path,
+            "description": description,
+        },
+    )
+    if replay is not None:
+        return replay
 
     async def _complete_idempotency(response_json: dict, status_code: int) -> None:
-        if not idem or not idem_key:
-            return
-        await idem.complete(
-            wallet_id=wallet_id,
-            endpoint=endpoint,
-            idempotency_key=idem_key,
+        await guard.complete(
+            response_json,
+            status_code,
             response_reference=response_json.get("entry_id"),
-            response_json=response_json,
-            status_code=status_code,
         )
 
     try:
@@ -1117,12 +1094,24 @@ async def transfer_wallets(
     Both wallets are locked during the transaction for ACID compliance.
     """
     _require_wallet_access(auth, from_wallet_id)
-    idempotency_key = resolve_idempotency_key_lines(idempotency_key_lines)
+    resolve_idempotency_key_lines(idempotency_key_lines)
     endpoint = "/v1/billing/transfer"
-    # The idempotency row's wallet_id references wallets. Beginning one for an
-    # unknown source fails the foreign key and answers 500, where the unkeyed
-    # path answers 404.
-    if idempotency_key is not None and await money.get_wallet(from_wallet_id) is None:
+    # The idempotency row's wallet_id references wallets. Opening one for an
+    # unknown source fails the foreign key and answers 500, while the same
+    # call without a key answers 404.
+    if await money.get_wallet(from_wallet_id) is None:
+        await _record_billing_governance(
+            event="billing.transfer",
+            auth=auth,
+            wallet_id=from_wallet_id,
+            service_category="transfer",
+            endpoint=endpoint,
+            request_id=correlation_id,
+            estimated_cost=amount,
+            ok=False,
+            error="wallet_not_found",
+            metadata={"to_wallet_id": to_wallet_id},
+        )
         raise HTTPException(
             status_code=404,
             detail=str(WalletNotFoundError(from_wallet_id)),
@@ -1130,21 +1119,27 @@ async def transfer_wallets(
     # Opt-in idempotency: a retried transfer with the same Idempotency-Key
     # replays the original result instead of moving credits twice. Keyed on
     # the source wallet (the debited side). correlation_id is part of the
-    # identity when the caller sends one, because it is stored on both ledger
-    # rows and becomes the transfer id the caller is shown.
+    # stored transfer, so a reuse with a different one conflicts. The
+    # compatible payload is the hash written before that field was included,
+    # and it is only allowed to replay an existing row.
     request_payload = {
         "from_wallet_id": from_wallet_id,
         "to_wallet_id": to_wallet_id,
         "amount": str(amount),
         "description": description,
+        "correlation_id": correlation_id,
     }
-    if correlation_id is not None:
-        request_payload["correlation_id"] = correlation_id
     guard, replay = await _begin_idempotency(
-        idempotency_key=idempotency_key,
+        idempotency_key_lines=idempotency_key_lines,
         wallet_id=from_wallet_id,
         endpoint=endpoint,
         request_payload=request_payload,
+        compatible_request_payload={
+            "from_wallet_id": from_wallet_id,
+            "to_wallet_id": to_wallet_id,
+            "amount": str(amount),
+            "description": description,
+        },
     )
     if replay is not None:
         return replay
@@ -1173,9 +1168,7 @@ async def transfer_wallets(
                 "description": description,
             },
         )
-        # Store the same JSON the live response uses. complete() stringifies
-        # Decimal values, so a raw engine dict replays amounts as strings
-        # after the first response already sent numbers.
+        # Store and return the same JSON representation for live and replay responses.
         body = jsonable_encoder(result)
         await guard.complete(body, 200, response_reference=body.get("transfer_id"))
         return JSONResponse(status_code=200, content=body)

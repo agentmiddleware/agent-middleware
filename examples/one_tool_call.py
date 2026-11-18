@@ -87,114 +87,116 @@ async def main() -> int:
 
         await init_db()
         try:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://sandbox"
-            ) as client:
-                # Create wallets and mint an API key.
-                admin = {"X-API-Key": admin_key}
-                run_id = secrets.token_hex(6)
-                sponsor_resp = await client.post(
+            # Manually trigger FastAPI lifespan to register dogfood tool
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://sandbox"
+                ) as client:
+                    # Create wallets and mint an API key.
+                    admin = {"X-API-Key": admin_key}
+                    run_id = secrets.token_hex(6)
+                    sponsor_resp = await client.post(
                     "/v1/billing/wallets/sponsor",
                     json={
-                        "sponsor_name": f"one-tool-{run_id}",
-                        "email": f"one-tool-{run_id}@example.com",
-                        "initial_credits": 10,
-                        "require_kyc": False,
-                    },
-                    headers=admin,
-                )
-                agent_resp = await client.post(
-                    "/v1/billing/wallets/agent",
-                    json={
-                        "sponsor_wallet_id": sponsor_resp.json()["wallet_id"],
-                        "agent_id": f"one-tool-agent-{run_id}",
-                        "budget_credits": 5,
-                        "daily_limit": 5,
-                    },
-                    headers=admin,
-                )
-                wallet_id = agent_resp.json()["wallet_id"]
-                key_resp = await client.post(
-                    "/v1/api-keys",
-                    json={
-                        "wallet_id": wallet_id,
-                        "key_name": f"one-tool-{run_id}",
-                        "expires_in_days": 1,
-                    },
-                    headers=admin,
-                )
-                agent_key = key_resp.json()["api_key"]
+                            "sponsor_name": f"one-tool-{run_id}",
+                            "email": f"one-tool-{run_id}@example.com",
+                            "initial_credits": 10,
+                            "require_kyc": False,
+                        },
+                        headers=admin,
+                    )
+                    agent_resp = await client.post(
+                        "/v1/billing/wallets/agent",
+                        json={
+                            "sponsor_wallet_id": sponsor_resp.json()["wallet_id"],
+                            "agent_id": f"one-tool-agent-{run_id}",
+                            "budget_credits": 5,
+                            "daily_limit": 5,
+                        },
+                        headers=admin,
+                    )
+                    wallet_id = agent_resp.json()["wallet_id"]
+                    key_resp = await client.post(
+                        "/v1/api-keys",
+                        json={
+                            "wallet_id": wallet_id,
+                            "key_name": f"one-tool-{run_id}",
+                            "expires_in_days": 1,
+                        },
+                        headers=admin,
+                    )
+                    agent_key = key_resp.json()["api_key"]
 
-                # Issue a permit for one tool with a 3-credit budget.
-                tool_name = "partner.notes.write"
-                permit_resp = await client.post(
-                    "/v1/permits",
-                    json={
-                        "issuer_wallet_id": wallet_id,
-                        "subject_wallet_id": wallet_id,
-                        "subject_key_id": key_resp.json()["key_id"],
-                        "allowed_tools": [tool_name],
-                        "scopes": [f"tool:{tool_name}:invoke", "billing:charge"],
-                        "max_credits": 3,
-                        "expires_at": (
-                            datetime.now(UTC) + timedelta(minutes=5)
-                        ).isoformat(),
-                    },
-                    headers={**admin, "Idempotency-Key": f"one-tool-permit-{run_id}"},
-                )
-                permit_id = permit_resp.json()["permit_id"]
+                    # Issue a permit for one tool with a 3-credit budget.
+                    tool_name = "partner.notes.write"
+                    permit_resp = await client.post(
+                        "/v1/permits",
+                        json={
+                            "issuer_wallet_id": wallet_id,
+                            "subject_wallet_id": wallet_id,
+                            "subject_key_id": key_resp.json()["key_id"],
+                            "allowed_tools": [tool_name],
+                            "scopes": [f"tool:{tool_name}:invoke", "billing:charge"],
+                            "max_credits": 3,
+                            "expires_at": (
+                                datetime.now(UTC) + timedelta(minutes=5)
+                            ).isoformat(),
+                        },
+                        headers={**admin, "Idempotency-Key": f"one-tool-permit-{run_id}"},
+                    )
+                    permit_id = permit_resp.json()["permit_id"]
 
-                # Call the tool once through the governed MCP endpoint.
-                # partner.notes.write argument is "text", not "note", and charges 2 credits.
-                call_resp = await client.post(
-                    "/mcp/messages",
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": "call-1",
-                        "method": "tools/call",
-                        "params": {
-                            "name": tool_name,
-                            "arguments": {"text": "one tool call example"},
-                            "mcpContext": {
-                                "wallet_id": wallet_id,
-                                "permit_id": permit_id,
-                                "idempotency_key": f"one-tool-{run_id}",
+                    # Call the tool once through the governed MCP endpoint.
+                    # partner.notes.write argument is "text", not "note", and charges 2 credits.
+                    call_resp = await client.post(
+                        "/mcp/messages",
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": "call-1",
+                            "method": "tools/call",
+                            "params": {
+                                "name": tool_name,
+                                "arguments": {"text": "one tool call example"},
+                                "mcpContext": {
+                                    "wallet_id": wallet_id,
+                                    "permit_id": permit_id,
+                                    "idempotency_key": f"one-tool-{run_id}",
+                                },
                             },
                         },
-                    },
-                    headers={"X-API-Key": agent_key},
-                )
-                result = call_resp.json().get("result", {})
-                if result.get("isError"):
-                    print(f"Tool call failed: {call_resp.json()}", file=sys.stderr)
-                    return 1
+                        headers={"X-API-Key": agent_key},
+                    )
+                    result = call_resp.json().get("result", {})
+                    if result.get("isError"):
+                        print(f"Tool call failed: {call_resp.json()}", file=sys.stderr)
+                        return 1
 
-                # Extract the receipt from the result.
-                receipt_dict = result.get("receipt", {})
-                receipt_id = receipt_dict.get("receipt_id")
+                    # Extract the receipt from the result.
+                    receipt_dict = result.get("receipt", {})
+                    receipt_id = receipt_dict.get("receipt_id")
 
-                # Fetch the portable bundle and trust keys for offline verification.
-                bundle_resp = await client.get(
-                    f"/v1/receipts/{receipt_id}/portable",
-                    headers={"X-API-Key": agent_key},
-                )
-                keys_resp = await client.get("/.well-known/trust-keys.json")
+                    # Fetch the portable bundle and trust keys for offline verification.
+                    bundle_resp = await client.get(
+                        f"/v1/receipts/{receipt_id}/portable",
+                        headers={"X-API-Key": agent_key},
+                    )
+                    keys_resp = await client.get("/.well-known/trust-keys.json")
 
-                # Verify the receipt offline with Receipt.verify().
-                # from_dict takes the receipt from the MCP response, verify takes the bundle.
-                receipt = Receipt.from_dict(receipt_dict)
-                verification = receipt.verify(
-                    bundle=bundle_resp.json(), keys=keys_resp.json()
-                )
+                    # Verify the receipt offline with Receipt.verify().
+                    # from_dict takes the receipt from the MCP response, verify takes the bundle.
+                    receipt = Receipt.from_dict(receipt_dict)
+                    verification = receipt.verify(
+                        bundle=bundle_resp.json(), keys=keys_resp.json()
+                    )
 
-                # Print the result.
-                print(f"Receipt ID: {receipt_id}")
-                print(f"Tool: {receipt_dict.get('tool')}")
-                print(f"Outcome: {receipt_dict.get('outcome')}")
-                print(f"Credits charged: {receipt_dict.get('credits_charged')}")
-                print(f"Verification: {'valid' if verification.ok else 'INVALID'}")
+                    # Print the result.
+                    print(f"Receipt ID: {receipt_id}")
+                    print(f"Tool: {receipt_dict.get('tool')}")
+                    print(f"Outcome: {receipt_dict.get('outcome')}")
+                    print(f"Credits charged: {receipt_dict.get('credits_charged')}")
+                    print(f"Verification: {'valid' if verification.ok else 'INVALID'}")
 
-                return 0 if verification.ok else 1
+                    return 0 if verification.ok else 1
         finally:
             await close_db()
 

@@ -684,7 +684,9 @@ jobs:
       - name: Test (node --test)
         # Same suites as the command in site/README.md, from the repository
         # root. node --test exits 0 when its pattern matches no file, so fail
-        # here if the suites were moved or renamed.
+        # here if the suites were moved or renamed. Node gets the quoted
+        # pattern, not the expanded paths: it reads each argument as a glob,
+        # so a path with brackets in its name would match nothing.
         run: |
           shopt -s nullglob
           suites=(site/test_*.mjs)
@@ -692,7 +694,7 @@ jobs:
             echo "::error::no site/test_*.mjs suites found"
             exit 1
           fi
-          node --test "${suites[@]}"
+          node --test 'site/test_*.mjs'
 
   trust_release_gate:
     # Non-required while trust coverage and committed OpenAPI parity fail.

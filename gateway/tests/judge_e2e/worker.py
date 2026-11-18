@@ -78,6 +78,9 @@ async def _run(connection, settings) -> None:
     assert active_settings is settings
     assert active_settings.ENVIRONMENT == "test"
     assert active_settings.TRUST_MODE_ENABLED is True
+    
+    from app.core import rate_limiter
+    assert rate_limiter.settings is settings, "rate_limiter not using test settings"
     from app.db.models import (
         IdempotencyRecordModel,
         LedgerEntryModel,

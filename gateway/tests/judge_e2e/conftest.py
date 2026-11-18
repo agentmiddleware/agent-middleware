@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import multiprocessing
+import os
 import tempfile
 from pathlib import Path
 
@@ -18,6 +19,14 @@ from cryptography.hazmat.primitives.serialization import (
 from tests.judge_e2e.worker import serve
 
 
+def pytest_collection_modifyitems(config, items):
+    """Skip judge_e2e tests under xdist unless explicitly requested."""
+    if hasattr(config, "workerinput") and "JUDGE_E2E_XDIST" not in os.environ:
+        skip_xdist = pytest.mark.skip(reason="judge_e2e harness uses SIGKILL and is incompatible with xdist")
+        for item in items:
+            item.add_marker(skip_xdist)
+
+
 class Judge:
     """Control an isolated gateway worker and its runtime-issued demo authority."""
 
@@ -30,6 +39,7 @@ class Judge:
             )
         ).decode()
         self._demo = None
+        self._all_demos = []
         self.start()
 
     def start(self):
@@ -65,6 +75,7 @@ class Judge:
         response = self.request("POST", "/v1/demo/keys", authenticated=False, json={})
         assert response["status"] == 201
         self._demo = response["body"]
+        self._all_demos.append(self._demo)
         assert self._demo["tenant"] == "demo"
         assert self._demo["allowed_tools"] == ["partner.echo"]
         assert self._demo["permit_id"]
@@ -107,12 +118,14 @@ class Judge:
             **kwargs,
         )
 
-    def snapshot(self):
+    def snapshot(self, demo=None):
         """Read persisted state and the worker dispatch count."""
+        if demo is None:
+            demo = self._demo
         return self.rpc(
             "snapshot",
-            wallet_id=self._demo["wallet_id"],
-            permit_id=self._demo["permit_id"],
+            wallet_id=demo["wallet_id"],
+            permit_id=demo["permit_id"],
         )
 
     def export(self, receipt_id):

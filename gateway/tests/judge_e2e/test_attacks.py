@@ -45,14 +45,19 @@ def test_guardrails_deny_before_dispatch_or_money(judge, attack):
     if attack == "budget":
         # Spend the issued cap using genuine product-generated operations.
         # Stop at the first denial rather than inventing a balance or permit.
+        succeeded = 0
         for index in range(20):
             before = judge.snapshot()
             response = judge.call(key=f"budget-{index}")
             if "error" in response["body"]:
                 break
+            succeeded += 1
         else:
             pytest.fail("demo permit failed to bound spend within 20 calls")
         assert response["body"]["error"]["message"] == "permit_budget_exceeded"
+        assert succeeded == 5, f"expected 5 successful calls, got {succeeded}"
+        from decimal import Decimal
+        assert Decimal(before["spent"]) == Decimal("5"), f"expected 5 credits spent, got {before['spent']}"
     else:
         before = judge.snapshot()
         response = judge.call(
@@ -101,11 +106,17 @@ def test_offline_tamper_and_unknown_key_fail_closed(judge):
 def test_permit_replay_from_another_demo_wallet_is_denied(judge):
     """Verify a permit cannot authorize another demo wallet."""
     first_permit = judge.issue()
+    first_demo = judge._all_demos[0]
+    first_wallet_before = judge.snapshot(first_demo)
     judge.issue()
-    before = judge.snapshot()
+    second_demo = judge._all_demos[1]
+    second_wallet_before = judge.snapshot(second_demo)
     response = judge.call(permit_id=first_permit)
     assert response["status"] == 200
     assert response["body"]["error"]["message"] == "permit_wallet_mismatch"
-    after = judge.snapshot()
+    second_wallet_after = judge.snapshot(second_demo)
     for field in ("balance", "spent", "dispatches", "debits", "refunds"):
-        assert after[field] == before[field], field
+        assert second_wallet_after[field] == second_wallet_before[field], field
+    first_wallet_after = judge.snapshot(first_demo)
+    for field in ("balance", "spent", "dispatches", "debits", "refunds"):
+        assert first_wallet_after[field] == first_wallet_before[field], field

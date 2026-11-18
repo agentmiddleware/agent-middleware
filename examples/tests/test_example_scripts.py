@@ -134,13 +134,28 @@ def test_retry_tool_error_returns_nonzero(
     assert asyncio.run(call_with_retry.main()) == 1
 
 
-def test_one_tool_call_runs_without_error(capsys: pytest.CaptureFixture[str]) -> None:
+def test_one_tool_call_runs_without_error(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The one_tool_call example must complete successfully and print expected output."""
-    assert asyncio.run(one_tool_call.main()) == 0
-    out = capsys.readouterr().out
-    # Verify the output format matches the documented example exactly
-    assert "Receipt ID: rcpt-" in out
-    assert "Tool: partner.notes.write\n" in out
-    assert "Outcome: success\n" in out
-    assert "Credits charged: 2.00000000\n" in out
-    assert "Verification: valid\n" in out
+    # Isolate env changes and clear cached settings after the example runs
+    import sys
+    from importlib import reload
+
+    original_env = dict(os.environ)
+    
+    try:
+        assert asyncio.run(one_tool_call.main()) == 0
+        out = capsys.readouterr().out
+        # Verify the output format matches the documented example exactly
+        assert "Receipt ID: rcpt-" in out
+        assert "Tool: partner.notes.write\n" in out
+        assert "Outcome: success\n" in out
+        assert "Credits charged: 2.00000000\n" in out
+        assert "Verification: valid\n" in out
+    finally:
+        # Restore environment and clear gateway module cache
+        os.environ.clear()
+        os.environ.update(original_env)
+        if "app.config" in sys.modules:
+            reload(sys.modules["app.config"])

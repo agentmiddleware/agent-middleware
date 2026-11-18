@@ -49,7 +49,10 @@ from .core.product_positioning import (
     POSITIONING_TAGLINE,
 )
 from .core.rate_limiter import RateLimitMiddleware, rate_limit_discovery
-from .core.runtime_degradation import warn_if_rate_limiter_memory_only
+from .core.runtime_degradation import (
+    get_runtime_degradation,
+    warn_if_rate_limiter_memory_only,
+)
 from .core.runtime_mode import get_simulation_modes
 from .middleware.head_method import HeadMethodMiddleware
 from .middleware.error_envelope import ErrorEnvelopeMiddleware, error_envelope
@@ -1281,8 +1284,6 @@ async def root(request: Request):
     ),
 )
 async def health():
-    from app.core.runtime_degradation import get_runtime_degradation
-
     redis_status = await check_redis_liveness()
     degradation = get_runtime_degradation()
     
@@ -1346,8 +1347,6 @@ async def health_ready():
     checks["database"] = await check_database_readiness()
     if checks["database"]["status"] != "up":
         all_healthy = False
-
-    from app.core.runtime_degradation import get_runtime_degradation
 
     degradation = get_runtime_degradation()
 

@@ -374,18 +374,17 @@ missing control.
   delayed (default 2 seconds, capped at 10) before the 401/403 response instead
   of answered immediately. This bounds invalid-key rotation without locking
   out valid keys. Valid credentials from a throttled address are never delayed.
-  The delay costs the server no work it saves and does not slow a parallel
-  attacker: it only adds friction for sequential guessing. The ceiling is
-  enforced only when credentials are not accepted, never on denials after
-  authentication. Pre-auth 429s (over the per-key or anonymous limit) return
-  early and are never delayed. Delayed requests hold a socket and task for the
-  full delay; a process-wide cap (100 concurrent delayed requests) prevents
-  resource exhaustion. Past that cap, responses are rejected immediately
-  without delay. The delay stops when the client disconnects. With `REDIS_URL`
-  set, the counter is shared via Redis; otherwise it is per-process with a
-  matching ~62-second window and LRU eviction to bound memory. Counter failures
-  fall back to in-memory counting, logged and marked under
-  `runtime_degradation`.
+  The delay adds friction for sequential guessing only; it does not reduce
+  server work or slow a parallel attacker. The ceiling is enforced only when
+  credentials are not accepted, never on denials after authentication. Pre-auth
+  429s (over the per-key or anonymous limit) return early and are never delayed.
+  Delayed requests hold a socket and task for the full delay; a process-wide cap
+  (100 concurrent delayed requests) prevents resource exhaustion. Past that cap,
+  responses are rejected immediately without delay. The delay stops when the
+  client disconnects. With `REDIS_URL` set, the counter is shared via Redis;
+  otherwise it is per-process with a fixed 62-second window and OrderedDict LRU
+  eviction to bound memory. Counter failures fall back to in-memory counting,
+  logged and marked under `runtime_degradation`.
 
 `GET /` and `GET /v1/discover` both publish this as `rate_limits`.
 

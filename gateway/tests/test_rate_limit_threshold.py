@@ -1467,15 +1467,6 @@ async def test_10k_cap_eviction_through_dispatch(monkeypatch) -> None:
     monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "100000")
     get_settings.cache_clear()
 
-
-@pytest.mark.anyio
-async def test_10k_cap_repeat_hit_no_eviction(monkeypatch) -> None:
-    """At 10k cap, a repeat hit on existing key leaves size unchanged and evicts nothing."""
-    import time
-
-    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "100000")
-    get_settings.cache_clear()
-
     async def deny(_request):
         return PlainTextResponse("no", status_code=401)
 
@@ -1515,6 +1506,45 @@ async def test_10k_cap_repeat_hit_no_eviction(monkeypatch) -> None:
 
 
 @pytest.mark.anyio
+async def test_10k_cap_repeat_hit_no_eviction(monkeypatch) -> None:
+    """At 10k cap, a repeat hit on existing key leaves size unchanged and evicts nothing."""
+    import time
+
+    monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "100000")
+    get_settings.cache_clear()
+
+    async def deny(_request):
+        return PlainTextResponse("no", status_code=401)
+
+    app = Starlette(routes=[Route("/v1/w", deny)])
+    limited = RateLimitMiddleware(app)
+    limited._redis_url = ""
+
+    # Seed 9,999 entries with 127.0.0.1 at the front, at the 10k cap
+    now = time.time()
+    limited._rejected_credentials_count["127.0.0.1"] = (1, now)
+    for i in range(1, 10000):
+        client_id = f"10.0.{i // 256}.{i % 256}"
+        limited._rejected_credentials_count[client_id] = (1, now)
+
+    assert len(limited._rejected_credentials_count) == 10000
+    keys_before = set(limited._rejected_credentials_count.keys())
+
+    # Send a 401 from 127.0.0.1 through the client (repeat hit)
+    transport = ASGITransport(app=limited)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        response = await http.get("/v1/w", headers={"X-API-Key": "invalid"})
+        assert response.status_code == 401
+
+    # Assert size is still 10,000 and key set is unchanged
+    assert len(limited._rejected_credentials_count) == 10000
+    keys_after = set(limited._rejected_credentials_count.keys())
+    assert keys_before == keys_after  # No keys were evicted
+
+    get_settings.cache_clear()
+
+
+@pytest.mark.anyio
 async def test_10k_cap_repeat_hit_moves_to_end(monkeypatch) -> None:
     """At 10k cap, a repeat hit moves the key to end, so next new key evicts a different entry."""
     import time
@@ -1529,69 +1559,50 @@ async def test_10k_cap_repeat_hit_moves_to_end(monkeypatch) -> None:
     limited = RateLimitMiddleware(app)
     limited._redis_url = ""
 
-    # Fill to exactly 10k
+    # Seed 9,999 entries with 127.0.0.1 at the front, at the 10k cap
     now = time.time()
-    for i in range(10000):
+    limited._rejected_credentials_count["127.0.0.1"] = (1, now)
+    for i in range(1, 10000):
         client_id = f"10.0.{i // 256}.{i % 256}"
         limited._rejected_credentials_count[client_id] = (1, now)
 
     assert len(limited._rejected_credentials_count) == 10000
+    first_key_after_127 = list(limited._rejected_credentials_count.keys())[1]
 
-    first_key = next(iter(limited._rejected_credentials_count))
-    second_key = list(limited._rejected_credentials_count.keys())[1]
+    # Send a 401 from 127.0.0.1 through the client (repeat hit)
+    transport = ASGITransport(app=limited)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        response = await http.get("/v1/w", headers={"X-API-Key": "invalid"})
+        assert response.status_code == 401
 
-    # Give first_key a repeat hit - moves it to end
-    async with limited._lock:
-        count, window_start = limited._rejected_credentials_count[first_key]
-        limited._rejected_credentials_count[first_key] = (count + 1, window_start)
-        limited._rejected_credentials_count.move_to_end(first_key)
-
-    # Verify first_key is now at the end
+    # Assert 127.0.0.1 is now the last key
     last_key = list(limited._rejected_credentials_count.keys())[-1]
-    assert last_key == first_key
+    assert last_key == "127.0.0.1"
 
-    # Now add a new key through dispatch - should evict second_key, not first_key
-    transport = ASGITransport(app=limited)
-    async with AsyncClient(transport=transport, base_url="http://test") as http:
-        await http.get("/v1/w", headers={"X-API-Key": "invalid"})
+    # Create a wrapper ASGI app that overrides the client IP
+    class ClientOverrideApp:
+        def __init__(self, app, client_ip):
+            self.app = app
+            self.client_ip = client_ip
 
-    # first_key should still be there (it was moved to end)
-    assert first_key in limited._rejected_credentials_count
-    # second_key should be evicted (it was oldest after first_key moved)
-    assert second_key not in limited._rejected_credentials_count
-    # New key should be present
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                scope["client"] = (self.client_ip, 0)
+            await self.app(scope, receive, send)
+
+    # Send a 401 from a new IP (192.168.1.1) through the client
+    wrapped_app = ClientOverrideApp(limited, "192.168.1.1")
+    transport2 = ASGITransport(app=wrapped_app)
+    async with AsyncClient(transport=transport2, base_url="http://test") as http:
+        response = await http.get("/v1/w", headers={"X-API-Key": "invalid"})
+        assert response.status_code == 401
+
+    # Assert the first entry after 127.0.0.1 was evicted (oldest after move_to_end)
+    # while 127.0.0.1 survived at the end
+    assert len(limited._rejected_credentials_count) == 10000
     assert "127.0.0.1" in limited._rejected_credentials_count
-    # Size should still be 10k
-    assert len(limited._rejected_credentials_count) == 10000
-
-    get_settings.cache_clear()
-
-    async def deny(_request):
-        return PlainTextResponse("no", status_code=401)
-
-    app = Starlette(routes=[Route("/v1/w", deny)])
-    limited = RateLimitMiddleware(app)
-    limited._redis_url = ""
-
-    # Directly fill counter to cap (faster than dispatching 10k requests)
-    now = time.time()
-    for i in range(10000):
-        client_id = f"10.0.{i // 256}.{i % 256}"
-        limited._rejected_credentials_count[client_id] = (1, now)
-
-    assert len(limited._rejected_credentials_count) == 10000
-    first_key = next(iter(limited._rejected_credentials_count))
-
-    # Now dispatch through the full stack
-    # This should evict the oldest entry to make room for 127.0.0.1
-    transport = ASGITransport(app=limited)
-    async with AsyncClient(transport=transport, base_url="http://test") as http:
-        await http.get("/v1/w", headers={"X-API-Key": "invalid"})
-
-    # Should still be at cap, but first_key should be gone and 127.0.0.1 should be there
-    assert len(limited._rejected_credentials_count) == 10000
-    assert first_key not in limited._rejected_credentials_count
-    assert "127.0.0.1" in limited._rejected_credentials_count
+    assert first_key_after_127 not in limited._rejected_credentials_count
+    assert "192.168.1.1" in limited._rejected_credentials_count
 
     get_settings.cache_clear()
 
@@ -1615,38 +1626,6 @@ async def test_cancelled_delay_releases_concurrency_slot(monkeypatch) -> None:
     """A cancelled delay still decrements the concurrent delayed requests counter."""
     monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_CEILING", "1")
     monkeypatch.setenv("RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS", "10.0")
-    get_settings.cache_clear()
-
-    async def deny(_request):
-        return PlainTextResponse("no", status_code=401)
-
-    app = Starlette(routes=[Route("/v1/w", deny)])
-    limited = RateLimitMiddleware(app)
-    limited._redis_url = ""
-    transport = ASGITransport(app=limited)
-
-    async with AsyncClient(transport=transport, base_url="http://test") as http:
-        # First request to exceed ceiling
-        await http.get("/v1/w", headers={"X-API-Key": "invalid-0"})
-
-        # Second request should delay
-        task = asyncio.create_task(
-            http.get("/v1/w", headers={"X-API-Key": "invalid-1"})
-        )
-        await asyncio.sleep(0.1)  # Let it start delaying
-
-        # Assert counter increased before cancel
-        assert limited._concurrent_delayed_requests == 1
-
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-        # Verify the task was actually cancelled
-        assert task.cancelled()
-
-    # The key assertion: counter was decremented despite cancellation
-    assert limited._concurrent_delayed_requests == 0
     get_settings.cache_clear()
 
     async def deny(_request):

@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.health import gather_dependency_report
 from app.core.runtime_degradation import (
     REASON_IN_MEMORY_STORE_ALLOWED,
@@ -25,6 +25,10 @@ from app.core.trust_mode import (
     validate_trust_mode_guardrails,
 )
 from app.main import app
+
+# Test constants
+VALID_SIGNING_PRIVATE_KEY_B64 = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY="  # base64 of 32 bytes
+VALID_PRODUCTION_DATABASE_URL = "postgresql://user:pass@db.internal:5432/prod"
 
 
 @pytest.fixture(autouse=True)

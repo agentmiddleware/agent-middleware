@@ -5,12 +5,7 @@ import json
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    NoEncryption,
-    PrivateFormat,
-    PublicFormat,
-)
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from b2a_sdk.jcs import dumps_text
 from b2a_sdk.receipt_verifier import (

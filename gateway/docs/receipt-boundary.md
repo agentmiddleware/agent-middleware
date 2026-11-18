@@ -56,7 +56,7 @@ When the gateway reserved budget and prepared to dispatch, the receipt records:
 - **`delivery_uncertain`**: a transport failure occurred after the send attempt; the gateway cannot confirm whether the tool received the request. Receipt `outcome` is `delivery_uncertain` (charge retained).
 - **`response_rejected`**: the tool replied but the gateway rejected the response as invalid. Receipt `outcome` is `response_rejected` (charge retained).
 
-**For non-success outcomes, no field in the receipt proves the upstream tool received the request.** A `success` outcome (dispatch state `succeeded`) proves the tool received the request and returned a non-error response. For other outcomes, the `dispatch_claimed` state and `dispatched_at` timestamp prove only that the gateway acquired the right to send and recorded that acquisition before attempting the send.
+**Outcomes that prove the tool received the request**: `success` (the tool returned a non-error response), `failed_refunded` (the tool returned `isError: true`), and `response_rejected` (the tool replied but the gateway rejected the response). **For `denied`, `insufficient_funds`, and `delivery_uncertain` outcomes, no field proves the tool received the request.** The `dispatch_claimed` state and `dispatched_at` timestamp prove only that the gateway acquired the right to send and recorded that acquisition before attempting the send.
 
 ### Signature and provenance
 
@@ -273,7 +273,7 @@ The receipt boundary is:
 
 The receipt does **not** prove:
 
-1. The upstream tool received the request (except for `success` outcomes, which do prove the tool received and responded)
+1. The upstream tool received the request for `denied`, `insufficient_funds`, or `delivery_uncertain` outcomes. (`success`, `failed_refunded`, and `response_rejected` do prove the tool received the request, since the tool must have received it to respond.)
 2. The tool's side effect happened
 3. The side effect happened exactly once (tool must honor forwarded idempotency key)
 4. The tool's full response (only `response_hash` is recorded)

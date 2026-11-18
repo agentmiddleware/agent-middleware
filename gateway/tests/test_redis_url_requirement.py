@@ -236,8 +236,8 @@ async def test_health_dependencies_endpoint_shows_opt_out_degradation(monkeypatc
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     monkeypatch.setattr(settings, "REDIS_URL", "")
     monkeypatch.setattr(settings, "ALLOW_IN_MEMORY_STORE", True)
-    # STATE_BACKEND=memory is not allowed in production-like, so set redis
-    monkeypatch.setattr(settings, "STATE_BACKEND", "redis")
+    # Production needs DATABASE_URL for durable state (postgres auto-detection)
+    monkeypatch.setattr(settings, "DATABASE_URL", VALID_PRODUCTION_DATABASE_URL)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
@@ -257,8 +257,8 @@ async def test_health_endpoint_reports_opt_out_as_degraded(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     monkeypatch.setattr(settings, "REDIS_URL", "")
     monkeypatch.setattr(settings, "ALLOW_IN_MEMORY_STORE", True)
-    # STATE_BACKEND=memory is not allowed in production-like, so set redis
-    monkeypatch.setattr(settings, "STATE_BACKEND", "redis")
+    # Production needs DATABASE_URL for durable state (postgres auto-detection)
+    monkeypatch.setattr(settings, "DATABASE_URL", VALID_PRODUCTION_DATABASE_URL)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
@@ -278,8 +278,8 @@ async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     monkeypatch.setattr(settings, "REDIS_URL", "")
     monkeypatch.setattr(settings, "ALLOW_IN_MEMORY_STORE", True)
-    # STATE_BACKEND=memory is not allowed in production-like, so set redis
-    monkeypatch.setattr(settings, "STATE_BACKEND", "redis")
+    # Production needs DATABASE_URL for durable state (postgres auto-detection)
+    monkeypatch.setattr(settings, "DATABASE_URL", VALID_PRODUCTION_DATABASE_URL)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:

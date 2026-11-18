@@ -20,7 +20,7 @@ The gateway computes a SHA-256 hash over `{tool_name, arguments, wallet_id, perm
 - `gateway/app/routers/mcp.py:1572-1581` — constructs `effective_request_payload` from these four fields, then `effective_request_hash = sha256_hex(effective_request_payload)`
 - `gateway/app/services/receipts.py:171` — `ReceiptModel` includes `request_hash: str`
 - `gateway/app/services/receipts.py:207` — signed payload includes `"request_hash": model.request_hash`
-- `spec/receipt-v0.1.md:39` — "Lowercase hex SHA-256 of the request and response values"
+- `spec/receipt-v0.1.md:38` — "Lowercase hex SHA-256 of the request and response values"
 
 The `request_hash` is signed into the receipt (line 207) and links the receipt to the logical invocation (tool name, arguments, wallet, permit), not transport framing.
 
@@ -41,12 +41,13 @@ The raw idempotency key is never signed (only its record ID is), so a verifier w
 The gateway persists a durable state machine for each upstream dispatch attempt.
 
 **Code references:**
-- `gateway/app/services/mcp_dispatch_attempts.py:165-179` — dispatch states: `"prepared"`, `"dispatch_claimed"`, `"succeeded"`, `"returned_error"`, `"delivery_uncertain"`, `"response_rejected"`
-- `gateway/app/services/mcp_dispatch_attempts.py:1652` — sets `dispatch_claim_hash` when claiming dispatch
+- `gateway/app/services/mcp_dispatch_attempts.py:165-167` — dispatch states: `"prepared"`, `"dispatched"` (legacy), `"dispatch_claimed"`
+- `gateway/app/services/mcp_dispatch_attempts.py:168-175` — terminal states: `"succeeded"`, `"returned_error"`, `"delivery_uncertain"`, `"response_rejected"`
+- `gateway/app/services/mcp_dispatch_attempts.py:1650-1653` — sets `dispatch_claim_hash` when claiming dispatch (before the send)
 - `gateway/app/services/mcp_dispatch_attempts.py:1998` — stores `response_hash` on terminal result
 - `gateway/app/db/models.py` (line references via grep) — `McpDispatchAttemptModel` includes `dispatch_claim_hash`, `response_hash`, `result_json`, `result_size_bytes`
 
-The `dispatch_claim_hash` is a durable one-shot boundary proving a given invocation was sent. The `result_json` field stores the actual response from the upstream tool.
+The `dispatch_claim_hash` is a durable one-shot boundary proving a single dispatch claim (set before the upstream send). The `result_json` field stores the actual response from the upstream tool.
 
 ### 1.4 Receipt Fields
 
@@ -54,7 +55,7 @@ Receipts include several fields that bind the call to its execution:
 
 **Code references:**
 - `gateway/app/services/receipts.py:161-190` — `receipt_model_to_response` shows all fields
-- `gateway/app/services/receipts.py:201-224` — `_verification_payload` constructs the signed payload
+- `gateway/app/services/receipts.py:201-217` — `_verification_payload` constructs the base signed payload
 - `spec/receipt-v0.1.md:30-56` — full signed payload specification
 - `gateway/app/services/receipts.py:208` — `"response_hash": model.response_hash` is signed as JSON `null` when there is no response, present otherwise
 
@@ -69,7 +70,11 @@ Signed fields include:
 - `created_at` (timestamp)
 - `alg`, `kid` (signature metadata)
 
-Additional fields signed only when set (lines 218-224): `reason_code`, `enforcement_mode`, `gateway_build`, `permit_digest`, `approval_digest`, `counterparty`, `sequence`, `prev_receipt_digest`, `constraints_evaluated`.
+Additional fields signed only when set:
+- Lines 218-224: `reason_code`, `enforcement_mode`, `gateway_build`
+- Lines 231-232: `approval_id`
+- Lines 235-244: `permit_digest`, `approval_digest`, `counterparty`, `sequence`, `prev_receipt_digest`
+- Lines 246-250: `constraints_evaluated`
 
 ### 1.5 Audit Chain
 

@@ -284,6 +284,8 @@ async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
 
     # Clear settings cache and use environment variables for proper test isolation
     get_settings.cache_clear()
+    # Add finalizer to clear cache after test completes
+    request.addfinalizer(get_settings.cache_clear)
 
     # Simulate production-like with the opt-out via environment
     monkeypatch.setenv("ENVIRONMENT", "prod-test")
@@ -321,6 +323,62 @@ async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
     assert body["status"] == "degraded"
     assert body["runtime_degradation"]["degraded"] is True
     assert REASON_IN_MEMORY_STORE_ALLOWED in body["runtime_degradation"]["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_unreachable_redis_with_opt_out_still_fails(monkeypatch, request):
+    """Opt-out only covers missing REDIS_URL, not unreachable configured Redis.
+
+    When REDIS_URL is set but Redis is unreachable, the opt-out does not hide
+    the failure. Both /health and /health/ready must return 503.
+    """
+    from types import SimpleNamespace
+
+    # Clear settings cache and use environment variables for proper test isolation
+    get_settings.cache_clear()
+    # Add finalizer to clear cache after test completes
+    request.addfinalizer(get_settings.cache_clear)
+
+    # Simulate production-like with REDIS_URL set and opt-out enabled
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("REDIS_URL", "redis://unreachable:6379")
+    monkeypatch.setenv("ALLOW_IN_MEMORY_STORE", "true")
+
+    # Mock Redis as down
+    async def mock_redis_down():
+        return {"status": "down", "error": "Connection refused"}
+
+    import app.main as main_mod
+
+    monkeypatch.setattr(main_mod, "check_redis_health", mock_redis_down)
+
+    # Mock state store to return healthy
+    async def mock_state_health():
+        return {"ok": True, "backend": "memory"}
+
+    monkeypatch.setattr(
+        main_mod,
+        "get_durable_state",
+        lambda: SimpleNamespace(health_report=mock_state_health),
+    )
+
+    # Mock database readiness to return up
+    async def mock_db_ready():
+        return {"status": "up"}
+
+    from app.core import health as health_mod
+
+    monkeypatch.setattr(health_mod, "check_database_readiness", mock_db_ready)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        health_resp = await http.get("/health")
+        ready_resp = await http.get("/health/ready")
+
+    # With configured Redis down, both endpoints return 503 hard failure,
+    # regardless of the opt-out setting.
+    assert health_resp.status_code == 503
+    assert ready_resp.status_code == 503
 
 
 # --- Stable reason code ------------------------------------------------------
@@ -382,7 +440,7 @@ def test_prod_prefix_environment_triggers_check():
         )
 
 
-def test_typo_environment_does_not_trigger_check():
+def test_typo_environment_triggers_check():
     """A typo like 'produciton' is treated as production-like (non-empty, not in local list).
 
     This is intentional: unknown environments are treated as production-like for safety.

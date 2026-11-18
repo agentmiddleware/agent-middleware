@@ -122,10 +122,11 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
   partner today means raising it for the whole deployment.
 - **Redis outage:** with `REDIS_URL` set, production-like environments return
   `503` instead of falling back to per-process memory, so the limit is never
-  silently wider than declared. Without `REDIS_URL` there is no shared limiter
-  to lose: the limit is enforced per process, so the effective limit is the
-  declared limit times the process count, and a production-like deployment is
-  reported as degraded on `/health/dependencies`.
+  silently wider than declared. Production-like environments refuse to boot
+  without `REDIS_URL` unless `ALLOW_IN_MEMORY_STORE=true`; with the opt-out,
+  the limit is enforced per process, so the effective limit is the declared
+  limit times the process count, and the deployment is reported as degraded on
+  `/health/dependencies`.
 
 `GET /v1/discover` → `rate_limits` and `GET /` → `rate_limits` report the
 same figure the middleware enforces.

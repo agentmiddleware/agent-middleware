@@ -1287,12 +1287,9 @@ async def health():
     redis_status = await check_redis_liveness()
     degradation = get_runtime_degradation()
 
-    # Redis down is a hard failure (503) UNLESS the opt-out is used. With
-    # ALLOW_IN_MEMORY_STORE=true, Redis down is soft degradation (200), not
-    # hard failure. Runtime degradation (opt-out) does not fail liveness:
-    # return 200 with status="degraded" in body.
-    allow_opt_out = settings.ALLOW_IN_MEMORY_STORE
-    hard_failure = redis_status == "down" and not allow_opt_out
+    # Redis down is a hard failure (503). The opt-out only covers missing
+    # REDIS_URL, not an unreachable configured Redis.
+    hard_failure = redis_status == "down"
     status = (
         "healthy"
         if (redis_status != "down" and not degradation["degraded"])

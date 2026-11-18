@@ -48,6 +48,8 @@ LEGACY_MODULES_WITHOUT_CLEANUP = frozenset(
         "test_content_store",
         "test_discover_kyc_honesty",
         "test_discovery",
+        # test_redis_url_requirement: No database writes, only boot validation
+        "test_redis_url_requirement",
         "test_discovery_consistency",
         "test_discovery_drift",
         "test_discovery_honesty",

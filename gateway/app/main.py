@@ -1337,12 +1337,19 @@ async def health_ready():
     if checks["database"]["status"] != "up":
         all_healthy = False
 
+    from app.core.runtime_degradation import get_runtime_degradation
+
+    degradation = get_runtime_degradation()
+    if degradation["degraded"]:
+        all_healthy = False
+
     return JSONResponse(
         status_code=200 if all_healthy else 503,
         content={
             "status": "ready" if all_healthy else "not_ready",
             "version": settings.APP_VERSION,
             "checks": checks,
+            "runtime_degradation": degradation,
         },
     )
 

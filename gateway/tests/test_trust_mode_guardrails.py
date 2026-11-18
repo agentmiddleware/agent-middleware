@@ -155,6 +155,7 @@ def test_settings_wrapper_uses_environment_field():
         DEBUG=False,
         WEBAUTHN_ALLOW_MOCK=False,
         DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
+        REDIS_URL="redis://redis.internal:6379/0",
     )
 
     validate_trust_mode_guardrails(settings)
@@ -186,6 +187,7 @@ def test_production_accepts_public_mcp_disabled():
         allow_legacy_unpermitted_mcp=False,
         enable_proof_surfaces=False,
         enable_public_mcp_endpoint=False,
+        redis_url="redis://redis.internal:6379/0",
         database_url=VALID_PRODUCTION_DATABASE_URL,
     )
 
@@ -267,6 +269,7 @@ def test_production_accepts_a_postgres_database_url():
         signing_private_key_b64=VALID_SIGNING_PRIVATE_KEY_B64,
         allow_legacy_unpermitted_mcp=False,
         enable_proof_surfaces=False,
+        redis_url="redis://redis.internal:6379/0",
         database_url=VALID_PRODUCTION_DATABASE_URL,
     )
 
@@ -336,6 +339,7 @@ def test_production_accepts_isolated_or_disabled_sandbox_backend(backend: str):
         signing_private_key_b64=VALID_SIGNING_PRIVATE_KEY_B64,
         allow_legacy_unpermitted_mcp=False,
         enable_proof_surfaces=False,
+        redis_url="redis://redis.internal:6379/0",
         database_url=VALID_PRODUCTION_DATABASE_URL,
         behavioral_sandbox_python_backend=backend,
     )
@@ -393,6 +397,7 @@ def test_settings_wrapper_forwards_local_only_escape_hatches():
         DEBUG=False,
         WEBAUTHN_ALLOW_MOCK=False,
         DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
+        REDIS_URL="redis://redis.internal:6379/0",
         ALLOW_PRIVATE_NETWORK_TARGETS=True,
         ALLOW_UNSAFE_HOST_PYTHON_SANDBOX=True,
         BEHAVIORAL_SANDBOX_PYTHON_BACKEND="unsafe_host",

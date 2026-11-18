@@ -196,6 +196,7 @@ async def lifespan(app: FastAPI):
         simulation_modes=get_simulation_modes(),
         cors_origins=settings.CORS_ORIGINS,
         tenant_rls_mode=settings.TENANT_RLS_MODE,
+        allow_in_memory_store=bool(settings.ALLOW_IN_MEMORY_STORE),
     )
     # A public deployment whose manifest tells agents the operator has no
     # contact is a discovery-honesty defect, not a neutral default. Partial
@@ -1280,12 +1281,20 @@ async def root(request: Request):
     ),
 )
 async def health():
+    from app.core.runtime_degradation import get_runtime_degradation
+
     redis_status = await check_redis_liveness()
-    healthy = redis_status != "down"
+    degradation = get_runtime_degradation()
+    
+    # Redis down is a hard failure (503). Runtime degradation (opt-out) does
+    # not fail liveness: return 200 with status="degraded" in body.
+    hard_failure = redis_status == "down"
+    status = "healthy" if (redis_status != "down" and not degradation["degraded"]) else "degraded"
+    
     return JSONResponse(
-        status_code=200 if healthy else 503,
+        status_code=503 if hard_failure else 200,
         content={
-            "status": "healthy" if healthy else "degraded",
+            "status": status,
             "version": settings.APP_VERSION,
             "commit_sha": get_build_commit_sha(),
             # Same field /health/dependencies publishes, so the liveness probe
@@ -1297,6 +1306,7 @@ async def health():
             # validated enum, never a credential.
             "tenant_rls_mode": get_settings().TENANT_RLS_MODE,
             "checks": {"redis": redis_status},
+            "runtime_degradation": degradation,
         },
     )
 

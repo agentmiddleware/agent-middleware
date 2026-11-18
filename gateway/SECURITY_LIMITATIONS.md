@@ -363,11 +363,12 @@ missing control.
   edge request-count/connection cap remains the operator's job, as noted
   under inbound body bounding above.
 - With `REDIS_URL` set, a Redis outage in production-like environments fails
-  closed (`503`), never silently wider than declared. Without `REDIS_URL`
-  there is no shared limiter to lose: each worker or replica enforces the
-  declared limit on its own, so the effective limit is the declared limit times
-  the process count, and a production-like deployment is reported as degraded
-  (see the startup posture notes above).
+  closed (`503`), never silently wider than declared. Production-like
+  environments without `REDIS_URL` refuse to boot unless
+  `ALLOW_IN_MEMORY_STORE=true` is explicitly set. When the opt-out is used,
+  each worker or replica enforces the declared limit on its own, so the
+  effective limit is the declared limit times the process count, and the
+  deployment is reported as degraded in health endpoints and startup logs.
 
 `GET /` and `GET /v1/discover` both publish this as `rate_limits`.
 

@@ -244,8 +244,27 @@ async def test_health_dependencies_endpoint_shows_opt_out_degradation(monkeypatc
 
 
 @pytest.mark.anyio
+async def test_health_endpoint_reports_opt_out_as_degraded(monkeypatch):
+    """/health returns 200 with status=degraded when opt-out is used."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "REDIS_URL", "")
+    monkeypatch.setattr(settings, "ALLOW_IN_MEMORY_STORE", True)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        resp = await http.get("/health")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "degraded"
+    assert body["runtime_degradation"]["degraded"] is True
+    assert REASON_IN_MEMORY_STORE_ALLOWED in body["runtime_degradation"]["reasons"]
+
+
+@pytest.mark.anyio
 async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
-    """The /health/ready endpoint reports degraded when opt-out is used."""
+    """/health/ready returns 200 with runtime_degradation when opt-out is used."""
     settings = get_settings()
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     monkeypatch.setattr(settings, "REDIS_URL", "")
@@ -267,3 +286,126 @@ async def test_readiness_endpoint_is_degraded_with_opt_out(monkeypatch):
 def test_stable_reason_code_is_not_renamed():
     """The reason code is part of the operator contract; do not rename it."""
     assert REASON_IN_MEMORY_STORE_ALLOWED == "in_memory_store_allowed_in_production"
+
+
+# --- Environment edge cases -------------------------------------------------
+
+
+def test_environment_with_whitespace_is_normalized():
+    """Environments with whitespace are normalized and still trigger the check."""
+    with pytest.raises(TrustModeGuardrailError, match="REDIS_URL is required"):
+        validate_trust_mode_guardrails(
+            Settings(
+                ENVIRONMENT="  production  ",
+                TRUST_MODE_ENABLED=True,
+                TRUST_SIGNING_PRIVATE_KEY_B64=VALID_SIGNING_PRIVATE_KEY_B64,
+                ALLOW_LEGACY_UNPERMITTED_MCP=False,
+                ENABLE_PROOF_SURFACES=False,
+                DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
+                REDIS_URL="",
+            )
+        )
+
+
+def test_environment_with_odd_case_triggers_check():
+    """Production-like environments are case-insensitive."""
+    with pytest.raises(TrustModeGuardrailError, match="REDIS_URL is required"):
+        validate_trust_mode_guardrails(
+            Settings(
+                ENVIRONMENT="PRODUCTION",
+                TRUST_MODE_ENABLED=True,
+                TRUST_SIGNING_PRIVATE_KEY_B64=VALID_SIGNING_PRIVATE_KEY_B64,
+                ALLOW_LEGACY_UNPERMITTED_MCP=False,
+                ENABLE_PROOF_SURFACES=False,
+                DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
+                REDIS_URL="",
+            )
+        )
+
+
+def test_prod_prefix_environment_triggers_check():
+    """PROD_EU and similar prod-* variants trigger the check."""
+    with pytest.raises(TrustModeGuardrailError, match="REDIS_URL is required"):
+        validate_trust_mode_guardrails(
+            Settings(
+                ENVIRONMENT="prod_eu",
+                TRUST_MODE_ENABLED=True,
+                TRUST_SIGNING_PRIVATE_KEY_B64=VALID_SIGNING_PRIVATE_KEY_B64,
+                ALLOW_LEGACY_UNPERMITTED_MCP=False,
+                ENABLE_PROOF_SURFACES=False,
+                DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
+                REDIS_URL="",
+            )
+        )
+
+
+def test_typo_environment_does_not_trigger_check():
+    """A typo like 'produciton' is not production-like, boots normally."""
+    validate_trust_mode_guardrails(
+        Settings(
+            ENVIRONMENT="produciton",
+            TRUST_MODE_ENABLED=True,
+            TRUST_SIGNING_PRIVATE_KEY_B64=VALID_SIGNING_PRIVATE_KEY_B64,
+            ALLOW_LEGACY_UNPERMITTED_MCP=False,
+            ENABLE_PROOF_SURFACES=False,
+            DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
+            REDIS_URL="",
+        )
+    )
+
+
+def test_allow_in_memory_store_parsed_from_environment():
+    """ALLOW_IN_MEMORY_STORE is correctly parsed from environment as bool."""
+    import os
+
+    old_value = os.environ.get("ALLOW_IN_MEMORY_STORE")
+
+    try:
+        os.environ["ALLOW_IN_MEMORY_STORE"] = "true"
+        settings = Settings(
+            ENVIRONMENT="production",
+            REDIS_URL="",
+        )
+        assert settings.ALLOW_IN_MEMORY_STORE is True
+
+        os.environ["ALLOW_IN_MEMORY_STORE"] = "false"
+        settings = Settings(
+            ENVIRONMENT="production",
+            REDIS_URL="",
+        )
+        assert settings.ALLOW_IN_MEMORY_STORE is False
+    finally:
+        if old_value is None:
+            os.environ.pop("ALLOW_IN_MEMORY_STORE", None)
+        else:
+            os.environ["ALLOW_IN_MEMORY_STORE"] = old_value
+
+
+def test_validate_trust_mode_guardrails_wrapper_with_opt_out():
+    """The Settings → validate_trust_mode_guardrails wrapper respects opt-out."""
+    validate_trust_mode_guardrails(
+        Settings(
+            ENVIRONMENT="production",
+            TRUST_MODE_ENABLED=True,
+            TRUST_SIGNING_PRIVATE_KEY_B64=VALID_SIGNING_PRIVATE_KEY_B64,
+            ALLOW_LEGACY_UNPERMITTED_MCP=False,
+            ENABLE_PROOF_SURFACES=False,
+            DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
+            REDIS_URL="",
+            ALLOW_IN_MEMORY_STORE=True,
+        )
+    )
+
+    with pytest.raises(TrustModeGuardrailError, match="REDIS_URL is required"):
+        validate_trust_mode_guardrails(
+            Settings(
+                ENVIRONMENT="production",
+                TRUST_MODE_ENABLED=True,
+                TRUST_SIGNING_PRIVATE_KEY_B64=VALID_SIGNING_PRIVATE_KEY_B64,
+                ALLOW_LEGACY_UNPERMITTED_MCP=False,
+                ENABLE_PROOF_SURFACES=False,
+                DATABASE_URL=VALID_PRODUCTION_DATABASE_URL,
+                REDIS_URL="",
+                ALLOW_IN_MEMORY_STORE=False,
+            )
+        )

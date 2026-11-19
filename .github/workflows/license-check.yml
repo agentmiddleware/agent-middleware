@@ -119,9 +119,11 @@ jobs:
           python-version: "3.12"
           enable-cache: false
       - name: Install runtime dependencies only
+        env:
+          PROJECT: ${{ matrix.project }}
         run: |
           uv venv "$RUNNER_TEMP/licvenv"
-          uv pip install --python "$RUNNER_TEMP/licvenv/bin/python" "./${{ matrix.project }}"
+          uv pip install --python "$RUNNER_TEMP/licvenv/bin/python" "./$PROJECT"
       - name: Collect licenses
         run: |
           uvx --from "pip-licenses==${PIP_LICENSES_VERSION}" pip-licenses \

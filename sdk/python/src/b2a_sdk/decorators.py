@@ -13,12 +13,25 @@ Telemetry is scheduled as a background task for non-blocking execution.
 
 import asyncio
 import contextvars
+import enum
 import functools
 import inspect
+import json
 import time
 import traceback
-from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any, ParamSpec, TypeVar, cast, get_type_hints
+import types
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from typing import (
+    Any,
+    Literal,
+    ParamSpec,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from .client import B2AClient, DryRunSimulation
 
@@ -89,6 +102,158 @@ def _notify_registration(
             pass
 
 
+_JSON_SCHEMA_SCALARS: dict[Any, str] = {
+    str: "string",
+    int: "integer",
+    float: "number",
+    bool: "boolean",
+    bytes: "string",
+    type(None): "null",
+}
+
+
+def _json_schema_enum(values: Any) -> dict[str, Any]:
+    """Build an ``enum`` fragment from literal values or enum members.
+
+    Enum members contribute their ``.value``. If any value still cannot be
+    written as strict JSON (bytes, or a non-finite number), the fragment is
+    ``{}`` (any value) so the schema stays serializable.
+    """
+    choices = [value.value if isinstance(value, enum.Enum) else value for value in values]
+    try:
+        json.dumps(choices, allow_nan=False)
+    except (TypeError, ValueError):
+        return {}
+    return {"enum": choices}
+
+
+_DEFINITION_KEYWORDS = ("$defs", "definitions")
+
+
+def _rewrite_refs(node: Any, renames: dict[str, str]) -> Any:
+    """Return ``node`` with every ``$ref`` in ``renames`` pointed at its new name."""
+    if isinstance(node, dict):
+        return {
+            key: renames.get(value, value)
+            if key == "$ref" and isinstance(value, str)
+            else _rewrite_refs(value, renames)
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_rewrite_refs(item, renames) for item in node]
+    return node
+
+
+def _hoist_definitions(schema: dict[str, Any], defs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Move a model schema's definitions into ``defs`` and return the rest.
+
+    Pydantic writes ``$ref`` values such as ``#/$defs/Model`` that resolve from
+    the document root. The caller places ``defs`` at the root of the tool's
+    schema so those references still resolve when the model schema is nested.
+    Two different models that share a name get distinct names.
+    """
+    found = {
+        keyword: schema[keyword]
+        for keyword in _DEFINITION_KEYWORDS
+        if isinstance(schema.get(keyword), dict)
+    }
+    if not found:
+        return schema
+    body = {key: value for key, value in schema.items() if key not in found}
+
+    # Pick a root name for every incoming definition. A name is shared with a
+    # stored definition only when the two are equal after the incoming refs
+    # are rewritten, so a definition that merely points at a conflicting one
+    # is renamed too and the stored graph is never changed.
+    incoming = [(keyword, name) for keyword, names in found.items() for name in names]
+    targets = {(keyword, name): name for keyword, name in incoming}
+    suffixes = dict.fromkeys(incoming, 1)
+    while True:
+        renames = {
+            f"#/{keyword}/{name}": f"#/{keyword}/{target}"
+            for (keyword, name), target in targets.items()
+            if target != name
+        }
+        rewritten = {
+            (keyword, name): _rewrite_refs(found[keyword][name], renames)
+            for keyword, name in incoming
+        }
+        settled = True
+        for keyword, name in incoming:
+            stored = defs.get(keyword, {}).get(targets[keyword, name])
+            if stored is None or stored == rewritten[keyword, name]:
+                continue
+            settled = False
+            others = {
+                target
+                for (other_keyword, other), target in targets.items()
+                if other_keyword == keyword and other != name
+            } | (set(found[keyword]) - {name})
+            while True:
+                suffixes[keyword, name] += 1
+                candidate = f"{name}_{suffixes[keyword, name]}"
+                if candidate not in others:
+                    break
+            targets[keyword, name] = candidate
+        if settled:
+            break
+
+    for keyword, name in incoming:
+        defs.setdefault(keyword, {})[targets[keyword, name]] = rewritten[keyword, name]
+    return cast(dict[str, Any], _rewrite_refs(body, renames))
+
+
+def _json_schema_for_hint(
+    hint: Any, defs: dict[str, dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Map a Python type annotation to a JSON Schema fragment.
+
+    Unknown annotations map to ``{}`` (any value) so the emitted schema stays
+    valid JSON Schema instead of carrying a Python type name.
+
+    Model definitions are collected into ``defs`` (keyed by ``$defs`` or
+    ``definitions``) for the caller to place at the root of the schema.
+    """
+    if defs is None:
+        defs = {}
+    if hint is Any or hint is object:
+        return {}
+    if hint in _JSON_SCHEMA_SCALARS:
+        return {"type": _JSON_SCHEMA_SCALARS[hint]}
+    if hasattr(hint, "model_json_schema"):
+        return _hoist_definitions(cast(dict[str, Any], hint.model_json_schema()), defs)
+    if isinstance(hint, type) and issubclass(hint, enum.Enum):
+        return _json_schema_enum(hint)
+
+    origin = get_origin(hint)
+    args = get_args(hint)
+    if origin is Literal:
+        return _json_schema_enum(args)
+    if origin is Union or origin is types.UnionType:
+        options = [_json_schema_for_hint(arg, defs) for arg in args]
+        if any(option == {} for option in options):
+            return {}
+        return {"anyOf": options}
+    if hint in (list, tuple, set, frozenset) or (
+        isinstance(origin, type) and issubclass(origin, (list, tuple, set, frozenset, Sequence))
+    ):
+        schema: dict[str, Any] = {"type": "array"}
+        if origin is tuple and args and args[-1] is not Ellipsis:
+            schema["prefixItems"] = [_json_schema_for_hint(arg, defs) for arg in args]
+            schema["minItems"] = schema["maxItems"] = len(args)
+        elif args:
+            schema["items"] = _json_schema_for_hint(args[0], defs)
+        return schema
+    if hint is dict or (isinstance(origin, type) and issubclass(origin, Mapping)):
+        schema = {"type": "object"}
+        if len(args) == 2:
+            schema["additionalProperties"] = _json_schema_for_hint(args[1], defs)
+        return schema
+    if hasattr(hint, "schema") and callable(hint.schema):
+        return _hoist_definitions(cast(dict[str, Any], hint.schema()), defs)
+    return {}
+
+
 def _extract_schema_from_func(func: Callable) -> tuple[dict | None, dict | None]:
     """Extract input/output schemas from a function signature."""
     try:
@@ -97,21 +262,20 @@ def _extract_schema_from_func(func: Callable) -> tuple[dict | None, dict | None]
 
         properties = {}
         required = []
+        defs: dict[str, dict[str, Any]] = {}
 
         for param_name, param in sig.parameters.items():
             if param_name in ("self", "cls"):
                 continue
 
+            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                continue
+
             hint = hints.get(param_name)
             if hint is None:
                 properties[param_name] = {"type": "string"}
-            elif hasattr(hint, "model_json_schema"):
-                properties[param_name] = hint.model_json_schema()
-            elif hasattr(hint, "schema"):
-                properties[param_name] = hint.schema()
             else:
-                type_str = getattr(hint, "__name__", str(hint))
-                properties[param_name] = {"type": type_str}
+                properties[param_name] = _json_schema_for_hint(hint, defs)
 
             if param.default is inspect.Parameter.empty:
                 required.append(param_name)
@@ -125,6 +289,8 @@ def _extract_schema_from_func(func: Callable) -> tuple[dict | None, dict | None]
             if properties
             else None
         )
+        if input_schema is not None:
+            input_schema.update(defs)
 
         return_type = hints.get("return")
         output_schema = None

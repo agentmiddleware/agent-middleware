@@ -784,7 +784,8 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
         # Expect 403 with permit_revoked
         assert call_resp.status_code == 403
         error = call_resp.json()
-        assert "permit_revoked" in str(error).lower()
+        # REST 403 has detail.error field
+        assert error["detail"]["error"] == "permit_revoked"
 
         # Verify no charge was made
         balance_resp = await client.get(
@@ -1069,29 +1070,23 @@ async def test_permit_revoked_during_reserve_is_denied(
             )
             assert call_resp.status_code == 200
             resp_json = call_resp.json()
-            assert "error" in resp_json
             error = resp_json["error"]
             # The second validation at permits.py:867 should catch the race
             expected_message = (
                 "permit_revoked" if terminal_status == "revoked" else "permit_exhausted"
             )
-            # JSON-RPC errors often have generic message like "Permission denied"
-            # The actual error code is in error.data.error or the error.code
-            if "data" in error:
-                # Try multiple places: data.error, data.details, or just check the string representation
-                error_data = error.get("data", {})
-                actual_error = (
-                    error_data.get("error")
-                    or error_data.get("details", {}).get("error") 
-                    or error_data.get("details", {}).get("status")
+            # JSON-RPC may wrap in generic message; check message or data.receipt.reason_code
+            actual_message = error.get("message")
+            if actual_message == expected_message:
+                pass  # Direct match
+            elif "data" in error and "receipt" in error["data"]:
+                # Check reason_code in receipt
+                reason_code = error["data"]["receipt"].get("reason_code")
+                assert reason_code == expected_message, (
+                    f"Expected reason_code='{expected_message}' but got '{reason_code}'"
                 )
-                if actual_error:
-                    assert expected_message in actual_error.lower() or actual_error == terminal_status
-                else:
-                    # Check the whole error data structure as a string
-                    assert expected_message in str(error).lower(), f"Expected '{expected_message}' in error: {error}"
             else:
-                assert error["message"] == expected_message
+                assert actual_message == expected_message
 
         # Verify no charge was made
         balance_resp = await client.get(
@@ -1128,19 +1123,19 @@ async def test_permit_revoked_during_reserve_is_denied(
 
 @pytest.mark.anyio
 async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_database):
-    """Revoked permit refused in authorize_reserve_and_prepare with no debit and no dispatch attempt row.
+    """Revoked permit refused in authorize_reserve_and_prepare re-check with no debit and no dispatch.
 
-    Uses an upstream MCP executor with a race injection to verify denial happens
-    in mcp_dispatch_attempts.authorize_reserve_and_prepare's re-check (lines 791-801 / 1000-1055)
-    after validate_for_action passes.
+    Injects revoke at authorize_reserve_and_prepare entry so only the re-check
+    (mcp_dispatch_attempts.py:791-801, :1000-1003) catches it.
     """
-    from unittest.mock import AsyncMock, patch
-
-    from sqlalchemy import select
+    from unittest.mock import patch
 
     from app.db.models import McpDispatchAttemptModel
-    from app.routers.mcp import get_permit_service
-    from tests.test_mcp_upstream_governed import FakeUpstreamExecutor, _register_upstream
+    from app.routers.mcp import evaluate_wallet_policy
+    from tests.test_mcp_upstream_governed import (
+        FakeUpstreamExecutor,
+        _register_upstream,
+    )
 
     provisioned = await provision_agent_wallet(client)
     tool_name = "revoked-upstream-dispatch-tool"
@@ -1173,22 +1168,21 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
             idem_key="test_revoked_permit_denied_before_upstream_dispatch-1",
         )
 
-        # Inject revoke after validate_for_action, before authorize_reserve
-        original_validate = get_permit_service().validate_for_action
+        # Inject revoke at evaluate_wallet_policy like the race test
+        revoke_injected = False
 
-        async def validate_then_revoke(**kwargs):
-            result = await original_validate(**kwargs)
-            # Revoke after validation passes
-            revoke_resp = await client.post(
-                f"/v1/permits/{permit['permit_id']}/revoke",
-                headers=provisioned["agent_headers"],
-            )
-            assert revoke_resp.status_code == 200
-            return result
+        async def revoke_during_policy(**kwargs):
+            nonlocal revoke_injected
+            if not revoke_injected:
+                revoke_injected = True
+                revoke_resp = await client.post(
+                    f"/v1/permits/{permit['permit_id']}/revoke",
+                    headers=provisioned["agent_headers"],
+                )
+                assert revoke_resp.status_code == 200
+            return await evaluate_wallet_policy(**kwargs)
 
-        with patch.object(
-            get_permit_service(), "validate_for_action", new=validate_then_revoke
-        ):
+        with patch("app.routers.mcp.evaluate_wallet_policy", new=revoke_during_policy):
             call_resp = await client.post(
                 "/mcp",
                 json={
@@ -1212,6 +1206,7 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
             resp_json = call_resp.json()
             assert "error" in resp_json
             assert resp_json["error"]["message"] == "permit_revoked"
+            assert revoke_injected, "Race injection never triggered"
 
         # Verify upstream executor was never called
         assert len(executor.calls) == 0, "Upstream executor was called despite denial"
@@ -1259,11 +1254,11 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
 
 @pytest.mark.anyio
 async def test_camelcase_mcp_context_is_ignored_regression(client, clean_database):
-    """KNOWN BEHAVIOR: camelCase 'mcpContext' in REST invoke body is ignored.
+    """KNOWN ISSUE: camelCase 'mcpContext' in REST invoke body is ignored.
 
     ToolCallRequest schema (mcp.py:633-640) only accepts snake_case 'mcp_context',
     not camelCase 'mcpContext'. When camelCase is sent, the field is dropped and
-    the gateway proceeds without explicit permit context.
+    the gateway proceeds without the explicit permit reference.
     """
     provisioned = await provision_agent_wallet(client)
     tool_name = "camelcase-test-tool"
@@ -1303,19 +1298,22 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
         # Tool executes because camelCase was ignored
         assert call_resp.status_code == 200
         response = call_resp.json()
-        
-        # REST invoke returns MCP result format with output field
-        assert "result" in response or "content" in response
-        
-        # Check if there's a receipt in the response
-        receipt = response.get("receipt")
-        if receipt:
-            # Verify the receipt used a different permit (not the revoked one)
+
+        # ToolCallResponse has content, isError, structuredContent, receipt
+        assert "content" in response
+        assert response["isError"] is False
+
+        # Verify receipt exists - it may be null if no permit was auto-minted
+        # The test verifies camelCase is ignored; if auto-mint didn't happen,
+        # receipt being null is expected behavior
+        assert "receipt" in response
+        receipt = response["receipt"]
+        if receipt is not None:
+            # If a receipt exists, verify it's not the revoked permit
+            assert "permit_id" in receipt
             assert receipt["permit_id"] != revoked_permit["permit_id"], (
                 "Receipt used revoked permit despite camelCase field being ignored"
             )
-        else:
-            # No receipt returned - verify tool executed successfully
-            assert response.get("isError") is False or "error" not in response
+            assert "credits_charged" in receipt
     finally:
         get_service_registry().unregister_local(tool_name)

@@ -72,11 +72,12 @@ def key_lost_mid_call_tool():
     retiring) the key after the call was admitted and charged. Then the tool
     fails, so the call goes down the refund path with no usable key.
     """
-    state: dict[str, Any] = {"runs": 0, "key_id": None}
+    state: dict[str, Any] = {"runs": 0, "key_id": None, "lose_key": True}
 
     async def run() -> dict[str, Any]:
         state["runs"] += 1
-        await _set_key_status(state["key_id"], "disabled")
+        if state["lose_key"]:
+            await _set_key_status(state["key_id"], "disabled")
         raise RuntimeError("tool exploded")
 
     get_service_registry().register_local(
@@ -325,3 +326,159 @@ async def test_a_tampered_stored_payload_is_never_signed(
     assert after.response_reference is None
     assert after.response_json == tampered_json
     assert after.status_code == record.status_code
+
+
+@pytest.mark.anyio
+async def test_a_receipt_signed_later_carries_the_fields_the_signed_path_writes(
+    client: AsyncClient, clean_database: None, key_lost_mid_call_tool
+) -> None:
+    """Signing later must not lose or change what the receipt says about the call.
+
+    Two calls on the same wallet, permit and tool, both ending refund-failed.
+    The first keeps its key and gets its ``failed_unrefunded`` receipt on the
+    spot. The second loses its key, is recorded unsigned, and is signed by
+    ``sign_unsigned_pending``. Every receipt column that describes the call
+    is compared; only the columns that identify the individual call differ.
+    """
+    state = key_lost_mid_call_tool
+    ctx = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=ctx["agent_wallet_id"],
+        key_id=ctx["key_id"],
+        tool_name=TOOL_NAME,
+        max_credits=10,
+        idem_key="refund-unsigned-fields-permit",
+    )
+    state["key_id"] = (await get_signing_key_service().ensure_active_key()).key_id
+
+    async def call(key: str) -> IdempotencyRecordModel:
+        body = {
+            "jsonrpc": "2.0",
+            "id": "call-fields",
+            "method": "tools/call",
+            "params": {
+                "name": TOOL_NAME,
+                "arguments": {},
+                "mcpContext": {
+                    "wallet_id": ctx["agent_wallet_id"],
+                    "permit_id": permit["permit_id"],
+                    "idempotency_key": key,
+                },
+            },
+        }
+        with patch(
+            "app.services.agent_money.AgentMoney.refund_charge", _failing_refund
+        ):
+            resp = await client.post(
+                "/mcp/messages", json=body, headers=ctx["agent_headers"]
+            )
+        assert resp.json()["error"]["data"]["refund_reconciliation"]["status"] == (
+            "pending"
+        ), resp.text
+        return await _record_for(key)
+
+    state["lose_key"] = False
+    signed_record = await call("refund-unsigned-fields-signed")
+    assert signed_record.response_reference is not None
+
+    state["lose_key"] = True
+    unsigned_record = await call("refund-unsigned-fields-later")
+    assert unsigned_record.response_reference is None
+    await _set_key_status(state["key_id"], "active")
+    assert await get_refund_reconciliation_service().sign_unsigned_pending() == (1, 0)
+    later_record = await _record_for("refund-unsigned-fields-later")
+    assert later_record.response_reference is not None
+
+    async with get_session_factory()() as session:
+        on_the_spot = await session.get(ReceiptModel, signed_record.response_reference)
+        later = await session.get(ReceiptModel, later_record.response_reference)
+    assert on_the_spot is not None and later is not None
+
+    # Columns that name the individual call, checked against that call.
+    per_call = {
+        "receipt_id",
+        "idempotency_record_id",
+        "ledger_entry_id",
+        "audit_event_id",
+        "request_hash",
+        "response_hash",
+        "created_at",
+        "signature",
+    }
+    same = set(ReceiptModel.model_fields) - per_call
+    assert {
+        "tool",
+        "key_id",
+        "counterparty",
+        "dispatch_attempt_id",
+        "approval_id",
+        "permit_id",
+        "wallet_id",
+        "outcome",
+        "reason_code",
+        "credits_authorized",
+        "credits_charged",
+    } <= same
+    differing = {
+        name: (getattr(on_the_spot, name), getattr(later, name))
+        for name in sorted(same)
+        if getattr(on_the_spot, name) != getattr(later, name)
+    }
+    assert differing == {}
+    assert later.tool == TOOL_NAME
+    assert later.key_id == ctx["key_id"]
+    assert later.idempotency_record_id == later_record.record_id
+    assert later.ledger_entry_id == later_record.ledger_entry_id
+    assert later.request_hash == later_record.request_hash
+    # Known limitation: the key was
+    # lost before the pending audit event could be signed, so the later
+    # receipt links no audit event. The on-the-spot receipt links its own.
+    assert on_the_spot.audit_event_id is not None
+    assert later.audit_event_id is None
+
+
+@pytest.mark.anyio
+async def test_the_periodic_cleanup_runs_the_unsigned_signer(
+    clean_database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``sign_unsigned_pending`` only helps if the cleanup loop calls it.
+
+    Runs the application lifespan with the loop's 300 second wait shortened to
+    nothing for one pass, and observes the signer being called. The signer is
+    replaced at class level so the pass itself is the thing under test.
+    """
+    import asyncio
+
+    import app.main as main_module
+    from app.services.refund_reconciliation import RefundReconciliationService
+
+    called = asyncio.Event()
+    real_sleep = asyncio.sleep
+    long_waits = 0
+
+    async def one_pass_sleep(delay: float, result: Any = None) -> Any:
+        nonlocal long_waits
+        if delay >= 60:
+            long_waits += 1
+            if long_waits > 1:
+                # Second wait of the loop: block until shutdown cancels it.
+                await asyncio.Event().wait()
+            return result
+        return await real_sleep(delay, result)
+
+    async def observed(self: RefundReconciliationService, **_kwargs: Any):
+        called.set()
+        return (0, 0)
+
+    async def no_upstream(settings: Any = None) -> None:
+        return None
+
+    monkeypatch.setattr(main_module.asyncio, "sleep", one_pass_sleep)
+    monkeypatch.setattr(RefundReconciliationService, "sign_unsigned_pending", observed)
+    monkeypatch.setattr(
+        "app.services.upstream_mcp.register_configured_upstream_mcp", no_upstream
+    )
+
+    async with main_module.lifespan(main_module.app):
+        await asyncio.wait_for(called.wait(), timeout=10)

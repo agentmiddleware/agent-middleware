@@ -160,8 +160,11 @@ async def _reset_telemetry(pm) -> None:
     async with factory() as session:
         await session.execute(delete(TelemetryEventModel))
         await session.commit()
-    await pm.detector._hydrate_if_needed()
-    pm.detector._anomalies.clear()
+    # Clear the durable copy too: the detector reloads it on every read.
+    async with pm.detector._lock:
+        pm.detector._anomalies.clear()
+        pm.detector._owners.clear()
+        await pm.detector._persist_locked()
 
 
 @pytest.fixture

@@ -175,6 +175,24 @@ _SIGNING_KEY_REMEDIATION = {
 }
 
 
+# Seconds between passes of the /v1/telemetry anomaly detector.
+TELEMETRY_ANALYSIS_INTERVAL_SECONDS = 60
+
+
+def telemetry_analysis_enabled(cfg=settings) -> bool:
+    """Whether this boot runs the /v1/telemetry anomaly detection loop.
+
+    The loop serves the telemetry proof surface, so it runs only where that
+    router is mounted (ENABLE_PROOF_SURFACES) and its event store exists
+    (DATABASE_URL). ENVIRONMENT=test never starts it.
+    """
+    return bool(
+        cfg.ENABLE_PROOF_SURFACES
+        and cfg.DATABASE_URL
+        and (cfg.ENVIRONMENT or "").strip().lower() != "test"
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_trust_mode_guardrails(settings)
@@ -504,6 +522,21 @@ async def lifespan(app: FastAPI):
         startup_time_s=time.monotonic() - startup_time,
     )
 
+    # Last startup step, so a failed boot never leaves the loop running.
+    telemetry_pm = None
+    if telemetry_analysis_enabled(settings):
+        from .core.dependencies import get_autonomous_pm
+
+        telemetry_pm = get_autonomous_pm()
+        await telemetry_pm.start_background_analysis(
+            interval_seconds=TELEMETRY_ANALYSIS_INTERVAL_SECONDS
+        )
+        logger.info(
+            "app_startup",
+            phase="telemetry_analysis_started",
+            interval_s=TELEMETRY_ANALYSIS_INTERVAL_SECONDS,
+        )
+
     logger.info("app_ready", version=settings.APP_VERSION)
 
     yield
@@ -522,6 +555,10 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         logger.info("app_shutdown", phase="cleanup_task_stopped")
+
+    if telemetry_pm is not None:
+        await telemetry_pm.stop_background_analysis()
+        logger.info("app_shutdown", phase="telemetry_analysis_stopped")
 
     await close_db()
     await close_durable_state()

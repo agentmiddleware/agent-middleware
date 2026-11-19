@@ -29,11 +29,13 @@ set up the SDK; they do not execute a tool or create a new receipt.
 Inspect the [sample proof](https://agentmiddleware.dev/proof), or download its
 existing receipt and public key snapshot and run the verifier:
 
+**Sample receipt issued by the earlier test host**
+
 ```bash
 pip install 'amw-sdk[verify]'
 curl -fsSLo receipt.json https://www.agentmiddleware.dev/proof/receipt.json
 curl -fsSLo trust-keys.json https://www.agentmiddleware.dev/proof/trust-keys.json
-amw verify --bundle receipt.json --keys trust-keys.json --expect-issuer https://api.agentmiddleware.dev
+amw verify --bundle receipt.json --keys trust-keys.json --expect-issuer https://api.thisisatest.tech
 ```
 
 Successful verification reports `VERIFIED`. After the downloads, verification

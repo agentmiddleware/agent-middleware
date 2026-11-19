@@ -233,10 +233,11 @@ pip install amw-sdk</code></pre>
           <section class="hero-v2-code" id="safe-demo" aria-labelledby="safe-demo-title">
             <h2 id="safe-demo-title">Verify a published receipt</h2>
             <p>In the same environment, install the verification extra and download the existing public receipt and public key snapshot:</p>
+            <p><strong>Sample receipt issued by the earlier test host</strong></p>
             <pre id="home-safe-demo" tabindex="0"><code>pip install 'amw-sdk[verify]'
 curl -fsSLo receipt.json https://www.agentmiddleware.dev/proof/receipt.json
 curl -fsSLo trust-keys.json https://www.agentmiddleware.dev/proof/trust-keys.json
-amw verify --bundle receipt.json --keys trust-keys.json --expect-issuer https://api.agentmiddleware.dev</code></pre>
+amw verify --bundle receipt.json --keys trust-keys.json --expect-issuer https://api.thisisatest.tech</code></pre>
             <p>No secrets, no spend, no production mutation. Downloads only read public files; verification then runs offline with no gateway call.</p>
             <p>Success reports <code>VERIFIED</code>. This is a historical, self-issued receipt, not a new tool execution. It checks the signature against the supplied public key snapshot and does not prove a downstream effect or independent issuer trust. <a href="/proof/">Inspect the receipt and verification limits.</a></p>
           </section>

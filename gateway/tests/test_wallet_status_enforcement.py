@@ -682,3 +682,101 @@ async def test_active_wallet_still_operates(client, clean_database):
         headers=BOOTSTRAP,
     )
     assert resp.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_transfer_into_closed_child_wallet_is_refused(client, clean_database):
+    """A reclaimed child is closed for good: nothing can charge, reclaim or
+    transfer out of it, so a credit landing there would be stranded (#343)."""
+    _, agent = await _make_agent(client)
+    child = await _make_child(client, agent)
+    reclaim = await client.post(
+        f"/v1/billing/wallets/{child}/reclaim",
+        headers=BOOTSTRAP,
+    )
+    assert reclaim.status_code == 200
+    assert reclaim.json()["child_status"] == "closed"
+    agent_before = (
+        await client.get(f"/v1/billing/wallets/{agent}", headers=BOOTSTRAP)
+    ).json()["balance"]
+
+    headers = {**BOOTSTRAP, "Idempotency-Key": "closed-child-transfer-in"}
+    url = f"/v1/billing/transfer?from_wallet_id={agent}&to_wallet_id={child}&amount=1"
+    resp = await client.post(url, headers=headers)
+
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "transfer_error"
+    assert "closed" in detail["message"]
+
+    # The refusal is stored, so a retry replays it rather than moving money.
+    replay = await client.post(url, headers=headers)
+    assert replay.status_code == 400
+    assert replay.json()["detail"] == detail
+
+    agent_after = await client.get(f"/v1/billing/wallets/{agent}", headers=BOOTSTRAP)
+    child_after = await client.get(f"/v1/billing/wallets/{child}", headers=BOOTSTRAP)
+    assert agent_after.json()["balance"] == agent_before
+    assert child_after.json()["balance"] == 0
+    assert child_after.json()["status"] == "closed"
+
+
+@pytest.mark.anyio
+async def test_transfer_into_frozen_wallet_still_lands(client, clean_database):
+    """Only a closed destination is terminal. A frozen wallet can be unfrozen,
+    so credits sent to it are not stranded and the transfer still completes."""
+    _, agent = await _make_agent(client)
+    _, other = await _make_agent(client)
+    await _set_status(other, "frozen")
+
+    resp = await client.post(
+        f"/v1/billing/transfer?from_wallet_id={agent}&to_wallet_id={other}&amount=1",
+        headers=BOOTSTRAP,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_transfer_credit_guard_refuses_destination_closed_after_read(
+    clean_database, client
+):
+    """The credit UPDATE re-checks the destination status itself. SQLite
+    ignores FOR UPDATE, so a reclaim can close the child between the read and
+    the credit; the guarded write must refuse instead of stranding credits."""
+    _, agent = await _make_agent(client)
+    child = await _make_child(client, agent)
+    engine = get_agent_money()._wallet_engine
+    original = engine._lock_wallets_in_order
+
+    async def lock_then_close(session, wallet_ids):
+        wallets = await original(session, wallet_ids)
+        # Simulate the reclaim committing after the read: the row the credit
+        # targets is now closed although the in-memory copy says active.
+        factory = get_session_factory()
+        async with factory() as other_session:
+            row = await other_session.get(WalletModel, child)
+            assert row is not None
+            row.status = "closed"
+            other_session.add(row)
+            await other_session.commit()
+        return wallets
+
+    engine._lock_wallets_in_order = lock_then_close
+    try:
+        with pytest.raises(ValueError, match="closed"):
+            await engine.transfer(
+                agent,
+                child,
+                Decimal("1"),
+                caller=CallerIdentity(wallet_id=agent),
+            )
+    finally:
+        engine._lock_wallets_in_order = original
+
+    factory = get_session_factory()
+    async with factory() as session:
+        row = await session.get(WalletModel, child)
+        assert row is not None
+        assert row.balance == Decimal("100")

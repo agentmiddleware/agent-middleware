@@ -11,8 +11,6 @@ This test suite verifies the design partner's claim that a revoked permit:
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -754,6 +752,14 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
             model = result.scalar_one()
             assert model.status == "revoked", f"Permit not revoked: {model.status}"
 
+        # Get starting balance
+        balance_resp = await client.get(
+            f"/v1/wallets/{provisioned['agent_wallet_id']}",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert balance_resp.status_code == 200
+        starting_balance = balance_resp.json()["balance"]
+
         # Try to invoke via REST endpoint
         call_resp = await client.post(
             f"/mcp/tools/{tool_name}/invoke",
@@ -775,12 +781,30 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
 
         # Verify no charge was made
         balance_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}/balance",
+            f"/v1/wallets/{provisioned['agent_wallet_id']}",
             headers={"X-API-Key": "test-key"},
         )
         assert balance_resp.status_code == 200
-        balance = balance_resp.json()
-        assert balance["balance"] == "100.00", "Balance changed despite denial"
+        final_balance = balance_resp.json()["balance"]
+        assert final_balance == starting_balance, "Balance changed despite denial"
+
+        # Verify no ledger entry
+        ledger_resp = await client.get(
+            f"/v1/wallets/{provisioned['agent_wallet_id']}/ledger",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert ledger_resp.status_code == 200
+        ledger = ledger_resp.json()
+        assert len(ledger) == 1, "Unexpected ledger entries"
+
+        # Verify permit spent_credits unchanged
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(PermitModel).where(PermitModel.permit_id == permit["permit_id"])
+            )
+            model = result.scalar_one()
+            assert model.spent_credits == 0
     finally:
         get_service_registry().unregister_local(tool_name)
 
@@ -817,6 +841,14 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
             model = result.scalar_one()
             assert model.status == "revoked", f"Permit not revoked: {model.status}"
 
+        # Get starting balance
+        balance_resp = await client.get(
+            f"/v1/wallets/{provisioned['agent_wallet_id']}",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert balance_resp.status_code == 200
+        starting_balance = balance_resp.json()["balance"]
+
         # Try to invoke via standard /mcp endpoint
         call_resp = await client.post(
             "/mcp",
@@ -833,6 +865,7 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
             headers={
                 **provisioned["agent_headers"],
                 "X-Wallet-ID": provisioned["agent_wallet_id"],
+                "Idempotency-Key": "standard-mcp-revoked-1",
                 "Accept": "application/json",
             },
         )
@@ -840,6 +873,33 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
         resp_json = call_resp.json()
         assert "error" in resp_json
         assert resp_json["error"]["message"] == "permit_revoked"
+
+        # Verify no charge was made
+        balance_resp = await client.get(
+            f"/v1/wallets/{provisioned['agent_wallet_id']}",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert balance_resp.status_code == 200
+        final_balance = balance_resp.json()["balance"]
+        assert final_balance == starting_balance, "Balance changed despite denial"
+
+        # Verify no ledger entry
+        ledger_resp = await client.get(
+            f"/v1/wallets/{provisioned['agent_wallet_id']}/ledger",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert ledger_resp.status_code == 200
+        ledger = ledger_resp.json()
+        assert len(ledger) == 1, "Unexpected ledger entries"
+
+        # Verify permit spent_credits unchanged
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(PermitModel).where(PermitModel.permit_id == permit["permit_id"])
+            )
+            model = result.scalar_one()
+            assert model.spent_credits == 0
     finally:
         get_service_registry().unregister_local(tool_name)
 
@@ -985,6 +1045,33 @@ async def test_permit_revoked_during_reserve_is_denied(
                 "permit_revoked" if terminal_status == "revoked" else "permit_exhausted"
             )
             assert error["message"] == expected_message
+
+        # Verify no charge was made
+        balance_resp = await client.get(
+            f"/v1/wallets/{provisioned['agent_wallet_id']}",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert balance_resp.status_code == 200
+        final_balance = balance_resp.json()["balance"]
+        assert final_balance == "100.00", "Balance changed despite denial"
+
+        # Verify no ledger entry beyond initial credit
+        ledger_resp = await client.get(
+            f"/v1/wallets/{provisioned['agent_wallet_id']}/ledger",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert ledger_resp.status_code == 200
+        ledger = ledger_resp.json()
+        assert len(ledger) == 1, "Unexpected ledger entries"
+
+        # Verify permit spent_credits unchanged
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(PermitModel).where(PermitModel.permit_id == permit["permit_id"])
+            )
+            model = result.scalar_one()
+            assert model.spent_credits == 0
     finally:
         get_service_registry().unregister_local(tool_name)
 
@@ -993,17 +1080,21 @@ async def test_permit_revoked_during_reserve_is_denied(
 async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_database):
     """Revoked permit refused in authorize_reserve_and_prepare with no debit and no dispatch attempt row.
 
-    Uses an upstream MCP executor (not just a local callable) to verify denial happens
-    in mcp_dispatch_attempts.authorize_reserve_and_prepare before any dispatch attempt
-    row is created or credits are debited.
+    Uses an upstream MCP executor with a race injection to verify denial happens
+    in mcp_dispatch_attempts.authorize_reserve_and_prepare's re-check (lines 791-801 / 1000-1055)
+    after validate_for_action passes.
     """
-    from app.models.mcp_dispatch_attempt import McpDispatchAttemptModel
+    from unittest.mock import AsyncMock, patch
+
     from sqlalchemy import select
+
+    from app.db.models import McpDispatchAttemptModel
+    from app.routers.mcp import get_permit_service
 
     provisioned = await provision_agent_wallet(client)
     tool_name = "revoked-upstream-dispatch-tool"
 
-    # Register an upstream MCP service (not a local callable)
+    # Register upstream MCP service
     service_id = "upstream-test-service"
     registry = get_service_registry()
     registry.register(
@@ -1025,39 +1116,59 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
             idem_key="test_revoked_permit_denied_before_upstream_dispatch-1",
         )
 
-        # Revoke the permit
-        revoke_resp = await client.post(
-            f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
-        )
-        assert revoke_resp.status_code == 200
+        # Mock upstream client to verify it's never called
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock()
 
-        # Try to invoke - should be denied before dispatch
-        call_resp = await client.post(
-            "/mcp/messages",
-            json={
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "tool_name": tool_name,
-                                "arguments": {"message": "test"},
-                            }
-                        ),
-                    }
-                ],
-                "mcp_context": {
-                    "wallet_id": provisioned["agent_wallet_id"],
-                    "permit_id": permit["permit_id"],
-                    "idempotency_key": "revoked-upstream-1",
+        # Inject revoke after validate_for_action, before authorize_reserve
+        original_validate = get_permit_service().validate_for_action
+
+        async def validate_then_revoke(**kwargs):
+            result = await original_validate(**kwargs)
+            # Revoke after validation passes
+            revoke_resp = await client.post(
+                f"/v1/permits/{permit['permit_id']}/revoke",
+                headers={"X-API-Key": "test-key"},
+            )
+            assert revoke_resp.status_code == 200
+            return result
+
+        with (
+            patch.object(
+                get_permit_service(), "validate_for_action", new=validate_then_revoke
+            ),
+            patch(
+                "app.services.mcp_dispatch_attempts.get_mcp_client"
+            ) as mock_get_client,
+        ):
+            mock_get_client.return_value = mock_client
+
+            call_resp = await client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "upstream-revoked-1",
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": {"message": "test"},
+                        "_meta": {"io.agentmiddleware/permit_id": permit["permit_id"]},
+                    },
                 },
-            },
-            headers=provisioned["agent_headers"],
-        )
-        assert call_resp.status_code == 200
-        error = call_resp.json()["error"]
-        assert error["message"] == "permit_revoked"
+                headers={
+                    **provisioned["agent_headers"],
+                    "X-Wallet-ID": provisioned["agent_wallet_id"],
+                    "Idempotency-Key": "upstream-revoked-idem-1",
+                    "Accept": "application/json",
+                },
+            )
+            assert call_resp.status_code == 200
+            resp_json = call_resp.json()
+            assert "error" in resp_json
+            assert resp_json["error"]["message"] == "permit_revoked"
+
+            # Verify upstream client was never called
+            mock_client.call_tool.assert_not_awaited()
 
         # Verify no dispatch attempt row was created
         factory = get_session_factory()
@@ -1072,7 +1183,7 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
 
         # Verify no debit
         balance_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}/balance",
+            f"/v1/wallets/{provisioned['agent_wallet_id']}",
             headers={"X-API-Key": "test-key"},
         )
         assert balance_resp.status_code == 200
@@ -1084,18 +1195,18 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
 
 @pytest.mark.anyio
 async def test_camelcase_mcp_context_is_ignored_regression(client, clean_database):
-    """Regression test: camelCase 'mcpContext' in REST invoke body is currently ignored.
+    """KNOWN BEHAVIOR: camelCase 'mcpContext' in REST invoke body is ignored.
 
-    Documents the current behavior where ToolCallRequest only accepts snake_case
-    'mcp_context', not camelCase 'mcpContext'. This is expected behavior per the
-    schema at mcp.py:633-640.
+    ToolCallRequest schema (mcp.py:633-640) only accepts snake_case 'mcp_context',
+    not camelCase 'mcpContext'. When camelCase is sent, the field is dropped and
+    the gateway proceeds without explicit permit context.
     """
     provisioned = await provision_agent_wallet(client)
     tool_name = "camelcase-test-tool"
     _register_test_tool(tool_name)
 
     try:
-        permit = await create_tool_permit(
+        revoked_permit = await create_tool_permit(
             client,
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
@@ -1103,14 +1214,14 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
             idem_key="test_camelcase_mcp_context_is_ignored_regression-1",
         )
 
-        # Revoke to make it obvious if permit was used
+        # Revoke to make it obvious if this permit was used
         revoke_resp = await client.post(
-            f"/v1/permits/{permit['permit_id']}/revoke",
+            f"/v1/permits/{revoked_permit['permit_id']}/revoke",
             headers={"X-API-Key": "test-key"},
         )
         assert revoke_resp.status_code == 200
 
-        # Send camelCase mcpContext - it should be ignored and auto-mint a permit
+        # Send camelCase mcpContext - it will be ignored
         call_resp = await client.post(
             f"/mcp/tools/{tool_name}/invoke",
             json={
@@ -1118,17 +1229,24 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
                 "arguments": {"message": "test"},
                 "mcpContext": {
                     "wallet_id": provisioned["agent_wallet_id"],
-                    "permit_id": permit["permit_id"],
+                    "permit_id": revoked_permit["permit_id"],
                     "idempotency_key": "camelcase-ignored-1",
                 },
             },
             headers=provisioned["agent_headers"],
         )
 
-        # Tool executes because camelCase was ignored and auto-minting succeeded
+        # Tool executes because camelCase was ignored
         assert call_resp.status_code == 200
-        result = call_resp.json()
-        assert "result" in result
-        assert result["result"]["output"] == "test"
+        response = call_resp.json()
+        assert "content" in response
+        assert response["isError"] is False
+        assert response["receipt"] is not None
+
+        # Verify the receipt used a different permit (not the revoked one)
+        receipt = response["receipt"]
+        assert receipt["permit_id"] != revoked_permit["permit_id"], (
+            "Receipt used revoked permit despite camelCase field being ignored"
+        )
     finally:
         get_service_registry().unregister_local(tool_name)

@@ -420,22 +420,29 @@ async def begin_awi_http_governed(
     return ctx
 
 
+#: A code-shaped reason: lowercase identifier, no spaces, bounded length.
+_REASON_CODE_SHAPE = re.compile(r"[a-z][a-z0-9_]{0,127}")
+
+
 def _stable_awi_failure_reason(action_status: str, error: Any) -> str:
     """Collapse a typed failure to a receipt-safe reason code.
 
     A status of "error" whose error text reads "dom_bridge_failed: <detail>"
     yields the reason code dom_bridge_failed (the prefix before the first
     colon); other statuses (passkey_required, paused, ...) name themselves.
-    The result is sanitized to the receipt service's reason-code pattern
-    rather than raising on adversarial detail text.
+    Anything that is not already a lowercase identifier (free text, ids,
+    adversarial detail) becomes ``awi_failed`` rather than a code built
+    from that text.
     """
     candidate = action_status
     if action_status == "error" and isinstance(error, str) and error:
         candidate = error.split(":", 1)[0]
-    cleaned = re.sub(r"[^a-z0-9_.:-]", "_", candidate.strip().lower())
-    if not cleaned or not cleaned[0].isalpha():
-        cleaned = f"awi_{cleaned}" if cleaned else "awi_failed"
-    return cleaned[:128]
+    candidate = candidate.strip()
+    if not _REASON_CODE_SHAPE.fullmatch(candidate):
+        # Prose is not a code. Sanitizing it used to sign free text, ids
+        # included (no_page_available_for_session_<uuid>), as the reason.
+        return "awi_failed"
+    return candidate
 
 
 async def _admit_awi_http_governed(ctx: AwiHttpGovernedContext) -> None:

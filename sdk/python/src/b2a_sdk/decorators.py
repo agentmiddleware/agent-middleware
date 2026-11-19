@@ -127,18 +127,82 @@ def _json_schema_enum(values: Any) -> dict[str, Any]:
     return {"enum": choices}
 
 
-def _json_schema_for_hint(hint: Any) -> dict[str, Any]:
+_DEFINITION_KEYWORDS = ("$defs", "definitions")
+
+
+def _rewrite_refs(node: Any, renames: dict[str, str]) -> Any:
+    """Return ``node`` with every ``$ref`` in ``renames`` pointed at its new name."""
+    if isinstance(node, dict):
+        return {
+            key: renames.get(value, value)
+            if key == "$ref" and isinstance(value, str)
+            else _rewrite_refs(value, renames)
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_rewrite_refs(item, renames) for item in node]
+    return node
+
+
+def _hoist_definitions(schema: dict[str, Any], defs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Move a model schema's definitions into ``defs`` and return the rest.
+
+    Pydantic writes ``$ref`` values such as ``#/$defs/Model`` that resolve from
+    the document root. The caller places ``defs`` at the root of the tool's
+    schema so those references still resolve when the model schema is nested.
+    Two different models that share a name get distinct names.
+    """
+    found = {
+        keyword: schema[keyword]
+        for keyword in _DEFINITION_KEYWORDS
+        if isinstance(schema.get(keyword), dict)
+    }
+    if not found:
+        return schema
+    body = {key: value for key, value in schema.items() if key not in found}
+
+    renames: dict[str, str] = {}
+    targets: dict[tuple[str, str], str] = {}
+    for keyword, definitions in found.items():
+        taken = set(defs.get(keyword, {})) | set(definitions)
+        for name, definition in definitions.items():
+            target = name
+            if defs.get(keyword, {}).get(name, definition) != definition:
+                suffix = 2
+                while f"{name}_{suffix}" in taken:
+                    suffix += 1
+                target = f"{name}_{suffix}"
+                taken.add(target)
+                renames[f"#/{keyword}/{name}"] = f"#/{keyword}/{target}"
+            targets[keyword, name] = target
+
+    for keyword, definitions in found.items():
+        for name, definition in definitions.items():
+            defs.setdefault(keyword, {})[targets[keyword, name]] = _rewrite_refs(
+                definition, renames
+            )
+    return cast(dict[str, Any], _rewrite_refs(body, renames))
+
+
+def _json_schema_for_hint(
+    hint: Any, defs: dict[str, dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Map a Python type annotation to a JSON Schema fragment.
 
     Unknown annotations map to ``{}`` (any value) so the emitted schema stays
     valid JSON Schema instead of carrying a Python type name.
+
+    Model definitions are collected into ``defs`` (keyed by ``$defs`` or
+    ``definitions``) for the caller to place at the root of the schema.
     """
+    if defs is None:
+        defs = {}
     if hint is Any or hint is object:
         return {}
     if hint in _JSON_SCHEMA_SCALARS:
         return {"type": _JSON_SCHEMA_SCALARS[hint]}
     if hasattr(hint, "model_json_schema"):
-        return cast(dict[str, Any], hint.model_json_schema())
+        return _hoist_definitions(cast(dict[str, Any], hint.model_json_schema()), defs)
     if isinstance(hint, type) and issubclass(hint, enum.Enum):
         return _json_schema_enum(hint)
 
@@ -147,7 +211,7 @@ def _json_schema_for_hint(hint: Any) -> dict[str, Any]:
     if origin is Literal:
         return _json_schema_enum(args)
     if origin is Union or origin is types.UnionType:
-        options = [_json_schema_for_hint(arg) for arg in args]
+        options = [_json_schema_for_hint(arg, defs) for arg in args]
         if any(option == {} for option in options):
             return {}
         return {"anyOf": options}
@@ -156,18 +220,18 @@ def _json_schema_for_hint(hint: Any) -> dict[str, Any]:
     ):
         schema: dict[str, Any] = {"type": "array"}
         if origin is tuple and args and args[-1] is not Ellipsis:
-            schema["prefixItems"] = [_json_schema_for_hint(arg) for arg in args]
+            schema["prefixItems"] = [_json_schema_for_hint(arg, defs) for arg in args]
             schema["minItems"] = schema["maxItems"] = len(args)
         elif args:
-            schema["items"] = _json_schema_for_hint(args[0])
+            schema["items"] = _json_schema_for_hint(args[0], defs)
         return schema
     if hint is dict or (isinstance(origin, type) and issubclass(origin, Mapping)):
         schema = {"type": "object"}
         if len(args) == 2:
-            schema["additionalProperties"] = _json_schema_for_hint(args[1])
+            schema["additionalProperties"] = _json_schema_for_hint(args[1], defs)
         return schema
     if hasattr(hint, "schema") and callable(hint.schema):
-        return cast(dict[str, Any], hint.schema())
+        return _hoist_definitions(cast(dict[str, Any], hint.schema()), defs)
     return {}
 
 
@@ -179,6 +243,7 @@ def _extract_schema_from_func(func: Callable) -> tuple[dict | None, dict | None]
 
         properties = {}
         required = []
+        defs: dict[str, dict[str, Any]] = {}
 
         for param_name, param in sig.parameters.items():
             if param_name in ("self", "cls"):
@@ -191,7 +256,7 @@ def _extract_schema_from_func(func: Callable) -> tuple[dict | None, dict | None]
             if hint is None:
                 properties[param_name] = {"type": "string"}
             else:
-                properties[param_name] = _json_schema_for_hint(hint)
+                properties[param_name] = _json_schema_for_hint(hint, defs)
 
             if param.default is inspect.Parameter.empty:
                 required.append(param_name)
@@ -205,6 +270,8 @@ def _extract_schema_from_func(func: Callable) -> tuple[dict | None, dict | None]
             if properties
             else None
         )
+        if input_schema is not None:
+            input_schema.update(defs)
 
         return_type = hints.get("return")
         output_schema = None

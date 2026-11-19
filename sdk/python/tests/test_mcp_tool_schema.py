@@ -8,6 +8,11 @@ from typing import Any, Literal, Optional
 
 import pytest
 
+try:
+    import pydantic
+except ImportError:  # the SDK does not depend on pydantic
+    pydantic = None  # type: ignore[assignment]
+
 from b2a_sdk import decorators
 from b2a_sdk.decorators import mcp_tool
 
@@ -141,3 +146,127 @@ def test_values_json_cannot_hold_fall_back_to_any(
     schema = registrations[0]["input_schema"]
     assert schema["properties"] == {"blob": {}, "raw": {}, "member": {}}
     assert json.loads(json.dumps(schema)) == schema
+
+
+def _resolve(schema: dict[str, Any], ref: str) -> Any:
+    assert ref.startswith("#/")
+    node: Any = schema
+    for part in ref[2:].split("/"):
+        node = node[part]
+    return node
+
+
+def _all_refs(node: Any) -> list[str]:
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str):
+                found.append(value)
+            else:
+                found.extend(_all_refs(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_all_refs(item))
+    return found
+
+
+class _ItemHolder:
+    """Stands in for a model class: exposes the schema hook @mcp_tool reads."""
+
+    value_type = "integer"
+
+    @classmethod
+    def model_json_schema(cls) -> dict[str, Any]:
+        return {
+            "$defs": {
+                "Item": {
+                    "type": "object",
+                    "properties": {"value": {"type": cls.value_type}},
+                    "required": ["value"],
+                }
+            },
+            "type": "object",
+            "properties": {"item": {"$ref": "#/$defs/Item"}},
+            "required": ["item"],
+        }
+
+
+class _TextItemHolder(_ItemHolder):
+    value_type = "string"
+
+
+def test_nested_model_refs_resolve_from_the_schema_root(
+    registrations: list[dict[str, Any]],
+) -> None:
+    @mcp_tool(service_id="nested-models")
+    async def tool(
+        owner: _ItemHolder,
+        backup: _ItemHolder | None = None,
+        team: list[_ItemHolder] = [],  # noqa: B006 - the default is never mutated
+        pair: tuple[_ItemHolder, int] | None = None,
+        by_name: dict[str, _ItemHolder] = {},  # noqa: B006 - the default is never mutated
+    ) -> dict:
+        return {}
+
+    schema = registrations[0]["input_schema"]
+    item = _ItemHolder.model_json_schema()["$defs"]["Item"]
+    assert schema["$defs"] == {"Item": item}
+    refs = _all_refs(schema)
+    assert refs == ["#/$defs/Item"] * 5
+    assert all(_resolve(schema, ref) == item for ref in refs)
+
+    props = schema["properties"]
+    assert '"$defs":' not in json.dumps(props)
+    holder = {
+        key: value for key, value in _ItemHolder.model_json_schema().items() if key != "$defs"
+    }
+    assert props["owner"] == holder
+    assert props["backup"] == {"anyOf": [holder, {"type": "null"}]}
+    assert props["team"] == {"type": "array", "items": holder}
+    assert props["pair"]["anyOf"][0]["prefixItems"] == [holder, {"type": "integer"}]
+    assert props["by_name"] == {"type": "object", "additionalProperties": holder}
+    assert json.loads(json.dumps(schema)) == schema
+
+
+def test_same_named_definitions_from_different_models_stay_distinct(
+    registrations: list[dict[str, Any]],
+) -> None:
+    @mcp_tool(service_id="name-clash")
+    async def tool(a: _ItemHolder, b: list[_TextItemHolder], c: _ItemHolder | None = None) -> dict:
+        return {}
+
+    schema = registrations[0]["input_schema"]
+    assert set(schema["$defs"]) == {"Item", "Item_2"}
+    props = schema["properties"]
+    a_ref = props["a"]["properties"]["item"]["$ref"]
+    b_ref = props["b"]["items"]["properties"]["item"]["$ref"]
+    c_ref = props["c"]["anyOf"][0]["properties"]["item"]["$ref"]
+    assert _resolve(schema, a_ref)["properties"]["value"] == {"type": "integer"}
+    assert _resolve(schema, b_ref)["properties"]["value"] == {"type": "string"}
+    assert c_ref == a_ref
+
+
+if pydantic is not None:
+
+    class Address(pydantic.BaseModel):
+        city: str
+
+    class Person(pydantic.BaseModel):
+        name: str
+        address: Address
+
+
+@pytest.mark.skipif(pydantic is None, reason="pydantic is not installed")
+def test_pydantic_nested_model_refs_resolve(registrations: list[dict[str, Any]]) -> None:
+    @mcp_tool(service_id="pydantic-nested")
+    async def tool(owner: Person, team: list[Person], backup: Person | None = None) -> dict:
+        return {}
+
+    schema = registrations[0]["input_schema"]
+    assert set(schema["$defs"]) == {"Address"}
+    refs = _all_refs(schema)
+    assert refs == ["#/$defs/Address"] * 3
+    for ref in refs:
+        assert _resolve(schema, ref)["properties"]["city"]["type"] == "string"
+    assert '"$defs":' not in json.dumps(schema["properties"])
+    assert schema["required"] == ["owner", "team"]

@@ -743,6 +743,15 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
         )
         assert revoke_resp.status_code == 200, f"Revoke failed: {revoke_resp.json()}"
 
+        # Verify permit is actually revoked in DB
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(PermitModel).where(PermitModel.permit_id == permit["permit_id"])
+            )
+            model = result.scalar_one()
+            assert model.status == "revoked", f"Permit not revoked: {model.status}"
+
         # Try to invoke via REST endpoint
         call_resp = await client.post(
             f"/mcp/tools/{tool_name}/invoke",
@@ -787,6 +796,15 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
             headers={"X-API-Key": "test-key"},
         )
         assert revoke_resp.status_code == 200, f"Revoke failed: {revoke_resp.json()}"
+
+        # Verify permit is actually revoked in DB
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(PermitModel).where(PermitModel.permit_id == permit["permit_id"])
+            )
+            model = result.scalar_one()
+            assert model.status == "revoked", f"Permit not revoked: {model.status}"
 
         # Try to invoke via standard /mcp endpoint
         call_resp = await client.post(

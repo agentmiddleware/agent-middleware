@@ -5638,6 +5638,28 @@
         }
       }
     },
+    "/docs/static-dev-api-keys.md": {
+      "get": {
+        "tags": [
+          "Static"
+        ],
+        "summary": "Static dev API keys",
+        "description": "Local-only dev key class and the dev self-provision endpoint.",
+        "operationId": "get_static_dev_api_keys_md_docs_static_dev_api_keys_md_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dashboard": {
       "get": {
         "tags": [

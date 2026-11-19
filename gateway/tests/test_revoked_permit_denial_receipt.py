@@ -99,6 +99,7 @@ async def test_revoked_permit_denied_without_budget_movement(client, clean_datab
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_revoked_permit_denied_without_budget_movement-1",
         )
 
         revoke_resp = await client.post(
@@ -210,6 +211,7 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+            idem_key="active-permit-positive-control",
         )
 
         call_resp_active = await client.post(
@@ -233,6 +235,7 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+            idem_key="revoked-permit-no-dispatch",
         )
 
         # Revoke the permit
@@ -297,6 +300,7 @@ async def test_revoked_permit_returns_denial_code(client, clean_database):
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_revoked_permit_returns_denial_code-1",
         )
 
         # Revoke the permit
@@ -341,6 +345,7 @@ async def test_revoked_permit_produces_receipt(client, clean_database):
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_revoked_permit_produces_receipt-1",
         )
 
         # Revoke the permit
@@ -438,6 +443,7 @@ async def test_revoked_permit_inline_receipt_lacks_signing_input(
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_revoked_permit_inline_receipt_lacks_signing_input-1",
         )
 
         # Revoke and invoke
@@ -494,6 +500,7 @@ async def test_portable_denial_receipt_offline_verifiable(client, clean_database
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_portable_denial_receipt_offline_verifiable-1",
         )
 
         # Revoke and invoke to get a denial receipt
@@ -556,6 +563,7 @@ async def test_tampered_portable_denial_receipt_rejected(client, clean_database)
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_tampered_portable_denial_receipt_rejected-1",
         )
 
         # Revoke and invoke
@@ -651,6 +659,7 @@ async def test_tampered_portable_signed_field_rejected(
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_tampered_portable_signed_field_rejected-1",
         )
 
         # Revoke and invoke
@@ -729,6 +738,7 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_revoked_permit_via_rest_invoke-1",
         )
 
         # Revoke the permit
@@ -771,6 +781,7 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_revoked_permit_via_standard_mcp_endpoint-1",
         )
 
         # Revoke the permit
@@ -820,6 +831,7 @@ async def test_revoked_permit_details_includes_revoked_at(client, clean_database
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_revoked_permit_details_includes_revoked_at-1",
         )
 
         # Revoke the permit
@@ -902,6 +914,7 @@ async def test_permit_revoked_during_reserve_is_denied(
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
+                    idem_key="test_permit_revoked_during_reserve_is_denied-1",
         )
 
         async def transition_permit_during_policy(**kwargs):

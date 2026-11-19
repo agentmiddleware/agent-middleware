@@ -6,6 +6,8 @@ virtual environment. You do not need to clone the repository for these steps.
 
 ## Get a demo key and install
 
+This mint step is unverified until a live mint test confirms it.
+
 ```bash
 AMW_DEMO_KEY=$(curl -X POST https://api.agentmiddleware.dev/v1/demo/keys -fsS | jq -er '.api_key | strings | select(length > 0)') &&
 export AMW_API_KEY="$AMW_DEMO_KEY" &&
@@ -31,7 +33,7 @@ existing receipt and public key snapshot and run the verifier:
 pip install 'amw-sdk[verify]'
 curl -fsSLo receipt.json https://www.agentmiddleware.dev/proof/receipt.json
 curl -fsSLo trust-keys.json https://www.agentmiddleware.dev/proof/trust-keys.json
-amw verify --bundle receipt.json --keys trust-keys.json --expect-issuer https://api.thisisatest.tech
+amw verify --bundle receipt.json --keys trust-keys.json --expect-issuer https://api.agentmiddleware.dev
 ```
 
 Successful verification reports `VERIFIED`. After the downloads, verification

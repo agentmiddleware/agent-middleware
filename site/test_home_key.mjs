@@ -140,7 +140,7 @@ test("idle, loading, and success issue one empty POST and fill the live quicksta
   await get("home-key-retry").listeners.click();
   assert.equal(page.requests.length, 1);
   const [url, request] = page.requests[0];
-  assert.equal(url, "https://api.thisisatest.tech/v1/demo/keys");
+  assert.equal(url, "https://api.agentmiddleware.dev/v1/demo/keys");
   assert.equal(request.method, "POST");
   assert.equal(request.credentials, "omit");
   assert.deepEqual(Object.keys(request).sort(), ["credentials", "method"]);

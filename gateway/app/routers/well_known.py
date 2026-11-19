@@ -341,13 +341,13 @@ def _integration_manifest() -> dict[str, Any]:
             # field describes what ``install`` below produces, so it tracks the
             # source, not the newest tag. The two are named separately because
             # they differ whenever source has moved past the last release.
-            "version": "0.5.0",
+            "version": "0.5.1",
             "path": "sdk/python/",
             "install": "pip install -e ./sdk/python",
             "latest_release_tag": "python-sdk-v0.4.0",
             "note": (
                 "Install from source in sdk/python/ (import package "
-                "b2a_sdk), which yields 0.5.0 pre-release. Latest cut "
+                "b2a_sdk), which yields 0.5.1 pre-release. Latest cut "
                 "release is tag python-sdk-v0.4.0. Not published to PyPI."
             ),
         },

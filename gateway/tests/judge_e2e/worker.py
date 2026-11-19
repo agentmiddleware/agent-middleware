@@ -15,12 +15,16 @@ from dataclasses import asdict
 
 
 def serve(connection, database_url: str, signing_key: str) -> None:
-    """Run isolated gateway with test configuration and no network access."""
+    """Configure and run a gateway worker with network access disabled."""
     # Configure before importing the application, without loading dotenv files.
+    # Clear environment to avoid cached settings at import time.
+    os.environ.clear()
+    os.environ["ALLOW_METADATA_CREATE_ALL"] = "true"
+
     from app.core import config
 
     class LocalSettings(config.Settings):
-        """Test-only settings that ignore environment and dotenv sources."""
+        """Load only explicit local test settings and model defaults."""
 
         @classmethod
         def settings_customise_sources(
@@ -31,17 +35,17 @@ def serve(connection, database_url: str, signing_key: str) -> None:
             dotenv_settings,
             file_secret_settings,
         ):
+            """Exclude environment, dotenv, and file secret settings sources."""
             # Only explicit test configuration and model defaults. Never load
             # inherited credentials, dotenv files, or file secret sources.
             return (init_settings,)
 
     def reject_network(*args, **kwargs):
-        """Prevent any network socket connections during tests."""
+        """Reject socket connection attempts from the worker."""
         raise AssertionError("judge worker forbids network connections")
 
     socket.socket.connect = reject_network
     socket.socket.connect_ex = reject_network
-    os.environ["ALLOW_METADATA_CREATE_ALL"] = "true"
     settings = LocalSettings(
         _env_file=None,
         DATABASE_URL=database_url,
@@ -57,16 +61,27 @@ def serve(connection, database_url: str, signing_key: str) -> None:
         TRUST_SIGNING_PRIVATE_KEY_B64=signing_key,
         RATE_LIMIT_PER_MINUTE=1000000,
     )
+    config.get_settings.cache_clear()
     config.get_settings = lambda: settings
-    asyncio.run(_run(connection))
+    asyncio.run(_run(connection, settings))
 
 
-async def _run(connection) -> None:
-    """Handle requests from test fixture until stop or error."""
+async def _run(connection, settings) -> None:
+    """Serve pipe commands against the local ASGI application."""
     from httpx import ASGITransport, AsyncClient
     from sqlalchemy import select
 
+    from app.core.config import get_settings
     from app.db.database import close_db, get_session_factory, init_db
+
+    active_settings = get_settings()
+    assert active_settings is settings
+    assert active_settings.ENVIRONMENT == "test"
+    assert active_settings.TRUST_MODE_ENABLED is True
+
+    from app.core import rate_limiter
+
+    assert rate_limiter.settings is settings, "rate_limiter not using test settings"
     from app.db.models import (
         IdempotencyRecordModel,
         LedgerEntryModel,
@@ -84,7 +99,7 @@ async def _run(connection) -> None:
     from app.services.upstream_mcp import UpstreamMcpResult
 
     class Echo:
-        """Test executor that echoes messages and supports fault injection."""
+        """Execute local echo calls with an optional dispatch checkpoint pause."""
 
         dispatches = 0
         kill_during_dispatch = False
@@ -92,7 +107,7 @@ async def _run(connection) -> None:
         async def call_tool(
             self, arguments, *, invocation_id, idempotency_key, before_dispatch
         ):
-            """Echo the message argument or block for kill fault injection."""
+            """Record dispatch and return the canonical echo result."""
             await before_dispatch()
             self.dispatches += 1
             if self.kill_during_dispatch:

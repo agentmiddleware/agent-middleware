@@ -81,6 +81,10 @@ from app.core.auth import AuthContext, get_auth_context
 from app.core.browser_origin import validate_browser_origin
 from app.services.audit_chain import AuditChainContendedError
 from app.services.receipts import ReceiptWriteContendedError
+from app.services.signing_keys import (
+    SigningKeyUnavailableError,
+    get_signing_key_service,
+)
 from app.services.billing_engine import LedgerWriteContendedError
 from app.core.config import get_settings
 from app.core.time import utc_now
@@ -737,6 +741,15 @@ async def _governed_tools_call(
             },
         )
 
+    # Refuse before the auto-mint (which signs a permit) and before anything
+    # is begun or charged when this replica's signing key cannot sign. The
+    # governed pipeline checks again at its own entry; this one keeps the mint
+    # from failing first under a less precise error.
+    try:
+        await get_signing_key_service().assert_ready_to_sign()
+    except SigningKeyUnavailableError as exc:
+        raise _mcp_error(-32005, SigningKeyUnavailableError.reason) from exc
+
     auto_minted = permit_id is None
     # Unkeyed mutating calls get a deterministic retry slot so a lost-response
     # retry resolves to the same auto permit and replays the original receipt
@@ -843,6 +856,10 @@ async def _governed_tools_call(
         # non-retryable type, so what arrives is a refusal that ran nothing and
         # whose idempotency record has already been released.
         raise _mcp_error(-32005, ReceiptWriteContendedError.reason) from e
+    except SigningKeyUnavailableError as e:
+        # Raised only before anything is begun or charged (the governed entry
+        # check), so the same key may be retried on a replica that can sign.
+        raise _mcp_error(-32005, SigningKeyUnavailableError.reason) from e
     except PermitWriteContendedError as e:
         # The first guarded write on the way in, and the one this ladder was
         # missing: a contended permit reserve fell past every branch here into

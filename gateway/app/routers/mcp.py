@@ -118,6 +118,7 @@ from ..trust import (
     PermitError,
     PolicyDecision,
     ReceiptWriteContendedError,
+    SigningKeyUnavailableError,
     evaluate_tool_invocation,
     evaluate_wallet_policy,
     get_agent_money,
@@ -128,6 +129,7 @@ from ..trust import (
     get_permit_service,
     get_quote_service,
     get_receipt_service,
+    get_signing_key_service,
     permit_constraints_snapshot,
     recipient_binding_matches,
     record_audit_event,
@@ -456,6 +458,7 @@ _PUBLIC_REASON_MESSAGES: dict[str, str] = {
         "audit_chain_head_contention",
         "receipt_write_contended",
         "permit_write_contended",
+        "signing_key_unavailable",
         "tool_execution_failed",
     )
 }
@@ -468,6 +471,7 @@ _PUBLIC_MESSAGE_BY_EXC_TYPE: dict[type[BaseException], str] = {
     AuditChainContendedError: "audit_chain_head_contention",
     ReceiptWriteContendedError: "receipt_write_contended",
     PermitWriteContendedError: "permit_write_contended",
+    SigningKeyUnavailableError: SigningKeyUnavailableError.reason,
     ToolPermissionDenied: "Permission denied",
     PermissionError: "Permission denied",
     ToolExecutionError: "tool_execution_failed",
@@ -832,7 +836,12 @@ async def handle_messages(
             AuditChainContendedError,
             ReceiptWriteContendedError,
             PermitWriteContendedError,
+            SigningKeyUnavailableError,
         ) as e:
+            # SigningKeyUnavailableError joins this family because it is only
+            # raised before anything is begun or charged: retrying the same key
+            # on a replica whose signing key can sign is safe.
+            #
             # All five mean the same thing to a caller: nothing terminal was
             # recorded, retry the same idempotency key. -32005 is this
             # surface's retryable code. The public message is a canned string
@@ -1185,6 +1194,12 @@ async def _execute_registered_tool(
     Those coordinates name whichever row holds them now; only the granted id
     names ours.
     """
+    # Refuse before anything is begun, reserved or charged when this replica's
+    # configured signing key cannot sign. Every governed outcome past the
+    # charge needs a signed audit event and receipt; finding out there leaves
+    # a debited wallet with no evidence. Here it costs the caller one retry,
+    # on a replica whose key can sign, with nothing recorded.
+    await get_signing_key_service().assert_ready_to_sign()
     owned_record: dict[str, Any] = {}
     try:
         return await _execute_registered_tool_inner(
@@ -5228,6 +5243,7 @@ _INVOKE_PUBLIC_MESSAGE_BY_TYPE: tuple[tuple[type[BaseException], str], ...] = (
     (AuditChainContendedError, "audit_chain_head_contention"),
     (ReceiptWriteContendedError, "receipt_write_contended"),
     (PermitWriteContendedError, "permit_write_contended"),
+    (SigningKeyUnavailableError, SigningKeyUnavailableError.reason),
     (ToolPermissionDenied, "Permission denied"),
     (PermissionError, "Permission denied"),
     (ToolExecutionError, "tool_execution_failed"),
@@ -5392,8 +5408,9 @@ async def invoke_tool(
         AuditChainContendedError,
         ReceiptWriteContendedError,
         PermitWriteContendedError,
+        SigningKeyUnavailableError,
     ) as exc:
-        # Same five-way retryable family as /mcp/messages: the caller may
+        # Same retryable family as /mcp/messages: the caller may
         # retry the same idempotency key. A pre-effect
         # ReceiptWriteContendedError that reached here without this entry fell
         # through to except Exception and answered 200 isError internal_error,

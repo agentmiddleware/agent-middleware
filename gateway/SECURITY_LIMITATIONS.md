@@ -263,7 +263,8 @@ missing control.
   or keyed, cannot consume the readiness budget. Readiness requests themselves
   can still exhaust the route-wide readiness bucket (ten times the per-client
   limit), and probes then receive 429 until the window resets. It is limited
-  rather than exempt because it runs state store, MQTT and database checks.
+  rather than exempt because it runs state store, MQTT, database and signing
+  key checks.
   `/health/dependencies` stays on the ordinary limits because it runs live
   Stripe and Sentinel probes.
 - **Namespaced buckets:** per-key and anonymous bucket names, and so their

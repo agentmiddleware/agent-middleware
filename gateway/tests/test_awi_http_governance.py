@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from sqlalchemy import func, select
 from httpx import ASGITransport, AsyncClient
 
@@ -15,6 +16,8 @@ from app.main import app
 from app.services import awi_rag_engine as awi_rag_engine_module
 from app.services.awi_rag_engine import AWIRAGEngine
 from app.services.idempotency import MAX_CLIENT_IDEMPOTENCY_KEY_LENGTH
+from app.services import signing_keys as signing_keys_module
+from app.services.signing_keys import SigningKeyService, get_signing_key_service
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
     create_tool_permit,
@@ -789,3 +792,74 @@ async def test_execute_dom_bridge_failure_retains_charge_and_replays(
         assert debits_after == 1
     finally:
         manager._dom_sessions.pop(session_id, None)
+
+
+async def _wallet_debits(wallet_id: str) -> int:
+    async with get_session_factory()() as session:
+        return int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(LedgerEntryModel)
+                    .where(
+                        LedgerEntryModel.wallet_id == wallet_id,
+                        LedgerEntryModel.amount < 0,
+                    )
+                )
+            ).scalar_one()
+        )
+
+
+@pytest.mark.anyio
+async def test_rag_query_refuses_before_reserving_when_the_key_cannot_sign(
+    client, clean_database
+):
+    """An unusable signing key refuses before the reservation and the charge.
+
+    The receipt written after the callback needs the key. Refusing at
+    admission keeps the wallet whole and releases the begun record, so the
+    same Idempotency-Key succeeds once the key can sign (issue #280). The key
+    is made unusable by pairing its id with other key material, which leaves
+    the stored public key, and so the permit's signature, verifiable.
+    """
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    permit = await create_tool_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        tool_name="awi_rag_query",
+        max_credits=50,
+        idem_key="permit-awi-signing-precharge",
+    )
+    real_service = get_signing_key_service()
+    await real_service.ensure_active_key()
+    # A replica whose key id is bound to other key material: a fresh service
+    # instance installed as the module's service, never a patched singleton.
+    misconfigured = SigningKeyService()
+    misconfigured._key_id = real_service._key_id
+    misconfigured._private_key = Ed25519PrivateKey.generate()
+    headers = {
+        **provisioned["agent_headers"],
+        "X-Wallet-Id": wallet_id,
+        "X-Permit-Id": permit["permit_id"],
+        "Idempotency-Key": "awi-http-signing-precharge-1",
+    }
+    debits_before = await _wallet_debits(wallet_id)
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(signing_keys_module, "_signing_key_service", misconfigured)
+        refused = await client.post(
+            "/v1/awi/rag/query", json=RAG_QUERY_PAYLOAD, headers=headers
+        )
+
+    assert refused.status_code == 503, refused.text
+    assert refused.json()["detail"]["error"] == "signing_key_unavailable"
+    assert await _wallet_debits(wallet_id) == debits_before
+
+    # The module's own service is back in place: the key can sign again.
+    again = await client.post(
+        "/v1/awi/rag/query", json=RAG_QUERY_PAYLOAD, headers=headers
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["receipt"]["outcome"] == "success"
+    assert await _wallet_debits(wallet_id) == debits_before + 1

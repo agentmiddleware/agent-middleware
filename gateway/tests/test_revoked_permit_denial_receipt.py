@@ -879,6 +879,7 @@ async def test_revoked_permit_details_includes_revoked_at(client, clean_database
             assert db_revoked_at is not None
             # Normalize to UTC timezone-aware for comparison
             from datetime import timezone
+
             db_revoked_at = db_revoked_at.replace(tzinfo=timezone.utc)
         # Invoke with revoked permit
         call_resp = await client.post(

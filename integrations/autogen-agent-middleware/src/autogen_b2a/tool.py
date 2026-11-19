@@ -10,6 +10,7 @@ from typing import Any
 from autogen.agentchat.conversable_agent import ConversableAgent
 from b2a_sdk.models import PermitRequest
 
+from ._permit_store import PermitStore, permit_record, request_from_record, same_terms
 from .client import B2AClient
 
 # Same limit the SDK and the trust plane enforce. A longer key must fail
@@ -83,7 +84,16 @@ class B2AFunctionTool:
         base_url: str = "https://api.agentmiddleware.dev",
         permit_budget: Decimal = Decimal(100),
         permit_ttl_minutes: int = 30,
+        permit_store: PermitStore | None = None,
     ):
+        """Build the tool.
+
+        ``permit_store`` keeps each permit request body under its
+        ``permit_idempotency_key``. Pass a durable one, such as
+        :class:`JsonFilePermitStore`, to replay a permit after a process
+        restart. Without it, permit bodies live only in this instance, and a
+        new process that reuses a permit key gets ``idempotency_key_reused``.
+        """
         if not isinstance(api_key, str) or not api_key.strip():
             raise ValueError("api_key is required and must not be blank")
         if not isinstance(wallet_id, str) or not wallet_id.strip():
@@ -99,6 +109,7 @@ class B2AFunctionTool:
         # Keys here are the stripped text the SDK sends, not the raw caller string.
         self._permit_cache: dict[str, str] = {}  # permit_idempotency_key → permit_id
         self._permit_requests: dict[str, PermitRequest] = {}
+        self.permit_store = permit_store
 
     def _current_wallet_id(self) -> str:
         wallet_id = self.wallet_id
@@ -158,26 +169,31 @@ class B2AFunctionTool:
         _require_positive_ttl(permit_ttl_minutes)
 
         # Retain the body before the first await: a lost acknowledgement must
-        # replay the original expiry under the same caller-owned key.
+        # replay the original expiry under the same caller-owned key. The
+        # permit store carries that body across a process restart.
+        fresh = PermitRequest(
+            issuer_wallet_id=wallet_id,
+            subject_wallet_id=wallet_id,
+            max_credits=permit_budget,
+            expires_at=datetime.now(UTC) + timedelta(minutes=permit_ttl_minutes),
+            allowed_tools=[tool_name],
+            scopes=[f"tool:{tool_name}:invoke", "billing:charge"],
+        )
+        store = self.permit_store
         request = self._permit_requests.get(permit_key)
+        if request is None and store is not None:
+            record = store.get(permit_key)
+            if record is not None:
+                request = request_from_record(record)
         if request is None:
-            request = PermitRequest(
-                issuer_wallet_id=wallet_id,
-                subject_wallet_id=wallet_id,
-                max_credits=permit_budget,
-                expires_at=datetime.now(UTC) + timedelta(minutes=permit_ttl_minutes),
-                allowed_tools=[tool_name],
-                scopes=[f"tool:{tool_name}:invoke", "billing:charge"],
-            )
-            self._permit_requests[permit_key] = request
-        elif (
-            request.subject_wallet_id != wallet_id
-            or request.max_credits != permit_budget
-            or request.allowed_tools != [tool_name]
-        ):
+            request = fresh
+            if store is not None:
+                store.put(permit_key, permit_record(request, permit_ttl_minutes))
+        elif not same_terms(request, fresh):
             raise ValueError(
                 "permit_idempotency_key reused with different permit terms"
             )
+        self._permit_requests[permit_key] = request
 
         if permit_key in self._permit_cache:
             permit_id = self._permit_cache[permit_key]
@@ -237,7 +253,7 @@ class B2AFunctionTool:
                             },
                             "permit_idempotency_key": {
                                 "type": "string",
-                                "description": "Caller-supplied permit idempotency key (required, must be stable for replay)",
+                                "description": "Caller-supplied permit idempotency key (required, must be stable for replay; replay after a process restart needs a durable permit_store)",
                             },
                             "arguments": {
                                 "type": "object",

@@ -6,10 +6,33 @@ import shlex
 import socket
 from html import unescape
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from amw.cli import main
 
 SITE = Path(__file__).resolve().parent
+
+
+def test_homepage_demo_key_fetch_origin_is_allowed_by_csp():
+    script = (SITE / "home-key.js").read_text()
+    fetch = re.search(r"""\bfetch\s*\(\s*(["'])(https?://[^"']+)\1""", script)
+    assert fetch is not None
+    url = urlsplit(fetch[2])
+    origin = f"{url.scheme}://{url.netloc}"
+
+    config = json.loads((SITE / "vercel.json").read_text())
+    csp = next(
+        header["value"]
+        for rule in config["headers"]
+        if rule["source"] == "/(.*)"
+        for header in rule["headers"]
+        if header["key"].lower() == "content-security-policy"
+    )
+    directives = [directive.split() for directive in csp.split(";")]
+    connect_src = next(
+        parts[1:] for parts in directives if parts and parts[0] == "connect-src"
+    )
+    assert origin in connect_src
 
 
 def test_homepage_demo_verifies_offline_and_rejects_tampering(

@@ -37,6 +37,7 @@ from .core.durable_state import (
 )
 from .core.health import (
     CHECK_TIMEOUT_SECONDS,
+    PUBLIC_DEPENDENCY_KEYS,
     build_public_dependency_report,
     check_redis_liveness,
     check_database_readiness,
@@ -1366,13 +1367,15 @@ async def health_ready():
     ),
 )
 async def health_dependencies():
-    report = await gather_dependency_report()
     if get_settings().ENABLE_PROOF_SURFACES:
         # Proof surfaces are mounted and reachable, so their dependency truth
         # and simulation flags are live, relevant disclosures.
-        return report
+        return await gather_dependency_report()
     # Production posture: report the wedge, not a billboard of unmounted
     # surfaces. Full truth stays in the startup log (phase="runtime_posture").
+    # The other probes are not started: their verdicts would be discarded, and
+    # an anonymous caller must not be able to trigger outbound calls for them.
+    report = await gather_dependency_report(only=PUBLIC_DEPENDENCY_KEYS)
     return build_public_dependency_report(report)
 
 

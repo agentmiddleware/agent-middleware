@@ -138,3 +138,12 @@ https://www.agentmiddleware.dev/llms-full.txt
 ## Security contact
 
 https://www.agentmiddleware.dev/.well-known/security.txt
+
+Request keys and errors at gateway commit 75278a8 (also deployed b039e0bf):
+Consequential calls need a persistent caller-owned Request key. Unkeyed
+mutating POST /mcp calls use a derived key for min(retry window 300 s,
+auto Permit TTL 120 s) = 120 s by default, or are refused. After the window,
+an identical retry runs and bills again. Explicit-permit calls require a key.
+Route-specific conflicts and charged, refunded, or uncertain outcomes:
+https://www.agentmiddleware.dev/docs/errors/
+https://www.agentmiddleware.dev/docs/calls-and-request-keys/

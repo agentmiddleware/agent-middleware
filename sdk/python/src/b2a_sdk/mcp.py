@@ -64,8 +64,10 @@ def _gateway_server_error(response: httpx.Response, keyed: bool) -> dict[str, An
     FastMCP turns a raised exception into a bare ``ToolError`` string, which
     drops the gateway's error code and correlation id. Returning them as data
     keeps both. ``retryable`` is true only when the caller supplied an
-    idempotency key: an unkeyed call gets a fresh server-minted key on the
-    gateway, so retrying it is a new call that can execute and charge again.
+    idempotency key. Under SEL-498, an unkeyed mutating call on POST /mcp
+    gets a derived key within a bounded retry window, or is refused; explicit
+    permits require a key. After the window, an identical retry can execute
+    and charge again, so consequential calls need a persistent caller-owned key.
     """
     try:
         body = response.json()

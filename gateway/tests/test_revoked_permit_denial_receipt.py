@@ -181,7 +181,7 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
     QA gap 4: Includes positive control (active permit dispatches once) and
     asserts no dispatch_attempt_id and no mcp_dispatch_attempts row.
     """
-    from app.db.models import MCPDispatchAttemptModel
+    from app.db.models import McpDispatchAttemptModel
     from unittest.mock import patch
 
     provisioned = await provision_agent_wallet(client)
@@ -272,8 +272,8 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
         factory = get_session_factory()
         async with factory() as session:
             result = await session.execute(
-                select(MCPDispatchAttemptModel).where(
-                    MCPDispatchAttemptModel.permit_id == revoked_permit["permit_id"]
+                select(McpDispatchAttemptModel).where(
+                    McpDispatchAttemptModel.permit_id == revoked_permit["permit_id"]
                 )
             )
             attempts = result.scalars().all()
@@ -889,7 +889,9 @@ async def test_permit_revoked_during_reserve_is_denied(
     """
     from unittest.mock import patch
     from datetime import datetime, timezone
-    from app.services import permits as permits_module
+    from app.routers.mcp import evaluate_wallet_policy
+    from app.utils.time import utc_now
+    from app.services.permits import resign_permit_model
 
     provisioned = await provision_agent_wallet(client)
     tool_name = f"race-{terminal_status}-tool"
@@ -903,27 +905,26 @@ async def test_permit_revoked_during_reserve_is_denied(
             tool_name=tool_name,
         )
 
-        original_validate = permits_module._validate_model_for_action
+        async def transition_permit_during_policy(**kwargs):
+            # Transition the permit to terminal state before policy evaluation
+            factory = get_session_factory()
+            async with factory() as session:
+                model = await session.get(PermitModel, permit["permit_id"])
+                assert model is not None
+                if terminal_status == "revoked":
+                    model.status = "revoked"
+                    model.revoked_at = utc_now()
+                elif terminal_status == "exhausted":
+                    model.status = "exhausted"
+                    model.spent_credits = model.total_credits
+                await resign_permit_model(model)
+                session.add(model)
+                await session.commit()
+            return await evaluate_wallet_policy(**kwargs)
 
-        async def racing_validate(model, action, credits_to_reserve=None):
-            # First call goes through
-            result = await original_validate(model, action, credits_to_reserve)
-            if result is None:
-                # Between precheck and reserve, revoke/exhaust the permit
-                factory = get_session_factory()
-                async with factory() as session:
-                    permit_model = await session.get(PermitModel, model.permit_id)
-                    if terminal_status == "revoked":
-                        permit_model.status = "revoked"
-                        permit_model.revoked_at = datetime.now(timezone.utc)
-                    elif terminal_status == "exhausted":
-                        permit_model.status = "exhausted"
-                        permit_model.spent_credits = permit_model.total_credits
-                    await session.commit()
-            return result
-
-        with patch.object(
-            permits_module, "_validate_model_for_action", racing_validate
+        with patch(
+            "app.routers.mcp.evaluate_wallet_policy",
+            new=transition_permit_during_policy,
         ):
             call_resp = await client.post(
                 "/mcp/messages",
@@ -931,7 +932,7 @@ async def test_permit_revoked_during_reserve_is_denied(
                     provisioned["agent_wallet_id"],
                     permit["permit_id"],
                     tool_name,
-                    f"race-{terminal_status}-1",
+                    f"racing-{terminal_status}-1",
                 ),
                 headers=provisioned["agent_headers"],
             )

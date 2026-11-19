@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 from importlib import import_module
 from pathlib import Path
 
@@ -277,3 +278,72 @@ def test_evidence_fetch_failure_preserves_call_receipt(failing_path: str) -> Non
         else VerificationStatus.UNKNOWN_KEY
     )
     assert receipt.verify().status is expected_status
+
+
+def _naive(timestamp: str) -> str:
+    """Drop the UTC offset the way a SQLite-backed gateway returns stored receipts."""
+    assert timestamp.endswith("+00:00")
+    return timestamp.removesuffix("+00:00")
+
+
+@pytest.mark.parametrize("sdk_name", ["b2a_sdk", "amw"])
+def test_call_verify_accepts_receipt_with_naive_created_at(sdk_name: str) -> None:
+    """Issue #358: a stored receipt without an offset still matches its signed claim."""
+    pytest.importorskip("cryptography")
+    sdk = import_module(sdk_name)
+    payload = _receipt_payload()
+    payload["created_at"] = _naive(SIGNED_CLAIMS["created_at"])
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/mcp/messages":
+            return _evidence_response(request)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": request.headers["idempotency-key"],
+                "result": {
+                    "content": [{"type": "text", "text": '{"ok": true}'}],
+                    "isError": False,
+                    "receipt": payload,
+                },
+            },
+        )
+
+    with sdk.Client(
+        "YOUR_DEMO_KEY", base_url="http://test", transport=httpx.MockTransport(handler)
+    ) as client:
+        receipt = client.call(
+            SIGNED_CLAIMS["tool"],
+            {"message": "hi"},
+            key="order-123",
+            wallet_id=SIGNED_CLAIMS["wallet_id"],
+            permit_id=SIGNED_CLAIMS["permit_id"],
+        )
+
+    result = receipt.verify()
+    assert result.status is sdk.VerificationStatus.VERIFIED
+    assert result.ok
+
+
+def test_verify_rejects_naive_created_at_for_a_different_instant() -> None:
+    pytest.importorskip("cryptography")
+    raw = _receipt_payload()
+    signed = datetime.fromisoformat(SIGNED_CLAIMS["created_at"])
+    raw["created_at"] = (signed + timedelta(seconds=1)).replace(tzinfo=None).isoformat()
+    receipt = Receipt.from_dict(raw)
+
+    result = receipt.verify(bundle=VALID_BUNDLE, keys=KEYS)
+
+    assert result.status is VerificationStatus.MISMATCH
+
+
+def test_verify_rejects_created_at_with_a_different_offset() -> None:
+    pytest.importorskip("cryptography")
+    raw = _receipt_payload()
+    raw["created_at"] = _naive(SIGNED_CLAIMS["created_at"]) + "+02:00"
+    receipt = Receipt.from_dict(raw)
+
+    result = receipt.verify(bundle=VALID_BUNDLE, keys=KEYS)
+
+    assert result.status is VerificationStatus.MISMATCH

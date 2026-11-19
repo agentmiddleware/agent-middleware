@@ -275,6 +275,19 @@ generated key there would silently defeat the retry protection the caller
 asked for: every retry carrying the same malformed key would become a new
 charged operation (`test_mcp_idempotency_key_validation`).
 
+Arguments to a local tool that do not satisfy the tool's advertised
+`inputSchema` (a wrong type, a missing required argument, an unknown property
+where the schema sets `additionalProperties: false`, a string over
+`maxLength`) are refused with invalid params (JSON-RPC `-32602`, REST `400`)
+and `reason_code` `invalid_tool_arguments`, with `argument` naming the
+argument and `violation` naming the failed schema keyword. The value itself is
+never echoed. The check runs after the permit decision, so a permit denial
+keeps its signed receipt, and before the wallet policy, the approval gate and
+the charge, so nothing is charged, no receipt is written, and the same key can
+carry the corrected call. `POST /mcp` checks before it mints its permit
+(`test_mcp_tool_argument_validation`). Upstream tools are not checked here:
+the upstream server stays the authority for its own schema.
+
 Only a genuinely **absent** key — no header, no body entry, or a JSON `null`
 entry — is treated as an un-keyed call. On the standard MCP endpoint (and the
 `/mcp/messages` demo auto-permit path) an un-keyed call to a mutating tool

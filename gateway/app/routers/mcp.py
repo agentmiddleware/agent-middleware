@@ -65,6 +65,10 @@ from ..services.billing_engine import (
 )
 from ..services.ownership import CallerIdentity
 from ..services.service_registry import get_service_registry
+from ..services.tool_arguments import (
+    ToolArgumentsInvalid,
+    validate_local_tool_arguments,
+)
 from ..services.action_permits import (
     action_execution_identity,
     canonical_action_payload,
@@ -918,6 +922,14 @@ async def handle_messages(
             # a canned message and a request id.
             return _public_jsonrpc_error(
                 e, request=request, rpc_id=request_id, code=-32603
+            )
+        except ToolArgumentsInvalid as e:
+            return _public_jsonrpc_error(
+                e,
+                request=request,
+                rpc_id=request_id,
+                code=-32602,
+                data=e.as_error_data(),
             )
         except ValueError as e:
             code = _value_error_jsonrpc_code(str(e))
@@ -2110,6 +2122,26 @@ async def _execute_registered_tool_inner(
                 receipt=receipt_payload,
                 details=permit_validation.details,
             )
+
+    if action_binding is None:
+        # Local tool arguments are checked against the advertised inputSchema
+        # here (#348): after the permit decision, so a permit denial keeps its
+        # signed receipt, and before the IGA use, the wallet policy, the
+        # approval gate, the quote consume and the charge, so a client input
+        # error moves no money. Nothing has run, so the claim begun above is
+        # released and the corrected call can reuse the same key. Action tools
+        # were validated against their signed binding schema above.
+        try:
+            validate_local_tool_arguments(service, arguments)
+        except ToolArgumentsInvalid:
+            await _release_unresolved_tool_idempotency(
+                idem=idem,
+                idem_begin=idem_begin if idem_started else None,
+                wallet_id=wallet_id,
+                endpoint=idempotency_endpoint,
+                idempotency_key=idempotency_key,
+            )
+            raise
 
     # --- Enterprise IGA gate (app/core/oidc_iga) ---------------------------
     # When the call rode in with an Authorization bearer whose issuer is a
@@ -5067,6 +5099,8 @@ async def _maybe_mint_demo_permit(request: GovernedRequest) -> str | None:
         raise ValueError(f"Tool not found: {request.tool_name}")
     if registry.get_action_binding(record) is not None:
         raise ToolPermissionDenied("action_permit_required")
+    # Refused before a permit is minted for a call that cannot run (#348).
+    validate_local_tool_arguments(record, request.arguments)
 
     from .mcp_standard import (
         _mint_auto_permit,
@@ -5474,6 +5508,19 @@ async def invoke_tool(
             structuredContent={"error": public},
             isError=True,
         )
+    except ToolArgumentsInvalid as exc:
+        rid = _mcp_request_id(http_request)
+        _invoke_log_error(exc, rid)
+        data = exc.as_error_data()
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": data["reason_code"],
+                "argument": data["argument"],
+                "violation": data["violation"],
+            },
+            headers={"X-Request-ID": rid},
+        ) from exc
     except ValueError as exc:
         message = str(exc)
         if _value_error_jsonrpc_code(message) is None:

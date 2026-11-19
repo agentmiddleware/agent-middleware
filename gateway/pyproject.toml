@@ -41,6 +41,9 @@ dependencies = [
     # JWT auth (app/core/jwt.py, oidc_iga); explicit — previously only
     # transitive via mcp's pyjwt[crypto].
     "PyJWT>=2.15.1",
+    # Local tool arguments are validated against inputSchema before charging
+    # (#348); explicit, previously only transitive via mcp.
+    "jsonschema>=4.23.0",
     "redis>=8.1.0",
     "asyncpg>=0.32.0",
     "greenlet>=3.5.6",

@@ -127,6 +127,10 @@ from app.services.permits import (
 )
 from app.services.service_registry import get_service_registry
 from app.trust import approval_window_seconds, wallet_human_approval_required
+from app.services.tool_arguments import (
+    ToolArgumentsInvalid,
+    validate_local_tool_arguments,
+)
 from app.trust.adapters import GovernedRequestInvalid
 
 logger = logging.getLogger(__name__)
@@ -711,6 +715,20 @@ async def _governed_tools_call(
     ):
         raise _mcp_error(-32003, "action_permit_required")
 
+    if (
+        permit_id is None
+        and record is not None
+        and get_service_registry().get_action_binding(record) is None
+    ):
+        # This surface is about to mint a permit for the call. Refuse invalid
+        # arguments first, so no permit is minted and no key is bound for a
+        # call that cannot run (#348). With an explicit permit the governed
+        # pipeline checks them after the permit decision instead.
+        try:
+            validate_local_tool_arguments(record, arguments)
+        except ToolArgumentsInvalid as e:
+            raise _mcp_error(-32602, str(e), e.as_error_data()) from e
+
     # Wallet policy shapes the permit this surface mints. A policy demanding a
     # human decision is materialized as an approval-gated permit rather than
     # surfacing as an unsatisfiable denial: the agent calls the tool normally
@@ -890,6 +908,8 @@ async def _governed_tools_call(
     except PermissionError as e:
         raise _mcp_error(-32003, str(e)) from e
     except InvalidIdempotencyKeyError as e:
+        raise _mcp_error(-32602, str(e), e.as_error_data()) from e
+    except ToolArgumentsInvalid as e:
         raise _mcp_error(-32602, str(e), e.as_error_data()) from e
     except GovernedRequestInvalid as e:
         raise _mcp_error(-32602, str(e)) from e

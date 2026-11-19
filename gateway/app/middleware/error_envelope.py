@@ -40,6 +40,10 @@ ERROR_COPY: dict[str, tuple[str, str]] = {
         "This request key is too long.",
         "Use a shorter request key, such as a UUID.",
     ),
+    "invalid_tool_arguments": (
+        "The tool arguments do not match the tool's input schema.",
+        "Fix the argument named in the error. tools/list shows each tool's inputSchema.",
+    ),
     "idempotency_in_progress": (
         "A call with this key is still in progress.",
         "Wait for it to finish before checking the receipt.",

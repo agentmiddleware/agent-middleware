@@ -314,6 +314,34 @@ class EnvironmentGenerator(Protocol):
     def generate(self, difficulty: Difficulty, seed: int) -> SandboxEnvironment: ...
 
 
+# Keyword groups naming each transform the pattern generator can hide. The
+# first alias is the canonical word from the hidden rule text; the rest are
+# accepted spellings of the same transform.
+_TRANSFORM_KEYWORD_GROUPS = (
+    ("rotate",),
+    ("mirror",),
+    ("increment",),
+    ("color_swap", "color", "swap"),
+    ("invert",),
+    ("shift",),
+)
+
+
+def _expected_transform_keywords(hidden_rules: list[str]) -> list[tuple[str, ...]]:
+    """Keyword groups a correct pattern guess must mention.
+
+    Derived from the environment's own hidden rules, so a guess only wins
+    when it names the rule this environment actually hides.
+    """
+    groups: list[tuple[str, ...]] = []
+    for rule in hidden_rules:
+        lowered = rule.lower()
+        for group in _TRANSFORM_KEYWORD_GROUPS:
+            if group[0] in lowered and group not in groups:
+                groups.append(group)
+    return groups
+
+
 class SandboxEngine:
     """
     Headless environment manager for testing agent generalization.
@@ -411,22 +439,17 @@ class SandboxEngine:
 
         if env.env_type == EnvironmentType.PATTERN:
             if action_type == "submit_transform":
-                # Check if agent guessed the transformation rule
+                # Require exactly the hidden transforms, including every step
+                # and rejecting additional transforms in keyword-stuffed guesses.
                 guess = str(action_value).lower()
-                for rule in env.hidden_rules:
-                    if any(
-                        keyword in rule.lower() and keyword in guess
-                        for keyword in [
-                            "rotate",
-                            "mirror",
-                            "increment",
-                            "invert",
-                            "shift",
-                            "color",
-                            "swap",
-                        ]
-                    ):
-                        return 10.0, "Correct transformation detected!", True
+                expected = set(_expected_transform_keywords(env.hidden_rules))
+                named = {
+                    group
+                    for group in _TRANSFORM_KEYWORD_GROUPS
+                    if any(alias in guess for alias in group)
+                }
+                if expected and named == expected:
+                    return 10.0, "Correct transformation detected!", True
                 return -1.0, "Incorrect transformation. Try another approach.", False
             return 0.5, "Observation recorded.", False
 
@@ -435,6 +458,8 @@ class SandboxEngine:
             current = env.state.metadata.get("current_node", 0)
             if action_type == "move":
                 target = action_value
+                if isinstance(target, bool) or not isinstance(target, int):
+                    return -0.5, "Invalid move. Node must be an integer id.", False
                 edges = env.state.metadata.get("visible_edges", {})
                 neighbors = edges.get(str(current), [])
                 if target in neighbors:
@@ -452,11 +477,28 @@ class SandboxEngine:
                 env.state.metadata["current_schema_version"] += 1
                 return 0, "API schema has changed! Re-discover endpoints.", False
             if action_type == "call_endpoint":
-                env.state.metadata["endpoints_discovered"] = (
-                    env.state.metadata.get("endpoints_discovered", 0) + 1
-                )
+                # Only real, known endpoints count, and each one counts once:
+                # repeating a bogus path used to solve the environment.
+                known = {
+                    endpoint.get("path")
+                    for endpoint in env.state.metadata.get("mock_api", [])
+                    if isinstance(endpoint, dict)
+                }
+                target = str(action_value)
+                if target not in known:
+                    return (
+                        0,
+                        "Unknown endpoint. Discover the available endpoints "
+                        "and try again.",
+                        False,
+                    )
+                called = env.state.metadata.setdefault("endpoints_called", [])
+                if target in called:
+                    return 0, "Endpoint already called. Try another endpoint.", False
+                called.append(target)
+                discovered = len(called)
+                env.state.metadata["endpoints_discovered"] = discovered
                 total = env.state.metadata["num_endpoints"]
-                discovered = env.state.metadata["endpoints_discovered"]
                 if discovered >= total:
                     return 10.0, "All endpoints discovered and called!", True
                 return (

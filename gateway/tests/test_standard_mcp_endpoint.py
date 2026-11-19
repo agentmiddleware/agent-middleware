@@ -918,6 +918,78 @@ async def test_unkeyed_retry_straddling_window_boundary_dispatches_once(
         get_service_registry().unregister_local("echo-boundary")
 
 
+async def _expire_unkeyed_window(wallet_id: str, window_seconds: int) -> None:
+    """Age the auto-permit mint past the sliding unkeyed window.
+
+    ``_unkeyed_clock`` chooses the bucket; the live-slot join uses the mint
+    row's ``created_at`` against ``utc_now``. Tests move that timestamp the
+    same way ``_backdate_lock`` ages a held lock, never by sleeping.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from app.core.time import utc_now
+    from app.db.database import get_session_factory
+    from app.db.models import IdempotencyRecordModel
+    from app.routers import mcp_standard
+
+    factory = get_session_factory()
+    async with factory() as session:
+        await session.execute(
+            update(IdempotencyRecordModel)
+            .where(
+                IdempotencyRecordModel.wallet_id == wallet_id,
+                IdempotencyRecordModel.endpoint == mcp_standard._AUTO_PERMIT_ENDPOINT,
+            )
+            .values(created_at=utc_now() - timedelta(seconds=window_seconds + 1))
+        )
+        await session.commit()
+
+
+@pytest.mark.anyio
+async def test_unkeyed_retry_after_effective_window_dispatches_and_debits_again(
+    client, standard_mcp_enabled, clean_database, monkeypatch
+):
+    """An identical unkeyed retry after the effective window is a new call."""
+    import time as _time
+
+    from app.core.config import get_settings
+    from app.routers import mcp_standard
+
+    settings = get_settings()
+    window = min(
+        settings.MCP_UNKEYED_RETRY_WINDOW_SECONDS,
+        settings.STANDARD_MCP_PERMIT_TTL_SECONDS,
+    )
+    assert window == mcp_standard._effective_unkeyed_retry_window()
+    assert window > 0
+    start = _time.time()
+    provisioned = await provision_agent_wallet(client)
+    headers = {**provisioned["agent_headers"], **MCP_HEADERS}
+    invocations: list[str] = []
+    _register_counting_tool("echo-window-expiry", invocations)
+    try:
+        monkeypatch.setattr(mcp_standard, "_unkeyed_clock", lambda: start)
+        first = await _call(client, headers, "echo-window-expiry", 1)
+        await _expire_unkeyed_window(provisioned["agent_wallet_id"], window)
+        monkeypatch.setattr(
+            mcp_standard, "_unkeyed_clock", lambda: start + window + 0.001
+        )
+        retry = await _call(client, headers, "echo-window-expiry", 2)
+        assert first.status_code == retry.status_code == 200
+        assert "result" in first.json(), first.text
+        assert "result" in retry.json(), retry.text
+        assert (
+            retry.json()["result"]["receipt"]["receipt_id"]
+            != first.json()["result"]["receipt"]["receipt_id"]
+        )
+        assert invocations == ["hi", "hi"]
+        assert len(await _ledger_debits(client, provisioned, "echo-window-expiry")) == 2
+    finally:
+        get_service_registry().unregister_local("echo-window-expiry")
+
+
 @pytest.mark.anyio
 async def test_unkeyed_read_only_tool_is_refused_without_dispatch(
     client, standard_mcp_enabled, clean_database

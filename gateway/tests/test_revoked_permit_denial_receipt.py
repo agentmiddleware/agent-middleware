@@ -11,6 +11,8 @@ This test suite verifies the design partner's claim that a revoked permit:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -720,11 +722,6 @@ async def test_tampered_portable_signed_field_rejected(
         get_service_registry().unregister_local(tool_name)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Gateway bug: revoked permit not enforced on POST /mcp/tools/{service_id}/invoke; permit validated at mcp.py:1427 but code path unclear; root cause not yet isolated",
-)
 @pytest.mark.anyio
 async def test_revoked_permit_via_rest_invoke(client, clean_database):
     """QA gap 5: Revoked permit denial through POST /mcp/tools/{service_id}/invoke."""
@@ -763,7 +760,7 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
             json={
                 "name": tool_name,
                 "arguments": {"message": "test"},
-                "mcpContext": {
+                "mcp_context": {
                     "wallet_id": provisioned["agent_wallet_id"],
                     "permit_id": permit["permit_id"],
                     "idempotency_key": "revoked-rest-invoke-1",
@@ -771,19 +768,23 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
             },
             headers=provisioned["agent_headers"],
         )
-        # QA gap 5: Expect 403 with permit_revoked
+        # Expect 403 with permit_revoked
         assert call_resp.status_code == 403
         error = call_resp.json()
         assert "permit_revoked" in str(error).lower()
+
+        # Verify no charge was made
+        balance_resp = await client.get(
+            f"/v1/wallets/{provisioned['agent_wallet_id']}/balance",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert balance_resp.status_code == 200
+        balance = balance_resp.json()
+        assert balance["balance"] == "100.00", "Balance changed despite denial"
     finally:
         get_service_registry().unregister_local(tool_name)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="Gateway bug: revoked permit not enforced on POST /mcp; permit validated at mcp.py:1427 but code path unclear; root cause not yet isolated",
-)
 @pytest.mark.anyio
 async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
     """QA gap 6: Revoked permit denial through standard POST /mcp endpoint."""
@@ -826,12 +827,12 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
                 "params": {
                     "name": tool_name,
                     "arguments": {"message": "test"},
+                    "_meta": {"io.agentmiddleware/permit_id": permit["permit_id"]},
                 },
             },
             headers={
                 **provisioned["agent_headers"],
                 "X-Wallet-ID": provisioned["agent_wallet_id"],
-                "X-Permit-ID": permit["permit_id"],
                 "Accept": "application/json",
             },
         )
@@ -918,17 +919,7 @@ async def test_revoked_permit_details_includes_revoked_at(client, clean_database
 
 @pytest.mark.parametrize(
     "terminal_status",
-    [
-        "revoked",
-        pytest.param(
-            "exhausted",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason="Gateway bug: exhausted permit during reserve raises internal_error instead of denying with permit_exhausted. See gateway/app/services/permits.py:867",
-            ),
-        ),
-    ],
+    ["revoked", "exhausted"],
 )
 @pytest.mark.anyio
 async def test_permit_revoked_during_reserve_is_denied(
@@ -967,7 +958,7 @@ async def test_permit_revoked_during_reserve_is_denied(
                     model.revoked_at = utc_now()
                 elif terminal_status == "exhausted":
                     model.status = "exhausted"
-                    model.spent_credits = model.total_credits
+                    model.spent_credits = model.max_credits
                 await resign_permit_model(model)
                 session.add(model)
                 await session.commit()
@@ -994,5 +985,150 @@ async def test_permit_revoked_during_reserve_is_denied(
                 "permit_revoked" if terminal_status == "revoked" else "permit_exhausted"
             )
             assert error["message"] == expected_message
+    finally:
+        get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_database):
+    """Revoked permit refused in authorize_reserve_and_prepare with no debit and no dispatch attempt row.
+
+    Uses an upstream MCP executor (not just a local callable) to verify denial happens
+    in mcp_dispatch_attempts.authorize_reserve_and_prepare before any dispatch attempt
+    row is created or credits are debited.
+    """
+    from app.models.mcp_dispatch_attempt import McpDispatchAttemptModel
+    from sqlalchemy import select
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "revoked-upstream-dispatch-tool"
+
+    # Register an upstream MCP service (not a local callable)
+    service_id = "upstream-test-service"
+    registry = get_service_registry()
+    registry.register(
+        service_id=service_id,
+        definition={
+            "name": service_id,
+            "transport": "sse",
+            "url": "http://example.com/mcp",
+            "tools": [{"name": tool_name}],
+        },
+    )
+
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+            idem_key="test_revoked_permit_denied_before_upstream_dispatch-1",
+        )
+
+        # Revoke the permit
+        revoke_resp = await client.post(
+            f"/v1/permits/{permit['permit_id']}/revoke",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert revoke_resp.status_code == 200
+
+        # Try to invoke - should be denied before dispatch
+        call_resp = await client.post(
+            "/mcp/messages",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "tool_name": tool_name,
+                                "arguments": {"message": "test"},
+                            }
+                        ),
+                    }
+                ],
+                "mcp_context": {
+                    "wallet_id": provisioned["agent_wallet_id"],
+                    "permit_id": permit["permit_id"],
+                    "idempotency_key": "revoked-upstream-1",
+                },
+            },
+            headers=provisioned["agent_headers"],
+        )
+        assert call_resp.status_code == 200
+        error = call_resp.json()["error"]
+        assert error["message"] == "permit_revoked"
+
+        # Verify no dispatch attempt row was created
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(McpDispatchAttemptModel).where(
+                    McpDispatchAttemptModel.permit_id == permit["permit_id"]
+                )
+            )
+            attempts = result.scalars().all()
+            assert len(attempts) == 0, "Dispatch attempt created despite denial"
+
+        # Verify no debit
+        balance_resp = await client.get(
+            f"/v1/wallets/{provisioned['agent_wallet_id']}/balance",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert balance_resp.status_code == 200
+        balance = balance_resp.json()
+        assert balance["balance"] == "100.00", "Balance changed despite denial"
+    finally:
+        registry.unregister(service_id)
+
+
+@pytest.mark.anyio
+async def test_camelcase_mcp_context_is_ignored_regression(client, clean_database):
+    """Regression test: camelCase 'mcpContext' in REST invoke body is currently ignored.
+
+    Documents the current behavior where ToolCallRequest only accepts snake_case
+    'mcp_context', not camelCase 'mcpContext'. This is expected behavior per the
+    schema at mcp.py:633-640.
+    """
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "camelcase-test-tool"
+    _register_test_tool(tool_name)
+
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+            idem_key="test_camelcase_mcp_context_is_ignored_regression-1",
+        )
+
+        # Revoke to make it obvious if permit was used
+        revoke_resp = await client.post(
+            f"/v1/permits/{permit['permit_id']}/revoke",
+            headers={"X-API-Key": "test-key"},
+        )
+        assert revoke_resp.status_code == 200
+
+        # Send camelCase mcpContext - it should be ignored and auto-mint a permit
+        call_resp = await client.post(
+            f"/mcp/tools/{tool_name}/invoke",
+            json={
+                "name": tool_name,
+                "arguments": {"message": "test"},
+                "mcpContext": {
+                    "wallet_id": provisioned["agent_wallet_id"],
+                    "permit_id": permit["permit_id"],
+                    "idempotency_key": "camelcase-ignored-1",
+                },
+            },
+            headers=provisioned["agent_headers"],
+        )
+
+        # Tool executes because camelCase was ignored and auto-minting succeeded
+        assert call_resp.status_code == 200
+        result = call_resp.json()
+        assert "result" in result
+        assert result["result"]["output"] == "test"
     finally:
         get_service_registry().unregister_local(tool_name)

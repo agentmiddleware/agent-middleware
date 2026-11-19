@@ -132,13 +132,13 @@ def rate_limit_discovery() -> dict[str, Any]:
     ``shared_redis`` when ``REDIS_URL`` is set, otherwise ``per_process``. It
     reports configuration, not live state: with ``REDIS_URL`` set but
     unreachable outside a production-like environment the limiter counts in
-    memory while the field still says ``shared_redis``. Without ``REDIS_URL``
-    every worker and replica keeps its own counters in any environment, so each
-    limit is multiplied by the process count. Only a production-like deployment
-    that sets ``REDIS_URL`` refuses to fall back to memory when Redis fails. A
-    production-like deployment without ``REDIS_URL`` is reported as degraded on
-    ``/health/dependencies`` (``runtime_degradation``, reason
-    ``rate_limiter_redis_not_configured``) and logged once at startup.
+    memory while the field still says ``shared_redis``. Production-like
+    environments refuse to boot without ``REDIS_URL`` unless
+    ``ALLOW_IN_MEMORY_STORE=true``; with the opt-out, every worker and replica
+    keeps its own counters, so each limit is multiplied by the process count,
+    and the deployment is reported as degraded on ``/health/dependencies``
+    (``runtime_degradation``, reason ``in_memory_store_allowed_in_production``)
+    and logged once at startup.
 
     Requests whose credentials the app does not accept — a ``401``, the
     ``403`` an unknown API key is answered with, or any request to a route

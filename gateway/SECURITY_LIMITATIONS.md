@@ -157,18 +157,13 @@ repo; do not Redeploy from GitHub source).
   rate-limiter outage (HTTP 503) instead of silently using per-process memory.
   `/health/dependencies` exposes `runtime_degradation` when any configured
   backend has fallen back to in-memory.
-- A production-like deployment that never sets `REDIS_URL` still boots, and its
-  rate limiter counts in process memory: each worker and replica keeps its own
-  counters, so every limit is multiplied by the process count, and nothing
-  fails closed because there is no shared backend to lose. The runtime
-  reports this instead of looking healthy: `/health/dependencies` shows
-  `runtime_degradation.degraded` as `true` with the stable reason
-  `rate_limiter_redis_not_configured`, and the app logs one startup warning
-  with the same reason per process. The HTTP status of `/health/dependencies`
-  and the set of configurations that boot are unchanged. Requiring
-  `REDIS_URL` at boot would be a breaking change for single-process
-  deployments, so it is left as a separate, announced decision for the
-  maintainers.
+- Production-like environments refuse to boot without `REDIS_URL` unless
+  `ALLOW_IN_MEMORY_STORE=true`. With the opt-out, the rate limiter counts in
+  process memory: each worker and replica keeps its own counters, so every
+  limit is multiplied by the process count. The runtime reports this instead
+  of looking healthy: `/health/dependencies` shows `runtime_degradation.degraded`
+  as `true` with the stable reason `rate_limiter_redis_not_configured`,
+  and the app logs one startup warning with the same reason per process.
 - All Phase 9 AWI MCP tools always require signed permits (`requirePermit` in
   `/mcp/tools.json`), even if legacy unpermitted MCP is enabled. Those stubs
   are not wedge product; Phase 2 drops them from discovery when proof
@@ -363,11 +358,12 @@ missing control.
   edge request-count/connection cap remains the operator's job, as noted
   under inbound body bounding above.
 - With `REDIS_URL` set, a Redis outage in production-like environments fails
-  closed (`503`), never silently wider than declared. Without `REDIS_URL`
-  there is no shared limiter to lose: each worker or replica enforces the
-  declared limit on its own, so the effective limit is the declared limit times
-  the process count, and a production-like deployment is reported as degraded
-  (see the startup posture notes above).
+  closed (`503`), never silently wider than declared. Production-like
+  environments without `REDIS_URL` refuse to boot unless
+  `ALLOW_IN_MEMORY_STORE=true` is explicitly set. When the opt-out is used,
+  each worker or replica enforces the declared limit on its own, so the
+  effective limit is the declared limit times the process count, and the
+  deployment is reported as degraded in health endpoints and startup logs.
 
 `GET /` and `GET /v1/discover` both publish this as `rate_limits`.
 

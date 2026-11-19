@@ -115,6 +115,7 @@ def _production_cors(**overrides: str) -> dict:
         "enable_proof_surfaces": False,
         "debug": False,
         "webauthn_allow_mock": False,
+        "redis_url": "redis://redis.internal:6379/0",
         "database_url": _POSTGRES,
         "cors_origins": "https://app.example.com",
     }

@@ -65,6 +65,7 @@ def _prod_config(**overrides):
         "signing_private_key_b64": VALID_PROD_SIGNING_KEY,
         "allow_legacy_unpermitted_mcp": False,
         "enable_proof_surfaces": False,
+        "redis_url": "redis://redis.internal:6379/0",
         "database_url": VALID_PROD_DATABASE_URL,
     }
     base.update(overrides)

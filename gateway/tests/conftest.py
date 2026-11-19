@@ -545,3 +545,21 @@ def _clear_verified_api_key_cache():
     clear_verified_key_cache()
     yield
     clear_verified_key_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_degradation():
+    """Reset runtime degradation flags and settings cache after each test.
+
+    Tests that simulate production-like behavior or Redis unavailability may
+    set degradation flags or monkeypatch settings. The get_settings lru cache
+    can leak stale settings between tests. This fixture ensures both the flags
+    and the cache are cleared so they don't leak to other tests in the same
+    worker process.
+    """
+    from app.core.runtime_degradation import reset_runtime_degradation
+    from app.core.config import get_settings
+
+    yield
+    reset_runtime_degradation()
+    get_settings.cache_clear()

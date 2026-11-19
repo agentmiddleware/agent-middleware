@@ -49,7 +49,10 @@ from .core.product_positioning import (
     POSITIONING_TAGLINE,
 )
 from .core.rate_limiter import RateLimitMiddleware, rate_limit_discovery
-from .core.runtime_degradation import warn_if_rate_limiter_memory_only
+from .core.runtime_degradation import (
+    get_runtime_degradation,
+    warn_if_rate_limiter_memory_only,
+)
 from .core.runtime_mode import get_simulation_modes
 from .middleware.head_method import HeadMethodMiddleware
 from .middleware.error_envelope import ErrorEnvelopeMiddleware, error_envelope
@@ -196,6 +199,7 @@ async def lifespan(app: FastAPI):
         simulation_modes=get_simulation_modes(),
         cors_origins=settings.CORS_ORIGINS,
         tenant_rls_mode=settings.TENANT_RLS_MODE,
+        allow_in_memory_store=bool(settings.ALLOW_IN_MEMORY_STORE),
     )
     # A public deployment whose manifest tells agents the operator has no
     # contact is a discovery-honesty defect, not a neutral default. Partial
@@ -1281,11 +1285,21 @@ async def root(request: Request):
 )
 async def health():
     redis_status = await check_redis_liveness()
-    healthy = redis_status != "down"
+    degradation = get_runtime_degradation()
+
+    # Redis down is a hard failure (503). The opt-out only covers missing
+    # REDIS_URL, not an unreachable configured Redis.
+    hard_failure = redis_status == "down"
+    status = (
+        "healthy"
+        if (redis_status != "down" and not degradation["degraded"])
+        else "degraded"
+    )
+
     return JSONResponse(
-        status_code=200 if healthy else 503,
+        status_code=503 if hard_failure else 200,
         content={
-            "status": "healthy" if healthy else "degraded",
+            "status": status,
             "version": settings.APP_VERSION,
             "commit_sha": get_build_commit_sha(),
             # Same field /health/dependencies publishes, so the liveness probe
@@ -1297,6 +1311,7 @@ async def health():
             # validated enum, never a credential.
             "tenant_rls_mode": get_settings().TENANT_RLS_MODE,
             "checks": {"redis": redis_status},
+            "runtime_degradation": degradation,
         },
     )
 
@@ -1337,12 +1352,28 @@ async def health_ready():
     if checks["database"]["status"] != "up":
         all_healthy = False
 
+    degradation = get_runtime_degradation()
+
+    # Determine status: hard check failures take precedence and return 503.
+    # Otherwise, runtime_degradation makes it degraded (200), and passing
+    # all checks makes it ready (200).
+    if not all_healthy:
+        status = "not_ready"
+        status_code = 503
+    elif degradation["degraded"]:
+        status = "degraded"
+        status_code = 200
+    else:
+        status = "ready"
+        status_code = 200
+
     return JSONResponse(
-        status_code=200 if all_healthy else 503,
+        status_code=status_code,
         content={
-            "status": "ready" if all_healthy else "not_ready",
+            "status": status,
             "version": settings.APP_VERSION,
             "checks": checks,
+            "runtime_degradation": degradation,
         },
     )
 

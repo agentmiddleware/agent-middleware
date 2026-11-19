@@ -245,28 +245,26 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
         )
         assert revoke_resp.status_code == 200
 
-        # QA gap 4: Mock upstream executor to verify no dispatch
-        with patch("app.services.executor.dispatch") as mock_executor:
-            # Try to invoke with revoked permit
-            call_resp = await client.post(
-                "/mcp/messages",
-                json=_mcp_call(
-                    provisioned["agent_wallet_id"],
-                    revoked_permit["permit_id"],
-                    tool_name,
-                    "revoked-call-2",
-                ),
-                headers=provisioned["agent_headers"],
-            )
-            assert call_resp.status_code == 200
-            error = call_resp.json()["error"]
-            assert error["message"] == "permit_revoked"
+        # Try to invoke with revoked permit
+        call_resp = await client.post(
+            "/mcp/messages",
+            json=_mcp_call(
+                provisioned["agent_wallet_id"],
+                revoked_permit["permit_id"],
+                tool_name,
+                "revoked-call-2",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert call_resp.status_code == 200
+        error = call_resp.json()["error"]
+        assert error["message"] == "permit_revoked"
 
-            # QA gap 4: Assert no dispatch_attempt_id in response
-            assert "dispatch_attempt_id" not in error.get("data", {})
+        # QA gap 4: Assert no dispatch_attempt_id in response
+        assert "dispatch_attempt_id" not in error.get("data", {})
 
-            # Verify the tool was never invoked
-            assert len(dispatched) == 0
+        # QA gap 4: Verify the tool was never invoked via tracking_tool callback
+        assert len(dispatched) == 0
 
             # QA gap 4: Verify upstream executor was never called
             mock_executor.assert_not_called()
@@ -901,7 +899,7 @@ async def test_permit_revoked_during_reserve_is_denied(
     """
     from unittest.mock import patch
     from app.routers.mcp import evaluate_wallet_policy
-    from utils.time import utc_now
+    from app.core.time import utc_now
     from app.services.permits import resign_permit_model
 
     provisioned = await provision_agent_wallet(client)

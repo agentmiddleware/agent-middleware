@@ -23,6 +23,7 @@ from app.services.service_registry import get_service_registry
 from tests.test_trust_helpers import (
     create_tool_permit,
     provision_agent_wallet,
+    resign_permit_model,
 )
 
 
@@ -183,7 +184,6 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
     asserts no dispatch_attempt_id and no mcp_dispatch_attempts row.
     """
     from app.db.models import McpDispatchAttemptModel
-    from unittest.mock import patch
 
     provisioned = await provision_agent_wallet(client)
     tool_name = "revoked-no-dispatch-tool"

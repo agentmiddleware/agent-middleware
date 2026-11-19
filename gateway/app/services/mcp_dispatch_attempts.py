@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Any, cast
 from urllib.parse import urlsplit
 
-from sqlalchemy import func, select, update as sa_update
+from sqlalchemy import func, not_, or_, select, update as sa_update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -42,6 +42,7 @@ from app.services.permits import (
     get_permit_service,
 )
 from app.services.signing_keys import canonical_json, sha256_hex
+from app.services.refund_reconciliation import UNSIGNED_RECEIPT_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -2142,6 +2143,20 @@ class McpDispatchAttemptService:
                         cast(
                             ColumnElement[bool],
                             cast(Any, ReceiptModel.receipt_id).is_(None),
+                        ),
+                        # A pending refund recorded without a signed receipt
+                        # (RefundReconciliationService.create_pending) is
+                        # owned by sign_unsigned_pending and the operator
+                        # retry, exactly as a signed failed_unrefunded receipt
+                        # is: compensating it here as well could refund money
+                        # that the unsigned item still lists as owed.
+                        or_(
+                            cast(Any, IdempotencyRecordModel.response_json).is_(None),
+                            not_(
+                                cast(
+                                    Any, IdempotencyRecordModel.response_json
+                                ).contains(f'"{UNSIGNED_RECEIPT_KEY}"')
+                            ),
                         ),
                     )
                     .order_by(

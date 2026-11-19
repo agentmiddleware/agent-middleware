@@ -737,10 +737,11 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
         )
 
         # Revoke the permit
-        await client.post(
+        revoke_resp = await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
             headers={"X-API-Key": "test-key"},
         )
+        assert revoke_resp.status_code == 200, f"Revoke failed: {revoke_resp.json()}"
 
         # Try to invoke via REST endpoint
         call_resp = await client.post(
@@ -781,10 +782,11 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
         )
 
         # Revoke the permit
-        await client.post(
+        revoke_resp = await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
             headers={"X-API-Key": "test-key"},
         )
+        assert revoke_resp.status_code == 200, f"Revoke failed: {revoke_resp.json()}"
 
         # Try to invoke via standard /mcp endpoint
         call_resp = await client.post(

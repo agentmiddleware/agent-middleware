@@ -1080,6 +1080,9 @@ async def test_permit_revoked_during_reserve_is_denied(
             assert "receipt" in error["data"]
             reason_code = error["data"]["receipt"]["reason_code"]
             assert reason_code == expected_reason
+            # Also assert message for revoked case (exhausted returns generic message)
+            if terminal_status == "revoked":
+                assert error["message"] == expected_reason
 
         # Verify no charge was made
         balance_resp = await client.get(
@@ -1266,16 +1269,17 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
 
 @pytest.mark.xfail(
     strict=True,
-    reason="KNOWN ISSUE: camelCase mcpContext in REST invoke body is silently dropped; should reject (400) or honor permit",
+    raises=AssertionError,
+    reason="KNOWN ISSUE: camelCase mcpContext in REST invoke body is silently dropped; should reject (400/422) or honor permit",
 )
 @pytest.mark.anyio
 async def test_camelcase_mcp_context_is_ignored_regression(client, clean_database):
     """KNOWN ISSUE: camelCase 'mcpContext' in REST invoke body is silently dropped.
 
     ToolCallRequest schema (mcp.py:633-640) only accepts snake_case 'mcp_context',
-    not camelCase 'mcpContext'. The DESIRED behavior is: reject with 400 or honor
-    the permit. Current behavior: field is dropped and call proceeds, ignoring the
-    revoked permit.
+    not camelCase 'mcpContext'. The DESIRED behavior is: reject with 400/422 or
+    honor the permit with permit_revoked denial. Current behavior: field is dropped
+    and call proceeds, ignoring the revoked permit.
     """
     provisioned = await provision_agent_wallet(client)
     tool_name = "camelcase-test-tool"
@@ -1297,6 +1301,14 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
         )
         assert revoke_resp.status_code == 200
 
+        # Snapshot wallet balance before call
+        balance_resp = await client.get(
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert balance_resp.status_code == 200
+        starting_balance = balance_resp.json()["balance"]
+
         # Send camelCase mcpContext
         call_resp = await client.post(
             f"/mcp/tools/{tool_name}/invoke",
@@ -1312,15 +1324,47 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
             headers=provisioned["agent_headers"],
         )
 
-        # DESIRED: call is refused (4xx or permit_revoked denial)
-        if call_resp.status_code >= 400:
-            # Either rejected at schema validation (4xx) or denied
-            assert call_resp.status_code in (400, 403)
+        # DESIRED: EITHER request-validation rejection OR permit_revoked denial
+        if call_resp.status_code in (400, 422):
+            # Request validation rejected camelCase field
+            pass
+        elif call_resp.status_code == 403:
+            # HTTP 403 governed denial - must be permit_revoked
+            error = call_resp.json()
+            assert error["detail"]["error"] == "permit_revoked", (
+                f"403 must be permit_revoked, got {error.get('detail', {}).get('error')}"
+            )
         else:
-            # Or handled as permit_revoked denial
+            # HTTP 200 with denial response
             assert call_resp.status_code == 200
             response = call_resp.json()
-            assert "error" in response or response.get("isError") is True
+            assert response.get("isError") is True, "Expected isError=True for denial"
+            # Must have explicit permit_revoked code/reason
+            if "error" in response:
+                error_obj = response["error"]
+                # Check for permit_revoked in message, code, or data.receipt.reason_code
+                has_permit_revoked = (
+                    error_obj.get("message") == "permit_revoked"
+                    or error_obj.get("code") == "permit_revoked"
+                    or (
+                        "data" in error_obj
+                        and "receipt" in error_obj["data"]
+                        and error_obj["data"]["receipt"].get("reason_code")
+                        == "permit_revoked"
+                    )
+                )
+                assert has_permit_revoked, (
+                    f"Expected permit_revoked denial, got {error_obj}"
+                )
+
+        # Verify wallet balance unchanged
+        balance_resp = await client.get(
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert balance_resp.status_code == 200
+        final_balance = balance_resp.json()["balance"]
+        assert final_balance == starting_balance, "Wallet balance should be unchanged"
 
         # Verify revoked permit was not charged
         factory = get_session_factory()

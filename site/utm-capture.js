@@ -76,4 +76,21 @@ function persistAttribution(record) {
   }
 }
 
-persistAttribution(captureAttribution());
+function registerPosthogAttribution(record) {
+  // The demo-key record also contains a referrer. Only the five capped UTMs
+  // belong in analytics, including when they were carried from an earlier page.
+  const properties = {};
+  for (const key of UTM_PARAMS) {
+    if (record[key]) properties[key] = record[key];
+  }
+  if (Object.keys(properties).length === 0) return;
+  try {
+    if (typeof window !== "undefined") window.amwPosthog?.register(properties);
+  } catch {
+    // Analytics is optional and must not affect demo-key attribution storage.
+  }
+}
+
+const attribution = captureAttribution();
+persistAttribution(attribution);
+registerPosthogAttribution(attribution);

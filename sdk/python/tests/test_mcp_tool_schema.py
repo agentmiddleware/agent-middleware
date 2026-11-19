@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 import json
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
 import pytest
 
@@ -246,7 +246,7 @@ def test_same_named_definitions_from_different_models_stay_distinct(
     assert c_ref == a_ref
 
 
-if pydantic is not None:
+if pydantic is not None and int(pydantic.VERSION.split(".")[0]) >= 2:
 
     class Address(pydantic.BaseModel):
         city: str
@@ -256,7 +256,10 @@ if pydantic is not None:
         address: Address
 
 
-@pytest.mark.skipif(pydantic is None, reason="pydantic is not installed")
+@pytest.mark.skipif(
+    pydantic is None or int(pydantic.VERSION.split(".")[0]) < 2,
+    reason="needs pydantic 2 or newer",
+)
 def test_pydantic_nested_model_refs_resolve(registrations: list[dict[str, Any]]) -> None:
     @mcp_tool(service_id="pydantic-nested")
     async def tool(owner: Person, team: list[Person], backup: Person | None = None) -> dict:
@@ -270,3 +273,69 @@ def test_pydantic_nested_model_refs_resolve(registrations: list[dict[str, Any]])
         assert _resolve(schema, ref)["properties"]["city"]["type"] == "string"
     assert '"$defs":' not in json.dumps(schema["properties"])
     assert schema["required"] == ["owner", "team"]
+
+
+class _BoxHolder:
+    """Two levels of definitions: the tool refs Box, and Box refs Item."""
+
+    value_type = "integer"
+
+    @classmethod
+    def model_json_schema(cls) -> dict[str, Any]:
+        return {
+            "$defs": {
+                "Box": {"type": "object", "properties": {"item": {"$ref": "#/$defs/Item"}}},
+                "Item": {"type": "object", "properties": {"value": {"type": cls.value_type}}},
+            },
+            "type": "object",
+            "properties": {"box": {"$ref": "#/$defs/Box"}},
+        }
+
+
+class _TextBoxHolder(_BoxHolder):
+    value_type = "string"
+
+
+def _item_value_type(schema: dict[str, Any], holder: dict[str, Any]) -> str:
+    box = _resolve(schema, holder["properties"]["box"]["$ref"])
+    item = _resolve(schema, box["properties"]["item"]["$ref"])
+    return cast(str, item["properties"]["value"]["type"])
+
+
+def test_equal_definitions_that_ref_conflicting_ones_are_not_merged(
+    registrations: list[dict[str, Any]],
+) -> None:
+    @mcp_tool(service_id="graph-clash")
+    async def tool(
+        a: _BoxHolder,
+        b: _TextBoxHolder,
+        c: list[_BoxHolder],
+        d: _TextBoxHolder | None = None,
+    ) -> dict:
+        return {}
+
+    schema = registrations[0]["input_schema"]
+    props = schema["properties"]
+    assert _item_value_type(schema, props["a"]) == "integer"
+    assert _item_value_type(schema, props["b"]) == "string"
+    assert _item_value_type(schema, props["c"]["items"]) == "integer"
+    assert _item_value_type(schema, props["d"]["anyOf"][0]) == "string"
+    assert set(schema["$defs"]) == {"Box", "Item", "Box_2", "Item_2"}
+    assert props["c"]["items"] == props["a"]
+    assert props["d"]["anyOf"][0] == props["b"]
+
+
+class Ratio(enum.Enum):
+    UNBOUNDED = float("inf")
+
+
+def test_non_finite_enum_values_fall_back_to_any(
+    registrations: list[dict[str, Any]],
+) -> None:
+    @mcp_tool(service_id="non-finite")
+    async def tool(ratio: Ratio, limit: Literal[Ratio.UNBOUNDED]) -> dict:
+        return {}
+
+    schema = registrations[0]["input_schema"]
+    assert schema["properties"] == {"ratio": {}, "limit": {}}
+    assert json.loads(json.dumps(schema, allow_nan=False)) == schema

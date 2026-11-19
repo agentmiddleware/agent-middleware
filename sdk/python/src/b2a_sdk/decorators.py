@@ -116,12 +116,12 @@ def _json_schema_enum(values: Any) -> dict[str, Any]:
     """Build an ``enum`` fragment from literal values or enum members.
 
     Enum members contribute their ``.value``. If any value still cannot be
-    written as JSON, the fragment is ``{}`` (any value) so the schema stays
-    serializable.
+    written as strict JSON (bytes, or a non-finite number), the fragment is
+    ``{}`` (any value) so the schema stays serializable.
     """
     choices = [value.value if isinstance(value, enum.Enum) else value for value in values]
     try:
-        json.dumps(choices)
+        json.dumps(choices, allow_nan=False)
     except (TypeError, ValueError):
         return {}
     return {"enum": choices}
@@ -161,26 +161,45 @@ def _hoist_definitions(schema: dict[str, Any], defs: dict[str, dict[str, Any]]) 
         return schema
     body = {key: value for key, value in schema.items() if key not in found}
 
-    renames: dict[str, str] = {}
-    targets: dict[tuple[str, str], str] = {}
-    for keyword, definitions in found.items():
-        taken = set(defs.get(keyword, {})) | set(definitions)
-        for name, definition in definitions.items():
-            target = name
-            if defs.get(keyword, {}).get(name, definition) != definition:
-                suffix = 2
-                while f"{name}_{suffix}" in taken:
-                    suffix += 1
-                target = f"{name}_{suffix}"
-                taken.add(target)
-                renames[f"#/{keyword}/{name}"] = f"#/{keyword}/{target}"
-            targets[keyword, name] = target
+    # Pick a root name for every incoming definition. A name is shared with a
+    # stored definition only when the two are equal after the incoming refs
+    # are rewritten, so a definition that merely points at a conflicting one
+    # is renamed too and the stored graph is never changed.
+    incoming = [(keyword, name) for keyword, names in found.items() for name in names]
+    targets = {(keyword, name): name for keyword, name in incoming}
+    suffixes = dict.fromkeys(incoming, 1)
+    while True:
+        renames = {
+            f"#/{keyword}/{name}": f"#/{keyword}/{target}"
+            for (keyword, name), target in targets.items()
+            if target != name
+        }
+        rewritten = {
+            (keyword, name): _rewrite_refs(found[keyword][name], renames)
+            for keyword, name in incoming
+        }
+        settled = True
+        for keyword, name in incoming:
+            stored = defs.get(keyword, {}).get(targets[keyword, name])
+            if stored is None or stored == rewritten[keyword, name]:
+                continue
+            settled = False
+            others = {
+                target
+                for (other_keyword, other), target in targets.items()
+                if other_keyword == keyword and other != name
+            } | (set(found[keyword]) - {name})
+            while True:
+                suffixes[keyword, name] += 1
+                candidate = f"{name}_{suffixes[keyword, name]}"
+                if candidate not in others:
+                    break
+            targets[keyword, name] = candidate
+        if settled:
+            break
 
-    for keyword, definitions in found.items():
-        for name, definition in definitions.items():
-            defs.setdefault(keyword, {})[targets[keyword, name]] = _rewrite_refs(
-                definition, renames
-            )
+    for keyword, name in incoming:
+        defs.setdefault(keyword, {})[targets[keyword, name]] = rewritten[keyword, name]
     return cast(dict[str, Any], _rewrite_refs(body, renames))
 
 

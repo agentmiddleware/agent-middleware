@@ -1013,6 +1013,8 @@ class ReceiptResolutionModel(SQLModel, table=True):
     prev_hash: Optional[str] = Field(default=None, max_length=64)
     receipt_hash: str = Field(max_length=64, index=True)
     outcome: str = Field(max_length=32)
+    evidence: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    evidence_hash: Optional[str] = Field(default=None, max_length=64)
     created_at: datetime = Field(sa_type=NaiveUTCDateTime, default_factory=utc_now)
     payload_hash: str = Field(max_length=64)
     resolution_hash: str = Field(max_length=64, unique=True, index=True)

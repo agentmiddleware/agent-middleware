@@ -4,6 +4,16 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ## [Unreleased]
 
+### Operator receipt resolution (SEL-351 follow-up)
+
+- Add a bootstrap-admin-only resolution endpoint and operator CLI for signed
+  delivery_uncertain receipts, with bounded evidence and explicit refunds.
+- Add schema 058 evidence columns and resolution-v0.2 evidence-hash signatures;
+  preserve offline verification of resolution-v0.1 and original receipt bytes.
+- Keep original replays unchanged; repeat requests finish interrupted refunds
+  through separate ledger entries. Optional fixture lookups remain unregistered
+  by default and refuse unfenced negative answers.
+
 - Receipts: additive signed fields `permit_digest`, `approval_digest`,
   `counterparty`, `sequence` (per-permit, from 0 when a caller opts in; left
   unset otherwise), and `prev_receipt_digest` (omitted at sequence 0). Digests

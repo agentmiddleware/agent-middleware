@@ -137,7 +137,7 @@ Proven by `tests/test_audit_chain_contention_surface.py` and
 `tests/test_receipt_write_contention_surface.py`, which also pin that an
 ordinary bug in the same window still returns `-32603`.
 
-## Why `delivery_uncertain` cannot be "fixed"
+## Resolving `delivery_uncertain` without changing the receipt
 
 The durable dispatch claim is written immediately before the network
 send (`before_dispatch` in `app/services/upstream_mcp.py`). Every failure
@@ -154,6 +154,15 @@ honestly* rather than guess:
   reconciler imports no executor at all;
 - resolution belongs to the caller and the upstream provider, using the
   forwarded idempotency metadata (below) and the signed evidence.
+
+An operator can append a signed, evidence-bound resolution through the
+bootstrap-admin-only endpoint. The original receipt and replay remain
+`delivery_uncertain`; the gateway never redispatches. The charge stands unless
+an operator records `confirmed_not_delivered` with evidence and explicitly
+requests a refund. That refund is a separate ledger entry. Exact retries finish
+interrupted compensation; conflicting evidence or outcomes are refused.
+See the [operator resolution runbook](operator-resolution-runbook.md) for
+lookup limitations, sender fencing, refunds, and offline verification.
 
 Retaining the charge is a deliberate incentive choice: an ambiguous call that
 auto-refunded would pay callers to induce timeouts against providers whose

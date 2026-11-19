@@ -1883,7 +1883,17 @@ class McpDispatchAttemptService:
                         "dispatch_refund_ledger_conflict"
                     )
                 if attempt.state != "returned_error":
-                    raise DispatchAttemptConflictError("dispatch_refund_state_invalid")
+                    from app.services.receipt_resolutions import (
+                        operator_refund_authorized,
+                    )
+
+                    if (
+                        attempt.state != "delivery_uncertain"
+                        or not await operator_refund_authorized(session, attempt_id)
+                    ):
+                        raise DispatchAttemptConflictError(
+                            "dispatch_refund_state_invalid"
+                        )
                 refund = (
                     await session.execute(
                         select(LedgerEntryModel).where(

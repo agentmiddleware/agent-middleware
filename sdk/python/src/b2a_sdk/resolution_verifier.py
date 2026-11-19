@@ -139,9 +139,22 @@ def _verify_record(
     if not verify_ed25519(key, signature, signing_bytes):
         return _fail(VerificationStatus.INVALID, "resolution signature does not verify")
 
-    if claims.get("alg") != "Ed25519" or claims.get("version") != _VERSION:
+    if claims.get("alg") != "Ed25519" or claims.get("version") not in {_VERSION, "resolution-v0.2"}:
         return _fail(VerificationStatus.UNSUPPORTED, "unsupported signed resolution format")
-    if set(claims) != _SIGNED_FIELDS:
+    signed_fields = _SIGNED_FIELDS | (
+        {"evidence_hash"} if claims["version"] == "resolution-v0.2" else set()
+    )
+    if "evidence_hash" in signed_fields:
+        evidence = envelope.get("evidence")
+        if not isinstance(evidence, dict) or not _is_hash(claims.get("evidence_hash")):
+            return _fail(VerificationStatus.MALFORMED, "resolution evidence missing")
+        try:
+            digest = hashlib.sha256(canonical_json(evidence).encode("utf-8")).hexdigest()
+        except (ValueError, TypeError, RecursionError):
+            return _fail(VerificationStatus.MALFORMED, "resolution evidence invalid")
+        if digest != claims["evidence_hash"]:
+            return _fail(VerificationStatus.MISMATCH, "resolution evidence hash disagrees")
+    if set(claims) != signed_fields:
         return _fail(VerificationStatus.MALFORMED, "signed resolution fields are incomplete")
     for name in ("resolution_id", "receipt_id", "wallet_id", "kid"):
         if not isinstance(claims[name], str) or not claims[name]:
@@ -178,7 +191,7 @@ def _verify_record(
         return _fail(VerificationStatus.MISMATCH, "resolution canonicalization disagrees")
     if envelope.get("resolution_hash") != resolution_hash:
         return _fail(VerificationStatus.MISMATCH, "resolution_hash disagrees with signing_input")
-    for name in _SIGNED_FIELDS:
+    for name in signed_fields:
         if name not in envelope:
             return _fail(VerificationStatus.MALFORMED, f"resolution envelope has no {name}")
         if type(envelope[name]) is not type(claims[name]) or envelope[name] != claims[name]:

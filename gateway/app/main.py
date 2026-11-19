@@ -613,6 +613,43 @@ app = FastAPI(
     servers=build_openapi_servers(settings.PUBLIC_URL, settings.ENVIRONMENT),
 )
 
+
+def custom_openapi():
+    """Customize OpenAPI schema with security defaults.
+
+    Adds a default security requirement (API key or Bearer token) for all
+    endpoints except those explicitly marked as public (discovery endpoints).
+    This is a spec-level change only and does not alter runtime behavior.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    from fastapi.openapi.utils import get_openapi
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        servers=app.servers,
+        license_info=app.license_info,
+        contact=app.contact,
+        terms_of_service=app.terms_of_service,
+    )
+
+    # Add default security requirement (per-endpoint overrides already win)
+    if "security" not in openapi_schema:
+        openapi_schema["security"] = [
+            {"APIKeyHeader": []},
+            {"HTTPBearer": []},
+        ]
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi  # type: ignore[method-assign]
+
 # --- Middleware Stack ---
 
 # Run inside the rate limiter so its accepted-credential holder is shared

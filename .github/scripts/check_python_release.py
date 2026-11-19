@@ -10,9 +10,9 @@ def verify_release(
     event_name: str, tag: str, input_version: str, pyproject: Path, dist: Path
 ) -> str:
     if event_name == "push":
-        if not tag.startswith("python-v"):
-            raise ValueError("push tag must start with python-v")
-        requested_version = tag[len("python-v") :]
+        if not tag.startswith("python-sdk-v"):
+            raise ValueError("push tag must start with python-sdk-v")
+        requested_version = tag[len("python-sdk-v") :]
     elif event_name == "workflow_dispatch":
         requested_version = input_version
     else:

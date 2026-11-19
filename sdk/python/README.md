@@ -4,7 +4,7 @@ Typed async client for the governed MCP trust loop:
 
 `discover → authenticate → authorize → invoke → meter → receipt → audit → govern`
 
-The `amw-sdk` distribution is at version `0.5.0`. Tags matching `python-v*`
+The `amw-sdk` distribution is at version `0.5.0`. Tags matching `python-sdk-v*`
 trigger the PyPI release workflow. Until publication, install from this checkout.
 
 ## Installation

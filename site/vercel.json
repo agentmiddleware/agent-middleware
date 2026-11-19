@@ -16,12 +16,12 @@
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; form-action 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://vitals.vercel-insights.com https://api.thisisatest.tech https://cqtlzicxmaklslvxderm.supabase.co; manifest-src 'self'; upgrade-insecure-requests"
+          "value": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; form-action 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://us.i.posthog.com https://api.thisisatest.tech https://cqtlzicxmaklslvxderm.supabase.co; manifest-src 'self'; upgrade-insecure-requests"
         }
       ]
     },
     {
-      "source": "/:asset(styles.css|fonts.css|a11y.js|a11y-preload.js|va-init.js|analytics.js|utm-capture.js|home-key.js|wave.js|arcade-boot.js|arcade.js|arcade.css|favicon.svg|social-card.png)",
+      "source": "/:asset(styles.css|fonts.css|a11y.js|a11y-preload.js|analytics.js|posthog.js|utm-capture.js|home-key.js|wave.js|arcade-boot.js|arcade.js|arcade.css|favicon.svg|social-card.png)",
       "headers": [
         {
           "key": "Cache-Control",

@@ -6,7 +6,7 @@
 
 ## Abstract
 
-This note explores "OmniNode-style replay" — reconstructing and verifying what a remote (upstream MCP) tool actually did for a given AMW call, not just what the gateway admitted and dispatched. It describes what AMW records today, identifies gaps, evaluates candidate designs for replay verification, and recommends a smallest next step.
+This note explores "OmniNode-style replay": reconstructing and verifying what a remote (upstream MCP) tool actually did for a given AMW call, not just what the gateway admitted and dispatched. It describes what AMW records today, identifies gaps, evaluates candidate designs for replay verification, and recommends a smallest next step.
 
 This is an R&D design note, not a product roadmap. No claims about future features or delivery timelines are made.
 
@@ -18,7 +18,7 @@ The gateway computes a SHA-256 hash over `{tool_name, arguments, wallet_id, perm
 
 **Code references:**
 - `gateway/app/routers/mcp.py:1572-1581` — constructs `effective_request_payload` from these four fields, then `effective_request_hash = sha256_hex(effective_request_payload)`
-- `gateway/app/services/receipts.py:171` — `ReceiptModel` includes `request_hash: str`
+- `gateway/app/services/receipts.py:171` — `receipt_model_to_response` assigns `request_hash=model.request_hash`
 - `gateway/app/services/receipts.py:207` — signed payload includes `"request_hash": model.request_hash`
 - `spec/receipt-v0.1.md:38` — "Lowercase hex SHA-256 of the request and response values"
 
@@ -29,7 +29,7 @@ The `request_hash` is signed into the receipt (line 207) and links the receipt t
 Each governed call includes an idempotency key, which the gateway uses for replay protection.
 
 **Code references:**
-- `gateway/app/services/receipts.py:165` — `ReceiptModel` includes `idempotency_record_id: str`
+- `gateway/app/services/receipts.py:165` — `receipt_model_to_response` assigns `idempotency_record_id=model.idempotency_record_id`
 - `gateway/app/services/receipts.py:225-226` — receipt signing optionally includes `idempotency_record_id` linkage (when `include_linkage` is true)
 - `spec/receipt-v0.1.md:36` — "The gateway's record for the idempotency key (the raw key is not signed). Omitted unless this signature included linkage"
 - `gateway/app/services/upstream_mcp.py:999-1011` — `_call_tool_once` requires `invocation_id` and `idempotency_key` before dispatch
@@ -107,11 +107,11 @@ A third-party verifier with only AMW's receipts and dispatch records can prove:
 3. That the gateway's internal records are consistent (via audit chain, permit/receipt digests, sequence numbers)
 
 A verifier **cannot** prove:
-1. **That the upstream tool actually executed the request** — the gateway's stored `result_json` could be fabricated, replayed from a different call, or corrupted
-2. **That the response hash corresponds to the tool's actual output** — without a tool-signed attestation, a verifier trusts the gateway to report the correct `response_hash`
-3. **What side effects the tool performed** — for non-idempotent tools, the stored response does not describe database writes, sent emails, or other state changes
-4. **Temporal ordering at the tool** — receipts prove when the gateway recorded the call, not when the upstream system executed it
-5. **Non-repudiation by the tool provider** — the tool cannot later be held accountable for the effect because it never signed anything
+1. **That the upstream tool actually executed the request**: the gateway's stored `result_json` could be fabricated, replayed from a different call, or corrupted
+2. **That the response hash corresponds to the tool's actual output**: without a tool-signed attestation, a verifier trusts the gateway to report the correct `response_hash`
+3. **What side effects the tool performed**: for non-idempotent tools, the stored response does not describe database writes, sent emails, or other state changes
+4. **Temporal ordering at the tool**: receipts prove when the gateway recorded the call, not when the upstream system executed it
+5. **Non-repudiation by the tool provider**: the tool cannot later be held accountable for the effect because it never signed anything
 
 The core gap: **the remote tool produces no signed artifact**. The gateway is trusted to faithfully relay requests and responses, but a verifier cannot independently confirm this without cooperation from the upstream system.
 
@@ -179,7 +179,7 @@ The core gap: **the remote tool produces no signed artifact**. The gateway is tr
 - **Pro:** Detects retroactive tampering by the gateway
 - **Con:** Cannot verify non-idempotent side effects (emails sent, database rows deleted)
 - **Con:** Requires the verifier to have credentials and network access to the upstream tool
-- **Con:** Does not prove what happened **at the time** — only what the tool returns **now**
+- **Con:** Does not prove what happened **at the time**: only what the tool returns **now**
 - **Con:** High cost: every verification is a live tool invocation (rate limits, billing, side effects)
 
 ## 4. Recommended Next Step and Open Questions
@@ -191,13 +191,14 @@ The core gap: **the remote tool produces no signed artifact**. The gateway is tr
 1. Add an optional `replay_metadata` field to receipts (not signed, or signed as an optional extension):
    ```json
    {
-     "upstream_tool_endpoint": "https://example.com/mcp/tool/foo",
-     "request_canonical_json": "{...}",
-     "response_canonical_json": "{...}",
-     "dispatch_timestamp_utc": "2026-11-18T01:23:45.678Z",
-     "tool_reported_timestamp": "2026-11-18T01:23:46.012Z"
+     "upstream_tool_endpoint": "<tool-endpoint-url>",
+     "request_canonical_json": "<canonical-request-json>",
+     "response_canonical_json": "<canonical-response-json>",
+     "dispatch_timestamp_utc": "<ISO-8601-dispatch-time>",
+     "tool_reported_timestamp": "<ISO-8601-tool-time>"
    }
    ```
+   (Illustrative shape with placeholders; actual recorded values would be populated by the gateway)
 2. Store the full request/response transcripts alongside the receipt, indexed by `dispatch_attempt_id`
 3. Publish a "replay verification spec" that describes how a verifier can call the tool and compare responses
 

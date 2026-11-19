@@ -28,9 +28,13 @@ logger = logging.getLogger(__name__)
 # are part of the operator-facing contract: add new codes, do not rename these.
 REASON_RATE_LIMITER_MEMORY_FALLBACK = "rate_limiter_memory_fallback"
 REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED = "rate_limiter_redis_not_configured"
+REASON_REJECTED_CREDENTIALS_COUNTER_FALLBACK = (
+    "rejected_credentials_counter_memory_fallback"
+)
 REASON_DURABLE_STATE_MEMORY_FALLBACK = "durable_state_memory_fallback"
 
 _rate_limiter_memory_fallback = False
+_rejected_credentials_counter_fallback = False
 _memory_only_limiter_warned = False
 _durable_state_fell_back = False
 _durable_state_intended: str | None = None
@@ -39,6 +43,11 @@ _durable_state_intended: str | None = None
 def mark_rate_limiter_memory_fallback() -> None:
     global _rate_limiter_memory_fallback
     _rate_limiter_memory_fallback = True
+
+
+def mark_rejected_credentials_counter_fallback() -> None:
+    global _rejected_credentials_counter_fallback
+    _rejected_credentials_counter_fallback = True
 
 
 def mark_durable_state_fell_back(intended_backend: str) -> None:
@@ -85,10 +94,14 @@ def warn_if_rate_limiter_memory_only() -> bool:
 
 def reset_runtime_degradation() -> None:
     """Test helper: clear degradation flags between cases."""
-    global _rate_limiter_memory_fallback, _durable_state_fell_back
-    global _durable_state_intended, _memory_only_limiter_warned
+    global _rate_limiter_memory_fallback, _rejected_credentials_counter_fallback
+    global \
+        _durable_state_fell_back, \
+        _durable_state_intended, \
+        _memory_only_limiter_warned
     _memory_only_limiter_warned = False
     _rate_limiter_memory_fallback = False
+    _rejected_credentials_counter_fallback = False
     _durable_state_fell_back = False
     _durable_state_intended = None
 
@@ -101,6 +114,8 @@ def get_runtime_degradation() -> dict[str, Any]:
     reasons: list[str] = []
     if _rate_limiter_memory_fallback:
         reasons.append(REASON_RATE_LIMITER_MEMORY_FALLBACK)
+    if _rejected_credentials_counter_fallback:
+        reasons.append(REASON_REJECTED_CREDENTIALS_COUNTER_FALLBACK)
     if memory_only:
         reasons.append(REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED)
     if _durable_state_fell_back:
@@ -112,6 +127,7 @@ def get_runtime_degradation() -> dict[str, Any]:
             "redis_configured": redis_configured,
             "memory_only_in_production_like": memory_only,
             "using_memory_fallback": _rate_limiter_memory_fallback,
+            "rejected_credentials_counter_fallback": _rejected_credentials_counter_fallback,
             "backend": (
                 "memory"
                 if _rate_limiter_memory_fallback or not redis_configured

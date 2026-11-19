@@ -336,8 +336,8 @@ def billable(
     Raises:
         InsufficientFundsError: If wallet balance is insufficient
         IdempotencyConflictError: If the key was used for a different charge
-        ValueError: If the factory returns a blank or overlong key (nothing is
-            charged and the function does not run)
+        ValueError: If the factory returns None, or a blank or overlong key
+            (nothing is charged and the function does not run)
     """
 
     def decorator(
@@ -362,7 +362,16 @@ def billable(
             if idempotency_key_factory is not None:
                 # Passed only when configured, so a client whose charge()
                 # predates the keyword keeps working.
-                charge_kwargs["idempotency_key"] = idempotency_key_factory(*args, **kwargs)
+                factory_key = idempotency_key_factory(*args, **kwargs)
+                if factory_key is None:
+                    # charge() reads None as "no key" and mints a fresh one, so
+                    # a retry would be billed again. A configured factory that
+                    # yields no key is a bug in the caller: fail before any
+                    # charge and before the function runs.
+                    raise ValueError(
+                        "idempotency_key_factory must return a non-blank string, got None"
+                    )
+                charge_kwargs["idempotency_key"] = factory_key
             await client.charge(
                 wallet_id=wallet_id,
                 service_category=service_category,

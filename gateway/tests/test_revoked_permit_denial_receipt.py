@@ -105,7 +105,7 @@ async def test_revoked_permit_denied_without_budget_movement(client, clean_datab
 
         revoke_resp = await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
         assert revoke_resp.status_code == 200
 
@@ -241,7 +241,7 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
         # Revoke the permit
         revoke_resp = await client.post(
             f"/v1/permits/{revoked_permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
         assert revoke_resp.status_code == 200
 
@@ -301,7 +301,7 @@ async def test_revoked_permit_returns_denial_code(client, clean_database):
         # Revoke the permit
         await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
 
         # Invoke and check error code
@@ -346,7 +346,7 @@ async def test_revoked_permit_produces_receipt(client, clean_database):
         # Revoke the permit
         await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
 
         # Invoke with revoked permit
@@ -444,7 +444,7 @@ async def test_revoked_permit_inline_receipt_lacks_signing_input(
         # Revoke and invoke
         await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
 
         call_resp = await client.post(
@@ -501,7 +501,7 @@ async def test_portable_denial_receipt_offline_verifiable(client, clean_database
         # Revoke and invoke to get a denial receipt
         await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
 
         call_resp = await client.post(
@@ -564,7 +564,7 @@ async def test_tampered_portable_denial_receipt_rejected(client, clean_database)
         # Revoke and invoke
         await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
 
         call_resp = await client.post(
@@ -660,7 +660,7 @@ async def test_tampered_portable_signed_field_rejected(
         # Revoke and invoke
         await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
 
         call_resp = await client.post(
@@ -739,7 +739,7 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
         # Revoke the permit
         revoke_resp = await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
         assert revoke_resp.status_code == 200, f"Revoke failed: {revoke_resp.json()}"
 
@@ -752,13 +752,20 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
             model = result.scalar_one()
             assert model.status == "revoked", f"Permit not revoked: {model.status}"
 
-        # Get starting balance
+        # Get starting balance and ledger count
         balance_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}",
-            headers={"X-API-Key": "test-key"},
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
         )
         assert balance_resp.status_code == 200
         starting_balance = balance_resp.json()["balance"]
+
+        ledger_resp = await client.get(
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert ledger_resp.status_code == 200
+        starting_ledger_count = len(ledger_resp.json()["entries"])
 
         # Try to invoke via REST endpoint
         call_resp = await client.post(
@@ -781,21 +788,21 @@ async def test_revoked_permit_via_rest_invoke(client, clean_database):
 
         # Verify no charge was made
         balance_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}",
-            headers={"X-API-Key": "test-key"},
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
         )
         assert balance_resp.status_code == 200
         final_balance = balance_resp.json()["balance"]
         assert final_balance == starting_balance, "Balance changed despite denial"
 
-        # Verify no ledger entry
+        # Verify ledger unchanged
         ledger_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}/ledger",
-            headers={"X-API-Key": "test-key"},
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
         )
         assert ledger_resp.status_code == 200
-        ledger = ledger_resp.json()
-        assert len(ledger) == 1, "Unexpected ledger entries"
+        final_ledger_count = len(ledger_resp.json()["entries"])
+        assert final_ledger_count == starting_ledger_count, "Unexpected ledger change"
 
         # Verify permit spent_credits unchanged
         factory = get_session_factory()
@@ -828,7 +835,7 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
         # Revoke the permit
         revoke_resp = await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
         assert revoke_resp.status_code == 200, f"Revoke failed: {revoke_resp.json()}"
 
@@ -841,13 +848,20 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
             model = result.scalar_one()
             assert model.status == "revoked", f"Permit not revoked: {model.status}"
 
-        # Get starting balance
+        # Get starting balance and ledger count
         balance_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}",
-            headers={"X-API-Key": "test-key"},
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
         )
         assert balance_resp.status_code == 200
         starting_balance = balance_resp.json()["balance"]
+
+        ledger_resp = await client.get(
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert ledger_resp.status_code == 200
+        starting_ledger_count = len(ledger_resp.json()["entries"])
 
         # Try to invoke via standard /mcp endpoint
         call_resp = await client.post(
@@ -876,21 +890,21 @@ async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
 
         # Verify no charge was made
         balance_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}",
-            headers={"X-API-Key": "test-key"},
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
         )
         assert balance_resp.status_code == 200
         final_balance = balance_resp.json()["balance"]
         assert final_balance == starting_balance, "Balance changed despite denial"
 
-        # Verify no ledger entry
+        # Verify ledger unchanged
         ledger_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}/ledger",
-            headers={"X-API-Key": "test-key"},
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
         )
         assert ledger_resp.status_code == 200
-        ledger = ledger_resp.json()
-        assert len(ledger) == 1, "Unexpected ledger entries"
+        final_ledger_count = len(ledger_resp.json()["entries"])
+        assert final_ledger_count == starting_ledger_count, "Unexpected ledger change"
 
         # Verify permit spent_credits unchanged
         factory = get_session_factory()
@@ -925,7 +939,7 @@ async def test_revoked_permit_details_includes_revoked_at(client, clean_database
         # Revoke the permit
         await client.post(
             f"/v1/permits/{permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
 
         # Get the DB revoked_at timestamp
@@ -999,6 +1013,21 @@ async def test_permit_revoked_during_reserve_is_denied(
     _register_test_tool(tool_name)
 
     try:
+        # Get starting balance and ledger count
+        balance_resp = await client.get(
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert balance_resp.status_code == 200
+        starting_balance = balance_resp.json()["balance"]
+
+        ledger_resp = await client.get(
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert ledger_resp.status_code == 200
+        starting_ledger_count = len(ledger_resp.json()["entries"])
+
         permit = await create_tool_permit(
             client,
             wallet_id=provisioned["agent_wallet_id"],
@@ -1048,21 +1077,21 @@ async def test_permit_revoked_during_reserve_is_denied(
 
         # Verify no charge was made
         balance_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}",
-            headers={"X-API-Key": "test-key"},
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
         )
         assert balance_resp.status_code == 200
         final_balance = balance_resp.json()["balance"]
-        assert final_balance == "100.00", "Balance changed despite denial"
+        assert final_balance == starting_balance, "Balance changed despite denial"
 
-        # Verify no ledger entry beyond initial credit
+        # Verify ledger unchanged beyond initial credit
         ledger_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}/ledger",
-            headers={"X-API-Key": "test-key"},
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
         )
         assert ledger_resp.status_code == 200
-        ledger = ledger_resp.json()
-        assert len(ledger) == 1, "Unexpected ledger entries"
+        final_ledger_count = len(ledger_resp.json()["entries"])
+        assert final_ledger_count == starting_ledger_count, "Unexpected ledger change"
 
         # Verify permit spent_credits unchanged
         factory = get_session_factory()
@@ -1090,22 +1119,14 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
 
     from app.db.models import McpDispatchAttemptModel
     from app.routers.mcp import get_permit_service
+    from tests.test_mcp_upstream_governed import FakeUpstreamExecutor, _register_upstream
 
     provisioned = await provision_agent_wallet(client)
     tool_name = "revoked-upstream-dispatch-tool"
 
-    # Register upstream MCP service
-    service_id = "upstream-test-service"
-    registry = get_service_registry()
-    registry.register(
-        service_id=service_id,
-        definition={
-            "name": service_id,
-            "transport": "sse",
-            "url": "http://example.com/mcp",
-            "tools": [{"name": tool_name}],
-        },
-    )
+    # Register upstream MCP executor
+    executor = FakeUpstreamExecutor("success")
+    _register_upstream(tool_name, executor)
 
     try:
         permit = await create_tool_permit(
@@ -1128,7 +1149,7 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
             # Revoke after validation passes
             revoke_resp = await client.post(
                 f"/v1/permits/{permit['permit_id']}/revoke",
-                headers={"X-API-Key": "test-key"},
+                headers=provisioned["agent_headers"],
             )
             assert revoke_resp.status_code == 200
             return result
@@ -1183,8 +1204,8 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
 
         # Verify no debit
         balance_resp = await client.get(
-            f"/v1/wallets/{provisioned['agent_wallet_id']}",
-            headers={"X-API-Key": "test-key"},
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
         )
         assert balance_resp.status_code == 200
         balance = balance_resp.json()
@@ -1217,7 +1238,7 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
         # Revoke to make it obvious if this permit was used
         revoke_resp = await client.post(
             f"/v1/permits/{revoked_permit['permit_id']}/revoke",
-            headers={"X-API-Key": "test-key"},
+            headers=provisioned["agent_headers"],
         )
         assert revoke_resp.status_code == 200
 

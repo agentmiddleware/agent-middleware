@@ -888,9 +888,8 @@ async def test_permit_revoked_during_reserve_is_denied(
     for the race condition pattern at permits.py:815 and :867.
     """
     from unittest.mock import patch
-    from datetime import datetime, timezone
     from app.routers.mcp import evaluate_wallet_policy
-    from app.utils.time import utc_now
+    from utils.time import utc_now
     from app.services.permits import resign_permit_model
 
     provisioned = await provision_agent_wallet(client)

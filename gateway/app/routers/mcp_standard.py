@@ -94,9 +94,11 @@ from app.services.mcp_retry_key import (
 )
 from app.routers.mcp import (
     _MAX_JSON_NESTING_DEPTH,
+    TOOL_FAILURE_JSONRPC_CODE,
     GovernedToolError,
     HumanApprovalPendingSignal,
     TerminalRecordContendedError,
+    ToolExecutionError,
     ToolPermissionDenied,
     _ensure_local_mcp_tools_registered,
     _handle_tools_call,
@@ -886,7 +888,13 @@ async def _governed_tools_call(
         data = dict(e.extra_data)
         if e.receipt:
             data["receipt"] = e.receipt
-        raise _mcp_error(e.jsonrpc_code, str(e), data or None) from e
+        # The tool's own exception text stays in the server log: a tool
+        # failure answers the canned reason code, as on /mcp/messages.
+        message = "tool_execution_failed" if e.tool_originated else str(e)
+        raise _mcp_error(e.jsonrpc_code, message, data or None) from e
+    except ToolExecutionError as e:
+        logger.error("mcp_tool_execution_failed surface=/mcp request_id=%s", request_id)
+        raise _mcp_error(TOOL_FAILURE_JSONRPC_CODE, "tool_execution_failed") from e
     except PermissionError as e:
         raise _mcp_error(-32003, str(e)) from e
     except InvalidIdempotencyKeyError as e:

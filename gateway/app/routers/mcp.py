@@ -417,6 +417,11 @@ def _safe_jsonrpc_id(value: Any) -> str | int | float | None:
 
 INTERNAL_ERROR_MESSAGE = "internal_error"
 
+# A tool that ran and failed, with its debit refunded, is a classified outcome
+# and shares the upstream failure code (docs/failure-semantics.md). -32603 is
+# reserved for failures the pipeline did not classify.
+TOOL_FAILURE_JSONRPC_CODE = -32006
+
 # Public JSON-RPC messages are canned constants. Exception text is logged
 # under a request id and never copied into the client payload.
 _MCP_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -511,7 +516,9 @@ def _public_jsonrpc_message(exc: BaseException, *, code: int) -> str:
     fixed public strings below is replaced by a canned message and the
     original text stays server-side in the log.
     """
-    if isinstance(exc, ToolExecutionError):
+    if isinstance(exc, ToolExecutionError) or (
+        isinstance(exc, GovernedToolError) and exc.tool_originated
+    ):
         # A wrapped tool failure, classified by type before any text matching:
         # the tool's own text may mimic a refusal code or a denial prefix, and
         # must never select the message.
@@ -917,7 +924,7 @@ async def handle_messages(
             # The tool's own error stays in the server log; the client gets
             # a canned message and a request id.
             return _public_jsonrpc_error(
-                e, request=request, rpc_id=request_id, code=-32603
+                e, request=request, rpc_id=request_id, code=TOOL_FAILURE_JSONRPC_CODE
             )
         except ValueError as e:
             code = _value_error_jsonrpc_code(str(e))
@@ -3289,11 +3296,15 @@ async def _execute_registered_tool_inner(
                 ledger_entry_id=charge_result.entry_id,
                 approval_id=(approval_check.approval_id if approval_check else None),
             )
+            # -32006, like every other confirmed, refunded tool failure
+            # (docs/failure-semantics.md). -32603 is the unclassified channel,
+            # and this failure is classified: the tool raised and the refund
+            # landed.
             raise GovernedToolError(
                 str(exc),
                 receipt=receipt_payload,
                 status_code=500,
-                jsonrpc_code=-32603,
+                jsonrpc_code=TOOL_FAILURE_JSONRPC_CODE,
                 tool_originated=True,
             ) from exc
         raise ToolExecutionError(str(exc)) from exc
@@ -4794,16 +4805,22 @@ async def _raise_replayed_error(replay: Any) -> None:
             receipt=receipt,
             details=details if isinstance(details, dict) else None,
         )
+    tool_originated = (
+        isinstance(receipt, dict)
+        and receipt.get("reason_code") == "tool_execution_failed"
+    )
     raise GovernedToolError(
         reason,
         receipt=receipt,
         extra_data=extra_data,
         status_code=replay.status_code,
-        jsonrpc_code=_status_to_jsonrpc_code(replay.status_code, reason),
-        tool_originated=(
-            isinstance(receipt, dict)
-            and receipt.get("reason_code") == "tool_execution_failed"
+        # A replay answers with the code the live call answered.
+        jsonrpc_code=(
+            TOOL_FAILURE_JSONRPC_CODE
+            if tool_originated
+            else _status_to_jsonrpc_code(replay.status_code, reason)
         ),
+        tool_originated=tool_originated,
     )
 
 

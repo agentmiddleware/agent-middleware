@@ -372,6 +372,10 @@ missing control.
 
 `GET /` and `GET /v1/discover` both publish this as `rate_limits`.
 
+For deployment instructions on setting `FORWARDED_ALLOW_IPS` and the complete
+forwarded address contract, see
+[docs/deployment-configuration.md](docs/deployment-configuration.md).
+
 ## Response Hardening Headers
 
 Every response gets `X-Content-Type-Options: nosniff`, `X-Frame-Options:

@@ -1072,21 +1072,17 @@ async def test_permit_revoked_during_reserve_is_denied(
             resp_json = call_resp.json()
             error = resp_json["error"]
             # The second validation at permits.py:867 should catch the race
-            expected_message = (
+            expected_reason = (
                 "permit_revoked" if terminal_status == "revoked" else "permit_exhausted"
             )
-            # JSON-RPC may wrap in generic message; check message or data.receipt.reason_code
-            actual_message = error.get("message")
-            if actual_message == expected_message:
-                pass  # Direct match
-            elif "data" in error and "receipt" in error["data"]:
-                # Check reason_code in receipt
-                reason_code = error["data"]["receipt"].get("reason_code")
-                assert reason_code == expected_message, (
-                    f"Expected reason_code='{expected_message}' but got '{reason_code}'"
-                )
-            else:
-                assert actual_message == expected_message
+            # Assert exact reason_code in receipt
+            assert "data" in error
+            assert "receipt" in error["data"]
+            reason_code = error["data"]["receipt"]["reason_code"]
+            assert reason_code == expected_reason
+            # Message matches for revoked but is "Permission denied" for exhausted
+            if terminal_status == "revoked":
+                assert error["message"] == expected_reason
 
         # Verify no charge was made
         balance_resp = await client.get(
@@ -1125,13 +1121,14 @@ async def test_permit_revoked_during_reserve_is_denied(
 async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_database):
     """Revoked permit refused in authorize_reserve_and_prepare re-check with no debit and no dispatch.
 
-    Injects revoke at authorize_reserve_and_prepare entry so only the re-check
+    Injects revoke at evaluate_wallet_policy so only the re-check
     (mcp_dispatch_attempts.py:791-801, :1000-1003) catches it.
     """
-    from unittest.mock import patch
+    from unittest.mock import AsyncMock, patch
 
     from app.db.models import McpDispatchAttemptModel
     from app.routers.mcp import evaluate_wallet_policy
+    from app.services.mcp_dispatch_attempts import McpDispatchAttemptService
     from tests.test_mcp_upstream_governed import (
         FakeUpstreamExecutor,
         _register_upstream,
@@ -1168,6 +1165,11 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
             idem_key="test_revoked_permit_denied_before_upstream_dispatch-1",
         )
 
+        # Spy on authorize_reserve_and_prepare
+        authorize_spy = AsyncMock(
+            side_effect=McpDispatchAttemptService().authorize_reserve_and_prepare
+        )
+
         # Inject revoke at evaluate_wallet_policy like the race test
         revoke_injected = False
 
@@ -1182,7 +1184,11 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
                 assert revoke_resp.status_code == 200
             return await evaluate_wallet_policy(**kwargs)
 
-        with patch("app.routers.mcp.evaluate_wallet_policy", new=revoke_during_policy):
+        with patch(
+            "app.routers.mcp.evaluate_wallet_policy", new=revoke_during_policy
+        ), patch.object(
+            McpDispatchAttemptService, "authorize_reserve_and_prepare", new=authorize_spy
+        ):
             call_resp = await client.post(
                 "/mcp",
                 json={
@@ -1207,6 +1213,11 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
             assert "error" in resp_json
             assert resp_json["error"]["message"] == "permit_revoked"
             assert revoke_injected, "Race injection never triggered"
+
+        # Verify authorize_reserve_and_prepare was called exactly once
+        assert authorize_spy.await_count == 1, (
+            f"authorize_reserve_and_prepare called {authorize_spy.await_count} times"
+        )
 
         # Verify upstream executor was never called
         assert len(executor.calls) == 0, "Upstream executor was called despite denial"
@@ -1249,7 +1260,11 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
             model = result.scalar_one()
             assert model.spent_credits == 0
     finally:
-        get_service_registry().unregister_local(tool_name)
+        # Properly cleanup upstream registration
+        registry = get_service_registry()
+        registry.unregister_local(tool_name)
+        # Also remove from executor registry if present
+        registry._executor_registry.pop(tool_name, None)
 
 
 @pytest.mark.anyio
@@ -1280,6 +1295,14 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
         )
         assert revoke_resp.status_code == 200
 
+        # Get starting balance
+        balance_resp = await client.get(
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert balance_resp.status_code == 200
+        starting_balance = balance_resp.json()["balance"]
+
         # Send camelCase mcpContext - it will be ignored
         call_resp = await client.post(
             f"/mcp/tools/{tool_name}/invoke",
@@ -1303,17 +1326,21 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
         assert "content" in response
         assert response["isError"] is False
 
-        # Verify receipt exists - it may be null if no permit was auto-minted
-        # The test verifies camelCase is ignored; if auto-mint didn't happen,
-        # receipt being null is expected behavior
+        # Verify no receipt when camelCase is ignored
         assert "receipt" in response
         receipt = response["receipt"]
-        if receipt is not None:
-            # If a receipt exists, verify it's not the revoked permit
-            assert "permit_id" in receipt
-            assert receipt["permit_id"] != revoked_permit["permit_id"], (
-                "Receipt used revoked permit despite camelCase field being ignored"
-            )
-            assert "credits_charged" in receipt
+        assert receipt is None, "Expected no receipt when permit sent via camelCase"
+
+        # Verify wallet WAS charged (tool executed without explicit permit reference)
+        balance_resp = await client.get(
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert balance_resp.status_code == 200
+        final_balance = balance_resp.json()["balance"]
+        expected_charge = 2.0  # Default charge when no permit is used
+        assert final_balance == starting_balance - expected_charge, (
+            f"Expected charge of {expected_charge} credits"
+        )
     finally:
         get_service_registry().unregister_local(tool_name)

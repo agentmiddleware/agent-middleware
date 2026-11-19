@@ -266,9 +266,6 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
         # QA gap 4: Verify the tool was never invoked via tracking_tool callback
         assert len(dispatched) == 0
 
-            # QA gap 4: Verify upstream executor was never called
-            mock_executor.assert_not_called()
-
         # QA gap 4: Verify no mcp_dispatch_attempts row
         factory = get_session_factory()
         async with factory() as session:

@@ -897,7 +897,6 @@ async def test_permit_revoked_during_reserve_is_denied(
     from unittest.mock import patch
     from app.routers.mcp import evaluate_wallet_policy
     from app.core.time import utc_now
-    from app.services.permits import resign_permit_model
 
     provisioned = await provision_agent_wallet(client)
     tool_name = f"race-{terminal_status}-tool"

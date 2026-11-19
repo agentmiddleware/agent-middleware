@@ -583,6 +583,26 @@ jobs:
       - name: Build and import release and development images
         run: bash .github/scripts/smoke_gateway_image.sh
 
+  site:
+    name: Site tests
+    needs: detect
+    if: >-
+      ${{ always() && needs.detect.result == 'success' && needs.detect.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - name: Test site
+        run: node --test site/test_*.mjs
+
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}
     needs: detect
@@ -675,7 +695,7 @@ jobs:
   ci-result:
     # Single stable check name for branch protection, regardless of how the matrices expand.
     name: CI result
-    needs: [lint, detect, python, framework-integrations, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
+    needs: [lint, detect, python, framework-integrations, site, typescript, postgres-concurrency, postgres-proofs, gateway-image-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2

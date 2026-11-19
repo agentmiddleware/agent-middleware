@@ -25,6 +25,14 @@
     },
   };
 
+  // Deferred UTM registration runs before DOMContentLoaded, even if the
+  // asynchronous transport loads first. Capture once with path-only context.
+  function capturePageview() {
+    window.amwPosthog.capture("$pageview", { product: "AMW", page: location.pathname });
+  }
+  if (document.readyState === "complete") capturePageview();
+  else document.addEventListener("DOMContentLoaded", capturePageview, { once: true });
+
   // booking_click remains part of the existing contract for configured bookings.
   const allowedEvents = new Set([
     "booking_click",

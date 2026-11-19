@@ -66,12 +66,33 @@ def _mcp_call(wallet_id: str, permit_id: str, tool_name: str, idem: str) -> dict
 
 @pytest.mark.anyio
 async def test_revoked_permit_denied_without_budget_movement(client, clean_database):
-    """A revoked permit is denied without reserving or charging credits."""
+    """A revoked permit is denied without reserving or charging credits.
+
+    G1: Verifies wallet balance unchanged and total ledger count unchanged across all categories,
+    not just agent_comms entries with the tool name.
+    """
+    from unittest.mock import patch
+
     provisioned = await provision_agent_wallet(client)
     tool_name = "revoked-no-charge-tool"
     _register_test_tool(tool_name)
 
     try:
+        # Get initial wallet balance and ledger count
+        wallet_resp = await client.get(
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert wallet_resp.status_code == 200
+        initial_balance = wallet_resp.json()["balance"]
+
+        ledger_resp = await client.get(
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert ledger_resp.status_code == 200
+        initial_ledger_count = len(ledger_resp.json()["entries"])
+
         # Create and then revoke a permit
         permit = await create_tool_permit(
             client,
@@ -96,20 +117,29 @@ async def test_revoked_permit_denied_without_budget_movement(client, clean_datab
             assert model.status == "revoked"
             spent_before = model.spent_credits
 
-        # Try to invoke with the revoked permit
-        call_resp = await client.post(
-            "/mcp/messages",
-            json=_mcp_call(
-                provisioned["agent_wallet_id"],
-                permit["permit_id"],
-                tool_name,
-                "revoked-call-1",
-            ),
-            headers=provisioned["agent_headers"],
-        )
-        assert call_resp.status_code == 200
-        error = call_resp.json()["error"]
-        assert error["message"] == "permit_revoked"
+        # Mock charge paths to ensure they are never called
+        with (
+            patch("app.services.agent_money.AgentMoney.charge") as mock_charge,
+            patch("stripe.Charge.create") as mock_stripe,
+        ):
+            # Try to invoke with the revoked permit
+            call_resp = await client.post(
+                "/mcp/messages",
+                json=_mcp_call(
+                    provisioned["agent_wallet_id"],
+                    permit["permit_id"],
+                    tool_name,
+                    "revoked-call-1",
+                ),
+                headers=provisioned["agent_headers"],
+            )
+            assert call_resp.status_code == 200
+            error = call_resp.json()["error"]
+            assert error["message"] == "permit_revoked"
+
+            # Assert charge paths were never called
+            mock_charge.assert_not_called()
+            mock_stripe.assert_not_called()
 
         # Verify no budget movement occurred
         async with factory() as session:
@@ -119,26 +149,41 @@ async def test_revoked_permit_denied_without_budget_movement(client, clean_datab
             model = result.scalar_one()
             assert model.spent_credits == spent_before
 
-        # Verify no ledger charge
+        # G1: Verify wallet balance is unchanged
+        wallet_resp = await client.get(
+            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert wallet_resp.status_code == 200
+        final_balance = wallet_resp.json()["balance"]
+        assert final_balance == initial_balance, (
+            f"Wallet balance changed: {initial_balance} -> {final_balance}"
+        )
+
+        # G1: Verify total ledger count is unchanged (no PLATFORM_FEE or other charges)
         ledger_resp = await client.get(
             f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
             headers=provisioned["agent_headers"],
         )
         assert ledger_resp.status_code == 200
-        debits = [
-            e
-            for e in ledger_resp.json()["entries"]
-            if e["service_category"] == "agent_comms"
-            and tool_name in e.get("description", "")
-        ]
-        assert len(debits) == 0
+        final_ledger_count = len(ledger_resp.json()["entries"])
+        assert final_ledger_count == initial_ledger_count, (
+            f"Ledger entry count changed: {initial_ledger_count} -> {final_ledger_count}"
+        )
     finally:
         get_service_registry().unregister_local(tool_name)
 
 
 @pytest.mark.anyio
 async def test_revoked_permit_not_dispatched(client, clean_database):
-    """A revoked permit denial does not dispatch to the upstream tool."""
+    """A revoked permit denial does not dispatch to the upstream tool.
+
+    QA gap 4: Includes positive control (active permit dispatches once) and
+    asserts no dispatch_attempt_id and no mcp_dispatch_attempts row.
+    """
+    from app.db.models import MCPDispatchAttemptModel
+    from unittest.mock import patch
+
     provisioned = await provision_agent_wallet(client)
     tool_name = "revoked-no-dispatch-tool"
 
@@ -159,7 +204,31 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
     )
 
     try:
-        permit = await create_tool_permit(
+        # QA gap 4: Positive control - active permit dispatches once
+        active_permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+        )
+
+        call_resp_active = await client.post(
+            "/mcp/messages",
+            json=_mcp_call(
+                provisioned["agent_wallet_id"],
+                active_permit["permit_id"],
+                tool_name,
+                "active-call-positive-control",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert call_resp_active.status_code == 200
+        assert "result" in call_resp_active.json()
+        assert len(dispatched) == 1, "Active permit should dispatch once"
+        dispatched.clear()
+
+        # Now test revoked permit
+        revoked_permit = await create_tool_permit(
             client,
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
@@ -168,27 +237,49 @@ async def test_revoked_permit_not_dispatched(client, clean_database):
 
         # Revoke the permit
         revoke_resp = await client.post(
-            f"/v1/permits/{permit['permit_id']}/revoke",
+            f"/v1/permits/{revoked_permit['permit_id']}/revoke",
             headers={"X-API-Key": "test-key"},
         )
         assert revoke_resp.status_code == 200
 
-        # Try to invoke
-        call_resp = await client.post(
-            "/mcp/messages",
-            json=_mcp_call(
-                provisioned["agent_wallet_id"],
-                permit["permit_id"],
-                tool_name,
-                "revoked-call-2",
-            ),
-            headers=provisioned["agent_headers"],
-        )
-        assert call_resp.status_code == 200
-        assert call_resp.json()["error"]["message"] == "permit_revoked"
+        # QA gap 4: Mock upstream executor to verify no dispatch
+        with patch("app.services.executor.dispatch") as mock_executor:
+            # Try to invoke with revoked permit
+            call_resp = await client.post(
+                "/mcp/messages",
+                json=_mcp_call(
+                    provisioned["agent_wallet_id"],
+                    revoked_permit["permit_id"],
+                    tool_name,
+                    "revoked-call-2",
+                ),
+                headers=provisioned["agent_headers"],
+            )
+            assert call_resp.status_code == 200
+            error = call_resp.json()["error"]
+            assert error["message"] == "permit_revoked"
 
-        # Verify the tool was never invoked
-        assert len(dispatched) == 0
+            # QA gap 4: Assert no dispatch_attempt_id in response
+            assert "dispatch_attempt_id" not in error.get("data", {})
+
+            # Verify the tool was never invoked
+            assert len(dispatched) == 0
+
+            # QA gap 4: Verify upstream executor was never called
+            mock_executor.assert_not_called()
+
+        # QA gap 4: Verify no mcp_dispatch_attempts row
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(MCPDispatchAttemptModel).where(
+                    MCPDispatchAttemptModel.permit_id == revoked_permit["permit_id"]
+                )
+            )
+            attempts = result.scalars().all()
+            assert len(attempts) == 0, (
+                "Revoked permit should create no dispatch attempts"
+            )
     finally:
         get_service_registry().unregister_local(tool_name)
 
@@ -235,7 +326,11 @@ async def test_revoked_permit_returns_denial_code(client, clean_database):
 
 @pytest.mark.anyio
 async def test_revoked_permit_produces_receipt(client, clean_database):
-    """A revoked permit denial produces a signed receipt."""
+    """A revoked permit denial produces a signed receipt.
+
+    QA gap 1: Verifies credits_charged=='0', ledger_entry_id None, permit_id, wallet_id,
+    and tool from the SIGNED claims in the portable bundle, not just the inline copy.
+    """
     provisioned = await provision_agent_wallet(client)
     tool_name = "revoked-receipt-tool"
     _register_test_tool(tool_name)
@@ -269,25 +364,49 @@ async def test_revoked_permit_produces_receipt(client, clean_database):
         error = call_resp.json()["error"]
         assert error["message"] == "permit_revoked"
 
-        # Verify a receipt exists in the response
+        # Verify a receipt exists in the inline response
         assert "receipt" in error["data"]
         receipt = error["data"]["receipt"]
         assert receipt["outcome"] == "denied"
         assert receipt["reason_code"] == "permit_revoked"
-        assert receipt["credits_charged"] == "0"
-        assert receipt["ledger_entry_id"] is None
-        assert "signature" in receipt
-        assert receipt["signature"] is not None
+        # Note: inline receipt may not have signing_input, see t:297 xfail
+        receipt_id = receipt["receipt_id"]
+
+        # QA gap 1: Fetch portable bundle and verify SIGNED claims
+        portable_resp = await client.get(
+            f"/v1/receipts/{receipt_id}/portable",
+            headers=provisioned["agent_headers"],
+        )
+        assert portable_resp.status_code == 200
+        portable_bundle = portable_resp.json()
+
+        # Verify with SDK to get signed claims
+        from b2a_sdk.receipt_verifier import verify_bundle, key_set_from_document
+
+        keys_resp = await client.get("/.well-known/trust-keys.json")
+        assert keys_resp.status_code == 200
+        keys_doc = keys_resp.json()
+        key_set = key_set_from_document(keys_doc)
+
+        result = verify_bundle(portable_bundle, key_set)
+        assert result.ok, f"Verification failed: {result.status} - {result.reason}"
+
+        # QA gap 1: Assert signed claims (from signing_input, not just inline copy)
+        assert result.claims["credits_charged"] == "0"
+        assert result.claims["ledger_entry_id"] is None
+        assert result.claims["permit_id"] == permit["permit_id"]
+        assert result.claims["wallet_id"] == provisioned["agent_wallet_id"]
+        assert result.claims["tool"] == tool_name
 
         # Verify the receipt is persisted
         factory = get_session_factory()
         async with factory() as session:
-            result = await session.execute(
+            result_db = await session.execute(
                 select(ReceiptModel).where(
                     ReceiptModel.permit_id == permit["permit_id"]
                 )
             )
-            stored_receipt = result.scalar_one()
+            stored_receipt = result_db.scalar_one()
             assert stored_receipt.outcome == "denied"
             assert stored_receipt.signature is not None
     finally:
@@ -296,11 +415,19 @@ async def test_revoked_permit_produces_receipt(client, clean_database):
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="Receipt in MCP error response is not in portable bundle format with signing_input",
 )
 @pytest.mark.anyio
-async def test_revoked_permit_receipt_inline_not_verifiable(client, clean_database):
-    """Receipt in MCP error response lacks signing_input for offline verification."""
+async def test_revoked_permit_inline_receipt_lacks_signing_input(
+    client, clean_database
+):
+    """Receipt in MCP error response lacks signing_input for offline verification.
+
+    This test documents that the inline receipt (returned in the MCP error payload)
+    lacks the signing_input field required by verify_bundle. The portable endpoint
+    GET /v1/receipts/{id}/portable must be used for offline verification.
+    """
     provisioned = await provision_agent_wallet(client)
     tool_name = "revoked-inline-verify-tool"
     _register_test_tool(tool_name)
@@ -338,12 +465,15 @@ async def test_revoked_permit_receipt_inline_not_verifiable(client, clean_databa
         keys_doc = keys_resp.json()
 
         # Try to verify with the Python SDK
+        # Note: The inline receipt cannot be verified because it lacks signing_input.
+        # For offline verification, use GET /v1/receipts/{id}/portable instead.
+        # See test_portable_denial_receipt_offline_verifiable for the working path.
         from b2a_sdk.receipt_verifier import verify_bundle, key_set_from_document
 
         key_set = key_set_from_document(keys_doc)
         result = verify_bundle(receipt, key_set)
 
-        # The inline receipt lacks signing_input so verification fails
+        # The inline receipt lacks signing_input so verification fails with MALFORMED
         assert result.ok, f"Verification failed: {result.status} - {result.reason}"
         assert result.claims["outcome"] == "denied"
         assert result.claims["reason_code"] == "permit_revoked"
@@ -491,15 +621,28 @@ async def test_tampered_portable_denial_receipt_rejected(client, clean_database)
         get_service_registry().unregister_local(tool_name)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Receipt in MCP error response is not in portable bundle format with signing_input",
+@pytest.mark.parametrize(
+    ("field", "tampered_value"),
+    [
+        ("outcome", "success"),
+        ("reason_code", "permit_exhausted"),
+        ("credits_charged", "100"),
+        ("permit_id", "prmt-tampered-000000000000"),
+        ("tool", "tampered_tool_name"),
+        ("wallet_id", "wlt-tampered-000000000000"),
+    ],
 )
 @pytest.mark.anyio
-async def test_tampered_inline_denial_receipt_rejected(client, clean_database):
-    """A tampered denial receipt is rejected by offline verification."""
+async def test_tampered_portable_signed_field_rejected(
+    client, clean_database, field, tampered_value
+):
+    """Tampering any signed field in the portable bundle signing_input is rejected.
+
+    G2: Parametrized test that tampers each signed field inside signing_input,
+    not the top-level envelope. Each tamper should cause verification to fail.
+    """
     provisioned = await provision_agent_wallet(client)
-    tool_name = "revoked-tamper-tool"
+    tool_name = "revoked-tamper-field-tool"
     _register_test_tool(tool_name)
 
     try:
@@ -522,31 +665,282 @@ async def test_tampered_inline_denial_receipt_rejected(client, clean_database):
                 provisioned["agent_wallet_id"],
                 permit["permit_id"],
                 tool_name,
-                "revoked-call-6",
+                f"revoked-tamper-{field}",
             ),
             headers=provisioned["agent_headers"],
         )
         assert call_resp.status_code == 200
-        receipt = call_resp.json()["error"]["data"]["receipt"]
+        receipt_id = call_resp.json()["error"]["data"]["receipt"]["receipt_id"]
 
-        # Get the public keys for verification
+        # Fetch the portable bundle
+        portable_resp = await client.get(
+            f"/v1/receipts/{receipt_id}/portable",
+            headers=provisioned["agent_headers"],
+        )
+        assert portable_resp.status_code == 200
+        portable_bundle = portable_resp.json()
+
+        # Get the public keys
         keys_resp = await client.get("/.well-known/trust-keys.json")
         assert keys_resp.status_code == 200
         keys_doc = keys_resp.json()
 
-        # Tamper with the receipt by changing outcome in the signed payload
         from b2a_sdk.receipt_verifier import verify_bundle, key_set_from_document
         import copy
+        import json
 
         key_set = key_set_from_document(keys_doc)
-        tampered = copy.deepcopy(receipt)
-        # Tamper with a field that should be in the signed payload
-        tampered["outcome"] = "success"  # Change denial to success
 
-        result = verify_bundle(tampered, key_set)
-        # Verification should fail because the signature no longer matches
-        assert result.is_rejected or result.is_tampered, (
-            f"Tampered receipt should be rejected, got: {result.status}"
+        # First verify the untampered bundle works
+        result = verify_bundle(portable_bundle, key_set)
+        assert result.ok, "Untampered bundle should verify"
+
+        # Tamper with the specific field in signing_input
+        tampered = copy.deepcopy(portable_bundle)
+        signing_input = json.loads(tampered["signing_input"])
+        signing_input[field] = tampered_value
+        tampered["signing_input"] = json.dumps(
+            signing_input, separators=(",", ":"), sort_keys=True
         )
+
+        tampered_result = verify_bundle(tampered, key_set)
+        # G2: Verification must fail (INVALID) because signature doesn't match tampered signing_input
+        assert (
+            tampered_result.status == "INVALID"
+            or tampered_result.is_rejected
+            or tampered_result.is_tampered
+        ), (
+            f"Tampered {field} should be rejected, got: {tampered_result.status} - {tampered_result.reason}"
+        )
+    finally:
+        get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+async def test_revoked_permit_via_rest_invoke(client, clean_database):
+    """QA gap 5: Revoked permit denial through POST /mcp/tools/{service_id}/invoke."""
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "revoked-rest-invoke-tool"
+    _register_test_tool(tool_name)
+
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+        )
+
+        # Revoke the permit
+        await client.post(
+            f"/v1/permits/{permit['permit_id']}/revoke",
+            headers={"X-API-Key": "test-key"},
+        )
+
+        # Try to invoke via REST endpoint
+        call_resp = await client.post(
+            f"/mcp/tools/{tool_name}/invoke",
+            json={
+                "arguments": {"message": "test"},
+                "mcpContext": {
+                    "wallet_id": provisioned["agent_wallet_id"],
+                    "permit_id": permit["permit_id"],
+                    "idempotency_key": "revoked-rest-invoke-1",
+                },
+            },
+            headers=provisioned["agent_headers"],
+        )
+        # QA gap 5: Expect 403 with permit_revoked
+        assert call_resp.status_code == 403
+        error = call_resp.json()
+        assert "permit_revoked" in str(error).lower()
+    finally:
+        get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+async def test_revoked_permit_via_standard_mcp_endpoint(client, clean_database):
+    """QA gap 6: Revoked permit denial through standard POST /mcp endpoint."""
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "revoked-standard-mcp-tool"
+    _register_test_tool(tool_name)
+
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+        )
+
+        # Revoke the permit
+        await client.post(
+            f"/v1/permits/{permit['permit_id']}/revoke",
+            headers={"X-API-Key": "test-key"},
+        )
+
+        # Try to invoke via standard /mcp endpoint
+        call_resp = await client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": "standard-mcp-1",
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": {"message": "test"},
+                },
+            },
+            headers={
+                **provisioned["agent_headers"],
+                "X-Wallet-ID": provisioned["agent_wallet_id"],
+                "X-Permit-ID": permit["permit_id"],
+            },
+        )
+        assert call_resp.status_code == 200
+        resp_json = call_resp.json()
+        assert "error" in resp_json
+        assert resp_json["error"]["message"] == "permit_revoked"
+    finally:
+        get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+async def test_revoked_permit_details_includes_revoked_at(client, clean_database):
+    """QA gap 7: Assert error.data.details.revoked_at equals DB permits.revoked_at."""
+    from datetime import datetime
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "revoked-at-field-tool"
+    _register_test_tool(tool_name)
+
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+        )
+
+        # Revoke the permit
+        await client.post(
+            f"/v1/permits/{permit['permit_id']}/revoke",
+            headers={"X-API-Key": "test-key"},
+        )
+
+        # Get the DB revoked_at timestamp
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(PermitModel).where(PermitModel.permit_id == permit["permit_id"])
+            )
+            model = result.scalar_one()
+            assert model.status == "revoked"
+            db_revoked_at = model.revoked_at
+            assert db_revoked_at is not None
+
+        # Invoke with revoked permit
+        call_resp = await client.post(
+            "/mcp/messages",
+            json=_mcp_call(
+                provisioned["agent_wallet_id"],
+                permit["permit_id"],
+                tool_name,
+                "revoked-at-call-1",
+            ),
+            headers=provisioned["agent_headers"],
+        )
+        assert call_resp.status_code == 200
+        error = call_resp.json()["error"]
+        assert error["message"] == "permit_revoked"
+
+        # QA gap 7: Assert error.data.details.revoked_at matches DB
+        details = error["data"].get("details", {})
+        response_revoked_at_str = details.get("revoked_at")
+        assert response_revoked_at_str is not None, (
+            "details.revoked_at missing from error response"
+        )
+
+        # Parse and compare timestamps
+        response_revoked_at = datetime.fromisoformat(
+            response_revoked_at_str.replace("Z", "+00:00")
+        )
+        # Allow 1 second tolerance for any rounding/formatting differences
+        time_diff = abs((response_revoked_at - db_revoked_at).total_seconds())
+        assert time_diff < 1.0, (
+            f"revoked_at mismatch: DB={db_revoked_at}, response={response_revoked_at}"
+        )
+    finally:
+        get_service_registry().unregister_local(tool_name)
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    ["revoked", "exhausted"],
+)
+@pytest.mark.anyio
+async def test_permit_revoked_during_reserve_is_denied(
+    client, clean_database, terminal_status
+):
+    """QA gap 7: Concurrency test - permit revoked/exhausted between precheck and reserve.
+
+    References test_trust_negative_security.py:test_terminal_permit_between_precheck_and_reservation_is_denied
+    for the race condition pattern at permits.py:815 and :867.
+    """
+    from unittest.mock import patch
+    from datetime import datetime, timezone
+    from app.services import permits as permits_module
+
+    provisioned = await provision_agent_wallet(client)
+    tool_name = f"race-{terminal_status}-tool"
+    _register_test_tool(tool_name)
+
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=provisioned["agent_wallet_id"],
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+        )
+
+        original_validate = permits_module._validate_model_for_action
+
+        async def racing_validate(model, action, credits_to_reserve=None):
+            # First call goes through
+            result = await original_validate(model, action, credits_to_reserve)
+            if result is None:
+                # Between precheck and reserve, revoke/exhaust the permit
+                factory = get_session_factory()
+                async with factory() as session:
+                    permit_model = await session.get(PermitModel, model.permit_id)
+                    if terminal_status == "revoked":
+                        permit_model.status = "revoked"
+                        permit_model.revoked_at = datetime.now(timezone.utc)
+                    elif terminal_status == "exhausted":
+                        permit_model.status = "exhausted"
+                        permit_model.spent_credits = permit_model.total_credits
+                    await session.commit()
+            return result
+
+        with patch.object(
+            permits_module, "_validate_model_for_action", racing_validate
+        ):
+            call_resp = await client.post(
+                "/mcp/messages",
+                json=_mcp_call(
+                    provisioned["agent_wallet_id"],
+                    permit["permit_id"],
+                    tool_name,
+                    f"race-{terminal_status}-1",
+                ),
+                headers=provisioned["agent_headers"],
+            )
+            assert call_resp.status_code == 200
+            error = call_resp.json()["error"]
+            # The second validation at permits.py:867 should catch the race
+            expected_message = (
+                "permit_revoked" if terminal_status == "revoked" else "permit_exhausted"
+            )
+            assert error["message"] == expected_message
     finally:
         get_service_registry().unregister_local(tool_name)

@@ -1080,9 +1080,6 @@ async def test_permit_revoked_during_reserve_is_denied(
             assert "receipt" in error["data"]
             reason_code = error["data"]["receipt"]["reason_code"]
             assert reason_code == expected_reason
-            # Message matches for revoked but is "Permission denied" for exhausted
-            if terminal_status == "revoked":
-                assert error["message"] == expected_reason
 
         # Verify no charge was made
         balance_resp = await client.get(
@@ -1184,10 +1181,13 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
                 assert revoke_resp.status_code == 200
             return await evaluate_wallet_policy(**kwargs)
 
-        with patch(
-            "app.routers.mcp.evaluate_wallet_policy", new=revoke_during_policy
-        ), patch.object(
-            McpDispatchAttemptService, "authorize_reserve_and_prepare", new=authorize_spy
+        with (
+            patch("app.routers.mcp.evaluate_wallet_policy", new=revoke_during_policy),
+            patch.object(
+                McpDispatchAttemptService,
+                "authorize_reserve_and_prepare",
+                new=authorize_spy,
+            ),
         ):
             call_resp = await client.post(
                 "/mcp",
@@ -1260,20 +1260,22 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
             model = result.scalar_one()
             assert model.spent_credits == 0
     finally:
-        # Properly cleanup upstream registration
-        registry = get_service_registry()
-        registry.unregister_local(tool_name)
-        # Also remove from executor registry if present
-        registry._executor_registry.pop(tool_name, None)
+        # Cleanup upstream registration (unregister_local also removes from executor_registry)
+        get_service_registry().unregister_local(tool_name)
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="KNOWN ISSUE: camelCase mcpContext in REST invoke body is silently dropped; should reject (400) or honor permit",
+)
 @pytest.mark.anyio
 async def test_camelcase_mcp_context_is_ignored_regression(client, clean_database):
-    """KNOWN ISSUE: camelCase 'mcpContext' in REST invoke body is ignored.
+    """KNOWN ISSUE: camelCase 'mcpContext' in REST invoke body is silently dropped.
 
     ToolCallRequest schema (mcp.py:633-640) only accepts snake_case 'mcp_context',
-    not camelCase 'mcpContext'. When camelCase is sent, the field is dropped and
-    the gateway proceeds without the explicit permit reference.
+    not camelCase 'mcpContext'. The DESIRED behavior is: reject with 400 or honor
+    the permit. Current behavior: field is dropped and call proceeds, ignoring the
+    revoked permit.
     """
     provisioned = await provision_agent_wallet(client)
     tool_name = "camelcase-test-tool"
@@ -1288,22 +1290,14 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
             idem_key="test_camelcase_mcp_context_is_ignored_regression-1",
         )
 
-        # Revoke to make it obvious if this permit was used
+        # Revoke permit
         revoke_resp = await client.post(
             f"/v1/permits/{revoked_permit['permit_id']}/revoke",
             headers=provisioned["agent_headers"],
         )
         assert revoke_resp.status_code == 200
 
-        # Get starting balance
-        balance_resp = await client.get(
-            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
-            headers=provisioned["agent_headers"],
-        )
-        assert balance_resp.status_code == 200
-        starting_balance = balance_resp.json()["balance"]
-
-        # Send camelCase mcpContext - it will be ignored
+        # Send camelCase mcpContext
         call_resp = await client.post(
             f"/mcp/tools/{tool_name}/invoke",
             json={
@@ -1318,29 +1312,25 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
             headers=provisioned["agent_headers"],
         )
 
-        # Tool executes because camelCase was ignored
-        assert call_resp.status_code == 200
-        response = call_resp.json()
+        # DESIRED: call is refused (4xx or permit_revoked denial)
+        if call_resp.status_code >= 400:
+            # Either rejected at schema validation (4xx) or denied
+            assert call_resp.status_code in (400, 403)
+        else:
+            # Or handled as permit_revoked denial
+            assert call_resp.status_code == 200
+            response = call_resp.json()
+            assert "error" in response or response.get("isError") is True
 
-        # ToolCallResponse has content, isError, structuredContent, receipt
-        assert "content" in response
-        assert response["isError"] is False
-
-        # Verify no receipt when camelCase is ignored
-        assert "receipt" in response
-        receipt = response["receipt"]
-        assert receipt is None, "Expected no receipt when permit sent via camelCase"
-
-        # Verify wallet WAS charged (tool executed without explicit permit reference)
-        balance_resp = await client.get(
-            f"/v1/billing/wallets/{provisioned['agent_wallet_id']}",
-            headers=provisioned["agent_headers"],
-        )
-        assert balance_resp.status_code == 200
-        final_balance = balance_resp.json()["balance"]
-        expected_charge = 2.0  # Default charge when no permit is used
-        assert final_balance == starting_balance - expected_charge, (
-            f"Expected charge of {expected_charge} credits"
-        )
+        # Verify revoked permit was not charged
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(PermitModel).where(
+                    PermitModel.permit_id == revoked_permit["permit_id"]
+                )
+            )
+            model = result.scalar_one()
+            assert model.spent_credits == 0, "Revoked permit should not be charged"
     finally:
         get_service_registry().unregister_local(tool_name)

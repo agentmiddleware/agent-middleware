@@ -9,7 +9,7 @@ import json
 import logging
 from typing import Any, Literal, cast
 
-from sqlalchemy import select, update as sa_update
+from sqlalchemy import and_, or_, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -572,6 +572,46 @@ class RefundReconciliationService:
             on_exhausted=lambda exc: RefundReconciliationContendedError(),
         )
 
+    @staticmethod
+    async def _unsigned_page(
+        *, after: tuple[Any, str] | None, limit: int
+    ) -> list[IdempotencyRecordModel]:
+        """One page of unsigned pending refunds, oldest first, after ``after``.
+
+        Keyset order on ``(created_at, record_id)``, so a caller that advances
+        past every record it has seen never reads the same one twice in a pass,
+        whether or not that record could be signed.
+        """
+        created = cast(Any, IdempotencyRecordModel.created_at)
+        record_id = cast(Any, IdempotencyRecordModel.record_id)
+        conditions = [
+            cast(Any, IdempotencyRecordModel.response_reference).is_(None),
+            cast(Any, IdempotencyRecordModel.response_json).contains(
+                f'"{UNSIGNED_RECEIPT_KEY}"'
+            ),
+        ]
+        if after is not None:
+            conditions.append(
+                or_(
+                    created > after[0],
+                    and_(created == after[0], record_id > after[1]),
+                )
+            )
+        factory = get_session_factory()
+        async with factory() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(IdempotencyRecordModel)
+                        .where(*conditions)
+                        .order_by(created, record_id)
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
     async def sign_unsigned_pending(self, *, limit: int = 50) -> tuple[int, int]:
         """Sign the receipts of pending refunds recorded without one.
 
@@ -583,106 +623,93 @@ class RefundReconciliationService:
         signers are safe: the checkpoint is re-read under a row lock and the
         second signer finds it already signed.
 
-        Returns ``(signed, still_unsigned)``.
+        Every unsigned item is visited once per pass, in pages of ``limit``.
+        An item that is refused or cannot be signed stays unsigned and the scan
+        moves past it, so items that can never be signed (a refund that already
+        landed and was released, a payload that no longer matches its hash)
+        cannot keep newer items from being signed.
+
+        Returns ``(signed, still_unsigned)`` for the whole pass.
         """
-        factory = get_session_factory()
-        async with factory() as session:
-            records = (
-                (
-                    await session.execute(
-                        select(IdempotencyRecordModel)
-                        .where(
-                            cast(
-                                ColumnElement[bool],
-                                cast(
-                                    Any, IdempotencyRecordModel.response_reference
-                                ).is_(None),
-                            ),
-                            cast(
-                                ColumnElement[bool],
-                                cast(
-                                    Any, IdempotencyRecordModel.response_json
-                                ).contains(f'"{UNSIGNED_RECEIPT_KEY}"'),
-                            ),
-                        )
-                        .order_by(
-                            cast(ColumnElement[Any], IdempotencyRecordModel.created_at)
-                        )
-                        .limit(limit)
-                    )
-                )
-                .scalars()
-                .all()
-            )
+        if limit < 1:
+            raise ValueError("limit must be positive")
         signed = 0
         still_unsigned = 0
-        for record in records:
-            marker = _unsigned_marker(record)
-            if marker is None:
-                continue
-            inputs = dict(marker["inputs"])
-            if await self._refund_landed_and_budget_released(inputs):
-                # The money already came back and the permit reservation was
-                # already given back, by another path (for example a dispatch
-                # reconciler pass that ran before it learned to leave these
-                # items alone). A failed_unrefunded receipt would then claim a
-                # debt that no longer exists, and the operator retry would
-                # release the permit budget a second time. Leave it for an
-                # operator, loudly.
-                logger.error(
-                    "refund_reconciliation_unsigned_already_refunded",
-                    extra={
-                        "record_id": record.record_id,
-                        "ledger_entry_id": inputs["ledger_entry_id"],
-                    },
-                )
-                still_unsigned += 1
-                continue
-            if sha256_hex(inputs["response_payload"]) != marker.get("response_hash"):
-                # The stored payload no longer hashes to what the caller's
-                # response was; signing it would sign a different response.
-                logger.error(
-                    "refund_reconciliation_unsigned_payload_mismatch",
-                    extra={"record_id": record.record_id},
-                )
-                still_unsigned += 1
-                continue
-            try:
-                await self.create_pending(
-                    wallet_id=inputs["wallet_id"],
-                    endpoint=inputs["endpoint"],
-                    idempotency_key=inputs["idempotency_key"],
-                    permit_id=inputs["permit_id"],
-                    key_id=inputs["key_id"],
-                    tool_name=inputs["tool_name"],
-                    request_payload=None,
-                    request_hash=inputs["request_hash"],
-                    ledger_entry_id=inputs["ledger_entry_id"],
-                    credits_authorized=Decimal(inputs["credits_authorized"]),
-                    credits_charged=Decimal(inputs["credits_charged"]),
-                    audit_event_id=inputs["audit_event_id"],
-                    reason=inputs["reason"],
-                    dispatch_attempt_id=inputs["dispatch_attempt_id"],
-                    approval_id=inputs["approval_id"],
-                    response_payload=inputs["response_payload"],
-                    response_hash_override=inputs["response_hash_override"],
-                    counterparty=inputs["counterparty"],
-                    _from_unsigned=True,
-                )
-            except SigningKeyError:
-                still_unsigned += 1
-                continue
-            except (RefundReconciliationError, RefundReconciliationContendedError):
-                # Signed concurrently by another replica, or contended: the
-                # next pass reads it again.
-                logger.info(
-                    "refund_reconciliation_unsigned_skipped",
-                    extra={"record_id": record.record_id},
-                    exc_info=True,
-                )
-                still_unsigned += 1
-                continue
-            signed += 1
+        after: tuple[Any, str] | None = None
+        while True:
+            records = await self._unsigned_page(after=after, limit=limit)
+            if not records:
+                break
+            after = (records[-1].created_at, records[-1].record_id)
+            for record in records:
+                marker = _unsigned_marker(record)
+                if marker is None:
+                    continue
+                inputs = dict(marker["inputs"])
+                if await self._refund_landed_and_budget_released(inputs):
+                    # The money already came back and the permit reservation was
+                    # already given back, by another path (for example a dispatch
+                    # reconciler pass that ran before it learned to leave these
+                    # items alone). A failed_unrefunded receipt would then claim a
+                    # debt that no longer exists, and the operator retry would
+                    # release the permit budget a second time. Leave it for an
+                    # operator, loudly.
+                    logger.error(
+                        "refund_reconciliation_unsigned_already_refunded",
+                        extra={
+                            "record_id": record.record_id,
+                            "ledger_entry_id": inputs["ledger_entry_id"],
+                        },
+                    )
+                    still_unsigned += 1
+                    continue
+                if sha256_hex(inputs["response_payload"]) != marker.get(
+                    "response_hash"
+                ):
+                    # The stored payload no longer hashes to what the caller's
+                    # response was; signing it would sign a different response.
+                    logger.error(
+                        "refund_reconciliation_unsigned_payload_mismatch",
+                        extra={"record_id": record.record_id},
+                    )
+                    still_unsigned += 1
+                    continue
+                try:
+                    await self.create_pending(
+                        wallet_id=inputs["wallet_id"],
+                        endpoint=inputs["endpoint"],
+                        idempotency_key=inputs["idempotency_key"],
+                        permit_id=inputs["permit_id"],
+                        key_id=inputs["key_id"],
+                        tool_name=inputs["tool_name"],
+                        request_payload=None,
+                        request_hash=inputs["request_hash"],
+                        ledger_entry_id=inputs["ledger_entry_id"],
+                        credits_authorized=Decimal(inputs["credits_authorized"]),
+                        credits_charged=Decimal(inputs["credits_charged"]),
+                        audit_event_id=inputs["audit_event_id"],
+                        reason=inputs["reason"],
+                        dispatch_attempt_id=inputs["dispatch_attempt_id"],
+                        approval_id=inputs["approval_id"],
+                        response_payload=inputs["response_payload"],
+                        response_hash_override=inputs["response_hash_override"],
+                        counterparty=inputs["counterparty"],
+                        _from_unsigned=True,
+                    )
+                except SigningKeyError:
+                    still_unsigned += 1
+                    continue
+                except (RefundReconciliationError, RefundReconciliationContendedError):
+                    # Signed concurrently by another replica, or contended: the
+                    # next pass reads it again.
+                    logger.info(
+                        "refund_reconciliation_unsigned_skipped",
+                        extra={"record_id": record.record_id},
+                        exc_info=True,
+                    )
+                    still_unsigned += 1
+                    continue
+                signed += 1
         return signed, still_unsigned
 
     @staticmethod

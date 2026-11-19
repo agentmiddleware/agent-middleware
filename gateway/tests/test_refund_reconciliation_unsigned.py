@@ -482,3 +482,50 @@ async def test_the_periodic_cleanup_runs_the_unsigned_signer(
 
     async with main_module.lifespan(main_module.app):
         await asyncio.wait_for(called.wait(), timeout=10)
+
+
+@pytest.mark.anyio
+async def test_an_item_that_can_never_be_signed_does_not_block_newer_items(
+    client: AsyncClient, clean_database: None, key_lost_mid_call_tool
+) -> None:
+    """The scan moves past an item it refuses, within the same pass.
+
+    The oldest unsigned item is made permanently unsignable (its stored
+    payload no longer matches its recorded hash). A newer item is signable.
+    With a page size of one, a scan that re-selected the oldest items on every
+    pass would never reach the newer one, which would then stay invisible to
+    the operator refund list for good.
+    """
+    await _run_call_that_loses_its_key(
+        client, key_lost_mid_call_tool, key="refund-unsigned-blocked-old"
+    )
+    old = await _record_for("refund-unsigned-blocked-old")
+    stored = json.loads(old.response_json or "{}")
+    stored[UNSIGNED_RECEIPT_KEY]["inputs"]["response_payload"] = {
+        "error": "not what the caller was told"
+    }
+    async with get_session_factory()() as session:
+        row = await session.get(IdempotencyRecordModel, old.record_id)
+        assert row is not None
+        row.response_json = json.dumps(stored)
+        session.add(row)
+        await session.commit()
+
+    # The first call disabled the key; the second call needs it to be admitted.
+    await _set_key_status(key_lost_mid_call_tool["key_id"], "active")
+    await _run_call_that_loses_its_key(
+        client, key_lost_mid_call_tool, key="refund-unsigned-blocked-new"
+    )
+    new = await _record_for("refund-unsigned-blocked-new")
+    assert (old.created_at, old.record_id) < (new.created_at, new.record_id)
+    await _set_key_status(key_lost_mid_call_tool["key_id"], "active")
+
+    service = get_refund_reconciliation_service()
+    assert await service.sign_unsigned_pending(limit=1) == (1, 1)
+
+    assert (await _record_for("refund-unsigned-blocked-old")).response_reference is None
+    signed = await _record_for("refund-unsigned-blocked-new")
+    assert signed.response_reference is not None
+    assert UNSIGNED_RECEIPT_KEY not in json.loads(signed.response_json or "{}")
+    # The blocked item is still counted on every later pass, never signed.
+    assert await service.sign_unsigned_pending(limit=1) == (0, 1)

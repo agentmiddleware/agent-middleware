@@ -378,7 +378,9 @@ inputs server side. The periodic cleanup on every replica runs
 `RefundReconciliationService.sign_unsigned_pending`: a replica whose key can
 sign writes the `failed_unrefunded` receipt and turns the item into an
 ordinary pending work item, which the operator list and retry then see; a
-replica that cannot sign leaves it for the next pass. Until it is signed the
+replica that cannot sign leaves it for the next pass. Each pass visits every
+unsigned item once, oldest first, and moves past an item it refuses, so an
+item that can never be signed does not keep newer ones waiting. Until it is signed the
 item does not appear in the operator list
 (`tests/test_refund_reconciliation_unsigned.py`). The unsigned item is the
 only owner of that debt: the dispatch reconciler skips an upstream attempt

@@ -26,11 +26,8 @@
   }
 
   function fillQuickstart(template, data) {
-    return template
-      .replace("export AMW_API_KEY='YOUR_DEMO_KEY'", () =>
-        `export AMW_API_KEY=${shellQuote(data.api_key)}`)
-      .replace("export AMW_WALLET_ID='YOUR_WALLET_ID'", () =>
-        `export AMW_WALLET_ID=${shellQuote(data.wallet_id)}`);
+    return template.replace(/^AMW_DEMO_KEY=.*$/m, () =>
+      `AMW_DEMO_KEY=${shellQuote(data.api_key)} &&`);
   }
 
   function showPanel() {
@@ -117,7 +114,7 @@
 
     let response;
     try {
-      response = await fetch("https://api.thisisatest.tech/v1/demo/keys", request);
+      response = await fetch("https://api.agentmiddleware.dev/v1/demo/keys", request);
     } catch {
       showFailure(false);
       return;
@@ -184,7 +181,6 @@
       "Copy was unavailable. Copy Key and Wallet separately."));
   for (const [buttonId, codeId] of [
     ["home-hero-python-copy", "home-hero-python"],
-    ["home-hero-curl-copy", "home-hero-curl"],
   ]) {
     const button = byId(buttonId);
     const code = byId(codeId);

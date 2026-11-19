@@ -2681,6 +2681,22 @@ body.home-light .hero-v2-actions {
   gap: 12px;
   margin-top: 27px;
 }
+body.home-light .hero-v2-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+body.home-light .hero-v2-badges li {
+  padding: 6px 10px;
+  border: 1px solid var(--home-line);
+  border-radius: 20px;
+  background: var(--home-bg);
+  color: var(--home-text);
+  font-size: 0.75rem;
+}
 body.home-light .hero-v2-action {
   display: inline-flex;
   align-items: center;

@@ -6,7 +6,7 @@
 
   const pending = window.amwPosthog;
   const config = pending?.config;
-  if (!config?.key || !["https://us.i.posthog.com", "https://eu.i.posthog.com"].includes(config.host)) return;
+  if (!config?.key || config.host !== "https://us.i.posthog.com") return;
 
   const allowedEvents = new Set(["$pageview", "booking_click", "demo_key_click", "email_click", "proof_click"]);
   const utmKeys = ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"];
@@ -19,7 +19,9 @@
     const result = {};
     for (const key of utmKeys) {
       const value = properties?.[key];
-      if (typeof value === "string" && value.trim()) result[key] = value.trim().slice(0, 128);
+      if (typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (trimmed && !trimmed.includes("@")) result[key] = trimmed.slice(0, 128);
     }
     return result;
   }
@@ -41,6 +43,7 @@
         product: "AMW",
         page,
         $process_person_profile: false,
+        $geoip_disable: true,
         ...(isPageview ? {} : { cta_id: properties.cta_id }),
       };
       try {

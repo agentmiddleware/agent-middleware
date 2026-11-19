@@ -5,8 +5,8 @@ The source HTML deliberately contains non-deployable tokens. Vercel runs this
 script and serves only ``dist/``; a missing or obviously provisional contact
 therefore fails the build instead of leaking a fake funnel into production.
 
-PostHog configuration is emitted only when ``AMW_POSTHOG_KEY`` is provided
-with a supported ``AMW_POSTHOG_HOST``. Without a key, analytics stays off.
+PostHog configuration is emitted only when a valid ``AMW_POSTHOG_KEY`` is
+provided, using the pinned US host. Without a key, analytics stays off.
 Vercel Web Analytics is not loaded.
 """
 
@@ -71,8 +71,8 @@ _BOOKING_MARKER_LINE = re.compile(
     flags=re.MULTILINE,
 )
 POSTHOG_CONFIG_TOKEN = "@@POSTHOG_CONFIG@@"
-# Match the explicit region hosts permitted by vercel.json and analytics.js.
-POSTHOG_HOSTS = frozenset({"https://us.i.posthog.com", "https://eu.i.posthog.com"})
+# Match the pinned host permitted by vercel.json and analytics.js.
+POSTHOG_HOSTS = frozenset({"https://us.i.posthog.com"})
 # Shared chrome is rendered at build time so it also works without JavaScript.
 SITE_PARTIALS = {
     "@@SITE_NAV@@": "partials/nav.html",
@@ -322,11 +322,17 @@ def render_posthog_config(environment: dict[str, str]) -> str:
     key = environment.get("AMW_POSTHOG_KEY", "").strip()
     if not key:
         return ""
-    host = environment.get("AMW_POSTHOG_HOST", "").strip().removesuffix("/")
+    if not re.fullmatch(r"phc_[A-Za-z0-9]+", key):
+        raise LaunchConfigurationError("AMW_POSTHOG_KEY must match ^phc_[A-Za-z0-9]+$")
+    host = (
+        environment.get("AMW_POSTHOG_HOST", "https://us.i.posthog.com")
+        .strip()
+        .removesuffix("/")
+    )
     if host not in POSTHOG_HOSTS:
         raise LaunchConfigurationError(
-            "AMW_POSTHOG_HOST must be https://us.i.posthog.com or "
-            "https://eu.i.posthog.com when AMW_POSTHOG_KEY is set"
+            "AMW_POSTHOG_HOST must be https://us.i.posthog.com "
+            "when AMW_POSTHOG_KEY is set"
         )
     return (
         '<meta name="amw-posthog-key" content="'

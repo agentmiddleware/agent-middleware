@@ -12,8 +12,8 @@ const sourcePages = [
   "index.html", "404.html", "pilot/index.html", "proof/index.html",
   "compare/index.html", "concept/index.html", "demo-key/index.html", "try/index.html",
 ];
-const hosts = ["https://us.i.posthog.com", "https://eu.i.posthog.com"];
-const freshKey = () => randomBytes(24).toString("hex");
+const host = "https://us.i.posthog.com";
+const freshKey = () => `phc_testkeyonly${randomBytes(24).toString("hex")}`;
 
 function python(code, input) {
   return spawnSync("python3", ["-c", `
@@ -50,7 +50,7 @@ function htmlFiles(directory) {
   });
 }
 
-function build(environment, inspect) {
+function build(environment, inspect, expectedStatus = 0) {
   mkdirSync(join(siteRoot, "dist"), { recursive: true });
   const temporary = mkdtempSync(join(siteRoot, "dist", "analytics-check-"));
   const output = join(temporary, "output");
@@ -71,8 +71,8 @@ raise SystemExit(build_site.main(["--output", payload["output"]]))
         ...environment,
       },
     });
-    assert.equal(result.status, 0, result.stderr);
-    inspect(output);
+    assert.equal(result.status, expectedStatus, result.stderr);
+    inspect(output, result);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
@@ -88,17 +88,27 @@ test("PostHog config stays absent without a key and ignores the legacy Vercel fl
   }
 });
 
-test("PostHog config requires an explicit supported region and escapes the key", () => {
+test("PostHog config defaults to the pinned US host and accepts its trailing slash", () => {
   const key = freshKey();
-  for (const host of hosts) {
-    assert.deepEqual(configuration({ AMW_POSTHOG_KEY: ` ${key} `, AMW_POSTHOG_HOST: `${host}/` }), {
+  for (const environment of [{}, { AMW_POSTHOG_HOST: host }, { AMW_POSTHOG_HOST: `${host}/` }]) {
+    assert.deepEqual(configuration({ AMW_POSTHOG_KEY: ` ${key} `, ...environment }), {
       markup: `<meta name="amw-posthog-key" content="${key}" />\n    <meta name="amw-posthog-host" content="${host}" />`,
     });
   }
-  const escaped = configuration({ AMW_POSTHOG_KEY: `${key}"<&'`, AMW_POSTHOG_HOST: hosts[0] });
-  assert.ok(escaped.markup.includes(`${key}&quot;&lt;&amp;&#x27;`));
+});
+
+test("PostHog config rejects malformed capture keys without emitting or echoing them", () => {
+  for (const key of ["phx_testkeyonly", "arbitrary string", "phc_", "phc_test_key", "phc_test-key", `${freshKey()}\"<&'`, "phc_test\nkey"]) {
+    const result = configuration({ AMW_POSTHOG_KEY: key });
+    assert.equal(result.error, "AMW_POSTHOG_KEY must match ^phc_[A-Za-z0-9]+$");
+    assert.equal(result.markup, undefined);
+  }
+});
+
+test("PostHog config rejects every explicitly configured host except the pinned US host", () => {
+  const key = freshKey();
   for (const host of [
-    "", "http://us.i.posthog.com", "https://us.i.posthog.com/extra",
+    "", "  ", "https://eu.i.posthog.com", "http://us.i.posthog.com", "https://us.i.posthog.com/extra",
     "https://us.i.posthog.com//", "https://us.i.posthog.com?query=value",
     "https://us.i.posthog.com#fragment", "https://user@us.i.posthog.com",
     "https://us.i.posthog.com:443", "https://us.i.posthog.com.example.org",
@@ -110,13 +120,32 @@ test("PostHog config requires an explicit supported region and escapes the key",
   }
 });
 
+for (const [label, key] of [["phx_ key", "phx_invalidfixture"], ["arbitrary string", "not a PostHog capture key"]]) {
+  test(`full build rejects a ${label} before emitting HTML`, () => {
+    build({ AMW_POSTHOG_KEY: key, AMW_POSTHOG_HOST: host }, (output, result) => {
+      assert.match(result.stderr, /site build blocked: AMW_POSTHOG_KEY/);
+      assert.equal(`${result.stdout}${result.stderr}`.includes(key), false);
+      assert.equal(existsSync(output), false);
+    }, 2);
+  });
+}
+
+test("full build rejects a non-US PostHog host before emitting HTML", () => {
+  const key = freshKey();
+  build({ AMW_POSTHOG_KEY: key, AMW_POSTHOG_HOST: "https://eu.i.posthog.com" }, (output, result) => {
+    assert.match(result.stderr, /site build blocked: AMW_POSTHOG_HOST/);
+    assert.equal(`${result.stdout}${result.stderr}`.includes(key), false);
+    assert.equal(existsSync(output), false);
+  }, 2);
+});
+
 test("all page templates use current assets and explicit safe tracked CTA identifiers", () => {
   for (const relative of [...sourcePages, "partials/nav.html", "partials/footer.html"]) {
     const markup = readFileSync(join(siteRoot, relative), "utf8");
     assert.doesNotMatch(markup, /VERCEL_ANALYTICS|va-init\.js|\/_vercel\/insights/);
     if (sourcePages.includes(relative)) {
       assert.match(markup, /@@POSTHOG_CONFIG@@/);
-      assert.match(markup, /\/analytics\.js\?v=posthog-1/);
+      assert.match(markup, /\/analytics\.js\?v=posthog-2/);
       assert.match(markup, /\/utm-capture\.js\?v=utm-2/);
     }
     for (const [tag] of markup.matchAll(/<[^>]+data-analytics-event="[^"]+"[^>]*>/g)) {
@@ -135,7 +164,7 @@ test("full unconfigured build includes no analytics loader even with the old fla
       const markup = readFileSync(path, "utf8");
       assert.doesNotMatch(markup, /amw-posthog-key|amw-posthog-host|@@POSTHOG_CONFIG@@/);
       assert.doesNotMatch(markup, /va-init\.js|\/_vercel\/insights|<script[^>]+src="[^"]*posthog\.js/);
-      assert.match(markup, /\/analytics\.js\?v=posthog-1/);
+      assert.match(markup, /\/analytics\.js\?v=posthog-2/);
       assert.match(markup, /\/utm-capture\.js\?v=utm-2/);
     }
     assert.equal(existsSync(join(output, "va-init.js")), false);
@@ -143,10 +172,10 @@ test("full unconfigured build includes no analytics loader even with the old fla
   });
 });
 
-test("full configured build adds only escaped PostHog metadata to every page", () => {
-  for (const host of hosts) {
+test("full configured build adds only validated US PostHog metadata to every page", () => {
+  for (const environment of [{}, { AMW_POSTHOG_HOST: host }, { AMW_POSTHOG_HOST: `${host}/` }]) {
     const key = freshKey();
-    build({ AMW_POSTHOG_KEY: key, AMW_POSTHOG_HOST: host }, (output) => {
+    build({ AMW_POSTHOG_KEY: key, ...environment }, (output) => {
       for (const path of htmlFiles(output)) {
         const markup = readFileSync(path, "utf8");
         assert.equal(markup.match(/name="amw-posthog-key"/g)?.length, 1);
@@ -163,14 +192,13 @@ test("full configured build adds only escaped PostHog metadata to every page", (
   }
 });
 
-test("CSP permits only the supported PostHog ingestion hosts with same-origin scripts", () => {
+test("CSP permits only the pinned US PostHog ingestion host with same-origin scripts", () => {
   const config = JSON.parse(readFileSync(join(siteRoot, "vercel.json"), "utf8"));
   const csp = config.headers.flatMap((entry) => entry.headers).find((entry) => entry.key === "Content-Security-Policy").value;
   assert.match(csp, /(?:^|; )script-src 'self';/);
   assert.doesNotMatch(csp, /vercel-insights|unsafe-inline|\*/);
   const connect = csp.split("; ").find((directive) => directive.startsWith("connect-src ")).split(" ");
-  for (const host of hosts) assert.ok(connect.includes(host));
-  assert.deepEqual(connect.filter((value) => value.includes("posthog")), hosts);
+  assert.deepEqual(connect.filter((value) => value.includes("posthog")), [host]);
   const cache = config.headers.find((entry) => entry.source.includes("analytics.js"));
   assert.ok(cache.source.includes("posthog.js"));
   assert.equal(cache.source.includes("va-init.js"), false);

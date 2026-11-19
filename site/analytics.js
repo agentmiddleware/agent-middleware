@@ -8,7 +8,7 @@
   const key = configValue("amw-posthog-key");
   const host = configValue("amw-posthog-host");
   // Source pages and unconfigured builds do not load a client or send events.
-  if (!key || !["https://us.i.posthog.com", "https://eu.i.posthog.com"].includes(host)) return;
+  if (!key || host !== "https://us.i.posthog.com") return;
   if (window.amwPosthog) return;
 
   // Keep calls made while the local client loads, including UTM registration.
@@ -60,7 +60,7 @@
   });
 
   const loader = document.createElement("script");
-  loader.src = "/posthog.js?v=posthog-1";
+  loader.src = "/posthog.js?v=posthog-2";
   loader.async = true;
   loader.onerror = function () {
     queue.length = 0;

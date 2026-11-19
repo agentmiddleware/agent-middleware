@@ -10,7 +10,7 @@ const utmScript = readFileSync(new URL("./utm-capture.js", import.meta.url), "ut
 const homeHtml = readFileSync(new URL("./index.html", import.meta.url), "utf8");
 
 function analyticsPage(options = {}) {
-  const key = options.key ?? randomUUID();
+  const key = options.key ?? "phc_testkeyonlyabcdefghijklmnopqrstuvwxyz012345";
   const sent = [];
   const loaded = [];
   const vaCalls = [];
@@ -101,7 +101,7 @@ test("homepage demo key button emits one event with the exact allowed properties
   assert.match(homeHtml, /<button[^>]*id="home-key-trigger"[^>]*data-analytics-event="demo_key_click"[^>]*data-cta-id="home-key-trigger"[^>]*>/);
   const page = analyticsPage({ pathname: "/" });
   assert.equal(page.loaded.length, 1);
-  assert.equal(page.loaded[0].src, "/posthog.js?v=posthog-1");
+  assert.equal(page.loaded[0].src, "/posthog.js?v=posthog-2");
   assert.equal(page.loaded[0].async, true);
   page.load();
   page.ready();
@@ -115,7 +115,7 @@ test("homepage demo key button emits one event with the exact allowed properties
   assert.equal(body.api_key, page.key);
   assert.match(body.distinct_id, /^[\da-f-]{36}$/);
   assert.equal(body.event, "demo_key_click");
-  assert.deepEqual(body.properties, { product: "AMW", page: "/", cta_id: "home-key-trigger", $process_person_profile: false });
+  assert.deepEqual(body.properties, { product: "AMW", page: "/", cta_id: "home-key-trigger", $process_person_profile: false, $geoip_disable: true });
   assert.equal(request.method, "POST");
   assert.equal(request.keepalive, true);
   assert.equal(request.credentials, "omit");
@@ -125,7 +125,7 @@ test("homepage demo key button emits one event with the exact allowed properties
 });
 
 test("the existing event names are preserved, with no request_access alias", () => {
-  const page = analyticsPage({ host: "https://eu.i.posthog.com" });
+  const page = analyticsPage();
   page.load();
   page.ready();
   for (const event of ["email_click", "demo_key_click", "proof_click", "booking_click"]) page.click(event);
@@ -133,8 +133,9 @@ test("the existing event names are preserved, with no request_access alias", () 
   page.click("receipt_verified");
   page.click("");
   assert.deepEqual(page.sent.map(({ body }) => body.event), ["$pageview", "email_click", "demo_key_click", "proof_click", "booking_click"]);
-  assert.ok(page.sent.every(({ url }) => url === "https://eu.i.posthog.com/i/v0/e/"));
+  assert.ok(page.sent.every(({ url }) => url === "https://us.i.posthog.com/i/v0/e/"));
   assert.ok(page.sent.every(({ body }) => body.properties.$process_person_profile === false));
+  assert.ok(page.sent.every(({ body }) => body.properties.$geoip_disable === true));
   assert.equal(new Set(page.sent.map(({ body }) => body.distinct_id)).size, 1);
   assert.deepEqual(page.vaCalls, []);
 });
@@ -155,12 +156,36 @@ test("no configured key means no client, listener, requests, or Vercel calls", (
 });
 
 test("missing or unsafe hosts fail closed without loading anything", () => {
-  for (const host of ["", "http://us.i.posthog.com", "https://us.i.posthog.com/?email=private", "https://us.i.posthog.com.example.org"]) {
+  for (const host of ["", "https://eu.i.posthog.com", "http://us.i.posthog.com", "https://us.i.posthog.com/?email=private", "https://us.i.posthog.com.example.org"]) {
     const page = analyticsPage({ host });
     page.ready();
     page.click("email_click");
     assert.deepEqual(page.loaded, []);
     assert.deepEqual(page.sent, []);
+  }
+});
+
+test("loading the client directly with an unapproved host cannot enable capture", () => {
+  for (const host of ["https://eu.i.posthog.com", "https://example.org"]) {
+    const sent = [];
+    const pending = {
+      config: { key: "phc_testkeyonlyabcdefghijklmnopqrstuvwxyz012345", host },
+      queue: [["capture", "$pageview", { page: "/" }]],
+    };
+    const window = { amwPosthog: pending, crypto: { randomUUID } };
+    const context = createContext({
+      window,
+      fetch(...args) {
+        sent.push(args);
+        return Promise.resolve({ ok: true });
+      },
+    });
+    // Even loading the file directly cannot enable it, without analytics.js.
+    runInContext(clientScript, context, { filename: "posthog.js" });
+    window.amwPosthog.capture?.("email_click", { page: "/", cta_id: "footer-contact" });
+    assert.deepEqual(sent, []);
+    assert.equal(window.amwPosthog, pending);
+    assert.equal(window.amwPosthog.capture, undefined);
   }
 });
 
@@ -181,11 +206,11 @@ test("queued pageview, attribution and clicks survive delayed loading without du
   assert.deepEqual(page.sent.map(({ body }) => body.event), ["$pageview", "proof_click"]);
   assert.deepEqual(page.sent[0].body.properties, {
     utm_source: "newsletter", utm_campaign: "launch", utm_term: "t".repeat(128),
-    product: "AMW", page: "/proof/", $process_person_profile: false,
+    product: "AMW", page: "/proof/", $process_person_profile: false, $geoip_disable: true,
   });
   assert.deepEqual(page.sent[1].body.properties, {
     utm_source: "newsletter", utm_campaign: "launch", utm_term: "t".repeat(128),
-    product: "AMW", page: "/proof/", cta_id: "proof-download", $process_person_profile: false,
+    product: "AMW", page: "/proof/", cta_id: "proof-download", $process_person_profile: false, $geoip_disable: true,
   });
   assert.equal(JSON.parse(page.session.get("amwDemoKeyUtm")).referrer, "https://news.example/article?email=private@example.org");
   page.load();
@@ -206,10 +231,10 @@ test("pageview waits for attribution when the client loads before UTM capture", 
   page.click("email_click", "footer-contact");
   assert.deepEqual(page.sent.map(({ body }) => body.event), ["$pageview", "email_click"]);
   assert.deepEqual(page.sent[0].body.properties, {
-    utm_medium: "email", utm_content: "footer", product: "AMW", page: "/proof/", $process_person_profile: false,
+    utm_medium: "email", utm_content: "footer", product: "AMW", page: "/proof/", $process_person_profile: false, $geoip_disable: true,
   });
   assert.deepEqual(page.sent[1].body.properties, {
-    utm_medium: "email", utm_content: "footer", product: "AMW", page: "/proof/", cta_id: "footer-contact", $process_person_profile: false,
+    utm_medium: "email", utm_content: "footer", product: "AMW", page: "/proof/", cta_id: "footer-contact", $process_person_profile: false, $geoip_disable: true,
   });
 });
 
@@ -222,7 +247,7 @@ test("pageview captures once when analytics initializes after DOM readiness", ()
   page.load();
   assert.equal(page.sent.length, 1);
   assert.equal(page.sent[0].body.event, "$pageview");
-  assert.deepEqual(page.sent[0].body.properties, { product: "AMW", page: "/proof/", $process_person_profile: false });
+  assert.deepEqual(page.sent[0].body.properties, { product: "AMW", page: "/proof/", $process_person_profile: false, $geoip_disable: true });
   assert.equal(page.sent[0].request.referrerPolicy, "no-referrer");
 });
 
@@ -233,6 +258,7 @@ test("transport boundary strips extra properties and rejects unapproved events",
     email: "private@example.org", name: "private", referrer: "https://news.example/?private",
     $current_url: "https://www.agentmiddleware.dev/?private", $set: { email: "private@example.org" },
     $process_person_profile: true,
+    $geoip_disable: false,
     utm_unknown: "ignored", utm_campaign: { form: "private" },
   };
   page.window.amwPosthog.register({ ...privateFields, utm_source: "  newsletter  ", utm_term: "t".repeat(200) });
@@ -240,7 +266,7 @@ test("transport boundary strips extra properties and rejects unapproved events",
     ...privateFields, product: "overridden", page: "/pilot/?private#private", cta_id: "pilot-contact",
   });
   assert.deepEqual(page.sent[0].body.properties, {
-    utm_source: "newsletter", utm_term: "t".repeat(128), product: "AMW", page: "/pilot/", cta_id: "pilot-contact", $process_person_profile: false,
+    utm_source: "newsletter", utm_term: "t".repeat(128), product: "AMW", page: "/pilot/", cta_id: "pilot-contact", $process_person_profile: false, $geoip_disable: true,
   });
   page.window.amwPosthog.capture("$pageview", {
     ...privateFields, product: "overridden", page: "/pilot/?private#private", cta_id: "pilot-contact",
@@ -248,7 +274,7 @@ test("transport boundary strips extra properties and rejects unapproved events",
   });
   assert.equal(page.sent[1].body.event, "$pageview");
   assert.deepEqual(page.sent[1].body.properties, {
-    utm_source: "newsletter", utm_term: "t".repeat(128), product: "AMW", page: "/pilot/", $process_person_profile: false,
+    utm_source: "newsletter", utm_term: "t".repeat(128), product: "AMW", page: "/pilot/", $process_person_profile: false, $geoip_disable: true,
   });
   for (const event of ["request_access", "$autocapture", "$identify", "$snapshot"]) {
     page.window.amwPosthog.capture(event, { page: "/", cta_id: "nav-contact" });
@@ -259,6 +285,25 @@ test("transport boundary strips extra properties and rejects unapproved events",
   }
   assert.doesNotThrow(() => page.window.amwPosthog.capture("$pageview"));
   assert.equal(page.sent.length, 2);
+});
+
+test("registration and capture omit UTM values containing @ while preserving safe neighbors", () => {
+  for (const value of ["@", "  @  ", " newsletter@example.org ", "@newsletter", "newsletter@", "t".repeat(128) + "@example.org"]) {
+    const page = analyticsPage();
+    page.load();
+    page.window.amwPosthog.register({ utm_source: value, utm_medium: "  email  " });
+    page.window.amwPosthog.capture("$pageview", { page: "/" });
+    assert.deepEqual(page.sent[0].body.properties, {
+      utm_medium: "email", product: "AMW", page: "/", $process_person_profile: false, $geoip_disable: true,
+    });
+    page.window.amwPosthog.capture("email_click", {
+      page: "/", cta_id: "footer-contact", utm_campaign: value, utm_content: "  footer  ",
+    });
+    assert.deepEqual(page.sent[1].body.properties, {
+      utm_medium: "email", utm_content: "footer", product: "AMW", page: "/", cta_id: "footer-contact",
+      $process_person_profile: false, $geoip_disable: true,
+    });
+  }
 });
 
 test("clicks without approved names and explicit safe CTA ids are ignored", () => {

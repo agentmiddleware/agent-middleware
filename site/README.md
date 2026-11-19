@@ -155,14 +155,14 @@ entity-escaped for HTML targets, and entity escapes are not decoded inside a
 `'unsafe-inline'`. `a11y-preload.js` applies saved accessibility preferences
 before first paint. It is loaded **synchronously** in `<head>`; do not add
 `defer`. PostHog uses the same-origin `posthog.js` client, loaded only when
-configured. `connect-src` permits the two supported PostHog ingestion hosts.
+configured. `connect-src` permits only `https://us.i.posthog.com` for PostHog.
 
 The CSP blocks executable inline `<script>` elements. Put executable code in a
 same-origin file instead.
 
 The shared CSS and JS assets are served with `max-age=604800`, so cache busting is a **manual
 query token**: script references carry a version such as
-`/analytics.js?v=posthog-1`. When you
+`/analytics.js?v=posthog-2`. When you
 change any of those files (including `/wave.js`, `/arcade-boot.js`,
 `/arcade.js`, and `/arcade.css`), bump the token in
 `index.html`, `proof/index.html`, `compare/index.html`, `concept/index.html`,
@@ -493,19 +493,27 @@ the shared design system directly, including the accessibility controls.
 
 ## Analytics
 
-PostHog stays off until its project has been chosen and configured. Set these
-values in the deployment's build environment, never in tracked files:
+AMW uses PostHog project 317650, chosen by C.Lee, on the US ingestion host.
+PostHog stays off until configured. Set these values in the deployment's build
+environment, never in tracked files:
 
-- `AMW_POSTHOG_KEY`: the chosen project's public capture key, not a personal
-  API key. The build emits it in an HTML meta tag for the browser client.
-- `AMW_POSTHOG_HOST`: the project's ingestion region, either
-  `https://us.i.posthog.com` or `https://eu.i.posthog.com`. A single trailing
-  slash is accepted. A configured key requires one of these hosts.
+- `AMW_POSTHOG_KEY`: the project's public capture key, not a personal API key.
+  After trimming whitespace, it must match `^phc_[A-Za-z0-9]+$` or the build
+  fails. The build emits valid keys in an HTML meta tag for the browser client.
+- `AMW_POSTHOG_HOST`: defaults to `https://us.i.posthog.com` when unset.
+  If set with a configured key, it must equal that host after removing a
+  single trailing slash; any other value fails the build.
 
 With an absent or blank key, the build emits no PostHog configuration and the
 browser loads no PostHog client or analytics requests. The host is ignored
-until a key is set. No key, token, or project ID is committed. Generated
+until a key is set. No key or token is committed. Generated
 `dist/` output is ignored by git and must not be committed.
+
+Project 317650's **Discard client IP data** setting is currently off and must
+be turned on under **Settings > Project > IP data capture configuration**
+(`anonymize_ips` in the API). This is a separate project configuration step
+requiring C.Lee's yes; this code change does not change the remote setting.
+The client also sends `$geoip_disable: true` on every event.
 
 `analytics.js` loads the same-origin `posthog.js` capture API client only when
 configured. It sends the existing `email_click`, `demo_key_click`, and
@@ -515,11 +523,14 @@ alias is defined.
 
 Event properties are limited to `product` (`AMW`), `page` (pathname only),
 `cta_id` (the element's explicit `data-cta-id`), and the five campaign fields
-`utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, and `utm_term`.
+`utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, and `utm_term`,
+plus `$process_person_profile: false` and `$geoip_disable: true`.
 `utm-capture.js` registers trimmed campaign values capped at 128 characters,
 including attribution carried across this tab's pages. It still stores the
 existing `amwDemoKeyUtm` session record, including its capped referrer, for
-the demo-key flow. That referrer is never registered with PostHog.
+the demo-key flow. That referrer is never registered with PostHog. The
+PostHog client drops any UTM value containing `@` after trimming, before
+registering or sending it.
 
 The client uses the [PostHog capture API](https://posthog.com/docs/api/capture)
 with the capture key and a random identifier for the current page lifetime
@@ -528,8 +539,10 @@ pageviews, autocapture, session recording, or identification calls. Requests omi
 credentials and the HTTP referrer. Email addresses, names, form values,
 receipt fields, and full URLs or referrers are not analytics properties.
 
-Vercel Web Analytics remains off. The build never emits its loader or a
-`window.va` shim, and `PUBLIC_ENABLE_VERCEL_ANALYTICS` no longer enables it.
+Vercel Web Analytics remains off by C.Lee's standing rule; AMW uses PostHog
+only. Keep the removal of `va-init.js` and the Vercel insights path. The build
+never emits its loader or a `window.va` shim, and
+`PUBLIC_ENABLE_VERCEL_ANALYTICS` no longer enables it.
 
 ## Deployment
 

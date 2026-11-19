@@ -200,7 +200,7 @@ def _page_template(
     <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
     <script src="/a11y-preload.js?v=gateway-19"></script>
     @@POSTHOG_CONFIG@@
-    <script defer src="/analytics.js?v=posthog-1"></script>
+    <script defer src="/analytics.js?v=posthog-2"></script>
     <script defer src="/utm-capture.js?v=utm-2"></script>
     <script defer src="/a11y.js?v=gateway-19"></script>
   </head>

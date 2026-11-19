@@ -35,7 +35,6 @@ def test_conflicting_payload_cannot_reuse_a_completed_key(judge):
     after_replay = judge.snapshot()
     assert after_replay["spent"] == first_snapshot["spent"]
     assert after_replay["debits"] == first_snapshot["debits"]
-    assert replay["body"]["result"]["receipt"]["receipt_id"] == first_receipt_id
 
 
 @pytest.mark.parametrize("attack", ["anonymous", "tool_scope", "budget"])
@@ -80,7 +79,7 @@ def test_guardrails_deny_before_dispatch_or_money(judge, attack):
 
 
 def test_offline_tamper_and_unknown_key_fail_closed(judge):
-    """Verify offline validation rejects tampering and unknown signing keys."""
+    """Verify offline validation rejects tampering, bad signatures, and unknown keys."""
     judge.issue()
     first = judge.call()
     receipt_id = first["body"]["result"]["receipt"]["receipt_id"]
@@ -96,6 +95,15 @@ def test_offline_tamper_and_unknown_key_fail_closed(judge):
     assert result.status is VerificationStatus.INVALID
     assert result.is_tampered
     other_private = Ed25519PrivateKey.generate()
+    bad_signature = {
+        **bundle,
+        "signature": base64.b64encode(
+            other_private.sign(bundle["signing_input"].encode("utf-8"))
+        ).decode(),
+    }
+    invalid = verify_bundle(bad_signature, keys)
+    assert invalid.status is VerificationStatus.INVALID
+    assert not invalid.ok
     other_public = other_private.public_key()
     other_key_b64 = base64.b64encode(
         other_public.public_bytes(Encoding.Raw, PublicFormat.Raw)

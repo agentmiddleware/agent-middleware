@@ -105,6 +105,7 @@ def test_identity_refuses_incomplete_binding():
 async def test_http_transport_cannot_select_action_namespace(monkeypatch):
     from unittest.mock import AsyncMock
     from starlette.requests import Request
+    from starlette.responses import Response
     from app.routers import mcp
 
     normalize = AsyncMock(return_value=object())
@@ -130,6 +131,7 @@ async def test_http_transport_cannot_select_action_namespace(monkeypatch):
         "partner.pay",
         request,
         Request({"type": "http", "headers": []}),
+        Response(),
         auth=object(),
         money=object(),
     )

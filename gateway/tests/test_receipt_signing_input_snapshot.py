@@ -5,7 +5,7 @@ any change to the field set, key ordering, Decimal/datetime normalization,
 or the payload_hash derivation changes what an offline verifier must
 reconstruct, and silently invalidates every receipt already issued.
 
-This test freezes five representative receipts to byte-exact canonical
+This test freezes representative receipts to byte-exact canonical
 JSON, and freezes the Ed25519 signature over those bytes under a fixed
 test seed (Ed25519 is deterministic, so the signature is a second pin on
 the same bytes).
@@ -47,7 +47,7 @@ GOLDEN_DIR = Path(__file__).parent / "fixtures" / "receipt_signing_golden"
 # Fixed 32-byte seed; NOT a production key. Exists only to make the
 # signature pin deterministic.
 _TEST_SEED = bytes(range(32))
-_FIXED_CREATED_AT = datetime(2026, 9, 14, 17, 0, 0, tzinfo=timezone.utc)
+_FIXED_CREATED_AT = datetime(2026, 9, 16, 12, 30, 0, tzinfo=timezone.utc)
 
 
 def _base_model(**overrides) -> ReceiptModel:
@@ -56,7 +56,9 @@ def _base_model(**overrides) -> ReceiptModel:
         idempotency_record_id="idem_golden_0001",
         dispatch_attempt_id="disp_golden_0001",
         permit_id="pmt_golden_0001",
-        wallet_id="agt-golden-0001",
+        # Subject wallet of pmt_golden_0001 (was agt-golden-0001; that wallet
+        # is not on the permit, so the sample could not check against it).
+        wallet_id="agt-golden-subject",
         key_id="key_golden_0001",
         tool="golden-path-echo",
         request_hash="a" * 64,
@@ -68,6 +70,15 @@ def _base_model(**overrides) -> ReceiptModel:
         reason_code=None,
         audit_event_id="aud_golden_0001",
         approval_id=None,
+        # SHA-256 of pmt_golden_0001's golden signing_input (active_minimal).
+        permit_digest="d9b3c6d71c4ad21500425f018e7393200cd53bcfb1e9e9b520d549839181d62e",
+        # No signed-approval golden exists yet; omit approval_digest even when
+        # approval_id is set (see success_approval cases).
+        approval_digest=None,
+        counterparty="partner.example",
+        sequence=0,
+        # sequence 0: prev_receipt_digest omitted (None).
+        prev_receipt_digest=None,
         constraints_evaluated_json=None,
         created_at=_FIXED_CREATED_AT,
         signature="",
@@ -88,6 +99,24 @@ CASES = {
             action_schema_version="1",
             action_public_tool_id="golden-path-echo",
             action_upstream_binding_hash="d" * 64,
+        ),
+        True,
+    ),
+    # Migration 052 signs enforcement_mode and gateway_build only when set.
+    # Pin both populated, and enforcement_mode alone, so a refactor cannot
+    # drop or reorder either field while the omitted-field goldens stay green.
+    "success_enforcement_build": (
+        _base_model(
+            receipt_id="rcpt_golden_0005",
+            enforcement_mode="enforce",
+            gateway_build="0123456789abcdef0123456789abcdef01234567",
+        ),
+        True,
+    ),
+    "success_permissive": (
+        _base_model(
+            receipt_id="rcpt_golden_0006",
+            enforcement_mode="permissive",
         ),
         True,
     ),

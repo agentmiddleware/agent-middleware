@@ -10,6 +10,10 @@ fence, metering against an internal credit ledger, Ed25519 receipts, the
 hash-chained audit log, policy, and the MCP endpoints. Python 3.11+, FastAPI,
 SQLite or PostgreSQL, Alembic.
 
+Note for contributors: the canonical gateway copy is
+`agent-middleware-api/app`; this directory is synced from it, so policy and
+safety fixes should match that copy.
+
 ## Run it
 
 ```bash

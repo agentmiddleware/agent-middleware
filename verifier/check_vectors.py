@@ -1,4 +1,4 @@
-"""Run the Python offline verifier against spec/test-vectors/receipts.json.
+"""Run the Python offline verifier against the spec test vectors.
 
 Exit 0 when every case produces its expected status. Needs only the SDK and
 `cryptography`; no network, database, or gateway.
@@ -13,22 +13,41 @@ import json
 import sys
 from pathlib import Path
 
-from b2a_sdk.receipt_verifier import key_set_from_document, verify_bundle
+from b2a_sdk.receipt_verifier import (
+    key_set_from_document,
+    verify_bundle,
+    verify_permit_bundle,
+)
 
 VECTORS = Path(__file__).resolve().parent.parent / "spec" / "test-vectors"
 
+SUITES = (
+    ("receipts.json", verify_bundle),
+    ("rotation.json", verify_bundle),
+    ("permits.json", verify_permit_bundle),
+)
+
 
 def main() -> int:
-    default_keys = key_set_from_document(json.loads((VECTORS / "keys.json").read_text()))
-    cases = json.loads((VECTORS / "receipts.json").read_text())["cases"]
+    default_keys = key_set_from_document(
+        json.loads((VECTORS / "keys.json").read_text())
+    )
     failures = 0
-    for case in cases:
-        keys = key_set_from_document(case["keys"]) if "keys" in case else default_keys
-        status = verify_bundle(case["bundle"], keys).status.value
-        ok = status == case["expect"]
-        failures += not ok
-        print(f"{'ok  ' if ok else 'FAIL'} {case['name']}: {status} (expected {case['expect']})")
-    print(f"{len(cases) - failures}/{len(cases)} vectors passed")
+    total = 0
+    for filename, verify in SUITES:
+        cases = json.loads((VECTORS / filename).read_text())["cases"]
+        for case in cases:
+            keys = (
+                key_set_from_document(case["keys"]) if "keys" in case else default_keys
+            )
+            status = verify(case["bundle"], keys).status.value
+            ok = status == case["expect"]
+            failures += not ok
+            total += 1
+            print(
+                f"{'ok  ' if ok else 'FAIL'} {filename}:{case['name']}: {status} (expected {case['expect']})"
+            )
+    print(f"{total - failures}/{total} vectors passed")
     return 1 if failures else 0
 
 

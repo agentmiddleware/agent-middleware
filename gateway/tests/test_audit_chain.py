@@ -694,8 +694,7 @@ async def test_windowed_verify_of_valid_chain_is_valid(client, clean_database):
     assert windowed.valid is True, windowed
     assert windowed.checked_events == 2
 
-    # The seeded predecessor is really checked: tampering the chain_hash of
-    # the last event *outside* the window breaks the first in-window link.
+    # The full chain walk checks the hash of an event outside the window.
     async with factory() as session:
         event = (
             await session.execute(
@@ -712,4 +711,5 @@ async def test_windowed_verify_of_valid_chain_is_valid(client, clean_database):
         created_after=third_created - timedelta(microseconds=1),
     )
     assert tampered.valid is False
-    assert tampered.reason == "audit_previous_hash_mismatch"
+    assert tampered.reason == "audit_chain_hash_mismatch"
+    assert tampered.broken_event_id == rows[1].event_id

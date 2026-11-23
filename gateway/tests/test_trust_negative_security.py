@@ -27,7 +27,11 @@ from app.schemas.billing import ServiceCategory
 from app.services.policies import evaluate_wallet_policy as real_evaluate_wallet_policy
 from app.services.receipts import get_receipt_service
 from app.services.service_registry import get_service_registry
-from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
+from tests.test_trust_helpers import (
+    create_tool_permit,
+    provision_agent_wallet,
+    resign_permit_model,
+)
 
 
 @pytest.fixture
@@ -101,6 +105,7 @@ async def test_expired_permit_is_denied_without_charge(client, clean_database):
             )
             model = result.scalar_one()
             model.expires_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+            await resign_permit_model(model)
             session.add(model)
             await session.commit()
 
@@ -197,6 +202,7 @@ async def test_terminal_permit_between_precheck_and_reservation_is_denied(
                     model.revoked_at = utc_now()
                 else:
                     model.expires_at = utc_now() - timedelta(seconds=1)
+                await resign_permit_model(model)
                 session.add(model)
                 await session.commit()
             return await real_evaluate_wallet_policy(**kwargs)

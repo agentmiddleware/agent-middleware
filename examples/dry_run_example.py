@@ -170,7 +170,7 @@ def _cheaper_label(cost_a, cost_b) -> str:
 async def main() -> int:
     try:
         await demo_simulation()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - display unexpected demo failures
         print(f"\nError: {e}")
         print("Make sure the B2A API is running at http://localhost:8000")
         print("Or set B2A_API_URL environment variable.")

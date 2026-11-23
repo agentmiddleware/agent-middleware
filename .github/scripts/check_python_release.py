@@ -21,7 +21,9 @@ def verify_release(
     project = tomllib.loads(pyproject.read_text())["project"]
     version = project["version"]
     if not requested_version or requested_version != version:
-        raise ValueError(f"release version {requested_version!r} does not match pyproject {version!r}")
+        raise ValueError(
+            f"release version {requested_version!r} does not match pyproject {version!r}"
+        )
 
     distribution = re.sub(r"[-_.]+", "_", project["name"]).lower()
     artifacts = list(dist.iterdir())
@@ -32,9 +34,13 @@ def verify_release(
 
     wheel_parts = wheels[0].name.removesuffix(".whl").split("-")
     if len(wheel_parts) not in (5, 6) or wheel_parts[:2] != [distribution, version]:
-        raise ValueError(f"wheel filename has the wrong distribution or version: {wheels[0].name}")
+        raise ValueError(
+            f"wheel filename has the wrong distribution or version: {wheels[0].name}"
+        )
     if sdists[0].name != f"{distribution}-{version}.tar.gz":
-        raise ValueError(f"sdist filename has the wrong distribution or version: {sdists[0].name}")
+        raise ValueError(
+            f"sdist filename has the wrong distribution or version: {sdists[0].name}"
+        )
     return version
 
 

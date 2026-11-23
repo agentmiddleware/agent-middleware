@@ -25,7 +25,7 @@ from app.schemas.trust import PermitCreateRequest
 from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from app.services.receipts import get_receipt_service
-from tests.test_trust_helpers import provision_agent_wallet
+from tests.test_trust_helpers import provision_agent_wallet, resign_permit_model
 
 
 @pytest.fixture
@@ -84,6 +84,7 @@ async def _backdate_expiry(permit_id: str) -> None:
             model = await session.get(PermitModel, permit_id)
             assert model is not None
             model.expires_at = utc_now() - timedelta(minutes=5)
+            await resign_permit_model(model)
             session.add(model)
 
 

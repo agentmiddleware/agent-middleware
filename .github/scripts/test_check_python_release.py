@@ -19,14 +19,18 @@ class ReleaseVersionTests(unittest.TestCase):
         (self.dist / "amw_sdk-0.5.0-py3-none-any.whl").touch()
         (self.dist / "amw_sdk-0.5.0.tar.gz").touch()
 
-    def verify(self, event: str = "push", tag: str = "python-v0.5.0", input_version: str = "") -> str:
+    def verify(
+        self, event: str = "push", tag: str = "python-v0.5.0", input_version: str = ""
+    ) -> str:
         return verify_release(event, tag, input_version, self.pyproject, self.dist)
 
     def test_tag_release_matches(self) -> None:
         self.assertEqual(self.verify(), "0.5.0")
 
     def test_dispatch_release_matches(self) -> None:
-        self.assertEqual(self.verify(event="workflow_dispatch", input_version="0.5.0"), "0.5.0")
+        self.assertEqual(
+            self.verify(event="workflow_dispatch", input_version="0.5.0"), "0.5.0"
+        )
 
     def test_wrong_tag_or_dispatch_version_fails(self) -> None:
         for event, tag, input_version in (
@@ -35,9 +39,11 @@ class ReleaseVersionTests(unittest.TestCase):
             ("workflow_dispatch", "", "0.5.1"),
             ("workflow_dispatch", "", ""),
         ):
-            with self.subTest(event=event, tag=tag, input_version=input_version):
-                with self.assertRaises(ValueError):
-                    self.verify(event=event, tag=tag, input_version=input_version)
+            with (
+                self.subTest(event=event, tag=tag, input_version=input_version),
+                self.assertRaises(ValueError),
+            ):
+                self.verify(event=event, tag=tag, input_version=input_version)
 
     def test_wrong_wheel_or_sdist_version_fails(self) -> None:
         for original, wrong in (

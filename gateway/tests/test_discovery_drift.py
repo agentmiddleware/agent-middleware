@@ -90,10 +90,12 @@ async def test_standard_mcp_is_advertised_only_when_enabled(client, monkeypatch)
 
         assert "mcp" not in disabled["endpoints"]
         assert disabled["integrations"]["mcp_json_rpc"] == "/mcp/messages"
+        assert disabled["integrations"]["mcp_json_rpc_status"] == "deprecated"
         assert (
-            disabled["integrations"]["mcp_json_rpc_status"]
-            == "legacy_project_transport"
+            "not enabled on this instance"
+            in (disabled["integrations"]["mcp_json_rpc_note"])
         )
+        assert "mcp_transport" not in disabled["agent_first"]
         assert "preferred_integration" not in disabled["integrations"]
         assert "standard_mcp_streamable_http" not in disabled["integrations"]
         assert (
@@ -115,6 +117,10 @@ async def test_standard_mcp_is_advertised_only_when_enabled(client, monkeypatch)
             == "standard_mcp_streamable_http"
         )
         assert enabled_discovery["integration_guides"]["standard_mcp"] == "/mcp"
+        transport = enabled["agent_first"]["mcp_transport"]
+        assert transport["preferred"] == "standard_mcp_streamable_http"
+        assert transport["endpoint"] == "POST /mcp"
+        assert transport["legacy_json_rpc_status"] == "deprecated"
         enabled_root = (await client.get("/")).json()
         assert "POST /mcp" in enabled_root["services"]["mcp_server"]["endpoints"]
     finally:

@@ -2,6 +2,15 @@
 
 Use Agent Middleware API tools with Microsoft AutoGen agents.
 
+## Status: use the governed wrapper first
+
+The governed wrapper in
+[`integrations/autogen-agent-middleware`](../../integrations/autogen-agent-middleware/README.md)
+runs every call through the **permit -> invoke -> signed receipt** loop and is
+the path to show buyers. `get_autogen_tools` below is a legacy ungoverned
+factory: its function map calls the API with no permit, no idempotency key,
+and no signed receipt, and it emits a `DeprecationWarning`.
+
 ## Installation
 
 No PyPI package is published. The SDK distribution will be published as
@@ -27,7 +36,10 @@ from framework_integrations import B2AClient, get_autogen_tools
 
 # Initialize client
 client = B2AClient(
-    api_url="http://localhost:8000", api_key="your-api-key", wallet_id="your-wallet-id"
+    api_url="http://localhost:8000",
+    api_key="your-api-key",
+    wallet_id="your-wallet-id",
+    agent_id="your-registered-agent-id",  # Required for send_message
 )
 
 # Get AutoGen-compatible function map

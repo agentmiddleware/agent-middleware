@@ -80,6 +80,20 @@ exact `MCP_UPSTREAM_TOOL_NAME`, and exposes it as
 unreachable or that tool is absent. No database service registration is
 required.
 
+Multi tool upstream discovery is a Preview feature. To expose multiple tools
+from the same upstream server, set
+`MCP_UPSTREAM_MULTI_TOOL_ENABLED=true`, leave `MCP_UPSTREAM_TOOL_NAME` empty,
+and use `MCP_UPSTREAM_PUBLIC_TOOL_ID` as the public ID prefix. Every discovered
+tool is registered as `<prefix>.<sha256 of upstream tool name>` (lowercase hex).
+The full digest keeps IDs stable across restarts and distinct even when tool
+names have similar spelling. Set `MCP_UPSTREAM_TOOL_ALLOWLIST` to a comma-separated
+list of exact upstream tool names to expose only those tools. An absent listed
+tool, duplicate name, or invalid schema fails startup. When the allowlist is
+empty, all discovered tools are exposed. Each public ID needs its own permit
+scope; each call costs `MCP_UPSTREAM_CREDITS_PER_CALL` and has its own dispatch
+attempt. Reusing an idempotency key with another tool or request body is refused.
+Existing single-tool settings remain the default.
+
 Keep a second tool id out of the permit (e.g. `YOUR_TOOL_ID.admin`) for the
 out-of-scope denial step.
 

@@ -39,6 +39,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from ..core import product_analytics
 from ..core.browser_origin import validate_browser_origin
 from ..core.config import get_settings
 from ..core.trust_mode import is_production_like_environment
@@ -111,7 +112,23 @@ def _reject_cross_origin(request: Request) -> None:
     that send no Origin pass through. Same rule as
     ``app.core.browser_origin.validate_browser_origin``.
     """
-    validate_browser_origin(request)
+    try:
+        validate_browser_origin(request)
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_403_FORBIDDEN or exc.detail != {
+            "error": "origin_not_allowed"
+        }:
+            raise
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "error": "origin_not_allowed",
+                "message": (
+                    "Cross-origin browser requests are not accepted on this "
+                    "endpoint. Call it from a CLI, SDK, or server-side client."
+                ),
+            },
+        ) from exc
 
 
 @router.post(
@@ -155,6 +172,7 @@ async def self_provision_dev_key(
         key_name=request.key_name,
     )
 
+    product_analytics.track_signup(sponsor.wallet_id, method="dev_self_provision")
     return SelfProvisionResponse(
         sponsor_wallet_id=sponsor.wallet_id,
         wallet_id=agent.wallet_id,

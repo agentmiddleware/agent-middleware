@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
+from app.db.database import get_session_factory
+from app.db.models import ControlPlaneAuditEventModel
 from app.main import app
 from app.schemas.billing import ServiceCategory
+from app.schemas.trust import ReceiptEvidenceResponse
 from app.services.service_registry import get_service_registry
+from app.trust.evidence import build_evidence_bundle
 from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
     create_tool_permit,
@@ -84,7 +89,63 @@ async def test_evidence_bundle_returns_flat_verified_artifact(client, clean_data
     assert verification["receipt_signature"] == "ok"
     assert verification["permit_signature"] == "ok"
     assert verification["audit_chain"] == "ok"
+    # The flat map says audit_chain is the receipt's own event link, not a
+    # whole-chain walk.
+    assert verification["audit_chain_scope"] == "receipt_event_link"
     assert verification["request_hash"] == "ok"
+
+
+@pytest.mark.anyio
+async def test_evidence_bundle_flags_a_tampered_own_audit_event(client, clean_database):
+    provisioned = await provision_agent_wallet(client)
+    _, receipt = await _invoke_governed_tool(client, provisioned)
+    factory = get_session_factory()
+    async with factory() as session:
+        event = (
+            (
+                await session.execute(
+                    select(ControlPlaneAuditEventModel).where(
+                        ControlPlaneAuditEventModel.event_id
+                        == receipt["audit_event_id"]
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+        event.error = "tampered"
+        session.add(event)
+        await session.commit()
+
+    resp = await client.get(
+        f"/v1/evidence/{receipt['receipt_id']}",
+        headers=provisioned["agent_headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    bundle = resp.json()
+    assert bundle["valid"] is False
+    assert bundle["verification"]["audit_chain"] == "audit_payload_hash_mismatch"
+    assert bundle["verification"]["audit_chain_scope"] == "receipt_event_link"
+
+
+@pytest.mark.anyio
+async def test_evidence_bundle_omits_audit_scope_without_an_audit_check(
+    client, clean_database
+):
+    provisioned = await provision_agent_wallet(client)
+    _, receipt = await _invoke_governed_tool(client, provisioned)
+    detailed = await client.get(
+        f"/v1/receipts/{receipt['receipt_id']}/evidence",
+        headers=provisioned["agent_headers"],
+    )
+    assert detailed.status_code == 200, detailed.text
+    payload = detailed.json()
+    payload["checks"] = [
+        check for check in payload["checks"] if check["name"] != "audit_chain"
+    ]
+    bundle = build_evidence_bundle(ReceiptEvidenceResponse.model_validate(payload))
+    assert "audit_chain_scope" not in bundle.verification
+    assert bundle.verification["audit_chain"] == "skipped"
 
 
 @pytest.mark.anyio

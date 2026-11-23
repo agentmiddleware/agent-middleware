@@ -34,7 +34,7 @@ from typing import Any, Optional, TYPE_CHECKING
 from uuid import uuid4
 
 from app.core.time import utc_now
-from app.core.url_guard import check_outbound_url
+from app.core.url_guard import browser_request_block_reason, check_outbound_url
 
 if TYPE_CHECKING:
     from playwright.async_api import Page, BrowserContext
@@ -442,6 +442,8 @@ class AWIPlaywrightBridge:
         # which may not be installed (see _init_playwright's ImportError guard).
         self._playwright: Any = None
         self._browser: Any = None
+        self._browser_cdp: Any = None
+        self._browser_cdp_lock = asyncio.Lock()
         self._playwright_initialized = False
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -727,9 +729,6 @@ class AWIPlaywrightBridge:
             try:
                 await self._execute_single_command(session, cmd)
                 executed += 1
-
-                if cmd.command_type == CommandType.GOTO:
-                    session.current_url = cmd.value
 
             except Exception as e:
                 error = str(e)
@@ -2025,7 +2024,24 @@ class AWIPlaywrightBridge:
                 "height": viewport[1] if viewport else 720,
             },
             user_agent="Mozilla/5.0 (compatible; AWI-Client/1.0; +https://agent-middleware.dev)",
+            service_workers="block",
         )
+        # Routes screen initial requests. Browser-level CDP screens every
+        # redirect hop, including OOPIFs and popups that have separate targets.
+        await context.route(
+            "**/*",
+            self._guard_browser_route,
+        )
+        if self._playwright_initialized:
+            if not hasattr(context, "route_web_socket"):
+                await context.close()
+                raise RuntimeError("Playwright WebSocket routing is required")
+            await context.route_web_socket("**/*", self._guard_browser_websocket)
+            try:
+                await self._ensure_browser_cdp_guard()
+            except Exception:
+                await context.close()
+                raise
 
         page = await context.new_page()
 
@@ -2038,6 +2054,69 @@ class AWIPlaywrightBridge:
         logger.info(
             f"Created browser context {session.browser_context_id} for session {session.session_id}"
         )
+
+    async def _ensure_browser_cdp_guard(self) -> None:
+        """Pause each Chromium request hop across pages and OOPIF targets."""
+        async with self._browser_cdp_lock:
+            if self._browser_cdp is not None:
+                return
+            cdp = await self._browser.new_browser_cdp_session()
+            cdp.on(
+                "Fetch.requestPaused",
+                lambda event: asyncio.create_task(
+                    self._guard_browser_cdp_request(cdp, event)
+                ),
+            )
+            try:
+                await cdp.send(
+                    "Fetch.enable",
+                    {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
+                )
+            except Exception:
+                await cdp.detach()
+                raise
+            self._browser_cdp = cdp
+
+    async def _guard_browser_route(self, route: Any) -> None:
+        """Refuse an unapproved initial request before Chromium sends it."""
+        url = getattr(getattr(route, "request", None), "url", "")
+        try:
+            reason = await browser_request_block_reason(str(url))
+            if reason:
+                logger.info("Blocked browser request (%s).", reason)
+                await route.abort("blockedbyclient")
+                return
+            await route.continue_()
+        except Exception:
+            logger.warning("Browser URL guard failed closed.", exc_info=True)
+            await route.abort("blockedbyclient")
+
+    async def _guard_browser_cdp_request(self, cdp: Any, event: dict[str, Any]) -> None:
+        """Screen every Chromium request, including redirect hops."""
+        request_id = event["requestId"]
+        try:
+            reason = await browser_request_block_reason(event["request"]["url"])
+            if reason:
+                logger.info("Blocked browser request (%s).", reason)
+                await cdp.send(
+                    "Fetch.failRequest",
+                    {"requestId": request_id, "errorReason": "BlockedByClient"},
+                )
+            else:
+                await cdp.send("Fetch.continueRequest", {"requestId": request_id})
+        except Exception:
+            logger.warning("Browser URL guard failed closed.", exc_info=True)
+            try:
+                await cdp.send(
+                    "Fetch.failRequest",
+                    {"requestId": request_id, "errorReason": "BlockedByClient"},
+                )
+            except Exception:
+                logger.debug("Browser request was already closed.")
+
+    async def _guard_browser_websocket(self, route: Any) -> None:
+        """Refuse WebSockets, which HTTP context routes cannot intercept."""
+        await route.close(code=1008, reason="Browser WebSockets are blocked")
 
     async def _navigate_to(self, session: BridgeSession, url: str) -> None:
         """Navigate to a URL."""
@@ -2096,6 +2175,7 @@ class AWIPlaywrightBridge:
         if self._browser:
             await self._browser.close()
             self._browser = None
+            self._browser_cdp = None
 
         if self._playwright:
             await self._playwright.stop()

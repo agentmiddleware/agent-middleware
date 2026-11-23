@@ -339,6 +339,7 @@ def register_phase9_tools() -> None:
             credits_per_unit=tool["credits_per_unit"],
             unit_name=tool["unit_name"],
             require_permit=bool(tool.get("require_permit", False)),
+            read_only=bool(tool.get("read_only", False)),
         )
         logger.info(f"Registered Phase 9 MCP tool: {tool['service_id']}")
 

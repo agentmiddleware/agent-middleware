@@ -172,10 +172,12 @@ def test_reserialized_bytes_with_identical_json_are_rejected():
 
 
 def test_unicode_escape_flip_is_rejected():
+    """RFC 8785 emits UTF-8 code units for non-ASCII; swapping in a \\u escape tampers."""
     bundle, key_set = _verified_bundle(tool="caf\u00e9-echo")
-    assert "\\u00e9" in bundle["signing_input"]
+    assert "café-echo" in bundle["signing_input"]
+    assert "\\u00e9" not in bundle["signing_input"]
 
-    result = verify_bundle(_retarget(bundle, "\\u00e9", "\u00e9"), key_set)
+    result = verify_bundle(_retarget(bundle, "café-echo", "caf\\u00e9-echo"), key_set)
 
     assert result.status is VerificationStatus.INVALID
     assert result.is_tampered
@@ -291,7 +293,7 @@ def test_editing_payload_hash_without_resigning_is_invalid():
 
 
 def test_float_bearing_payload_verifies_without_reserialization():
-    """Floats the gateway signs (1.0, 0.0) verify; numbers are never rechecked."""
+    """RFC 8785 Number::toString emits 0/1 for 0.0/1.0; verifier trusts signed bytes."""
     kid, key_set, sign = _local_signer()
     payload = _payload(kid=kid)
     del payload["payload_hash"]
@@ -301,8 +303,46 @@ def test_float_bearing_payload_verifies_without_reserialization():
     inner = {k: v for k, v in payload.items() if k != "payload_hash"}
     payload["payload_hash"] = hashlib.sha256(canonical_json(inner).encode("utf-8")).hexdigest()
     bundle = _signed_bundle(payload, kid=kid, sign=sign)
-    assert '"latency_ms":0.0' in bundle["signing_input"]
-    assert '"injected_instructions":1.0' in bundle["signing_input"]
+    assert (
+        ',"latency_ms":0}' in bundle["signing_input"]
+        or '"latency_ms":0,' in bundle["signing_input"]
+    )
+    assert (
+        '"injected_instructions":1,' in bundle["signing_input"]
+        or '"injected_instructions":1}' in bundle["signing_input"]
+    )
+    assert '"latency_ms":0.0' not in bundle["signing_input"]
+    assert '"injected_instructions":1.0' not in bundle["signing_input"]
+
+    result = verify_bundle(bundle, key_set)
+
+    assert result.status is VerificationStatus.VERIFIED, result.reason
+
+
+def test_historical_python_float_lexemes_still_verify():
+    """Pre-JCS 1.0/0.0 signed bytes must verify; the verifier must not reserialize."""
+    kid, key_set, sign = _local_signer()
+    # Hand-built signing_input keeps historical Python json.dumps lexemes.
+    inner = (
+        '{"constraints_evaluated":{"jev_risk_guard":{"injected_instructions":1.0,'
+        '"latency_ms":0.0}},"kid":"' + kid + '","receipt_id":"rcpt-1"}'
+    )
+    payload_hash = hashlib.sha256(inner.encode("utf-8")).hexdigest()
+    signing_input = inner.replace(
+        ',"receipt_id"',
+        f',"payload_hash":"{payload_hash}","receipt_id"',
+        1,
+    )
+    assert "1.0" in signing_input and "0.0" in signing_input
+    bundle = {
+        "receipt_id": "rcpt-1",
+        "issuer": "https://api.example.com",
+        "alg": "Ed25519",
+        "kid": kid,
+        "canonicalization": "awi-canonical-json/1",
+        "signing_input": signing_input,
+        "signature": sign(signing_input),
+    }
 
     result = verify_bundle(bundle, key_set)
 

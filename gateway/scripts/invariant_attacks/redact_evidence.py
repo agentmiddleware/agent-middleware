@@ -20,7 +20,7 @@ _SENSITIVE_FIELDS = {
     "wallet_id",
 }
 _CREDENTIAL_RE = re.compile(r"(?<![A-Za-z0-9])(?:b2a|amw)_[A-Za-z0-9_-]{12,}")
-_WALLET_RE = re.compile(r"(?<![A-Za-z0-9])(?:agt|spn)-[A-Za-z0-9_-]{6,}")
+_WALLET_RE = re.compile(r"(?<![A-Za-z0-9])(?:agt|spn|chd)-[A-Za-z0-9_-]{6,}")
 
 
 def redact_evidence(value: Any) -> Any:

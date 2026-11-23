@@ -36,6 +36,7 @@ from ..core.config import get_settings
 from ..core.db_urls import as_sqlalchemy_url
 from ..core.time import to_naive_utc
 from ..core.trust_mode import is_production_like_environment
+from .api_key_usage_view import CREATE_API_KEY_USAGE_DAILY_VIEW_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +63,33 @@ REQUIRED_TRUST_TABLES = frozenset(
         "human_approvals",
         "receipt_resolutions",
         "resolution_chain_heads",
+        "api_key_usage_events",
     }
 )
 REQUIRED_TRUST_COLUMNS = {
-    "mcp_dispatch_attempts": frozenset({"dispatch_claim_hash"}),
+    "api_key_usage_events": frozenset(
+        {
+            "id",
+            "key_id",
+            "tenant",
+            "method",
+            "endpoint",
+            "status_code",
+            "latency_ms",
+            "created_at",
+        }
+    ),
+    "mcp_dispatch_attempts": frozenset(
+        {
+            "dispatch_claim_hash",
+            "reconcile_status",
+            "reconcile_lease_owner",
+            "reconcile_lease_expires_at",
+            "reconcile_next_probe_at",
+            "reconcile_probe_count",
+            "reconciled_at",
+        }
+    ),
     "resolution_chain_heads": frozenset({"last_sequence", "last_hash"}),
     "receipt_resolutions": frozenset(
         {
@@ -101,6 +125,8 @@ REQUIRED_TRUST_COLUMNS = {
             "action_schema_version",
             "action_public_tool_id",
             "action_upstream_binding_hash",
+            "enforcement_mode",
+            "gateway_build",
         }
     ),
 }
@@ -362,6 +388,10 @@ def _missing_required_tables(sync_conn) -> set[str]:  # noqa: ANN001
     return set(REQUIRED_TRUST_TABLES) - existing
 
 
+def _missing_required_views(sync_conn) -> set[str]:  # noqa: ANN001
+    return {"api_key_usage_daily"} - set(sa_inspect(sync_conn).get_view_names())
+
+
 def _missing_required_columns(sync_conn) -> set[str]:  # noqa: ANN001
     inspector = sa_inspect(sync_conn)
     existing_tables = set(inspector.get_table_names())
@@ -418,6 +448,7 @@ async def verify_required_schema(engine: AsyncEngine) -> None:
     async with engine.connect() as conn:
         missing = await conn.run_sync(_missing_required_tables)
         missing_columns = await conn.run_sync(_missing_required_columns)
+        missing_views = await conn.run_sync(_missing_required_views)
         stale = await conn.run_sync(_stale_alembic_message)
     # A stamped database can be both behind head and missing tables introduced
     # by later revisions. Report the revision mismatch first: it is the
@@ -439,6 +470,12 @@ async def verify_required_schema(engine: AsyncEngine) -> None:
             + ". Bring the schema to the packaged Alembic head before starting "
             "the API (normally `alembic upgrade head`; review an unstamped "
             "legacy schema before stamping its exact existing revision)."
+        )
+    if missing_views:
+        raise SchemaInitError(
+            "Required database views missing: "
+            + ", ".join(sorted(missing_views))
+            + ". Bring the schema to the packaged Alembic head before starting the API."
         )
 
 
@@ -462,6 +499,8 @@ async def init_db() -> None:
     if allows_metadata_create_all(dialect_name=dialect, environment=environment):
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
+            if "api_key_usage_daily" in await conn.run_sync(_missing_required_views):
+                await conn.exec_driver_sql(CREATE_API_KEY_USAGE_DAILY_VIEW_SQL)
             missing_columns = await conn.run_sync(_missing_required_columns)
         if missing_columns:
             raise SchemaInitError(

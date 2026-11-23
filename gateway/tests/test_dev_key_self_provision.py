@@ -160,6 +160,10 @@ async def test_cross_origin_browser_request_rejected(client, self_provision_sett
     )
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "origin_not_allowed"
+    assert resp.json()["detail"]["message"] == (
+        "Cross-origin browser requests are not accepted on this "
+        "endpoint. Call it from a CLI, SDK, or server-side client."
+    )
     assert "api_key" not in resp.text
 
 

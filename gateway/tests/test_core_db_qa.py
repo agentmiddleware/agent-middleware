@@ -368,6 +368,22 @@ def test_public_contact_valid_triple():
         ),
         (
             _Contact(
+                name="Acme Operations",
+                email="ops@acme-corp.com",
+                url="https://api.agentmiddleware.dev/book",
+            ),
+            "^PUBLIC_CONTACT_URL must point to a booking service$",
+        ),
+        (
+            _Contact(
+                name="Acme Operations",
+                email="ops@acme-corp.com",
+                url="https://api.agentmiddleware.dev./book",
+            ),
+            "^PUBLIC_CONTACT_URL must point to a booking service$",
+        ),
+        (
+            _Contact(
                 name="Agent Middleware API",
                 email="ops@acme-corp.com",
                 url="https://acme-corp.com/c",
@@ -902,7 +918,9 @@ def test_api_key_buckets_are_digests_not_plaintext():
     assert "live-secret-key" not in bucket
     assert _api_key_bucket("live-secret-key") == bucket
     assert _api_key_bucket("other-key") != bucket
-    assert _api_key_bucket(None) == "anonymous"
+    anonymous = _api_key_bucket(None, "198.51.100.7")
+    assert anonymous.endswith(":anonymous:client:198.51.100.7")
+    assert anonymous != _api_key_bucket(None, "198.51.100.8")
     assert _api_key_bucket("key") == _api_key_bucket("key".strip())
 
 
@@ -1187,6 +1205,7 @@ async def test_verify_required_schema_gate():
     from sqlmodel import SQLModel
 
     import app.db.models  # noqa: F401  (register tables)
+    from app.db.api_key_usage_view import CREATE_API_KEY_USAGE_DAILY_VIEW_SQL
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     try:
@@ -1194,6 +1213,10 @@ async def test_verify_required_schema_gate():
             await verify_required_schema(engine)
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
+        with pytest.raises(SchemaInitError, match="Required database views missing"):
+            await verify_required_schema(engine)
+        async with engine.begin() as conn:
+            await conn.exec_driver_sql(CREATE_API_KEY_USAGE_DAILY_VIEW_SQL)
         await verify_required_schema(engine)
     finally:
         await engine.dispose()

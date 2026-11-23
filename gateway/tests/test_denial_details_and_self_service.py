@@ -34,6 +34,7 @@ from tests.test_trust_helpers import (
     BOOTSTRAP_HEADERS,
     create_tool_permit,
     provision_agent_wallet,
+    resign_permit_model,
 )
 
 TOOL = "denial-echo"
@@ -163,6 +164,7 @@ async def test_expired_denial_says_when_it_expired(
         model.expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
             minutes=5
         )
+        await resign_permit_model(model)
         session.add(model)
         await session.commit()
 

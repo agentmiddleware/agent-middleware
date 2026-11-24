@@ -11,9 +11,11 @@ from sqlalchemy import select
 from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, ReceiptModel
 from app.main import app
-from app.schemas.billing import ServiceCategory
+from app.schemas.billing import InsufficientFundsResponse, ServiceCategory
+from app.services.agent_money import get_agent_money
 from app.services.idempotency import get_idempotency_service
 from app.services.receipts import ReceiptError, get_receipt_service
+from app.services.ownership import CallerIdentity
 from app.services.service_registry import get_service_registry
 from tests.support.db_gate import collection_mark, require_live_postgres
 from tests.test_trust_helpers import (
@@ -465,10 +467,17 @@ async def _create_zero_charge_receipt_with_ledger_entry(
     *,
     provisioned: dict,
     tool_name: str,
-    entry_id: str,
     entry_amount: Decimal,
     idem_key: str,
 ):
+    """Seed a zero-charge receipt against a debit the billing service wrote.
+
+    The debit, its entry id and its balance come from ``charge`` rather than
+    being written here: AGENTS.md allows a test to inject faults but requires
+    anything the product records to come from the product. Only the amount is
+    then moved, which is the fault each caller is testing -- the engine refuses
+    non-positive units, so a zero-amount debit cannot be charged directly.
+    """
     permit = await create_tool_permit(
         client,
         wallet_id=provisioned["agent_wallet_id"],
@@ -476,18 +485,22 @@ async def _create_zero_charge_receipt_with_ledger_entry(
         tool_name=tool_name,
         idem_key=f"{idem_key}-permit",
     )
-    factory = get_session_factory()
-    async with factory() as session:
-        session.add(
-            LedgerEntryModel(
-                entry_id=entry_id,
-                wallet_id=provisioned["agent_wallet_id"],
-                action="debit",
-                amount=entry_amount,
-                balance_after=Decimal("10000"),
-            )
-        )
-        await session.commit()
+    charge = await get_agent_money().charge(
+        provisioned["agent_wallet_id"],
+        ServiceCategory.AGENT_COMMS,
+        Decimal("1"),
+        caller=CallerIdentity(wallet_id=provisioned["agent_wallet_id"]),
+    )
+    assert not isinstance(charge, InsufficientFundsResponse), charge
+    entry_id = charge.entry_id
+    if charge.amount != entry_amount:
+        factory = get_session_factory()
+        async with factory() as session:
+            entry = await session.get(LedgerEntryModel, entry_id)
+            assert entry is not None
+            entry.amount = entry_amount
+            session.add(entry)
+            await session.commit()
     return await get_receipt_service().create_receipt(
         permit_id=permit["permit_id"],
         wallet_id=provisioned["agent_wallet_id"],
@@ -513,7 +526,6 @@ async def test_receipt_evidence_zero_charge_matches_zero_ledger_entry(
         client,
         provisioned=provisioned,
         tool_name="receipt-evidence-zero-match",
-        entry_id="zero-match-entry",
         entry_amount=Decimal("0"),
         idem_key="receipt-evidence-zero-match",
     )
@@ -538,7 +550,6 @@ async def test_receipt_evidence_zero_charge_rejects_nonzero_ledger_entry(
         client,
         provisioned=provisioned,
         tool_name="receipt-evidence-zero-mismatch",
-        entry_id="zero-mismatch-entry",
         entry_amount=Decimal("-2"),
         idem_key="receipt-evidence-zero-mismatch",
     )

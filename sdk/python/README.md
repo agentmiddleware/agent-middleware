@@ -10,7 +10,7 @@ trigger the PyPI release workflow. Until publication, install from this checkout
 ## Installation
 
 For the supported evaluation, integration, security, and pilot paths, start
-with the repository [documentation guide](../../gateway/docs/README.md).
+with the repository [documentation guide](https://github.com/agentmiddleware/agent-middleware/blob/main/gateway/docs/README.md).
 
 ### From PyPI after publication
 
@@ -185,7 +185,7 @@ ID and the full request unchanged for retries. `request_key(...)` and
 `idempotency_key="auto"` derive keys from arguments;
 use them only when those inputs uniquely identify one intended action.
 `request_key.explain(...)` shows which fields the helper uses or drops. See
-the [request keys guide](../../gateway/docs/concepts/request-keys.md) for
+the [request keys guide](https://github.com/agentmiddleware/agent-middleware/blob/main/gateway/docs/concepts/request-keys.md) for
 gateway retry behavior and error shapes.
 
 The client defaults to `http://localhost:8000`, never a hosted server.

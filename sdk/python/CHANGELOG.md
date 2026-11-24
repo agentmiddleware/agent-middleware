@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1
+
+### Fixed
+
+- **Receipt verification timezone fix**: `Receipt.verify()` no longer returns
+  `MISMATCH` on genuine receipts where `created_at` lacks a timezone. The
+  verifier now normalizes timestamps before comparison (PR #368, fixes #358,
+  commit 4bf3fd4f).
+
 ## Unreleased — 0.5.0
 
 `pyproject.toml` carries `0.5.0` from here on. `0.4.0` is published and

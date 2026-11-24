@@ -4,17 +4,17 @@ Typed async client for the governed MCP trust loop:
 
 `discover → authenticate → authorize → invoke → meter → receipt → audit → govern`
 
-The `amw-sdk` distribution is at version `0.5.0`. Tags matching `python-v*`
-trigger the PyPI release workflow. Until publication, install from this checkout.
+The `amw-sdk` distribution is published on PyPI. Tags matching `python-v*`
+trigger the PyPI release workflow.
 
 ## Installation
 
 For the supported evaluation, integration, security, and pilot paths, start
 with the repository [documentation guide](../../gateway/docs/README.md).
 
-### From PyPI after publication
+### From PyPI
 
-Choose the base package or an extra when `amw-sdk` is available on PyPI:
+Choose the base package or an extra:
 
 ```bash
 pip install amw-sdk
@@ -22,7 +22,7 @@ pip install "amw-sdk[verify]"
 pip install "amw-sdk[mcp]"
 ```
 
-### From a checkout (recommended)
+### From a checkout (for development)
 
 Install the version in this checkout:
 
@@ -74,13 +74,12 @@ additionally needs `cryptography`, kept behind the `verify` extra.
 ### Migrating from b2a-sdk
 
 `b2a-sdk` was never published to PyPI. If you installed it locally or from the
-0.4.0 wheel, remove it before installing `amw-sdk`. Until `amw-sdk` is on PyPI, install it
-from a checkout instead:
+0.4.0 wheel, remove it before installing `amw-sdk`, then install from PyPI:
 
 ```bash
 pip uninstall b2a-sdk
-pip install amw-sdk  # once published to PyPI
-# before publication, from a repository checkout:
+pip install amw-sdk
+# or, from a repository checkout:
 pip install ./sdk/python
 ```
 

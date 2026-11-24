@@ -50,7 +50,8 @@ uv build sdk/python --out-dir /tmp/amw-build
 ### Maintainer rules
 
 - Do not use em dashes or en dashes in user facing copy.
-- Use real data only. Do not create synthetic data.
+- Use real data only. Do not create synthetic data in product code, shipped fixtures, docs, examples, or user facing copy: no invented customers, wallets, keys, receipts, ledger entries, metrics, or claims.
+- Tests may supply their own inputs and inject faults. Tool arguments, client chosen idempotency keys, fault messages, and reserved documentation addresses (RFC 5737, RFC 3849) are not synthetic data. Anything the product records, such as a wallet, debit, ledger entry id, receipt, record id, stored response, or signature, must come from the product and not be written by hand.
 - Do not force push.
 - Do not use admin merge.
 - Never touch the archived `agent-middleware-api` repository.

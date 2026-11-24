@@ -688,11 +688,13 @@ async def get_tools_json(
 @router.post(
     "/messages",
     name="MCP JSON-RPC Messages",
+    summary="Deprecated: legacy MCP JSON-RPC messages (use POST /mcp)",
     deprecated=True,
     description=(
-        "Legacy project JSON-RPC endpoint, kept for existing clients and the "
-        "local proof scripts. It does not implement the standard MCP "
-        "initialization lifecycle. Check `/.well-known/agent.json` before "
+        "Deprecated in favor of the standard MCP Streamable HTTP endpoint at "
+        "POST /mcp. Legacy project JSON-RPC endpoint, kept for existing "
+        "clients and the local proof scripts. It does not implement the "
+        "standard MCP initialization lifecycle. Check `/.well-known/agent.json` before "
         "assuming the standard MCP Streamable HTTP endpoint at POST /mcp is "
         "available; both transports run the same governed permit→meter→receipt "
         "path when enabled."

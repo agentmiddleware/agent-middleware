@@ -469,7 +469,7 @@ print("RESULT " + json.dumps(asyncio.run(go())))
     assert "no gateway" in payload["raised"]
 
 
-def test_fuse_refusal_exits_two_without_a_traceback(tmp_path: Path) -> None:
+def test_fuse_refusal_exits_three_without_a_traceback(tmp_path: Path) -> None:
     """A safety refusal is not a failed measurement, so it gets its own code.
 
     The refusal is raised inside the MCP server's task group and arrives at
@@ -480,10 +480,30 @@ def test_fuse_refusal_exits_two_without_a_traceback(tmp_path: Path) -> None:
 
     result = _run_driver(driver)
 
-    assert result.returncode == 2, (result.returncode, result.stderr[-4000:])
+    assert result.returncode == 3, (result.returncode, result.stderr[-4000:])
     assert "native.key_conflict refused before any call" in result.stderr
     assert "Traceback" not in result.stderr
     assert "UnsafeTargetError" not in result.stderr
+
+
+def test_bad_flag_and_safety_refusal_exit_differently() -> None:
+    """A mistyped flag must not read as the fuse firing, or the reverse.
+
+    `argparse` exits 2 on a bad command line, so the refusal uses 3. This pins
+    the two apart at the process boundary a wrapper or CI step actually sees.
+    """
+    result = subprocess.run(
+        [sys.executable, "scripts/failure_lab.py", "--no-such-flag"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 2, (result.returncode, result.stderr[-2000:])
+    assert "unrecognized arguments" in result.stderr
+    assert "refused before any call" not in result.stderr
 
 
 def test_conflict_arm_records_the_fuse_in_its_evidence(

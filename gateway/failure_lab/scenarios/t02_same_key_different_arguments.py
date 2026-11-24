@@ -270,6 +270,13 @@ class SameKeyDifferentArguments(Scenario):
                 "wallet ended up once it had run."
             ),
         }
+        if target.safety_fuse is not None:
+            # A direct arm has no gateway between this probe and the tool, and
+            # under A_direct_naive nothing refuses the 100x payload at all. It
+            # is harmless only because configured_target fused it to the lab's
+            # own simulated tool, so the evidence records that check, not just
+            # the source.
+            extra["target_safety_fuse"] = dict(target.safety_fuse)
 
         further_effects = executions - executions_after_first
         # Observed at the fault layer, which sits outside the gateway; this is

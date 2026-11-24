@@ -102,8 +102,14 @@ requests can only reach that target's own in-process app, compared by object
 identity rather than by URL or settings, and unless that app wraps the
 simulated service it just built. The check runs before the tool starts, so a
 refusal sends nothing and shows in the report as a harness error naming
-`UnsafeTargetError`. C and D are not fused here, because the gateway's own
-refusal is what they measure. `tests/test_failure_lab_target_fuse.py` pins it.
+`UnsafeTargetError`. When the check passes, the target keeps a record of what
+it checked, and `T02` copies that record into the `extra` of its A and B
+results as `target_safety_fuse`. The evidence bundle then shows the fuse held
+for the arm that depends on it, not only the source. C and D are not fused
+here, because the gateway's own refusal is what they measure, so their results
+carry no such record. `tests/test_failure_lab_target_fuse.py` pins the fuse
+and its record, and `tests/test_failure_lab_scenarios.py` pins that C and D
+carry none.
 
 ---
 

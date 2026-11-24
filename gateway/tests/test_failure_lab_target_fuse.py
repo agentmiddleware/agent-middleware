@@ -202,3 +202,39 @@ async def test_t02_direct_naive_is_refused_not_executed(tmp_path, monkeypatch):
     assert requests == []
     ledger = EffectLedger(tmp_path / "effects-A_direct_naive-T02.db")
     assert ledger.execution_count() == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("configuration", DIRECT_CONFIGURATIONS)
+async def test_direct_targets_carry_a_record_of_the_fuse_they_passed(
+    tmp_path, configuration
+):
+    """The record says what was checked, and that each check came out true."""
+    async with configured_target(_env(tmp_path), configuration) as target:
+        fuse = target.safety_fuse
+    assert fuse is not None
+    assert fuse["enforced_by"] == "failure_lab.configurations.configured_target"
+    assert fuse["downstream_wraps_the_simulated_service_this_target_built"] is True
+    assert fuse["agent_requests_end_only_in_this_targets_in_process_app"] is True
+
+
+@pytest.mark.anyio
+async def test_t02_direct_arms_record_the_fuse_in_their_evidence(tmp_path):
+    """The arm that depends on the fuse shows it in the evidence, not only the source.
+
+    Read through ``as_dict``, the form the evidence bundle stores, and checked
+    against the verdicts T02 documents: recording the fuse must not change what
+    the arm measures.
+    """
+    scenario = SameKeyDifferentArguments()
+    result = await scenario.run(_env(tmp_path), configurations=DIRECT_CONFIGURATIONS)
+    assert len(result.configurations) == len(DIRECT_CONFIGURATIONS)
+    for outcome in result.configurations:
+        assert outcome.verdict is not Verdict.ERROR, outcome.error
+        assert outcome.verdict.value == scenario.expected[outcome.configuration]
+        stored = outcome.as_dict()["extra"]["target_safety_fuse"]
+        assert stored["enforced_by"] == "failure_lab.configurations.configured_target"
+        assert (
+            stored["downstream_wraps_the_simulated_service_this_target_built"] is True
+        )
+        assert stored["agent_requests_end_only_in_this_targets_in_process_app"] is True

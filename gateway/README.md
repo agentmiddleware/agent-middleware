@@ -10,6 +10,10 @@ fence, metering against an internal credit ledger, Ed25519 receipts, the
 hash-chained audit log, policy, and the MCP endpoints. Python 3.11+, FastAPI,
 SQLite or PostgreSQL, Alembic.
 
+Note for contributors: the canonical gateway copy is
+`agent-middleware-api/app`; this directory is synced from it, so policy and
+safety fixes should match that copy.
+
 ## Run it
 
 ```bash
@@ -22,6 +26,17 @@ make test                   # the test suite (excluding proof-surface tests)
 
 Walkthrough: [`docs/quickstart.md`](docs/quickstart.md) and the shorter
 [`../QUICKSTART.md`](../QUICKSTART.md).
+
+## Agent bootstrap
+
+Autonomous clients discover the gateway without human help. Fetch these in
+order: `GET /.well-known/agent.json`, then `GET /llms.txt`
+(`/llm.txt` serves identical content as a legacy alias). On production-like
+origins, obtain an operator-provisioned key and send it in `X-API-Key` when
+fetching `GET /mcp/tools.json`; local quickstart allows anonymous tool
+discovery. Then fetch `GET /openapi.json`. The manifest names the
+transport, authentication (`X-API-Key` header), and dependency-readiness
+rules; start the full loop at [`docs/quickstart.md`](docs/quickstart.md).
 
 ## Demo keys
 

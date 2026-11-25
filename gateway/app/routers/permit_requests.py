@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from fastapi.responses import HTMLResponse
 
 from app.core.auth import AuthContext, get_auth_context
+from app.routers.http_idempotency import resolve_idempotency_key_lines
 from app.db.models import PermitRequestModel
 from app.schemas.trust import PermitRequestCreate, PermitRequestResponse
 from app.trust import (
@@ -62,7 +63,7 @@ def _authorize_inspection(*, auth: AuthContext, model: PermitRequestModel) -> No
 async def create_permit_request(
     request: PermitRequestCreate,
     response: Response,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] = Header(..., alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ) -> PermitRequestResponse:
@@ -88,6 +89,9 @@ async def create_permit_request(
             },
         )
 
+    idempotency_key = resolve_idempotency_key_lines(
+        idempotency_key_lines, required=True
+    )
     service = get_permit_request_service()
     try:
         model = await service.create(

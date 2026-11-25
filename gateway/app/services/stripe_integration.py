@@ -21,15 +21,29 @@ from anyio import to_thread
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.sql.elements import ColumnElement
+from sqlmodel import col
 
 from ..db.database import get_session_factory
-from ..db.models import BillingAlertModel, LedgerEntryModel, WalletModel
+from ..db.models import (
+    BillingAlertModel,
+    IdempotencyRecordModel,
+    LedgerEntryModel,
+    WalletModel,
+)
 from ..core.config import get_settings
 from ..core.webhook_auth import WebhookVerificationError, verify_stripe_event
 from ..core.time import utc_now
 from ..core.resilience import run_with_write_conflict_retry
 from ..schemas.billing import AlertSeverity, AlertType, WalletStatus
 from .agent_money import WalletNotFoundError
+from .idempotency import (
+    IDEMPOTENCY_KEY_HEADER_SOURCE,
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
+    get_idempotency_service,
+    validate_client_idempotency_key,
+)
+from .signing_keys import sha256_hex
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -48,6 +62,12 @@ stripe.default_http_client = stripe.new_default_http_client(
 )
 
 SUPPORTED_TOP_UP_CURRENCY = "usd"
+_SECRET_FIELDS = frozenset({"client_secret"})
+_TOP_UP_QUOTE_PREFIX = "topup-quote:"
+# Stripe can prune an idempotency result once it is at least 24 hours old.
+# Never resend a create request after this conservative window.
+_TOP_UP_RETRY_MAX_AGE_SECONDS = 23 * 60 * 60
+_TOP_UP_RETRY_IDLE_SECONDS = 5 * 60
 
 
 class StripeSettlementError(ValueError):
@@ -90,6 +110,7 @@ class StripeIntegration:
         wallet_id: str,
         amount_fiat: Decimal,
         currency: str = "usd",
+        idempotency_key: str | None = None,
     ) -> dict:
         """
         Create a Stripe PaymentIntent for fiat top-up.
@@ -98,6 +119,8 @@ class StripeIntegration:
             wallet_id: The wallet to credit after successful payment
             amount_fiat: Amount in fiat currency (e.g., 50.00 for $50)
             currency: ISO 4217 currency code (default: usd)
+            idempotency_key: Optional client replay key, scoped to this wallet
+                for durable replay and the Stripe request.
 
         Returns:
             {
@@ -144,15 +167,105 @@ class StripeIntegration:
             int(credits) if credits == credits.to_integral_value() else float(credits)
         )
 
+        validated_key: str | None = None
+        if idempotency_key is not None:
+            validated_key = validate_client_idempotency_key(
+                idempotency_key, source=IDEMPOTENCY_KEY_HEADER_SOURCE
+            )
+
+        replay_service = (
+            get_idempotency_service() if validated_key is not None else None
+        )
+        replay_endpoint = "/v1/billing/top-up/prepare"
+        replay_payload = {
+            "amount_cents": amount_cents,
+            "currency": SUPPORTED_TOP_UP_CURRENCY,
+        }
+        if replay_service is not None and validated_key is not None:
+            try:
+                begun = await replay_service.begin_with_record(
+                    wallet_id=wallet_id,
+                    endpoint=replay_endpoint,
+                    idempotency_key=validated_key,
+                    request_payload=replay_payload,
+                    operation_kind="stripe_top_up",
+                )
+            except IdempotencyInProgressError:
+                # Only records made by this flow have a quote checkpoint. Older
+                # ambiguous rows stay blocked: they may already have sent a
+                # Stripe request with parameters we cannot reconstruct.
+                async with self._session_factory()() as session:
+                    record = (
+                        await session.execute(
+                            select(IdempotencyRecordModel).where(
+                                col(IdempotencyRecordModel.wallet_id) == wallet_id,
+                                col(IdempotencyRecordModel.endpoint) == replay_endpoint,
+                                col(IdempotencyRecordModel.idempotency_key)
+                                == validated_key,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if record is None or record.operation_kind != "stripe_top_up":
+                        raise
+                    # The in-progress error can be raised before any request
+                    # match check (e.g. the SQLite lock path), so verify the
+                    # key is not being reused for a different request before
+                    # replaying or resuming another request's PaymentIntent.
+                    if record.request_hash != sha256_hex(replay_payload):
+                        raise IdempotencyConflictError("idempotency_key_reused")
+                    if record.response_json is not None:
+                        return await self._rehydrate_top_up_replay(
+                            json.loads(record.response_json)
+                        )
+                    quote = record.response_reference or ""
+                    age = (utc_now() - record.created_at).total_seconds()
+                    if (
+                        not quote.startswith(_TOP_UP_QUOTE_PREFIX)
+                        or age < _TOP_UP_RETRY_IDLE_SECONDS
+                        or age >= _TOP_UP_RETRY_MAX_AGE_SECONDS
+                    ):
+                        raise
+                    credits_metadata = quote[len(_TOP_UP_QUOTE_PREFIX) :]
+                    credits = Decimal(credits_metadata)
+                    credits_response = (
+                        int(credits)
+                        if credits == credits.to_integral_value()
+                        else float(credits)
+                    )
+            else:
+                if begun.replay is not None:
+                    assert begun.replay.response_json is not None
+                    return await self._rehydrate_top_up_replay(
+                        begun.replay.response_json
+                    )
+                # Persist the exact Stripe quote before network I/O. A retry
+                # must reuse it even when EXCHANGE_RATE changes meanwhile.
+                async with self._session_factory()() as session:
+                    record = await session.get(IdempotencyRecordModel, begun.record_id)
+                    assert record is not None
+                    record.response_reference = _TOP_UP_QUOTE_PREFIX + credits_metadata
+                    await session.commit()
+
         def _create_top_up_payment_intent() -> Any:
+            metadata = {
+                "wallet_id": wallet_id,
+                "credits": credits_metadata,
+                "idempotency_key": (
+                    validated_key if validated_key is not None else str(uuid4())
+                ),
+            }
+            if validated_key is not None:
+                return stripe.PaymentIntent.create(
+                    amount=amount_cents,
+                    currency=SUPPORTED_TOP_UP_CURRENCY,
+                    metadata=metadata,
+                    idempotency_key="top-up:"
+                    + sha256_hex({"wallet_id": wallet_id, "client_key": validated_key}),
+                )
             return stripe.PaymentIntent.create(
                 amount=amount_cents,
                 currency=SUPPORTED_TOP_UP_CURRENCY,
-                metadata={
-                    "wallet_id": wallet_id,
-                    "credits": credits_metadata,
-                    "idempotency_key": str(uuid4()),
-                },
+                metadata=metadata,
             )
 
         # The Stripe SDK call is synchronous network I/O; run it on a worker
@@ -165,13 +278,37 @@ class StripeIntegration:
             f"${amount_fiat} -> {credits} credits"
         )
 
-        return {
+        response = {
             "client_secret": intent.client_secret,
             "payment_intent_id": intent.id,
             "amount_credits": credits_response,
             "amount_fiat": float(amount_fiat),
             "currency": SUPPORTED_TOP_UP_CURRENCY.upper(),
         }
+        if replay_service is not None and validated_key is not None:
+            await replay_service.complete(
+                wallet_id=wallet_id,
+                endpoint=replay_endpoint,
+                idempotency_key=validated_key,
+                response_reference=intent.id,
+                # CWE-312: never persist the PaymentIntent client_secret in
+                # the idempotency store; replay re-fetches it from Stripe.
+                response_json={
+                    k: v for k, v in response.items() if k not in _SECRET_FIELDS
+                },
+            )
+        return response
+
+    async def _rehydrate_top_up_replay(self, stored: dict) -> dict:
+        """Rebuild a top-up replay, re-fetching the client_secret from Stripe."""
+        replay = {k: v for k, v in stored.items() if k not in _SECRET_FIELDS}
+        intent_id = replay.get("payment_intent_id")
+        if intent_id:
+            intent = await to_thread.run_sync(
+                lambda: stripe.PaymentIntent.retrieve(intent_id)
+            )
+            replay["client_secret"] = intent.client_secret
+        return replay
 
     async def charge_shared_payment_token(
         self,

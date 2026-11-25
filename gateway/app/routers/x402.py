@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.auth import AuthContext, get_auth_context
+from app.routers.http_idempotency import resolve_idempotency_key_lines
 from app.core.time import utc_now
 from app.core.wallet_resolution import resolve_wallet_id
 from app.services.x402_engine import (
@@ -150,7 +151,7 @@ async def _refuse_in_progress_settle(
 @router.post("/settle", response_model=X402SettleResponse)
 async def settle_payment_required(
     request: X402SettleRequest,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] = Header(..., alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ) -> X402SettleResponse:
     """Authorize a 402 demand against a permit and record the settlement.
@@ -172,6 +173,9 @@ async def settle_payment_required(
         raise HTTPException(status_code=400, detail=exc.reason)
 
     wallet_id = resolve_wallet_id(request.wallet_id, auth)
+    idempotency_key = resolve_idempotency_key_lines(
+        idempotency_key_lines, required=True
+    )
 
     idem = get_idempotency_service()
     try:

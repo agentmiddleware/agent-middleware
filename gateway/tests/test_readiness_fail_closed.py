@@ -30,8 +30,11 @@ async def test_readiness_dependency_failures(monkeypatch, clean_database, fault)
     monkeypatch.setattr(
         main, "get_durable_state", lambda: SimpleNamespace(health_report=state_report)
     )
-    monkeypatch.setattr(main, "CHECK_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(health, "CHECK_TIMEOUT_SECONDS", 0.01)
+    # Only the timeout faults need a tiny budget. The healthy case runs a real
+    # database query, which a busy runner can take longer than 10 ms to answer.
+    timeout = 0.01 if fault.endswith("_timeout") else 2.0
+    monkeypatch.setattr(main, "CHECK_TIMEOUT_SECONDS", timeout)
+    monkeypatch.setattr(health, "CHECK_TIMEOUT_SECONDS", timeout)
     if fault in ("database", "database_timeout"):
 
         class Connection:

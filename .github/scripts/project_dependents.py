@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Expand a pull-request project set with the projects that depend on it.
 
 detect_projects.py lists directories that exist. On pull_request the workflow
@@ -17,6 +16,7 @@ Edges come from the tree, not a hand-maintained matrix:
 FALLBACK_DEPENDS_ON is only the floor for edges those scans can miss. A name
 that is not a discovered project is ignored.
 """
+
 from __future__ import annotations
 
 import json
@@ -67,7 +67,9 @@ FALLBACK_DEPENDS_ON = {
 _REL_PATH = re.compile(r"(?:\.\./|\./)[A-Za-z0-9_./-]+")
 _COPY = re.compile(r"(?m)^\s*(?:COPY|ADD)\s+(?:--\S+\s+)*(\S+)\s+\S+")
 _PY_FROM = re.compile(r"(?m)^\s*from\s+([A-Za-z_][\w.]*)\s+import\b")
-_PY_IMPORT = re.compile(r"(?m)^\s*import\s+([A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*)")
+_PY_IMPORT = re.compile(
+    r"(?m)^\s*import\s+([A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*)"
+)
 _JS_SPEC = re.compile(
     r"""(?:from|import)\s*(?:\(\s*)?["']([^"']+)["']|require\(\s*["']([^"']+)["']\s*\)"""
 )
@@ -75,9 +77,7 @@ _HATCH_PACKAGES = re.compile(r"(?m)^packages\s*=\s*\[([^\]]*)\]")
 _QUOTED = re.compile(r"""["']([^"']+)["']""")
 _CONSTRUCTED_INTEGRATION = re.compile(r"integrations/\{[^}\n]+\}-agent-middleware")
 _INTEGRATION_PROJECT = re.compile(r"integrations/.+-agent-middleware\Z")
-_WORKFLOW_SDK_INSTALL = re.compile(
-    r"""-e\s+["']\.\./sdk/python(?:\[[^\]]+\])?["']"""
-)
+_WORKFLOW_SDK_INSTALL = re.compile(r"""-e\s+["']\.\./sdk/python(?:\[[^\]]+\])?["']""")
 
 
 def is_shared(path: str, projects: list[str]) -> bool:
@@ -129,7 +129,9 @@ def _path_refs(text: str, *, dockerfile: bool) -> list[tuple[str, str]]:
     if dockerfile:
         for match in _COPY.finditer(text):
             source = match.group(1)
-            if source in (".", "..") or source.startswith(("--", "http://", "https://")):
+            if source in (".", "..") or source.startswith(
+                ("--", "http://", "https://")
+            ):
                 continue
             if "*" in source:
                 continue
@@ -139,10 +141,8 @@ def _path_refs(text: str, *, dockerfile: bool) -> list[tuple[str, str]]:
 
 def _resolve_ref(root: Path, project_dir: Path, kind: str, raw: str) -> str | None:
     token = raw.strip().strip("\"'")
-    if token.startswith("file:"):
-        token = token[5:]
-    if token.startswith("link:"):
-        token = token[5:]
+    token = token.removeprefix("file:")
+    token = token.removeprefix("link:")
     token = re.sub(r"\[.*\]\Z", "", token).rstrip("/")
     if not token or "://" in token or token in (".", ".."):
         return None
@@ -175,7 +175,11 @@ def _import_names(project_dir: Path) -> set[str]:
             meta = json.loads(package_json.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             meta = None
-        if isinstance(meta, dict) and isinstance(meta.get("name"), str) and meta["name"]:
+        if (
+            isinstance(meta, dict)
+            and isinstance(meta.get("name"), str)
+            and meta["name"]
+        ):
             names.add(meta["name"])
     return names
 
@@ -228,7 +232,12 @@ def dependency_edges(root: Path, projects: list[str]) -> list[tuple[str, str]]:
             text = manifest.read_text(encoding="utf-8", errors="ignore")
             dockerfile = manifest.name.startswith("Dockerfile")
             for kind, raw in _path_refs(text, dockerfile=dockerfile):
-                add(proj, _project_owning(_resolve_ref(root, project_dir, kind, raw) or "", project_set))
+                add(
+                    proj,
+                    _project_owning(
+                        _resolve_ref(root, project_dir, kind, raw) or "", project_set
+                    ),
+                )
 
     name_owners: dict[str, list[str]] = {}
     for proj in project_set:

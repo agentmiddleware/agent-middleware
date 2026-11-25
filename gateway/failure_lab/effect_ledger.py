@@ -281,9 +281,15 @@ class EffectLedger:
             return int(connection.execute(sql, params).fetchone()[0])
 
     def snapshot(self) -> list[dict[str, Any]]:
-        """The PRD's ledger shape: one entry per effect with its execution count."""
+        """The PRD's ledger shape: one entry per effect with its execution count.
+
+        Counts and rows come from one read. A second read can contain an
+        operation the first read never counted, and the snapshot would then
+        raise or mix two moments.
+        """
+        records = self.effects()
         counts: dict[str, int] = {}
-        for record in self.effects():
+        for record in records:
             counts[record.operation_id] = counts.get(record.operation_id, 0) + 1
         return [
             {
@@ -299,7 +305,7 @@ class EffectLedger:
                 "worker_pid": record.worker_pid,
                 "configuration": record.configuration,
             }
-            for record in self.effects()
+            for record in records
         ]
 
     def reset(self) -> None:

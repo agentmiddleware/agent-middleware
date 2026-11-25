@@ -98,6 +98,10 @@ def _sqlite_url_path(url: str) -> str | None:
     if match is None:
         return None
     remainder = trimmed[match.end() :]
+    # SQLite file URLs have an empty authority. Credentials or a host here
+    # belong to a driver-specific URL, not to an aiosqlite filename.
+    if remainder and not remainder.startswith("/"):
+        return None
     # sqlite:///relative.db -> relative.db; sqlite:////abs.db -> /abs.db
     return remainder[1:] if remainder.startswith("/") else remainder
 

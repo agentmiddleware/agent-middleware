@@ -21,7 +21,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any, Protocol, cast
@@ -183,15 +183,18 @@ class UpstreamMcpConfiguration:
     call_timeout_seconds: float
     max_response_bytes: int
     environment: str
+    multi_tool_enabled: bool = False
+    tool_allowlist: tuple[str, ...] = ()
 
     @classmethod
     def from_settings(cls, settings: Settings) -> UpstreamMcpConfiguration:
         """Build validated non-network configuration from application settings."""
         required_strings = {
             "MCP_UPSTREAM_URL": settings.MCP_UPSTREAM_URL,
-            "MCP_UPSTREAM_TOOL_NAME": settings.MCP_UPSTREAM_TOOL_NAME,
             "MCP_UPSTREAM_PUBLIC_TOOL_ID": settings.MCP_UPSTREAM_PUBLIC_TOOL_ID,
         }
+        if not settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED:
+            required_strings["MCP_UPSTREAM_TOOL_NAME"] = settings.MCP_UPSTREAM_TOOL_NAME
         missing = sorted(name for name, value in required_strings.items() if not value)
         token = settings.MCP_UPSTREAM_BEARER_TOKEN.get_secret_value()
         if not token:
@@ -210,6 +213,7 @@ class UpstreamMcpConfiguration:
             settings.MCP_UPSTREAM_URL,
             settings.MCP_UPSTREAM_TOOL_NAME,
             settings.MCP_UPSTREAM_PUBLIC_TOOL_ID,
+            settings.MCP_UPSTREAM_TOOL_ALLOWLIST,
             _GATEWAY_TOOL_DESCRIPTION,
         )
         if any(token in value for value in public_configuration):
@@ -218,13 +222,50 @@ class UpstreamMcpConfiguration:
             )
 
         for setting_name, tool_id in (
-            ("MCP_UPSTREAM_TOOL_NAME", settings.MCP_UPSTREAM_TOOL_NAME),
+            *(
+                (("MCP_UPSTREAM_TOOL_NAME", settings.MCP_UPSTREAM_TOOL_NAME),)
+                if settings.MCP_UPSTREAM_TOOL_NAME
+                else ()
+            ),
             ("MCP_UPSTREAM_PUBLIC_TOOL_ID", settings.MCP_UPSTREAM_PUBLIC_TOOL_ID),
         ):
             if not _SAFE_TOOL_ID.fullmatch(tool_id):
                 raise UpstreamMcpConfigurationError(
                     f"{setting_name} must use only the MCP tool-name characters A-Z, a-z, 0-9, _, -, and ."
                 )
+        if settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED and settings.MCP_UPSTREAM_TOOL_NAME:
+            raise UpstreamMcpConfigurationError(
+                "MCP_UPSTREAM_TOOL_NAME must be empty in multi-tool mode"
+            )
+        if (
+            settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED
+            and len(settings.MCP_UPSTREAM_PUBLIC_TOOL_ID) > 63
+        ):
+            raise UpstreamMcpConfigurationError(
+                "MCP_UPSTREAM_PUBLIC_TOOL_ID prefix must be at most 63 characters"
+            )
+        if (
+            not settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED
+            and settings.MCP_UPSTREAM_TOOL_ALLOWLIST
+        ):
+            raise UpstreamMcpConfigurationError(
+                "MCP_UPSTREAM_TOOL_ALLOWLIST requires multi-tool mode"
+            )
+        allowlist = tuple(
+            name.strip()
+            for name in settings.MCP_UPSTREAM_TOOL_ALLOWLIST.split(",")
+            if name.strip()
+        )
+        if settings.MCP_UPSTREAM_TOOL_ALLOWLIST and not allowlist:
+            raise UpstreamMcpConfigurationError(
+                "MCP_UPSTREAM_TOOL_ALLOWLIST must name at least one tool when set"
+            )
+        if len(allowlist) != len(set(allowlist)) or any(
+            any(ord(char) < 32 for char in name) for name in allowlist
+        ):
+            raise UpstreamMcpConfigurationError(
+                "MCP_UPSTREAM_TOOL_ALLOWLIST contains duplicate or invalid tool names"
+            )
 
         credits = settings.MCP_UPSTREAM_CREDITS_PER_CALL
         if not credits.is_finite() or credits <= 0:
@@ -288,6 +329,8 @@ class UpstreamMcpConfiguration:
             call_timeout_seconds=settings.MCP_UPSTREAM_CALL_TIMEOUT_SECONDS,
             max_response_bytes=settings.MCP_UPSTREAM_MAX_RESPONSE_BYTES,
             environment=settings.ENVIRONMENT,
+            multi_tool_enabled=settings.MCP_UPSTREAM_MULTI_TOOL_ENABLED,
+            tool_allowlist=allowlist,
         )
 
 
@@ -671,7 +714,7 @@ def get_upstream_mcp_metrics_snapshot() -> dict[str, Any]:
 
 
 class UpstreamMcpAdapter:
-    """Discover and invoke exactly one configured upstream MCP tool."""
+    """Discover remote tools and invoke one tool bound to this adapter."""
 
     def __init__(
         self,
@@ -776,8 +819,8 @@ class UpstreamMcpAdapter:
                 response_guard=response_guard,
             )
 
-    async def discover_tool(self) -> DiscoveredUpstreamTool:
-        """Initialize the upstream and cache the exact configured tool schema."""
+    async def discover_tools(self) -> list[DiscoveredUpstreamTool]:
+        """Initialize once and validate every selected upstream tool schema."""
         matches: list[Any] = []
         discovered_bytes = 0
         discovered_tool_count = 0
@@ -822,7 +865,14 @@ class UpstreamMcpAdapter:
                     matches.extend(
                         tool
                         for tool in page.tools
-                        if tool.name == self.configuration.tool_name
+                        if (
+                            (
+                                not self.configuration.tool_allowlist
+                                or tool.name in self.configuration.tool_allowlist
+                            )
+                            if self.configuration.multi_tool_enabled
+                            else tool.name == self.configuration.tool_name
+                        )
                     )
                     cursor = page.nextCursor
                     if not cursor:
@@ -851,33 +901,59 @@ class UpstreamMcpAdapter:
                 "upstream MCP discovery or initialization failed"
             ) from None
 
-        if len(matches) != 1:
+        if not self.configuration.multi_tool_enabled and len(matches) != 1:
             raise UpstreamMcpConfigurationError(
                 "configured upstream tool must appear exactly once in tools/list"
             )
-        selected = matches[0]
-        if not isinstance(selected.inputSchema, dict):
-            raise UpstreamMcpConfigurationError(
-                "configured upstream tool has an invalid input schema"
+        if self.configuration.multi_tool_enabled:
+            names = [tool.name for tool in matches]
+            if len(names) != len(set(names)):
+                raise UpstreamMcpConfigurationError(
+                    "upstream tools/list must contain unique selected tool names"
+                )
+            if set(self.configuration.tool_allowlist) - set(names):
+                raise UpstreamMcpConfigurationError(
+                    "MCP_UPSTREAM_TOOL_ALLOWLIST contains an absent upstream tool"
+                )
+            if not names:
+                raise UpstreamMcpConfigurationError(
+                    "upstream tools/list has no tools to expose"
+                )
+        discovered_tools = []
+        for selected in matches:
+            if not _SAFE_TOOL_ID.fullmatch(selected.name):
+                raise UpstreamMcpConfigurationError(
+                    "upstream tool name must be 1 to 128 safe MCP tool-name characters"
+                )
+            if not isinstance(selected.inputSchema, dict):
+                raise UpstreamMcpConfigurationError(
+                    "configured upstream tool has an invalid input schema"
+                )
+            input_schema_type = selected.inputSchema.get("type")
+            if input_schema_type is not None and input_schema_type != "object":
+                raise UpstreamMcpConfigurationError(
+                    "configured upstream tool input schema must describe an object"
+                )
+            output_schema = selected.outputSchema
+            if output_schema is not None and not isinstance(output_schema, dict):
+                raise UpstreamMcpConfigurationError(
+                    "configured upstream tool has an invalid output schema"
+                )
+            discovered_tools.append(
+                DiscoveredUpstreamTool(
+                    name=selected.name,
+                    description=_GATEWAY_TOOL_DESCRIPTION,
+                    input_schema=selected.inputSchema,
+                    output_schema=output_schema,
+                )
             )
-        input_schema_type = selected.inputSchema.get("type")
-        if input_schema_type is not None and input_schema_type != "object":
-            raise UpstreamMcpConfigurationError(
-                "configured upstream tool input schema must describe an object"
-            )
-        output_schema = selected.outputSchema
-        if output_schema is not None and not isinstance(output_schema, dict):
-            raise UpstreamMcpConfigurationError(
-                "configured upstream tool has an invalid output schema"
-            )
-        discovered = DiscoveredUpstreamTool(
-            name=selected.name,
-            description=_GATEWAY_TOOL_DESCRIPTION,
-            input_schema=selected.inputSchema,
-            output_schema=output_schema,
-        )
-        self._discovered_tool = discovered
-        return discovered
+        if len(discovered_tools) == 1:
+            self._discovered_tool = discovered_tools[0]
+        return discovered_tools
+
+    async def discover_tool(self) -> DiscoveredUpstreamTool:
+        """Preserve the single-tool discovery contract."""
+        return (await self.discover_tools())[0]
 
     def _canonicalize_result(self, result: Any) -> UpstreamMcpResult:
         if not isinstance(result, CallToolResult):
@@ -1129,8 +1205,8 @@ async def register_configured_upstream_mcp(
     registry: ServiceRegistry | None = None,
     http_client: httpx.AsyncClient | None = None,
     resolver: Resolver | None = None,
-) -> dict[str, Any] | None:
-    """Discover and register the single configured executable upstream tool."""
+) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """Discover and register configured executable upstream tools."""
     active_settings = settings or get_settings()
     active_registry = registry or get_service_registry()
     active_registry.unregister_execution_backend("upstream_mcp")
@@ -1143,17 +1219,57 @@ async def register_configured_upstream_mcp(
         http_client=http_client,
         resolver=resolver,
     )
-    discovered = await adapter.discover_tool()
-    return active_registry.register_upstream(
-        service_id=configuration.public_tool_id,
-        name=discovered.name,
-        description=discovered.description,
-        category=ServiceCategory.PLATFORM_FEE,
-        executor=adapter,
-        input_schema=discovered.input_schema,
-        output_schema=discovered.output_schema,
-        credits_per_unit=float(configuration.credits_per_call),
-        upstream_tool_name=configuration.tool_name,
-        upstream_origin=configuration.origin,
-        credits_per_unit_exact=format(configuration.credits_per_call, "f"),
-    )
+    if configuration.multi_tool_enabled:
+        discovered_tools = await adapter.discover_tools()
+    else:
+        discovered_tools = [await adapter.discover_tool()]
+    bindings = []
+    public_ids: set[str] = set()
+    for discovered in discovered_tools:
+        public_tool_id = (
+            configuration.public_tool_id
+            + "."
+            + hashlib.sha256(discovered.name.encode("utf-8")).hexdigest()
+            if configuration.multi_tool_enabled
+            else configuration.public_tool_id
+        )
+        if (
+            public_tool_id in public_ids
+            or active_registry.get_local(public_tool_id) is not None
+        ):
+            raise UpstreamMcpConfigurationError(
+                "generated upstream public tool ID conflicts with an existing service"
+            )
+        public_ids.add(public_tool_id)
+        tool_adapter = (
+            UpstreamMcpAdapter(
+                replace(
+                    configuration,
+                    tool_name=discovered.name,
+                    public_tool_id=public_tool_id,
+                ),
+                http_client=http_client,
+                resolver=resolver,
+            )
+            if configuration.multi_tool_enabled
+            else adapter
+        )
+        tool_adapter._discovered_tool = discovered
+        bindings.append((public_tool_id, discovered, tool_adapter))
+    registered = [
+        active_registry.register_upstream(
+            service_id=public_tool_id,
+            name=discovered.name,
+            description=discovered.description,
+            category=ServiceCategory.PLATFORM_FEE,
+            executor=tool_adapter,
+            input_schema=discovered.input_schema,
+            output_schema=discovered.output_schema,
+            credits_per_unit=float(configuration.credits_per_call),
+            upstream_tool_name=discovered.name,
+            upstream_origin=configuration.origin,
+            credits_per_unit_exact=format(configuration.credits_per_call, "f"),
+        )
+        for public_tool_id, discovered, tool_adapter in bindings
+    ]
+    return registered if configuration.multi_tool_enabled else registered[0]

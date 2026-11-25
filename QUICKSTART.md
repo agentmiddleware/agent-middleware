@@ -41,6 +41,25 @@ provisioning enabled. State and the signing key persist under
 
 ## Step by step
 
+### Using the hosted endpoint instead
+
+To use the hosted gateway, you do not need `make quickstart` or step 1. [Get an
+API key](https://www.agentmiddleware.dev/demo-key/), then in a terminal in the
+parent directory that contains `agent-middleware`:
+
+```bash
+cd agent-middleware/gateway
+export API_URL=https://api.agentmiddleware.dev
+export AMW_MCP_URL=https://api.agentmiddleware.dev/mcp
+export AGENT_API_KEY='REPLACE_WITH_YOUR_API_KEY'
+```
+
+Then continue at step 2. The included client reads `AMW_MCP_URL`
+and `AGENT_API_KEY` and sends the key as the `X-API-Key` header. Set
+`AMW_TOOL` if your key is allowed a different tool than `partner.notes.write`.
+The `data/dogfood_partner_notes.jsonl` check in step 2 applies only to the
+local server.
+
 ### 1. Provision a local key
 
 Open a second terminal in the parent directory that contains

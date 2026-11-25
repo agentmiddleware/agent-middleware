@@ -12,7 +12,11 @@ from ..core.auth import reject_anonymous_production_catalog, verify_api_key
 from ..core.config import get_settings
 from ..core.product_positioning import POSITIONING_DESCRIPTION
 from ..core.rate_limiter import rate_limit_discovery
-from .well_known import get_agent_first_metadata
+from .well_known import (
+    MCP_JSON_RPC_STATUS,
+    get_agent_first_metadata,
+    mcp_json_rpc_note,
+)
 
 router = APIRouter(
     prefix="/v1",
@@ -473,21 +477,19 @@ def _build_pricing() -> list[PricingTier]:
 
 def _build_integration_guides() -> dict[str, str]:
     """Trust-plane guides; AWI guide only when proof surfaces are mounted."""
+    standard_mcp_enabled = get_settings().ENABLE_STANDARD_MCP_ENDPOINT
     guides = {
         "mcp_tools": "/mcp/tools.json",
         "mcp_json_rpc": "/mcp/messages",
-        "mcp_json_rpc_status": "legacy_project_transport",
-        "mcp_json_rpc_note": (
-            "Project-specific JSON-RPC endpoint; it does not implement the "
-            "standard MCP initialization lifecycle."
-        ),
+        "mcp_json_rpc_status": MCP_JSON_RPC_STATUS,
+        "mcp_json_rpc_note": mcp_json_rpc_note(standard_mcp_enabled),
         "llm_txt": "/llm.txt",
         "llms_txt": "/llms.txt",
         "wedge": "/WEDGE.md",
         "partner_guide": "/DESIGN_PARTNER_GUIDE.md",
         "dogfood": "make dogfood-trust-plane (local partner.notes.write)",
     }
-    if get_settings().ENABLE_STANDARD_MCP_ENDPOINT:
+    if standard_mcp_enabled:
         guides["standard_mcp"] = "/mcp"
     if get_settings().ENABLE_PROOF_SURFACES:
         guides["awi_adoption"] = "/docs/awi-adoption-guide.md"

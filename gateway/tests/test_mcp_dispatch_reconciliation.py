@@ -1136,6 +1136,55 @@ async def test_existing_success_receipt_rejects_conflicting_signed_permit_snapsh
         )
 
 
+def test_assert_receipt_match_maps_jcs_reject_to_linkage_conflict():
+    """Non-I-JSON constraints must conflict, not raise CanonicalizationError."""
+    from types import SimpleNamespace
+
+    attempt = SimpleNamespace(
+        state="succeeded",
+        credits_charged=Decimal("1"),
+        credits_authorized=Decimal("1"),
+        idempotency_record_id="idem_jcs",
+        attempt_id="att_jcs",
+        permit_id="pmt_jcs",
+        wallet_id="w",
+        key_id="k",
+        public_tool_id="tool",
+        request_hash="a" * 64,
+        response_hash="b" * 64,
+        ledger_entry_id=None,
+        approval_id=None,
+    )
+    receipt = SimpleNamespace(
+        idempotency_record_id="idem_jcs",
+        dispatch_attempt_id="att_jcs",
+        permit_id="pmt_jcs",
+        wallet_id="w",
+        key_id="k",
+        tool="tool",
+        request_hash="a" * 64,
+        response_hash="b" * 64,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("1"),
+        outcome="success",
+        audit_event_id="aud_jcs",
+        approval_id=None,
+        reason_code=None,
+        constraints_evaluated={"n": 9007199254740993},
+    )
+    with pytest.raises(
+        DispatchAttemptError, match="^dispatch_receipt_linkage_conflict$"
+    ):
+        McpDispatchReconciliationService._assert_receipt_match(
+            receipt,
+            attempt=attempt,
+            outcome="success",
+            audit_event_id="aud_jcs",
+            constraints_evaluated={"n": 9007199254740993},
+        )
+
+
 @pytest.mark.anyio
 async def test_existing_receipt_adoption_matches_effective_jev_constraints(
     client: AsyncClient,

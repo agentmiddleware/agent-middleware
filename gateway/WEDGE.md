@@ -66,8 +66,8 @@ replacement (see [`SECURITY_LIMITATIONS.md`](SECURITY_LIMITATIONS.md)).
 
 ### Signed receipts are table stakes now (2026-08)
 
-The 2026 competitive sweep in
-`docs/market-research-2026-08.md` verified
+The 2026 competitive sweep (`docs/market-research-2026-08.md`, not included
+in this repository) verified
 that **signed, offline-verifiable receipts are no longer differentiating**.
 At least one MCP policy proxy emits Ed25519 receipts verifiable without calling
 its issuer, and it carries an IETF Internet-Draft for the format; other projects
@@ -115,10 +115,12 @@ documents.
 
 State that as scope, not as exclusivity: several projects enforce budgets and
 several dedupe replays, and whether any of them *binds* the two is an open
-verification question (`docs/market-research-2026-08.md` §7). Say "no project we
+verification question (`docs/market-research-2026-08.md` §7, not included in
+this repository). Say "no project we
 surveyed documents this," never "nobody does."
 
-**Re-tested 2026-08-25** (`docs/market-research-2026-08.md` §9) and the row
+**Re-tested 2026-08-25** (`docs/market-research-2026-08.md` §9, not included
+in this repository) and the row
 still holds — but the neighbourhood got more crowded, not less. Microsoft's
 `agent-governance-toolkit` now **ships** offline-verifiable receipts (Ed25519
 over RFC 8785 JCS, hash-chained), where §3 had recorded only a proposal;
@@ -271,8 +273,9 @@ Production-like deploys must keep `ENABLE_PROOF_SURFACES=false`.
 Deploy SOP (single path: `railway up` from this Dockerfile):
 the hosted-service deploy runbook (not in this repository).
 
-Agent-executable remediation of known spine/discovery/deploy debt:
-`docs/tech-debt-remediation-plan.md`.
+Agent-executable remediation of known spine/discovery/deploy debt is tracked
+in `docs/tech-debt-remediation-plan.md` (not included in this repository);
+the current frozen-surface inventory is [`docs/PROOF_SURFACES.md`](docs/PROOF_SURFACES.md).
 
 ## What Not To Claim Yet
 

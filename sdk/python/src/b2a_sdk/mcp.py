@@ -16,12 +16,116 @@ import asyncio
 import json
 import os
 import sys
+import uuid
 from typing import Any, Literal
 from urllib.parse import urlencode
 
 import httpx
 
 DEFAULT_API_URL = os.getenv("B2A_API_URL", "http://localhost:8000")
+_ASCII_PRINTABLE_MIN = 32
+_ASCII_PRINTABLE_MAX = 126
+_UNCERTAIN_OUTCOME_HINT = (
+    "The outcome is unknown; this call may already have run and charged. "
+    "Verify the outcome before retrying. Supply io.agentmiddleware/idempotency_key "
+    "in request _meta on future calls."
+)
+
+
+def _printable_ascii_idempotency_key(idempotency_key: str) -> str:
+    """Return the caller's key unchanged, or raise before anything is sent.
+
+    The gateway compares ``Idempotency-Key`` verbatim and never trims it
+    (``validate_client_idempotency_key`` in gateway/app/services/idempotency.py),
+    while HTTP servers drop leading and trailing header whitespace on the wire.
+    Silently trimming here, or letting the wire trim, would let ``" k"`` and
+    ``"k"`` alias to one key. So this bridge rejects edge whitespace instead
+    of trimming it, unlike ``AgentMiddlewareClient``, which trims. httpx
+    encodes header values as ASCII, so anything outside printable ASCII is
+    rejected too rather than failing with ``UnicodeEncodeError``.
+    """
+    if not isinstance(idempotency_key, str):
+        raise ValueError("idempotency_key must be a string")
+    if not idempotency_key.strip():
+        raise ValueError("idempotency_key must not be blank")
+    if idempotency_key != idempotency_key.strip():
+        raise ValueError("idempotency_key must not have leading or trailing whitespace")
+    if any(
+        ord(char) < _ASCII_PRINTABLE_MIN or ord(char) > _ASCII_PRINTABLE_MAX
+        for char in idempotency_key
+    ):
+        raise ValueError("idempotency_key must be printable ASCII")
+    return idempotency_key
+
+
+def _gateway_server_error(response: httpx.Response, keyed: bool) -> dict[str, Any]:
+    """Structured content for a gateway HTTP 5xx.
+
+    FastMCP turns a raised exception into a bare ``ToolError`` string, which
+    drops the gateway's error code and correlation id. Returning them as data
+    keeps both. ``retryable`` is true only when the caller supplied an
+    idempotency key: an unkeyed call gets a fresh server-minted key on the
+    gateway, so retrying it is a new call that can execute and charge again.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    sources = [body]
+    error = body.get("error")
+    if isinstance(error, dict):
+        sources = [error, body]
+        data = error.get("data")
+        if isinstance(data, dict):
+            sources.insert(0, data)
+
+    def first_str(field: str) -> str | None:
+        for source in sources:
+            value = source.get(field)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    code = first_str("code") or "internal_error"
+    correlation_id = (
+        first_str("correlation_id")
+        or response.headers.get("X-Correlation-ID")
+        or response.headers.get("X-Request-ID")
+    )
+    structured: dict[str, Any] = {
+        "error": code,
+        "code": code,
+        "message": first_str("message") or f"POST /mcp failed: HTTP {response.status_code}",
+        "correlation_id": correlation_id,
+        "http_status": response.status_code,
+        "retryable": keyed,
+    }
+    if not keyed:
+        structured["hint"] = _UNCERTAIN_OUTCOME_HINT
+    return structured
+
+
+def _gateway_response_uncertain(
+    *, keyed: bool, response: httpx.Response | None = None
+) -> dict[str, Any]:
+    """A missing or unusable gateway response does not prove the call did not run."""
+    structured: dict[str, Any] = {
+        "error": "gateway_response_uncertain",
+        "code": "gateway_response_uncertain",
+        "message": "POST /mcp did not return a usable response.",
+        "correlation_id": (
+            response.headers.get("X-Correlation-ID") or response.headers.get("X-Request-ID")
+            if response is not None
+            else None
+        ),
+        "http_status": response.status_code if response is not None else None,
+        "retryable": keyed,
+    }
+    if not keyed:
+        structured["hint"] = _UNCERTAIN_OUTCOME_HINT
+    return structured
 
 
 def generate_manifest(
@@ -104,10 +208,57 @@ def list_tools(
     print("=" * 60)
 
 
+async def invoke_service(
+    service_id: str,
+    input_data: dict,
+    wallet_id: str,
+    api_key: str,
+    *,
+    api_url: str = DEFAULT_API_URL,
+    idempotency_key: str | None = None,
+) -> dict:
+    """Invoke a marketplace service over the MCP tool route.
+
+    Sends an ``Idempotency-Key`` header: the caller key when given,
+    otherwise one minted for this call. Callers that retry one logical
+    invocation must reuse the key, or the retry is a second invocation.
+    Reusing a key lets the server deduplicate retries.
+
+    Raises:
+        ValueError: if a supplied key is blank, overlong, or contains control
+            characters (nothing is sent).
+    """
+    if idempotency_key is None:
+        key = uuid.uuid4().hex
+    else:
+        from .client import AgentMiddlewareClient
+
+        key = AgentMiddlewareClient._validate_idempotency_key(idempotency_key)
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{api_url}/mcp/tools/{service_id}/invoke",
+            headers={
+                "X-API-Key": api_key,
+                "Content-Type": "application/json",
+                "Idempotency-Key": key,
+            },
+            json={
+                "name": service_id,
+                "arguments": input_data,
+                "mcp_context": {"wallet_id": wallet_id},
+            },
+            timeout=30.0,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 async def serve_async(
     transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
+    legacy_result_format: bool = False,
 ) -> None:
     """
     Serve as an MCP server using the specified transport.
@@ -116,9 +267,11 @@ async def serve_async(
         transport: "stdio" or "sse"
         port: Port for SSE transport
         api_url: B2A API URL
+        legacy_result_format: Wrap successful gateway responses as JSON text
     """
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import Context, FastMCP
+        from mcp.types import CallToolResult, TextContent
     except ImportError:
         print('Error: mcp package required. Install: pip install "amw-sdk[mcp]"')
         return
@@ -128,33 +281,113 @@ async def serve_async(
 
     mcp = FastMCP("B2A Marketplace", port=port)
 
-    async def call_tool(service_id: str, input_data: dict, wallet_id: str, api_key: str) -> dict:
+    async def call_tool(
+        service_id: str,
+        input_data: dict,
+        api_key: str,
+        idempotency_key: str | None,
+    ) -> Any:
+        headers = {
+            "X-API-Key": api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = _printable_ascii_idempotency_key(idempotency_key)
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{api_url}/mcp/tools/{service_id}/invoke",
-                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-                json={
-                    "name": service_id,
-                    "arguments": input_data,
-                    "mcp_context": {"wallet_id": wallet_id},
-                },
-                timeout=30.0,
-                follow_redirects=False,
-            )
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await client.post(
+                    f"{api_url}/mcp",
+                    headers=headers,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": service_id, "arguments": input_data},
+                    },
+                    timeout=30.0,
+                    follow_redirects=False,
+                )
+            except httpx.RequestError:
+                structured = _gateway_response_uncertain(keyed=idempotency_key is not None)
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
+            if 400 <= response.status_code < 500:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {"detail": response.text}
+                detail = body.get("detail") if isinstance(body, dict) else body
+                error = detail.get("error") if isinstance(detail, dict) else detail
+                structured = dict(body) if isinstance(body, dict) else {"detail": body}
+                if isinstance(error, str):
+                    structured["error"] = error
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
+            if response.status_code >= 500:
+                structured = _gateway_server_error(response, keyed=idempotency_key is not None)
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
+            if not 200 <= response.status_code < 300:
+                structured = _gateway_response_uncertain(
+                    keyed=idempotency_key is not None, response=response
+                )
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
+            try:
+                envelope = response.json()
+                if not isinstance(envelope, dict):
+                    raise ValueError("gateway response must be an object")
+                if "error" in envelope:
+                    error = envelope["error"]
+                    structured = error if isinstance(error, dict) else {"error": error}
+                    return CallToolResult(
+                        content=[TextContent(type="text", text=json.dumps(structured))],
+                        isError=True,
+                        structuredContent=structured,
+                    )
+                result = envelope["result"]
+                return result if legacy_result_format else CallToolResult.model_validate(result)
+            except (ValueError, KeyError, TypeError):
+                structured = _gateway_response_uncertain(
+                    keyed=idempotency_key is not None, response=response
+                )
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(structured))],
+                    isError=True,
+                    structuredContent=structured,
+                )
 
     for tool in tools:
         name = tool.get("name", "unknown")
         desc = tool.get("description", "")
 
         async def create_handler(svc_id: str, svc_name: str):
-            async def handler(**kwargs) -> dict:
+            async def handler(ctx: Context, **kwargs: dict[str, Any]) -> Any:
+                meta = ctx.request_context.meta
+                metadata = (
+                    meta.model_dump(mode="json", by_alias=True, exclude_none=True)
+                    if meta is not None
+                    else {}
+                )
+                idempotency_key = metadata.get("io.agentmiddleware/idempotency_key")
                 return await call_tool(
                     service_id=svc_id,
-                    input_data=kwargs,
-                    wallet_id=os.getenv("B2A_WALLET_ID", ""),
+                    input_data=kwargs.pop("kwargs", kwargs),
                     api_key=os.getenv("B2A_API_KEY", ""),
+                    idempotency_key=idempotency_key,
                 )
 
             return handler
@@ -169,7 +402,6 @@ async def serve_async(
     print(file=output)
     print("Configure with:", file=output)
     print("  export B2A_API_KEY=<your-key>", file=output)
-    print("  export B2A_WALLET_ID=<your-wallet>", file=output)
     print(f"  export B2A_API_URL={api_url}", file=output)
     print(file=output)
 
@@ -185,9 +417,17 @@ def serve(
     transport: Literal["stdio", "sse"] = "stdio",
     port: int = 8001,
     api_url: str = DEFAULT_API_URL,
+    legacy_result_format: bool = False,
 ) -> None:
     """Sync wrapper for serve_async."""
-    asyncio.run(serve_async(transport=transport, port=port, api_url=api_url))
+    asyncio.run(
+        serve_async(
+            transport=transport,
+            port=port,
+            api_url=api_url,
+            legacy_result_format=legacy_result_format,
+        )
+    )
 
 
 def main() -> None:
@@ -217,6 +457,11 @@ def main() -> None:
     )
     serve_parser.add_argument("--port", type=int, default=8001, help="Port for SSE")
     serve_parser.add_argument("--api-url", default=DEFAULT_API_URL, help="B2A API URL")
+    serve_parser.add_argument(
+        "--legacy-result-format",
+        action="store_true",
+        help="Wrap successful tool results as JSON text for older MCP clients",
+    )
 
     args = parser.parse_args()
 
@@ -242,7 +487,12 @@ def main() -> None:
         list_tools(api_url=args.api_url, category=args.category)
 
     elif args.command == "serve":
-        serve(transport=args.transport, port=args.port, api_url=args.api_url)
+        serve(
+            transport=args.transport,
+            port=args.port,
+            api_url=args.api_url,
+            legacy_result_format=args.legacy_result_format,
+        )
 
     else:
         parser.print_help()

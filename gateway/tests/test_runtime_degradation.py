@@ -10,11 +10,16 @@ from starlette.routing import Route
 
 from app.core.health import gather_dependency_report
 from app.core.rate_limiter import RateLimitMiddleware
+from app.core.config import get_settings
 from app.core.runtime_degradation import (
+    REASON_DURABLE_STATE_MEMORY_FALLBACK,
+    REASON_RATE_LIMITER_MEMORY_FALLBACK,
+    REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED,
     get_runtime_degradation,
     mark_durable_state_fell_back,
     mark_rate_limiter_memory_fallback,
     reset_runtime_degradation,
+    warn_if_rate_limiter_memory_only,
 )
 from app.main import app
 
@@ -259,3 +264,208 @@ async def test_test_key_bypass_is_disabled_in_production_like_environments(
 
     assert first.status_code == 200
     assert second.status_code == 429
+
+
+# --- Memory-only limiter in a production-like environment (issue 286) --------
+
+_WARNING_LOGGER = "app.core.runtime_degradation"
+
+
+def _configure(monkeypatch, *, environment: str, redis_url: str) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ENVIRONMENT", environment)
+    monkeypatch.setattr(settings, "REDIS_URL", redis_url)
+
+
+def _memory_only_warnings(caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == _WARNING_LOGGER
+        and REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED in record.getMessage()
+    ]
+
+
+def test_production_like_without_redis_url_is_degraded_with_stable_reason(
+    monkeypatch,
+):
+    _configure(monkeypatch, environment="production", redis_url="")
+
+    snap = get_runtime_degradation()
+
+    assert snap["degraded"] is True
+    assert snap["reasons"] == ["rate_limiter_redis_not_configured"]
+    assert snap["rate_limiter"]["memory_only_in_production_like"] is True
+    assert snap["rate_limiter"]["backend"] == "memory"
+    assert snap["rate_limiter"]["using_memory_fallback"] is False
+
+
+@pytest.mark.parametrize("environment", ["production", "staging", "prod-eu"])
+def test_every_production_like_environment_is_degraded_without_redis_url(
+    monkeypatch, environment
+):
+    _configure(monkeypatch, environment=environment, redis_url="")
+
+    assert get_runtime_degradation()["reasons"] == [
+        REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED
+    ]
+
+
+def test_production_like_with_redis_url_is_not_degraded(monkeypatch):
+    _configure(monkeypatch, environment="production", redis_url="redis://cache:6379/0")
+
+    snap = get_runtime_degradation()
+
+    assert snap["degraded"] is False
+    assert snap["reasons"] == []
+    assert snap["rate_limiter"]["memory_only_in_production_like"] is False
+    assert snap["rate_limiter"]["backend"] == "redis"
+
+
+@pytest.mark.parametrize("environment", ["development", "test", "local", ""])
+def test_local_environment_without_redis_url_is_not_degraded(monkeypatch, environment):
+    _configure(monkeypatch, environment=environment, redis_url="")
+
+    snap = get_runtime_degradation()
+
+    assert snap["degraded"] is False
+    assert snap["reasons"] == []
+    assert snap["rate_limiter"]["memory_only_in_production_like"] is False
+    assert snap["rate_limiter"]["backend"] == "memory"
+
+
+def test_whitespace_redis_url_counts_as_not_configured(monkeypatch):
+    _configure(monkeypatch, environment="production", redis_url="   ")
+
+    assert get_runtime_degradation()["degraded"] is True
+
+
+def test_reasons_list_every_active_cause_in_a_stable_order(monkeypatch):
+    _configure(monkeypatch, environment="production", redis_url="")
+    mark_rate_limiter_memory_fallback()
+    mark_durable_state_fell_back("redis")
+
+    assert get_runtime_degradation()["reasons"] == [
+        REASON_RATE_LIMITER_MEMORY_FALLBACK,
+        REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED,
+        REASON_DURABLE_STATE_MEMORY_FALLBACK,
+    ]
+
+
+def test_stable_reason_codes_are_not_renamed():
+    assert REASON_RATE_LIMITER_MEMORY_FALLBACK == "rate_limiter_memory_fallback"
+    assert (
+        REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED == "rate_limiter_redis_not_configured"
+    )
+    assert REASON_DURABLE_STATE_MEMORY_FALLBACK == "durable_state_memory_fallback"
+
+
+def test_startup_warning_is_logged_once_for_a_memory_only_limiter(monkeypatch, caplog):
+    _configure(monkeypatch, environment="production", redis_url="")
+
+    with caplog.at_level("WARNING", logger=_WARNING_LOGGER):
+        first = warn_if_rate_limiter_memory_only()
+        second = warn_if_rate_limiter_memory_only()
+        third = warn_if_rate_limiter_memory_only()
+
+    assert (first, second, third) == (True, False, False)
+    messages = _memory_only_warnings(caplog)
+    assert len(messages) == 1
+    assert "REDIS_URL" in messages[0]
+    assert "per process" in messages[0]
+    assert not any(dash in messages[0] for dash in ("\u2014", "\u2013", " - "))
+
+
+def test_no_startup_warning_when_redis_url_is_set(monkeypatch, caplog):
+    _configure(monkeypatch, environment="production", redis_url="redis://cache:6379/0")
+
+    with caplog.at_level("WARNING", logger=_WARNING_LOGGER):
+        logged = warn_if_rate_limiter_memory_only()
+
+    assert logged is False
+    assert _memory_only_warnings(caplog) == []
+
+
+def test_no_startup_warning_in_a_local_environment(monkeypatch, caplog):
+    _configure(monkeypatch, environment="development", redis_url="")
+
+    with caplog.at_level("WARNING", logger=_WARNING_LOGGER):
+        logged = warn_if_rate_limiter_memory_only()
+
+    assert logged is False
+    assert _memory_only_warnings(caplog) == []
+
+
+def test_startup_warning_can_fire_again_after_a_reset(monkeypatch, caplog):
+    _configure(monkeypatch, environment="production", redis_url="")
+
+    with caplog.at_level("WARNING", logger=_WARNING_LOGGER):
+        assert warn_if_rate_limiter_memory_only() is True
+        reset_runtime_degradation()
+        assert warn_if_rate_limiter_memory_only() is True
+
+    assert len(_memory_only_warnings(caplog)) == 2
+
+
+@pytest.mark.anyio
+async def test_health_dependencies_reports_memory_only_limiter_as_degraded(
+    monkeypatch,
+):
+    _configure(monkeypatch, environment="production", redis_url="")
+
+    report = await gather_dependency_report()
+
+    assert report["runtime_degradation"]["degraded"] is True
+    assert report["runtime_degradation"]["reasons"] == [
+        REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED
+    ]
+    assert report["status"] == "degraded"
+    assert "runtime_degradation" in report["unhealthy"]
+
+
+@pytest.mark.anyio
+async def test_health_dependencies_endpoint_stays_200_when_limiter_is_memory_only(
+    monkeypatch,
+):
+    """Degrading loudly must not change which deployments serve traffic."""
+    _configure(monkeypatch, environment="production", redis_url="")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        resp = await http.get("/health/dependencies")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["runtime_degradation"]["reasons"] == [
+        REASON_RATE_LIMITER_REDIS_NOT_CONFIGURED
+    ]
+    assert body["status"] == "degraded"
+
+
+@pytest.mark.anyio
+async def test_lifespan_warns_before_signing_key_validation(monkeypatch):
+    """The startup warning is wired into the app lifespan, once per boot."""
+    from app import main as main_module
+    from app.services.signing_keys import SigningKeyError
+
+    calls: list[str] = []
+    monkeypatch.setattr(main_module, "validate_trust_mode_guardrails", lambda _s: None)
+    monkeypatch.setattr(main_module, "validate_api_key_hashing_config", lambda: None)
+    monkeypatch.setattr(main_module, "warn_if_trust_mode_permissive", lambda _s: None)
+    monkeypatch.setattr(
+        main_module,
+        "warn_if_rate_limiter_memory_only",
+        lambda: calls.append("memory_only_warning") or True,
+    )
+
+    def _stop_here(_settings):
+        calls.append("signing_key_validation")
+        raise SigningKeyError("stop_after_warning")
+
+    monkeypatch.setattr(main_module, "validate_signing_key_configuration", _stop_here)
+
+    with pytest.raises(SigningKeyError, match="stop_after_warning"):
+        async with main_module.lifespan(main_module.app):
+            pytest.fail("lifespan must stop at the sentinel")
+
+    assert calls == ["memory_only_warning", "signing_key_validation"]

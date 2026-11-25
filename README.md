@@ -2,11 +2,16 @@
 
 Agent Middleware is a gateway you put in front of an agent's risky tools (refunds, payouts, deploys) so each action needs a signed permit, runs at most once per request key, and leaves a signed receipt anyone can check offline.
 
-**Status:** Pre release. Solo maintained. Install from source; nothing is published to PyPI or npm.
+**Status:** Pre revenue, pre release, solo maintained. There are no paying
+customers or production deployments to point to. We are looking for design
+partners with one real consequential tool. Install from source; nothing is
+published to PyPI or npm.
 
 ## Try it in 3 minutes
 
 Use the [hosted demo](https://github.com/agentmiddleware/amw-demo). Get a demo key at the [demo key page](https://www.agentmiddleware.dev/demo-key/). The example also needs the associated wallet ID.
+
+Connecting an MCP client to the hosted endpoint `https://api.agentmiddleware.dev/mcp`? [Get an API key](https://www.agentmiddleware.dev/demo-key/) and send it as the `X-API-Key` header.
 
 ```bash
 git clone https://github.com/agentmiddleware/amw-demo.git
@@ -50,6 +55,11 @@ make quickstart
 Read [Security Limitations](gateway/SECURITY_LIMITATIONS.md) before relying on the gateway for a consequential action.
 
 ## Repo map
+
+This repository holds the reference gateway, protocol spec, SDKs,
+integrations, and design-partner pilot loop (start with
+[QUICKSTART.md](QUICKSTART.md)). The separate `agent-middleware-api`
+repository is outside this checkout; partner evaluation guidance is here.
 
 | Path | What it contains |
 | --- | --- |

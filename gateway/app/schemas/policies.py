@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field
 # a limit must stay below 1e10. allow_inf_nan=False refuses the Infinity/NaN
 # literals Starlette's JSON parser accepts (ge=0 alone let +Infinity through).
 _MAX_POLICY_LIMIT = 1e10
-# The planner's task tiers (app/optimizer/policy.py). A policy's tier is
-# compared against the requested one, so any other spelling never matched;
-# the column is String(20).
+# The planner's task tiers (app/optimizer/policy.py). A policy's tier is a
+# ceiling over the requested one (low < medium < high); any other spelling
+# fails closed at evaluation time. The column is String(20).
 RiskTier = Literal["low", "medium", "high"]
 
 

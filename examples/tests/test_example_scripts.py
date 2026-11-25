@@ -13,10 +13,11 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 import dry_run_example
 import mcp_tool_example
 import one_tool_call
-import pytest
 
 _REPO_ROOT = Path(os.path.abspath(dry_run_example.__file__)).parents[1]
 _SDK_SRC = _REPO_ROOT / "sdk" / "python" / "src"
@@ -143,7 +144,7 @@ def test_one_tool_call_runs_without_error(
     from importlib import reload
 
     original_env = dict(os.environ)
-    
+
     try:
         assert asyncio.run(one_tool_call.main()) == 0
         out = capsys.readouterr().out
@@ -159,3 +160,27 @@ def test_one_tool_call_runs_without_error(
         os.environ.update(original_env)
         if "app.config" in sys.modules:
             reload(sys.modules["app.config"])
+
+
+def test_serve_awaits_the_async_server_inside_the_running_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #359: --serve runs under asyncio.run, so it must not call asyncio.run again."""
+    import b2a_sdk.mcp
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_serve_async(**kwargs: object) -> None:
+        asyncio.get_running_loop()
+        calls.append(kwargs)
+
+    def nested_serve(**kwargs: object) -> None:
+        asyncio.run(fake_serve_async(**kwargs))
+
+    monkeypatch.setenv("B2A_API_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(b2a_sdk.mcp, "serve_async", fake_serve_async)
+    monkeypatch.setattr(b2a_sdk.mcp, "serve", nested_serve)
+
+    asyncio.run(mcp_tool_example.main_serve())
+
+    assert calls == [{"transport": "stdio", "api_url": "http://127.0.0.1:9"}]

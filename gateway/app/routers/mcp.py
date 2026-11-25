@@ -30,7 +30,7 @@ from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.exc import IntegrityError
 
 from ..audit.lightweight import record_audit
@@ -638,6 +638,25 @@ class ToolCallRequest(BaseModel):
         default_factory=dict, description="Tool arguments"
     )
     mcp_context: McpContext | None = Field(None, description="Billing context")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_the_json_rpc_spelling(cls, data: Any) -> Any:
+        """Read ``mcpContext`` as ``mcp_context`` on the REST body.
+
+        JSON-RPC ``params`` and most of the docs spell the context ``mcpContext``.
+        This model has no ``extra`` setting, so a body that used that spelling
+        used to have its wallet, permit and idempotency key dropped with no
+        error. Sending both spellings is ambiguous, so it is refused (422).
+        """
+        if isinstance(data, dict) and "mcpContext" in data:
+            if "mcp_context" in data:
+                raise ValueError(
+                    "send the billing context as mcp_context or mcpContext, not both"
+                )
+            data = {**data}
+            data["mcp_context"] = data.pop("mcpContext")
+        return data
 
 
 class ToolCallResponse(BaseModel):

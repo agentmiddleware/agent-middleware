@@ -127,7 +127,7 @@ async def test_governed_mcp_invoke_returns_receipt_and_replay_does_not_double_ch
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("transport", ["jsonrpc", "http"])
+@pytest.mark.parametrize("transport", ["jsonrpc", "http", "http_camel"])
 @pytest.mark.parametrize(
     "wallet_case", ["absent", "null", "empty", "matching", "foreign", "invalid"]
 )
@@ -183,9 +183,10 @@ async def test_legacy_mcp_wallet_defaults_only_when_omitted(
                 headers=provisioned["agent_headers"],
             )
         else:
+            context_key = "mcpContext" if transport == "http_camel" else "mcp_context"
             response = await client.post(
                 f"/mcp/tools/{tool_name}/invoke",
-                json={"name": tool_name, "arguments": {}, "mcp_context": context},
+                json={"name": tool_name, "arguments": {}, context_key: context},
                 headers=provisioned["agent_headers"],
             )
 

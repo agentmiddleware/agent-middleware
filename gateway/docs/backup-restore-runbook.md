@@ -457,9 +457,14 @@ After backup, upgrade, restore, or rollback:
    | Check | What it proves | Source |
    | --- | --- | --- |
    | `GET /health` | Process up. Redis PING when `REDIS_URL` is set. Returns `commit_sha`, `build_provenance`, `tenant_rls_mode`. | `gateway/app/main.py` `/health`; Docker `HEALTHCHECK` in `gateway/Dockerfile` and `gateway/docker-compose.yml` |
-   | `GET /health/ready` | Durable state store, MQTT (or `not_used` when simulated), database `SELECT 1`, and the signing key (key material loads and the configured key's row can sign). State store, MQTT or signing key `down`, or database not `up`, is not ready. | `gateway/app/main.py` `/health/ready`; `gateway/app/core/health.py` `check_database_readiness`, `check_signing_key_readiness` |
+   | `GET /health/ready` | Durable state store, MQTT (or `not_used` when simulated), database `SELECT 1`, and the signing key (key material loads and the configured key's row is checked when its lookup succeeds). State store, MQTT or signing key `down`, or database not `up`, is not ready. | `gateway/app/main.py` `/health/ready`; `gateway/app/core/health.py` `check_database_readiness`, `check_signing_key_readiness` |
    | `GET /health/dependencies` | Postgres, Redis, signing key, upstream MCP, version and commit SHA (production posture). | `gateway/app/main.py` `/health/dependencies` |
    | `scripts/human_preflight.sh` | Unauthenticated GETs: `/health`, `/health/dependencies`, OpenAPI, agent manifest, catalogs. | `gateway/scripts/human_preflight.sh`; `gateway/docs/human-onboarding.md` Preflight script |
+
+   During restore verification, check logs for `signing key row check raised`
+   warnings. A row lookup exception does not mark the signing key down, so
+   `/health/ready` can return 200 without validating the row when the other
+   checks pass. The database check owns database outages.
 
    Schema 040 also requires private schema parity, runtime posture, healthy
    public dependencies, and both health routes reporting the exact baked SHA

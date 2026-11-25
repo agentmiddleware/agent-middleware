@@ -459,17 +459,19 @@ async def _admit_awi_http_governed(ctx: AwiHttpGovernedContext) -> None:
     # is reserved yet, so the begun record is released for a retry.
     try:
         await get_signing_key_service().assert_ready_to_sign()
-    except SigningKeyUnavailableError as exc:
+    except Exception as exc:
         await idem.abandon(
             wallet_id=ctx.wallet_id,
             endpoint=ctx.endpoint,
             idempotency_key=ctx.idempotency_key,
             expected_record_id=ctx.record_id,
         )
-        raise HTTPException(
-            status_code=503,
-            detail={"error": exc.reason, "tool": ctx.tool_name},
-        ) from exc
+        if isinstance(exc, SigningKeyUnavailableError):
+            raise HTTPException(
+                status_code=503,
+                detail={"error": exc.reason, "tool": ctx.tool_name},
+            ) from exc
+        raise
     try:
         await permits.reserve_budget(
             ctx.permit_id,

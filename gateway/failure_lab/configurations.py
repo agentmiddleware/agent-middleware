@@ -421,8 +421,8 @@ class Target:
     permit: dict[str, Any] | None = None
     #: What :func:`configured_target` checked, and found true, before it
     #: yielded this direct target. ``None`` on the gateway configurations,
-    #: which are deliberately not fused. A scenario whose direct arm depends on
-    #: the fuse copies this into its evidence (see ``T02``).
+    #: which are deliberately not fused. ``Scenario.result`` copies it into
+    #: the evidence of every direct result as ``target_safety_fuse``.
     safety_fuse: dict[str, Any] | None = None
 
     @property

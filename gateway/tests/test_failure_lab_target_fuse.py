@@ -31,6 +31,7 @@ from failure_lab.configurations import (
 )
 from failure_lab.effect_ledger import EffectLedger
 from failure_lab.refund_tool import SimulatedRefundService
+from failure_lab.scenarios import SCENARIO_CLASSES
 from failure_lab.scenarios.base import Verdict
 from failure_lab.scenarios.t02_same_key_different_arguments import (
     SameKeyDifferentArguments,
@@ -218,17 +219,40 @@ async def test_direct_targets_carry_a_record_of_the_fuse_they_passed(
     assert fuse["agent_requests_end_only_in_this_targets_in_process_app"] is True
 
 
+#: Every scenario that drives at least one direct configuration. Derived from
+#: the registry, so a scenario that gains a direct arm is covered here too.
+DIRECT_SCENARIOS = tuple(
+    scenario_class
+    for scenario_class in SCENARIO_CLASSES
+    if any(
+        not configuration.uses_gateway
+        for configuration in scenario_class.configurations
+    )
+)
+
+
+def test_the_direct_scenario_list_is_not_empty():
+    """Guards the parametrized test below against silently running nothing."""
+    assert SameKeyDifferentArguments in DIRECT_SCENARIOS
+
+
 @pytest.mark.anyio
-async def test_t02_direct_arms_record_the_fuse_in_their_evidence(tmp_path):
-    """The arm that depends on the fuse shows it in the evidence, not only the source.
+@pytest.mark.parametrize(
+    "scenario_class", DIRECT_SCENARIOS, ids=lambda cls: cls.test_id
+)
+async def test_every_direct_arm_records_the_fuse_in_its_evidence(
+    tmp_path, scenario_class
+):
+    """Each direct arm shows the fuse in the evidence, not only the source.
 
     Read through ``as_dict``, the form the evidence bundle stores, and checked
-    against the verdicts T02 documents: recording the fuse must not change what
-    the arm measures.
+    against the verdicts each scenario documents: recording the fuse must not
+    change what an arm measures.
     """
-    scenario = SameKeyDifferentArguments()
-    result = await scenario.run(_env(tmp_path), configurations=DIRECT_CONFIGURATIONS)
-    assert len(result.configurations) == len(DIRECT_CONFIGURATIONS)
+    scenario = scenario_class()
+    selected = [c for c in DIRECT_CONFIGURATIONS if c in scenario.configurations]
+    result = await scenario.run(_env(tmp_path), configurations=selected)
+    assert len(result.configurations) == len(selected)
     for outcome in result.configurations:
         assert outcome.verdict is not Verdict.ERROR, outcome.error
         assert outcome.verdict.value == scenario.expected[outcome.configuration]

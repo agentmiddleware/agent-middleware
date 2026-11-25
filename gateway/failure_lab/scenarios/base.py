@@ -496,6 +496,14 @@ class Scenario:
         remaining_risks: Sequence[str] = (),
         extra: dict[str, Any] | None = None,
     ) -> ConfigurationResult:
+        recorded = dict(extra or {})
+        if target.safety_fuse is not None:
+            # A direct arm has no gateway between the agent and the tool, so
+            # it is harmless only because configured_target fused it to the
+            # lab's own simulated tool. Every direct result records that check
+            # here, so the evidence shows the fuse held, not just the source.
+            # Gateway targets carry no record: they are deliberately unfused.
+            recorded["target_safety_fuse"] = dict(target.safety_fuse)
         return ConfigurationResult(
             configuration=target.configuration.value,
             label=CONFIGURATION_LABELS[target.configuration],
@@ -509,7 +517,7 @@ class Scenario:
             gateway=measurements.gateway,
             receipts=measurements.receipts,
             remaining_risks=list(remaining_risks),
-            extra=extra or {},
+            extra=recorded,
         )
 
 

@@ -602,3 +602,85 @@ class TestBillingRouterDryRun:
         assert data["committed_charges"] == 0
         assert data["success"] is True
         assert "No charges to commit" in data["message"]
+
+
+class TestSdkSimulateSession:
+    """SDK simulate_session keeps the balance the gateway reports (issue #361)."""
+
+    @staticmethod
+    def _gateway_transport(rewrite_session=None):
+        """Send SDK requests to the real app, optionally reshaping its session body."""
+        import httpx
+        from httpx import ASGITransport
+        from app.main import app
+
+        gateway = ASGITransport(app=app)
+
+        class GatewayTransport(httpx.AsyncBaseTransport):
+            def __init__(self):
+                self.session_bodies = []
+
+            async def handle_async_request(self, request):
+                response = await gateway.handle_async_request(request)
+                if (
+                    request.method != "POST"
+                    or request.url.path != "/v1/billing/dry-run/session"
+                ):
+                    return response
+                await response.aread()
+                body = response.json()
+                self.session_bodies.append(body)
+                if rewrite_session is None:
+                    return httpx.Response(response.status_code, json=body)
+                return httpx.Response(response.status_code, json=rewrite_session(body))
+
+        return GatewayTransport()
+
+    @staticmethod
+    async def _open_session(transport):
+        from b2a_sdk import AgentMiddlewareClient
+
+        async with AgentMiddlewareClient(
+            api_key="test-key", base_url="http://test", transport=transport
+        ) as sdk:
+            wallet = await sdk.create_sponsor_wallet(
+                sponsor_name="Test Sponsor",
+                email="test@example.com",
+                initial_credits=10000.0,
+            )
+            async with sdk.simulate_session(wallet["wallet_id"]) as sim:
+                return sim.initial_balance, sim.total_cost, sim.session_id
+
+    @pytest.mark.anyio
+    async def test_initial_balance_is_the_gateway_virtual_balance(self):
+        transport = self._gateway_transport()
+        initial_balance, total_cost, session_id = await self._open_session(transport)
+
+        (session,) = transport.session_bodies
+        assert session_id == session["session_id"]
+        assert session["virtual_balance"] == 10000.0
+        assert initial_balance == session["virtual_balance"]
+        assert total_cost == 0.0
+
+    @pytest.mark.anyio
+    async def test_string_balance_from_gateway_is_read_as_a_number(self):
+        transport = self._gateway_transport(
+            lambda body: {**body, "virtual_balance": str(body["virtual_balance"])}
+        )
+        initial_balance, _, _ = await self._open_session(transport)
+
+        (session,) = transport.session_bodies
+        assert initial_balance == session["virtual_balance"]
+        assert isinstance(initial_balance, float)
+
+    @pytest.mark.anyio
+    async def test_missing_balance_is_none_not_zero(self):
+        transport = self._gateway_transport(
+            lambda body: {
+                key: value for key, value in body.items() if key != "virtual_balance"
+            }
+        )
+        initial_balance, _, _ = await self._open_session(transport)
+
+        assert transport.session_bodies[0]["virtual_balance"] == 10000.0
+        assert initial_balance is None

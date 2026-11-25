@@ -73,7 +73,7 @@ _TOP_UP_RETRY_IDLE_SECONDS = 5 * 60
 class PaymentsNotConfiguredError(RuntimeError):
     """No Stripe secret key is configured, so no fiat payment can be created."""
 
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__("payments_not_configured")
 
 

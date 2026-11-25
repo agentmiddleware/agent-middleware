@@ -50,7 +50,7 @@ verify = [
 # mcp 2.x renamed to MCPServer. Standalone generation is retired.
 # Bound matches the application's requirements.txt.
 mcp = [
-    "mcp>=1.29.0,<3",
+    "mcp>=1.29.0,<2",
 ]
 dev = [
     "pytest>=9.0.3",

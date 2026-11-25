@@ -34,6 +34,20 @@ the public receipt are product evidence, not a security sign-off.
 
 ## Demo Path
 
+The commands below run from `gateway/`. Prerequisites are Python 3.11+, `git`,
+`make`, `curl`, and [`uv`](https://docs.astral.sh/uv/). Install uv if it is
+missing, then clone and enter the gateway directory:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/agentmiddleware/agent-middleware
+cd agent-middleware/gateway
+```
+
+`uv` installs Python dependencies on the first `make` run. Details:
+[`../QUICKSTART.md`](../QUICKSTART.md) and
+[`docs/quickstart.md`](docs/quickstart.md).
+
 Run the focused one-command proof first:
 
 ```bash
@@ -42,8 +56,14 @@ make demo-trust-plane
 
 ### API key bootstrap (gated)
 
-There is **no public self-serve key mint**. After discovery, agents get `401`
-until an operator provisions a wallet-scoped key with a bootstrap admin key.
+There is **no public self-serve key mint** for a design-partner deployment.
+After discovery, agents get `401` until an operator provisions a wallet-scoped
+key with a bootstrap admin key.
+
+To try the demo today, without talking to an operator, get a free test key
+(synthetic credits, demo tenant) at
+[https://agentmiddleware.dev/try](https://agentmiddleware.dev/try). That page
+is the hosted preview, not a design-partner key.
 
 Documented flow + script:
 
@@ -64,7 +84,7 @@ from the configured upstream `partner.echo`; it is labeled self-issued proof,
 not customer traction. `partner.notes.write` must never stand in for a real
 partner tool in production.
 
-For the live engagement checklist that replaces `trust-plane-echo` / 
+For the live engagement checklist that replaces `trust-plane-echo` /
 `partner.notes.write` with the partner's real tool id, use
 [`docs/partner-first-tool-runbook.md`](docs/partner-first-tool-runbook.md).
 
@@ -74,7 +94,7 @@ The deployed limit is `RATE_LIMIT_PER_MINUTE` (default and production value:
 120). `RateLimitMiddleware` counts it in a 60-second window and returns
 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`
 on every counted response, including `401`s; the 121st request in a window
-gets `429`. A burst of a few dozen requests will not `429` — that is the
+gets `429`. A burst of a few dozen requests will not `429`: that is the
 120/min ceiling working as designed, not a missing limiter. Look at
 `X-RateLimit-Remaining` to see the budget without waiting for `429`.
 
@@ -95,8 +115,8 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
   buckets are shared across workers and replicas; without `REDIS_URL` each
   worker or replica keeps its own per-client buckets and its own backstop.
 - **Unaccepted credentials:** a request whose key the deployment does not
-  accept — a `401`, the `403 invalid_api_key` an unknown key gets, or any
-  request to a route that never checks the key (public discovery, a `404`) —
+  accept (a `401`, the `403 invalid_api_key` an unknown key gets, or any
+  request to a route that never checks the key, such as public discovery or a `404`)
   is also charged to one per-client bucket, shared by every key that client
   sends, at ten times the limit, because the per-key bucket is chosen from a
   header before the key is verified. Sending a different `X-API-Key` on every
@@ -156,9 +176,9 @@ under attack rather than just on the happy path, run the adversarial battery:
 make red-team-trust-plane
 ```
 
-It drives one valid permit and attacks it ten ways — no permit, unknown
+It drives one valid permit and attacks it ten ways: no permit, unknown
 permit, out-of-scope tool, missing scope, over-budget, stolen permit (wrong
-wallet), wrong key, expired, revoked, and tampered signature — and asserts
+wallet), wrong key, expired, revoked, and tampered signature. It asserts
 each is denied with a concrete reason code, that none produces a ledger debit,
 and that a final valid call is charged once (one debit for its key).
 

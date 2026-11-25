@@ -1,7 +1,49 @@
 # Demo Script: Concrete Trust-Plane Proof
 
-This is the design-partner demo for the current trust-plane proof. It shows one
-bounded agent tool call moving through the control plane:
+## Prerequisites
+
+Repository: https://github.com/agentmiddleware/agent-middleware
+
+Local commands in this script run from `gateway/` after you clone that
+repository. They need Python 3.11 or newer, `git`, and `make`, as documented
+in [QUICKSTART.md](../QUICKSTART.md).
+
+## Start with the hosted demo
+
+The public site's first demo is the hosted client, not a local server. Start
+there so an evaluator sees the same first path the public docs describe.
+
+Use the [hosted demo](https://github.com/agentmiddleware/amw-demo). Get a demo
+key at the [demo key page](https://www.agentmiddleware.dev/demo-key/). The
+example also needs the associated wallet ID. Connecting an MCP client to the
+hosted endpoint `https://api.agentmiddleware.dev/mcp` uses that key as the
+`X-API-Key` header. See the repository [README](../README.md).
+
+```bash
+git clone https://github.com/agentmiddleware/amw-demo.git
+cd amw-demo
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+export AMW_API_KEY='<your key>'
+export AMW_WALLET_ID='<your wallet id>'
+python examples/permit_echo_retry.py
+```
+
+The example creates a permit, calls the reference echo tool, retries with the
+same key, and checks the receipt offline. Commands in that repository are not
+in this one.
+
+Use the local gateway path below only after that hosted walkthrough, or when
+the hosted gateway is unavailable. Full local detail is in
+[QUICKSTART.md](../QUICKSTART.md).
+
+## What the local script shows
+
+This is the design-partner demo for the current trust-plane proof. The trust
+plane is the governed path in this gateway: a signed permit, one metered MCP
+tool call, a wallet charge, a signed receipt, and a hash-chained audit log.
+It shows one bounded agent tool call moving through that path:
 
 ```text
 scoped signed permit -> governed MCP invoke -> wallet charge -> signed receipt
@@ -20,16 +62,20 @@ Local reference tool id: **`trust-plane-echo`** (registered by
 
 For a real partner, register **one** of their internal tools under the same
 MCP path, issue a permit scoped only to that tool, and keep
-`ENABLE_PROOF_SURFACES=false`. Do not demo AWI/media/oracle until that single
+`ENABLE_PROOF_SURFACES=false`. That flag is off by default so frozen proof
+surfaces stay unmounted. Those surfaces (including AWI, media, and oracle)
+are demo scaffolding, not the product. Do not demo them until that single
 tool loop is trusted. Checklist:
 [`docs/partner-first-tool-runbook.md`](docs/partner-first-tool-runbook.md).
-See [`WEDGE.md`](WEDGE.md).
+See [`WEDGE.md`](WEDGE.md), which states the product wedge: at most one
+gateway dispatch and at most one debit per accepted idempotency key, with one
+finalized signed receipt, for metered MCP calls. This is not exactly-once.
 
 ## Environment
 
 Trust mode requires an Ed25519 signing seed; without it the server exits at
 startup with `trust_signing_private_key_required`. Generate one **once** and
-save it — this demo uses a persistent `./trust-demo.db`, and rebinding the same
+save it. This demo uses a persistent `./trust-demo.db`, and rebinding the same
 `TRUST_SIGNING_KEY_ID` to new key material is rejected with
 `signing_key_id_public_key_mismatch`:
 
@@ -37,7 +83,10 @@ save it — this demo uses a persistent `./trust-demo.db`, and rebinding the sam
 python3 -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())'
 ```
 
-Run the API in trust mode, reusing that seed on every restart:
+Run the API in trust mode, reusing that seed on every restart. Prefer
+`make quickstart` (below) for the local server. Use this uvicorn command only
+when you need the persistent `./trust-demo.db` setup instead of the quickstart
+database:
 
 ```bash
 export VALID_API_KEYS=dev-bootstrap-key
@@ -80,9 +129,9 @@ make agent-ops-war-room-check
 ```
 
 For the full loop over **real HTTP** as a self-provisioned non-admin caller
-— discover → authenticate → authorize → invoke → meter → receipt → replay →
-audit-chain verification → out-of-scope denial, with both receipts verified
-offline — plus a partner handoff bundle (portable receipts, public key set,
+(discover, authenticate, authorize, invoke, meter, receipt, replay,
+audit-chain verification, out-of-scope denial, with both receipts verified
+offline) plus a partner handoff bundle (portable receipts, public key set,
 and independent verification instructions) written to
 `data/live-loop-proof/`:
 
@@ -138,29 +187,29 @@ live demo flow below when walking a partner through the product story.
 
 Lead with the debit. Signed receipts ship in several competing products now, so
 a track that opens on the signature opens on the least differentiated thing in
-the demo. See [`WEDGE.md`](WEDGE.md) §"Signed receipts are table stakes now".
+the demo. See [`WEDGE.md`](WEDGE.md) section "Signed receipts are table stakes now".
 
-- "One agent action, at most one debit — no matter how many times the agent
+- "One agent action, at most one debit, no matter how many times the agent
   retries under the same accepted idempotency key. That is the whole product in one
   sentence." (A retry that mints a *new* key is a new operation, evaluated under
-  its own permit, budget and crash outcome — it may be charged, denied, or
+  its own permit, budget and crash outcome: it may be charged, denied, or
   refunded like any other. The key is the unit of deduplication, not a promise
   of a charge.)
 - "Watch the wallet. This call charges it once for this key, and the ledger entry is
   keyed to the idempotency record, so a duplicate debit cannot be written even
   under a race."
 - "Now I replay the identical request under the same key. Same receipt, no second
-  dispatch, no second debit — and the balance has not moved."
+  dispatch, no second debit, and the balance has not moved."
 - "The permit is the bounded authority that made the charge legitimate in the
   first place: wallet, tool, scope, budget, expiry, nonce, and signature. It is
   checked before the tool is allowed to run, not after."
 - "Trying a different tool with the same permit is denied, and the denial is
   itself signed and moves no money."
 - "The receipt's signature covers the ledger entry and the idempotency record
-  together — and, **when the call goes to the configured upstream MCP tool**,
+  together, and, **when the call goes to the configured upstream MCP tool**,
   the dispatch attempt as well. Plenty of tools sign receipts; that binding
   is what lets you check the relationship between authority, money and outcome
-  instead of taking three separate assertions on trust — and you can check the
+  instead of taking three separate assertions on trust. You can check the
   signature offline, without us. What actually *prevents* the second charge is
   one layer down: the ledger's `operation_key` uniqueness constraint and the
   idempotency replay path. The signature is evidence, not enforcement."
@@ -170,7 +219,7 @@ the demo. See [`WEDGE.md`](WEDGE.md) §"Signed receipts are table stakes now".
   when running the partner's configured upstream tool. Claiming it off the local
   proof is the exact overclaim a partner engineer will check first.
 - If asked about a crash on **this local demo tool**: "An incomplete idempotency
-  record stays in progress — the replay you just saw only returns a receipt once
+  record stays in progress. The replay you just saw only returns a receipt once
   the record is terminal. If a crash could have landed the side effect, the
   record goes to operator review and is deliberately never retried. We would
   rather block one call than fire it twice."
@@ -198,4 +247,6 @@ Say: "This proves a governed MCP trust-plane path for scoped, metered,
 replay-safe tool calls."
 
 Do not say: "This is production-grade agent banking," "full autonomous economic
-actor infrastructure," or "complete cross-framework governance."
+actor infrastructure," or "complete cross-framework governance." Do not say
+"exactly-once." The gateway is Fair Source (FSL-1.1-ALv2), not open source.
+Receipts and the audit chain are tamper-evident.

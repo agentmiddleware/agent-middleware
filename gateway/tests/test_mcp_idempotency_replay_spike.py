@@ -2,7 +2,9 @@
 
 Verified checkout: f176857ba91de594250f788b75e2ea85682dd706 (PR 295).
 Pre-deploy parent: 5009ebf0788dc335f321149f688a4435bb66f4d1.
-History is read locally with git show; no checkout, fetch, or network is used.
+Pre-deploy function sources are frozen verbatim below (extracted from the parent
+with git show and ast.get_source_segment), so CI's shallow checkout needs no
+history. Current functions are read from the checked-out tree. No network.
 
 Corrected source refs at that checkout:
 * gateway/app/routers/mcp_standard.py:749-779 resolves retry keys, refuses
@@ -16,7 +18,7 @@ Corrected source refs at that checkout:
   argument identity and slot keys. Neither key generator changed in PR 295.
 * gateway/app/services/signing_keys.py:67-106 maps Decimal to strings and
   emits JCS; :197-205 hashes those bytes. The parent's :67-97 canonical_json
-  uses json.dumps with ensure_ascii=True. We extract that function via AST.
+  uses json.dumps with ensure_ascii=True. That function is frozen below.
 * gateway/app/services/idempotency.py:518 hashes requests; :309-312 rejects a
   changed request hash, even when the external key is unchanged.
 * gateway/app/routers/mcp.py:1570-1579 binds arguments into the request hash;
@@ -61,7 +63,6 @@ import ast
 import hashlib
 import json
 import socket
-import subprocess
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -88,15 +89,142 @@ GOVERNED = "integrations/framework_integrations/_governed.py"
 RETRY = "gateway/app/services/mcp_retry_key.py"
 
 
+# Verbatim function sources at PARENT, keyed by repo path. Frozen in the test
+# because CI checks out with fetch-depth 2, so PARENT is not in local history.
+PARENT_SOURCES = {
+    "gateway/app/services/signing_keys.py": r'''
+def canonical_json(
+    payload: dict[str, Any],
+    *,
+    ensure_ascii: bool = True,
+    allow_nan: bool = True,
+) -> str:
+    """Serialize a payload into stable JSON before hashing or signing."""
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, Decimal):
+            normalized = value.normalize()
+            if normalized == normalized.to_integral():
+                return format(normalized, "f")
+            return format(normalized, "f")
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc).isoformat()
+        if isinstance(value, dict):
+            return {str(k): normalize(v) for k, v in sorted(value.items())}
+        if isinstance(value, list):
+            return [normalize(v) for v in value]
+        return value
+
+    return json.dumps(
+        normalize(payload),
+        separators=(",", ":"),
+        sort_keys=True,
+        ensure_ascii=ensure_ascii,
+        allow_nan=allow_nan,
+    )
+''',
+    "integrations/framework_integrations/_governed.py": r'''
+def derive_governed_idempotency_key(
+    *,
+    permit_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    action_id: str | None = None,
+) -> str:
+    """Derive the idempotency key for one logical governed tool call.
+
+    Key rule: the key is a deterministic ``gov-`` prefixed SHA-256 hash of
+    the stable identity of the logical call: the session's permit id, the
+    tool name, the canonical (key-sorted JSON) bound arguments, and the
+    caller-supplied action id when one is given. Retrying the same logical
+    call therefore reuses the same key, and the server replays the original
+    receipt instead of charging again. No randomness is used, so a retry
+    can never mint a fresh key by accident.
+
+    A different action needs a different key. Arguments alone do not always
+    distinguish two actions: pass ``action_id`` (for example the
+    framework's tool call id) whenever two calls can carry identical
+    arguments but must bill separately. Without ``action_id``, two calls
+    with identical permit, tool, and arguments share a key and the second
+    replays the first.
+
+    Raises:
+        ValueError: if ``permit_id`` or ``tool_name`` is blank, or a
+            supplied ``action_id`` is blank.
+    """
+    if not isinstance(permit_id, str) or not permit_id.strip():
+        raise ValueError("permit_id must not be blank")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        raise ValueError("tool_name must not be blank")
+    if action_id is not None and (
+        not isinstance(action_id, str) or not action_id.strip()
+    ):
+        raise ValueError("action_id must not be blank; omit it to derive without one")
+    canonical = json.dumps(
+        {
+            "permit_id": permit_id,
+            "tool": tool_name,
+            "args": arguments,
+            "action_id": action_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"gov-{digest}"
+''',
+    "gateway/app/services/mcp_retry_key.py": r'''
+def canonical_arguments(arguments: Any) -> str:
+    """Stable JSON for arguments: sorted keys, no whitespace variance."""
+    return json.dumps(
+        arguments if arguments is not None else {},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+
+
+def derive_retry_identity(
+    *,
+    wallet_id: str,
+    key_id: str | None,
+    principal: str,
+    tool_name: str,
+    arguments: Any,
+) -> str:
+    """Time-independent identity of one logical unkeyed call."""
+    material = "\x1f".join(
+        [
+            "v2",
+            wallet_id,
+            key_id or "",
+            principal,
+            tool_name,
+            canonical_arguments(arguments),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def slot_key(identity: str, *, window_seconds: int, bucket: int, attempt: int) -> str:
+    """Idempotency key for one (window bucket, attempt) slot of an identity."""
+    material = f"{identity}\x1f{window_seconds}\x1f{bucket}\x1f{attempt}"
+    return DERIVED_KEY_PREFIX + hashlib.sha256(material.encode("utf-8")).hexdigest()
+''',
+}
+
+
 def _history_functions(revision: str, path: str, names: set[str]) -> dict:
-    """Execute only selected function definitions from read-only local history."""
-    source = subprocess.run(
-        ["git", "show", f"{revision}:{path}"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+    """Execute only selected function definitions from PARENT or current tree."""
+    if revision == PARENT:
+        source = PARENT_SOURCES[path]
+    else:
+        assert revision == BASE
+        source = (ROOT / path).read_text(encoding="utf-8")
     nodes = [
         node
         for node in ast.parse(source).body
@@ -155,7 +283,7 @@ class CrossDeployReplayMissing(AssertionError):
 async def test_case_11_current_behavior(
     key_kind: str, clean_database: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def no_network(*args: Any, **kwargs: Any) -> None:
+    def no_network(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("case 11 must remain offline")
 
     monkeypatch.setattr(socket.socket, "connect", no_network)

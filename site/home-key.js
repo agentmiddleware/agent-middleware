@@ -117,7 +117,7 @@
 
     let response;
     try {
-      response = await fetch("https://api.thisisatest.tech/v1/demo/keys", request);
+      response = await fetch("https://api.agentmiddleware.dev/v1/demo/keys", request);
     } catch {
       showFailure(false);
       return;

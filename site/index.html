@@ -222,7 +222,7 @@ python examples/permit_echo_retry.py</code></pre>
               <button id="home-hero-python-copy" type="button" aria-label="Copy Python commands" disabled>Copy</button>
             </div>
             <div class="hero-v2-command-row hero-v2-curl-row">
-              <pre id="home-hero-curl" tabindex="0"><code>curl -s -X POST https://api.thisisatest.tech/v1/demo/keys</code></pre>
+              <pre id="home-hero-curl" tabindex="0"><code>curl -s -X POST https://api.agentmiddleware.dev/v1/demo/keys</code></pre>
               <button id="home-hero-curl-copy" type="button" aria-label="Copy curl command">Copy</button>
             </div>
             <p class="hero-v2-code-note">The button above fills these Python commands with a demo key. With curl, replace both export placeholders using <code>api_key</code> and <code>wallet_id</code> from the response.</p>
@@ -307,7 +307,7 @@ python examples/permit_echo_retry.py</code></pre>
         <div class="home-v2-section-heading"><p>Limits</p><h2 id="limits-title">Know where the boundary ends</h2></div>
         <p>AMW is not exactly once. For a configured upstream tool, one accepted request key permits at most one gateway dispatch and one debit.</p>
         <p><code>delivery_uncertain</code> means we charged this call but do not know if the tool finished. Check the tool directly before you try again. We never resend it on our own.</p>
-        <p>Receipts sign hashes of the request and response, not the content, and do not prove the tool was right. <a href="https://api.thisisatest.tech/SECURITY_LIMITATIONS.md" rel="noopener noreferrer">Read the limits.</a></p>
+        <p>Receipts sign hashes of the request and response, not the content, and do not prove the tool was right. <a href="https://api.agentmiddleware.dev/SECURITY_LIMITATIONS.md" rel="noopener noreferrer">Read the limits.</a></p>
       </section>
 
       <section class="home-v2-section home-v2-source" aria-labelledby="source-title" data-wave="order">

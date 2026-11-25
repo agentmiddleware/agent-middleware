@@ -6,7 +6,7 @@ import { createContext, runInContext, runInNewContext } from "node:vm";
 
 const script = readFileSync(new URL("./demo-key/demo-key.js", import.meta.url), "utf8");
 const captureScript = readFileSync(new URL("./utm-capture.js", import.meta.url), "utf8");
-const commandTemplate = `API=https://api.thisisatest.tech
+const commandTemplate = `API=https://api.agentmiddleware.dev
 KEY='YOUR_DEMO_KEY'
 WALLET='YOUR_WALLET_ID'
 curl -fsS "$API/v1/permits"
@@ -86,7 +86,7 @@ test("issuance uses an empty credential-free POST and renders one key as text", 
   await page.click("get-demo-key");
   assert.equal(page.requests.length, 1);
   const [url, options] = page.requests[0];
-  assert.equal(url, "https://api.thisisatest.tech/v1/demo/keys");
+  assert.equal(url, "https://api.agentmiddleware.dev/v1/demo/keys");
   assert.equal(options.method, "POST");
   assert.equal(options.credentials, "omit");
   assert.deepEqual(Object.keys(options).sort(), ["credentials", "method"]);

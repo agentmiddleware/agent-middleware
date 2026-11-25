@@ -9,7 +9,7 @@ Origin roles:
 - https://www.agentmiddleware.dev: human site and published proof. Its homepage
   issues free sandbox demo keys inline with no account needed. It executes no
   tools and holds no customer data.
-- https://api.thisisatest.tech: the gateway itself. All protected actions live
+- https://api.agentmiddleware.dev: the gateway itself. All protected actions live
   here.
 
 Do not treat the marketing origin as an API base URL.
@@ -69,7 +69,7 @@ https://www.agentmiddleware.dev/proof/
 
 Two files are published there: the portable receipt and the exact public-key
 snapshot that matches it. `b2a-verify-receipt --bundle receipt.json --keys
-trust-keys.json --expect-issuer https://api.thisisatest.tech` checks the
+trust-keys.json --expect-issuer https://api.agentmiddleware.dev` checks the
 signature with no API credential and no callback to the issuer. Exit 0 verified,
 1 invalid, 2 undetermined.
 
@@ -83,10 +83,10 @@ The standalone verifier is published next to the receipt, so no repository
 access is needed: download receipt.json, trust-keys.json, verify_receipt.py, and jcs.py
 from https://www.agentmiddleware.dev/proof/, run `python3 -m pip install
 cryptography`, then `python3 verify_receipt.py --bundle receipt.json --keys
-trust-keys.json --expect-issuer https://api.thisisatest.tech`. Keyless live
-calls: https://api.thisisatest.tech/health and
-https://api.thisisatest.tech/.well-known/trust-keys.json. Public API contract:
-https://api.thisisatest.tech/openapi.json and https://api.thisisatest.tech/docs.
+trust-keys.json --expect-issuer https://api.agentmiddleware.dev`. Keyless live
+calls: https://api.agentmiddleware.dev/health and
+https://api.agentmiddleware.dev/.well-known/trust-keys.json. Public API contract:
+https://api.agentmiddleware.dev/openapi.json and https://api.agentmiddleware.dev/docs.
 The free sandbox demo key can run the demo tool. Production tool calls need a
 design partner key (Preview).
 
@@ -111,7 +111,7 @@ customer validation, production settlement, or compliance evidence.
 
 ## Runtime honesty
 
-GET https://api.thisisatest.tech/health/dependencies
+GET https://api.agentmiddleware.dev/health/dependencies
 
 HTTP 200 alone does not mean every dependency is ready. Inspect `status` and
 the selected tool's dependencies. Health never replaces authentication or

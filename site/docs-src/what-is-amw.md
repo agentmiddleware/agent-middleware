@@ -15,6 +15,6 @@ The boundary is narrow. A gateway dispatch record cannot prove that the upstream
 
 Start with the [hosted sandbox quickstart](/docs/three-minute-quickstart/), then read [Permits](/docs/permits/), [Calls and request keys](/docs/calls-and-request-keys/), and [Limits](/docs/limits/).
 
-The [source repository](https://github.com/agentmiddleware/agent-middleware) and [organization](https://github.com/agentmiddleware) contain the project. The [website](https://www.agentmiddleware.dev) and [API discovery document](https://api.thisisatest.tech/.well-known/agent.json) are separate public surfaces.
+The [source repository](https://github.com/agentmiddleware/agent-middleware) and [organization](https://github.com/agentmiddleware) contain the project. The [website](https://www.agentmiddleware.dev) and [API discovery document](https://api.agentmiddleware.dev/.well-known/agent.json) are separate public surfaces.
 
 Apache 2.0 (gateway is Fair Source, FSL-1.1)

@@ -25,7 +25,7 @@ function makePage(fetchResponse, { copyFails = false, capture = true, search = "
       "home-key-retry", "home-key-email"].includes(id),
     disabled: id === "home-hero-python-copy",
     textContent: id === "home-hero-python" ? heroTemplate :
-      id === "home-hero-curl" ? "curl -s -X POST https://api.thisisatest.tech/v1/demo/keys" :
+      id === "home-hero-curl" ? "curl -s -X POST https://api.agentmiddleware.dev/v1/demo/keys" :
       id === "home-key-trigger" ? "Get a free demo key" : "",
     value: "",
     type: id === "home-key-value" || id === "home-wallet-value" ? "password" : "button",
@@ -101,7 +101,7 @@ test("hero Python copy requires an issued demo key and wallet", async () => {
   assert.match(homeHtml, /id="home-hero-python-copy"[^>]*disabled/);
   assert.equal(homeHtml.match(/git clone https:\/\/github.com\/agentmiddleware\/amw-demo\.git/g)?.length, 1);
   assert.match(homeHtml, /class="hero-v2-tab"><code>curl<\/code><\/span>/);
-  assert.match(homeHtml, /<pre id="home-hero-curl"[^>]*><code>curl -s -X POST https:\/\/api\.thisisatest\.tech\/v1\/demo\/keys<\/code><\/pre>/);
+  assert.match(homeHtml, /<pre id="home-hero-curl"[^>]*><code>curl -s -X POST https:\/\/api\.agentmiddleware\.dev\/v1\/demo\/keys<\/code><\/pre>/);
   assert.match(homeHtml, /id="home-hero-curl-copy"[^>]*aria-label="Copy curl command"/);
   assert.doesNotMatch(homeHtml, /curl<\/code><span>coming soon<\/span>/);
   assert.doesNotMatch(homeHtml, /id="home-quickstart-code"|id="home-copy-quickstart"/);
@@ -109,7 +109,7 @@ test("hero Python copy requires an issued demo key and wallet", async () => {
   await page.click("home-hero-python-copy");
   await page.click("home-hero-curl-copy");
   assert.deepEqual(page.copies, [
-    "curl -s -X POST https://api.thisisatest.tech/v1/demo/keys",
+    "curl -s -X POST https://api.agentmiddleware.dev/v1/demo/keys",
   ]);
   assert.equal(page.elements.get("home-hero-copy-status").textContent, "Commands copied.");
   assert.equal(page.requests.length, 0);
@@ -145,7 +145,7 @@ test("idle, loading, and success issue one empty POST and fill the live quicksta
   await get("home-key-retry").listeners.click();
   assert.equal(page.requests.length, 1);
   const [url, request] = page.requests[0];
-  assert.equal(url, "https://api.thisisatest.tech/v1/demo/keys");
+  assert.equal(url, "https://api.agentmiddleware.dev/v1/demo/keys");
   assert.equal(request.method, "POST");
   assert.equal(request.credentials, "omit");
   assert.deepEqual(Object.keys(request).sort(), ["credentials", "method"]);

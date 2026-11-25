@@ -6,7 +6,7 @@ import { createContext, runInContext } from "node:vm";
 const script = readFileSync(new URL("./try/try.js", import.meta.url), "utf8");
 const captureScript = readFileSync(new URL("./utm-capture.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("./try/index.html", import.meta.url), "utf8");
-const DEMO_KEY_URL = "https://api.thisisatest.tech/v1/demo/keys";
+const DEMO_KEY_URL = "https://api.agentmiddleware.dev/v1/demo/keys";
 const SIGNUP_URL = "https://cqtlzicxmaklslvxderm.supabase.co/functions/v1/amw-test-signup";
 
 function makePage(fetchResponse, options = {}) {

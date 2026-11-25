@@ -293,7 +293,7 @@ python3 -m pip install cryptography
 python3 verify_receipt.py \
   --bundle receipt.json \
   --keys trust-keys.json \
-  --expect-issuer https://api.thisisatest.tech</code></pre>
+  --expect-issuer https://api.agentmiddleware.dev</code></pre>
           <p>
             The verifier is a standalone script published on this page: it
             checks the signature over the receipt's hashes using the supplied
@@ -301,9 +301,9 @@ python3 verify_receipt.py \
             Anyone with a source checkout can use the SDK CLI
             <code>b2a-verify-receipt</code> instead. The same public key set
             is also served live, with no key needed, at
-            <code>https://api.thisisatest.tech/.well-known/trust-keys.json</code>
+            <code>https://api.agentmiddleware.dev/.well-known/trust-keys.json</code>
             (and
-            <code>https://api.thisisatest.tech/.well-known/jwks.json</code>).
+            <code>https://api.agentmiddleware.dev/.well-known/jwks.json</code>).
           </p>
         </div>
       </section>
@@ -319,8 +319,8 @@ python3 verify_receipt.py \
           needed to try permits and the demo tool. Production keys are issued
           during the Preview pilot through the pilot contact below.
         </p>
-        <pre tabindex="0"><code>curl -sS https://api.thisisatest.tech/health
-curl -sS https://api.thisisatest.tech/.well-known/trust-keys.json</code></pre>
+        <pre tabindex="0"><code>curl -sS https://api.agentmiddleware.dev/health
+curl -sS https://api.agentmiddleware.dev/.well-known/trust-keys.json</code></pre>
       </section>
 
       <section class="section pilot-section proof-contact" aria-labelledby="proof-contact-title">

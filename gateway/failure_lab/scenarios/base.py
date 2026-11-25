@@ -284,6 +284,22 @@ class ScenarioResult:
         }
 
 
+def _fuse_evidence(target_fuse: dict[str, Any] | None) -> dict[str, Any]:
+    """The ``extra`` entry that records a passed target safety fuse.
+
+    A direct arm has no gateway between the agent and the tool, so it is
+    harmless only because ``configured_target`` fused it to the lab's own
+    simulated tool. Every result for an admitted direct target carries the
+    record of that check, so the evidence shows the fuse held, not just the
+    source. A gateway target has no record, because it is deliberately
+    unfused, and a refused target never had a passed check to record: both
+    give an empty entry here.
+    """
+    if target_fuse is None:
+        return {}
+    return {"target_safety_fuse": dict(target_fuse)}
+
+
 class Scenario:
     """Base class. Subclasses implement :meth:`run_configuration`."""
 
@@ -356,10 +372,14 @@ class Scenario:
                 scenario=self.test_id,
                 configuration=configuration.value,
             )
+            # Stays None until configured_target admits the target. A refusal
+            # raises before that, so its ERROR result records no passed fuse.
+            admitted_fuse: dict[str, Any] | None = None
             try:
                 async with configured_target(
                     env, configuration, ledger_suffix=f"-{self.test_id}"
                 ) as target:
+                    admitted_fuse = target.safety_fuse
                     result = await self.run_configuration(target, log)
             except Exception as exc:  # noqa: BLE001 - a harness error is itself a result
                 result = ConfigurationResult(
@@ -369,6 +389,10 @@ class Scenario:
                     expectation=self.expected.get(configuration.value, ""),
                     observation=f"harness error: {type(exc).__name__}: {exc}",
                     counters=Counters(),
+                    # An arm that raised after it was admitted still ran
+                    # against the fused target, so its evidence keeps the
+                    # record.
+                    extra=_fuse_evidence(admitted_fuse),
                     error="".join(traceback.format_exception(exc))[-4000:],
                 )
             log.emit(
@@ -496,14 +520,6 @@ class Scenario:
         remaining_risks: Sequence[str] = (),
         extra: dict[str, Any] | None = None,
     ) -> ConfigurationResult:
-        recorded = dict(extra or {})
-        if target.safety_fuse is not None:
-            # A direct arm has no gateway between the agent and the tool, so
-            # it is harmless only because configured_target fused it to the
-            # lab's own simulated tool. Every direct result records that check
-            # here, so the evidence shows the fuse held, not just the source.
-            # Gateway targets carry no record: they are deliberately unfused.
-            recorded["target_safety_fuse"] = dict(target.safety_fuse)
         return ConfigurationResult(
             configuration=target.configuration.value,
             label=CONFIGURATION_LABELS[target.configuration],
@@ -517,7 +533,7 @@ class Scenario:
             gateway=measurements.gateway,
             receipts=measurements.receipts,
             remaining_risks=list(remaining_risks),
-            extra=recorded,
+            extra={**(extra or {}), **_fuse_evidence(target.safety_fuse)},
         )
 
 

@@ -18,9 +18,13 @@ These release checks are required and have not been run in this worktree.
 
 The new event writer is best effort: an insert failure leaves a reporting gap
 without failing the API request. The view contains only events recorded after
-the migration. This repository has no tenant RLS layer. The application exposes
-the view through a bootstrap-admin-only route; database privileges are a
-separate deployment boundary.
+the migration. `048_tenant_rls` creates wallet-isolation policies, but
+row-level security stays disabled under the default `TENANT_RLS_MODE` of
+`off` and no runtime code sets `app.current_wallet_id`, so no policy
+enforces anything; see `schema-048-rollout.md`. `api_key_usage_events` is
+key-scoped, has no wallet column, and is deliberately outside that table
+set. The application exposes the view through a bootstrap-admin-only
+route; database privileges are a separate deployment boundary.
 
 ## Rollback boundary
 

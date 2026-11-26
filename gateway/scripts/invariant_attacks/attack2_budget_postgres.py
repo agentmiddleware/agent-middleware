@@ -7,12 +7,12 @@ import os
 import json
 import sys
 
-import attacklib as A
+import attacklib as A  # noqa: N812
 
 A.API = os.environ.get("API_URL", "http://127.0.0.1:8001")  # PG-backed instance
 
 
-def race(cap, N, label):
+def race(cap, N, label):  # noqa: N803
     cred = A.provision(f"pgrace-{label}")
     p = A.issue_permit(
         cred,

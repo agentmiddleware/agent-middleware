@@ -1,0 +1,10 @@
+{
+  "preload": [
+    "instrument-serif-400-latin.5eb09b5a.woff2",
+    "libre-franklin-latin.52e60585.woff2",
+    "public-sans-latin.5ed4d31c.woff2",
+    "ibm-plex-mono-400-latin.08949f72.woff2",
+    "ibm-plex-mono-500-latin.01d28544.woff2",
+    "ibm-plex-mono-600-latin.0d1f0b8d.woff2"
+  ]
+}

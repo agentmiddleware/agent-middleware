@@ -14,16 +14,17 @@ This package is not published to PyPI. Install it from a checkout of
 this repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -e ./sdk/python
 python -m pip install -e integrations/autogen-agent-middleware
 ```
 
-`b2a_sdk` must be installed from the local path first: this package
-depends on `b2a-sdk>=0.4.0`, which is not on PyPI, so installing the
-wrapper on its own fails to resolve. That installs the `autogen_b2a`
-module used below.
+`b2a_sdk` remains an import package. The SDK distribution will be published
+as `amw-sdk` (`pip install amw-sdk`). Until then, install it from the local
+path first because this wrapper depends on `amw-sdk>=0.4.0` and cannot
+resolve that dependency from PyPI. Installing the wrapper provides the
+`autogen_b2a` module used below.
 
 The framework dependency is the `autogen` distribution on PyPI
 ([AG2 Classic](https://github.com/ag2ai/ag2classic)), which provides the
@@ -122,6 +123,8 @@ asyncio.run(main())
 
 Both `idempotency_key` and `permit_idempotency_key` are **required** and must be supplied by the caller. Do not auto-generate keys.
 
+The wrapper strips surrounding whitespace before it caches a permit or sends a key, because that is the text the SDK puts on the wire. A padded key and the same key without padding are one key. A key longer than 128 characters, or a key that contains control characters, is rejected before a permit is created. A blank tool name, a blank wallet, a non-positive budget or lifetime, and arguments that are not an object are rejected the same way, so a call the trust plane will refuse does not consume the permit key.
+
 An identical replay with the same invocation key returns the original receipt
 without recharging. `idempotency_key` identifies one governed invocation, and
 the gateway rejects that key reused with changed invocation input with an
@@ -150,6 +153,31 @@ async def main():
         arguments={"query": "test"},  # same arguments
     )
 ```
+
+### Replay after a process restart
+
+The trust plane stores the whole permit body, including its expiry, under
+`permit_idempotency_key`. By default the wrapper keeps that body in memory
+only, so a new process that reuses a permit key builds a new expiry and gets
+`idempotency_key_reused` instead of the original permit. To replay across a
+restart, give the wrapper a durable permit store. It records each permit body
+before the first network call and sends the same body again after a restart.
+A restart with a different wallet, budget, or tool under the same permit key
+is refused before any request. A different lifetime is not: the stored body,
+including its original expiry, is sent again.
+
+```python
+from autogen_b2a import B2AFunctionTool, JsonFilePermitStore
+
+tool = B2AFunctionTool(
+    api_key="...",
+    wallet_id="agent-001",
+    permit_store=JsonFilePermitStore("amw-permits.json"),
+)
+```
+
+`JsonFilePermitStore` suits one agent process. Processes that share permit keys
+should implement `PermitStore` (`get` and `put`) on their own database.
 
 ## Permit Configuration
 

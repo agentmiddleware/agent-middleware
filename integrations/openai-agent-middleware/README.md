@@ -20,9 +20,10 @@ plane's `Idempotency-Key` exists to capture, so `GovernedToolRunner`:
 1. derives the key from the id (`oai-<tool_call.id>`) and **never invents
    one** — a tool call without an id is refused, because an invented key would
    turn the retry into a second charged action;
-2. writes the derivation to an `OperationKeyStore` **before the first network
-   call**, so a crash between "the model asked" and "the receipt came back"
-   resumes with the same key;
+2. writes the derivation, including the canonical JSON arguments, to an
+   `OperationKeyStore` **before the first network call**, so a crash between
+   "the model asked" and "the receipt came back" resumes with the same key
+   and the same arguments;
 3. issues one permit per `(run_id, tool)` under a stable key, recording its
    complete JSON request before sending it. Retries reuse the original wallet,
    budget, scopes, and expiry, so the server receives identical request bytes.
@@ -42,14 +43,16 @@ This package is not published to PyPI. Install it from a checkout of this
 repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -e ./sdk/python
 python -m pip install -e integrations/openai-agent-middleware
 ```
 
-`b2a_sdk` must be installed from the local path first: this package depends
-on `b2a-sdk>=0.4.0`, which is not on PyPI. The `openai` package is optional
+`b2a_sdk` remains an import package. The SDK distribution will be published
+as `amw-sdk` (`pip install amw-sdk`). Until then, install it from the local
+path first because this wrapper depends on `amw-sdk>=0.4.0` and cannot
+resolve that dependency from PyPI. The `openai` package is optional
 (`pip install -e "integrations/openai-agent-middleware[openai]"`): the runner
 accepts the tool-call objects any OpenAI SDK version emits, and plain dicts.
 
@@ -123,7 +126,10 @@ already saved. An incomplete legacy permit cannot safely reconstruct the
 original request and is refused. Legacy records that contain neither a wallet
 binding nor a request snapshot cannot be checked locally for a changed wallet;
 keep them with their original wallet. New operation records persist that
-binding, including for completed-call replays.
+binding, including for completed-call replays. Records written before
+argument snapshots existed can still resume, but this runner cannot tell
+locally if the arguments changed. Keep those stores with the original
+transcript.
 
 ## What is refused client-side
 
@@ -134,6 +140,10 @@ binding, including for completed-call replays.
 | blank, padded, non-ASCII, or non-printable run IDs or raw tool names; derived permit keys longer than 128 characters | invalid HTTP idempotency keys must fail before persistence or HTTP |
 | a function name that was not registered with this runner | the model cannot expand the application's allowed tool set |
 | a recorded tool call replayed under a different tool name | the operation identity is bound to one action |
+| a recorded tool call replayed with different JSON arguments | the arguments are part of the action and are saved before the first network call, so a retry cannot commit a new body under the same id |
+| a receipt whose wallet, tool, permit, or receipt id disagrees with the call | the runner must not treat another action's receipt as this call's result |
+| an operation permit id that disagrees with the saved permit record | the call must use the permit that was issued for this run and tool |
+| a blank wallet, a non-positive or unstorable permit budget, or a non-positive permit lifetime | those requests cannot succeed, and saving them would stick the failure to the run |
 | a recorded call resumed under a different run ID, or stored record IDs/keys that disagree with the call, run, or tool | persisted identity must match the deterministic operation and permit key derivations |
 | a persisted operation or permit request reused with a different wallet | the original issuer and subject remain bound to the action |
 | an incomplete legacy permit without a request snapshot | rebuilding its body could change the request under the original key |

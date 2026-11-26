@@ -129,7 +129,7 @@ UNPUBLISHED_DISTRIBUTIONS = (
     "crewai-agent-middleware",
     "autogen-agent-middleware",
     "openai-agent-middleware",
-    "b2a-sdk",
+    "amw-sdk",
 )
 
 #: Paths excluded from the docs sweep: vendored/marketing site content, and the
@@ -264,16 +264,16 @@ def test_dry_run_example_states_its_proof_surface_prerequisite() -> None:
 
 # --- Framework wrapper SDK floor --------------------------------------------
 
-#: First b2a-sdk release with the typed async `AgentMiddlewareClient` trust
+#: First SDK release with the typed async `AgentMiddlewareClient` trust
 #: loop (`create_permit` / `invoke_tool` with caller-owned idempotency keys)
-#: that every framework wrapper subclasses and calls (b2a_sdk/CHANGELOG.md).
-B2A_SDK_TRUST_LOOP_FLOOR = Version("0.4.0")
+#: that every framework wrapper subclasses and calls (sdk/python/CHANGELOG.md).
+AMW_SDK_TRUST_LOOP_FLOOR = Version("0.4.0")
 
 
 def test_wrappers_require_an_sdk_that_ships_the_trust_loop() -> None:
-    """A wrapper's `b2a-sdk` lower bound must exclude SDKs it cannot run on.
+    """A wrapper's `amw-sdk` lower bound must exclude SDKs it cannot run on.
 
-    The wrappers declared `b2a-sdk>=0.3.0`, so a resolver could pick a 0.3.x
+    The wrappers previously declared a 0.3.0 floor, so a resolver could pick a 0.3.x
     SDK that has no `AgentMiddlewareClient` and every governed call failed.
     The wrapper CI job installs the in-tree SDK, so nothing else exercises
     the declared floor.
@@ -294,21 +294,21 @@ def test_wrappers_require_an_sdk_that_ships_the_trust_loop() -> None:
         sdk_requirements = [
             requirement
             for requirement in map(Requirement, dependencies)
-            if canonicalize_name(requirement.name) == "b2a-sdk"
+            if canonicalize_name(requirement.name) == "amw-sdk"
         ]
         if len(sdk_requirements) != 1:
-            offenders.append(f"{rel}: expected one b2a-sdk dependency")
+            offenders.append(f"{rel}: expected one amw-sdk dependency")
             continue
         specifier = sdk_requirements[0].specifier
         floors = [Version(spec.version) for spec in specifier if spec.operator == ">="]
-        if not floors or max(floors) < B2A_SDK_TRUST_LOOP_FLOOR:
-            offenders.append(f"{rel}: b2a-sdk{specifier} admits a pre-trust-loop SDK")
+        if not floors or max(floors) < AMW_SDK_TRUST_LOOP_FLOOR:
+            offenders.append(f"{rel}: amw-sdk{specifier} admits a pre-trust-loop SDK")
         if not specifier.contains(sdk_version):
             offenders.append(
-                f"{rel}: b2a-sdk{specifier} excludes in-tree {sdk_version}"
+                f"{rel}: amw-sdk{specifier} excludes in-tree {sdk_version}"
             )
     assert not offenders, (
-        f"wrappers must require b2a-sdk>={B2A_SDK_TRUST_LOOP_FLOOR}: {offenders}"
+        f"wrappers must require amw-sdk>={AMW_SDK_TRUST_LOOP_FLOOR}: {offenders}"
     )
 
 

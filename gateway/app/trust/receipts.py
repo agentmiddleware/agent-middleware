@@ -123,7 +123,7 @@ class BatchingReceiptEmitter:
                     break
                 try:
                     batch.append(await asyncio.wait_for(self._queue.get(), timeout))
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
             for kwargs, future in batch:
                 try:

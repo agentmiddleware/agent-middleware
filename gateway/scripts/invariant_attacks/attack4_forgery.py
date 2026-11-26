@@ -17,7 +17,7 @@ Sub-tests:
 import json
 import subprocess
 import sys
-import attacklib as A
+import attacklib as A  # noqa: N812
 
 import os
 import tempfile

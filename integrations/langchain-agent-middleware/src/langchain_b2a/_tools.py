@@ -3,12 +3,75 @@
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from math import isfinite
 from typing import Any
 
 from b2a_sdk.models import PermitRequest
 from langchain_core.tools import StructuredTool
 
+from ._permit_store import PermitStore, permit_record, request_from_record, same_terms
 from .client import B2AClient
+
+# Same limit the shared client and the server enforce.
+_MAX_IDEMPOTENCY_KEY_LENGTH = 128
+
+
+def _require_wallet_id(wallet_id: object) -> None:
+    if not isinstance(wallet_id, str) or not wallet_id.strip():
+        raise ValueError("wallet_id is required and must not be blank")
+
+
+def _require_permit_budget(permit_budget: object) -> None:
+    if isinstance(permit_budget, bool) or not isinstance(permit_budget, (Decimal, int, float)):
+        raise ValueError("permit_budget must be a positive amount")  # noqa: TRY004 - caller contract
+    if isinstance(permit_budget, Decimal):
+        if not permit_budget.is_finite() or permit_budget <= 0:
+            raise ValueError("permit_budget must be a positive amount")
+        return
+    if (isinstance(permit_budget, float) and not isfinite(permit_budget)) or permit_budget <= 0:
+        raise ValueError("permit_budget must be a positive amount")
+
+
+def _require_permit_ttl(permit_ttl_minutes: object) -> None:
+    if isinstance(permit_ttl_minutes, bool) or not isinstance(permit_ttl_minutes, (int, float)):
+        raise ValueError(  # noqa: TRY004 - caller contract
+            "permit_ttl_minutes must be a positive number of minutes"
+        )
+    if (
+        isinstance(permit_ttl_minutes, float) and not isfinite(permit_ttl_minutes)
+    ) or permit_ttl_minutes <= 0:
+        raise ValueError("permit_ttl_minutes must be a positive number of minutes")
+
+
+def _caller_idempotency_key(value: object, field: str) -> str:
+    """Return the key text the shared client will send.
+
+    The client strips surrounding whitespace, then refuses a blank or over-long
+    key. The permit cache has to use that same text. Caching the raw caller
+    string treats a padded key and its stripped form as two permits, so the
+    second call builds a new expiry and the server rejects the key as reused.
+
+    Control characters are refused before a permit is requested. The server
+    refuses them, and a newline does not belong in a request header.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{field} is required and must not be blank")  # noqa: TRY004 - caller contract
+    key = value.strip()
+    if not key:
+        raise ValueError(f"{field} is required and must not be blank")
+    if len(key) > _MAX_IDEMPOTENCY_KEY_LENGTH:
+        raise ValueError(f"{field} must be at most {_MAX_IDEMPOTENCY_KEY_LENGTH} characters")
+    if any(ord(char) < 32 or ord(char) == 127 for char in key):
+        raise ValueError(f"{field} must not contain control characters")
+    return key
+
+
+def _require_tool_name(tool_name: object) -> str:
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        raise ValueError("tool_name is required and must not be blank")
+    if any(ord(char) < 32 or ord(char) == 127 for char in tool_name):
+        raise ValueError("tool_name must not contain control characters")
+    return tool_name
 
 
 def create_mcp_tool(
@@ -17,6 +80,7 @@ def create_mcp_tool(
     wallet_id: str,
     permit_budget: Decimal = Decimal(100),
     permit_ttl_minutes: int = 30,
+    permit_store: PermitStore | None = None,
 ) -> StructuredTool:
     """Create a LangChain tool that calls MCP endpoints via governed permit→invoke→receipt flow.
 
@@ -25,7 +89,14 @@ def create_mcp_tool(
         wallet_id: Wallet ID for billing
         permit_budget: Maximum credits per permit (default 100)
         permit_ttl_minutes: Permit lifetime in minutes (default 30)
+        permit_store: Keeps each permit request body under its permit key.
+            Pass a durable one, such as ``JsonFilePermitStore``, to replay a
+            permit after a process restart. Without it, a new process that
+            reuses a permit key gets ``idempotency_key_reused``.
     """
+    _require_wallet_id(wallet_id)
+    _require_permit_budget(permit_budget)
+    _require_permit_ttl(permit_ttl_minutes)
     # Cache permits by permit_idempotency_key to avoid 409 on replay
     # Server hashes the FULL permit request body including expires_at.
     # Sending different expires_at with same key → 409 IdempotencyConflictError.
@@ -53,28 +124,39 @@ def create_mcp_tool(
             On replay with same permit_idempotency_key, reuses the cached permit_id.
             This avoids 409 IdempotencyConflictError from different expires_at timestamps.
         """
+        idempotency_key = _caller_idempotency_key(idempotency_key, "idempotency_key")
+        permit_idempotency_key = _caller_idempotency_key(
+            permit_idempotency_key, "permit_idempotency_key"
+        )
+        tool_name = _require_tool_name(tool_name)
         if arguments is None:
             arguments = {}
-        if not idempotency_key or not idempotency_key.strip():
-            raise ValueError("idempotency_key is required and must not be blank")
-        if not permit_idempotency_key or not permit_idempotency_key.strip():
-            raise ValueError("permit_idempotency_key is required and must not be blank")
+        elif not isinstance(arguments, dict):
+            raise ValueError("arguments must be an object")
 
         # Snapshot before awaiting creation, including a response lost after
         # acceptance. Concurrent coroutines also see this same request body.
+        # The permit store carries that body across a process restart.
+        fresh = PermitRequest(
+            issuer_wallet_id=wallet_id,
+            subject_wallet_id=wallet_id,
+            max_credits=permit_budget,
+            expires_at=datetime.now(UTC) + timedelta(minutes=permit_ttl_minutes),
+            allowed_tools=[tool_name],
+            scopes=[f"tool:{tool_name}:invoke", "billing:charge"],
+        )
         request = permit_requests.get(permit_idempotency_key)
+        if request is None and permit_store is not None:
+            record = permit_store.get(permit_idempotency_key)
+            if record is not None:
+                request = request_from_record(record)
         if request is None:
-            request = PermitRequest(
-                issuer_wallet_id=wallet_id,
-                subject_wallet_id=wallet_id,
-                max_credits=permit_budget,
-                expires_at=datetime.now(UTC) + timedelta(minutes=permit_ttl_minutes),
-                allowed_tools=[tool_name],
-                scopes=[f"tool:{tool_name}:invoke", "billing:charge"],
-            )
-            permit_requests[permit_idempotency_key] = request
-        elif request.allowed_tools != [tool_name]:
+            request = fresh
+            if permit_store is not None:
+                permit_store.put(permit_idempotency_key, permit_record(request, permit_ttl_minutes))
+        elif not same_terms(request, fresh):
             raise ValueError("permit_idempotency_key reused with different permit terms")
+        permit_requests[permit_idempotency_key] = request
 
         if permit_idempotency_key in permit_cache:
             permit_id = permit_cache[permit_idempotency_key]
@@ -118,6 +200,7 @@ def create_mcp_tool(
 
 def create_wallet_tool(client: B2AClient, *, wallet_id: str) -> StructuredTool:
     """Create a LangChain tool for wallet operations."""
+    _require_wallet_id(wallet_id)
 
     async def get_balance() -> str:
         """Get current wallet balance."""
@@ -137,6 +220,7 @@ def create_langgraph_tools(
     wallet_id: str,
     permit_budget: Decimal = Decimal(100),
     permit_ttl_minutes: int = 30,
+    permit_store: PermitStore | None = None,
 ) -> list[Callable]:
     """Get tools formatted for LangGraph ReAct agents."""
     return [
@@ -145,6 +229,7 @@ def create_langgraph_tools(
             wallet_id=wallet_id,
             permit_budget=permit_budget,
             permit_ttl_minutes=permit_ttl_minutes,
+            permit_store=permit_store,
         ),
         create_wallet_tool(client, wallet_id=wallet_id),
     ]

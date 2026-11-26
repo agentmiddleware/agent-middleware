@@ -3,16 +3,27 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # policy_bundles stores both limits as Numeric(18, 8): ten integer digits, so
 # a limit must stay below 1e10. allow_inf_nan=False refuses the Infinity/NaN
 # literals Starlette's JSON parser accepts (ge=0 alone let +Infinity through).
 _MAX_POLICY_LIMIT = 1e10
-# The planner's task tiers (app/optimizer/policy.py). A policy's tier is
-# compared against the requested one, so any other spelling never matched;
-# the column is String(20).
+# The planner's task tiers (app/optimizer/policy.py). A policy's tier is a
+# ceiling over the requested one (low < medium < high); any other spelling
+# fails closed at evaluation time. The column is String(20).
 RiskTier = Literal["low", "medium", "high"]
+
+# Columns that are NOT NULL in policy_bundles. A patch may leave them out
+# but may not set them to null; the list and limit fields keep null as
+# "no restriction on this dimension".
+_NOT_NULL_PATCH_FIELDS = (
+    "name",
+    "require_real_effects",
+    "risk_tier",
+    "human_approval_required",
+    "is_active",
+)
 
 
 class PolicyBundleCreate(BaseModel):
@@ -46,6 +57,17 @@ class PolicyBundlePatch(BaseModel):
     risk_tier: RiskTier | None = None
     human_approval_required: bool | None = None
     is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _refuse_null_for_required_fields(self) -> PolicyBundlePatch:
+        nulled = [
+            field
+            for field in _NOT_NULL_PATCH_FIELDS
+            if field in self.model_fields_set and getattr(self, field) is None
+        ]
+        if nulled:
+            raise ValueError(f"fields cannot be null: {', '.join(nulled)}")
+        return self
 
 
 class PolicyBundleResponse(BaseModel):

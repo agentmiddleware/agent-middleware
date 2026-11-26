@@ -77,6 +77,9 @@ These are **proof surfaces**. Start the API with `ENABLE_PROOF_SURFACES=true` to
 ### `410 Gone` on `POST /v1/billing/top-up`
 Direct top-ups are disabled by design. Use `POST /v1/billing/top-up/prepare` to create a Stripe PaymentIntent instead. See README.md "Core API surfaces" and [docs/settlement-rails.md](docs/settlement-rails.md).
 
+### `503 payments_not_configured` on `POST /v1/billing/top-up/prepare`
+No `STRIPE_SECRET_KEY` is set, so the gateway cannot create a PaymentIntent. Nothing is recorded, so once the key is set the same `Idempotency-Key` can be retried. A `502 payment_provider_error` means the gateway could not complete the call to Stripe (bad key, connection failure, rate limit, or a Stripe outage); the server log names the Stripe error type. A `400 topup_prepare_error` with a `provider_code` means Stripe rejected the request itself, for example an amount below its minimum.
+
 ### `401 Unauthorized` or `403 Forbidden`
 - Check that `X-API-Key` header is present and matches a valid wallet-scoped or bootstrap key.
 - Bootstrap keys go in `VALID_API_KEYS` (comma-separated). Wallet keys are created via `POST /v1/api-keys`.
@@ -92,14 +95,22 @@ You reused an `Idempotency-Key` with different payload. Use a fresh UUID for eac
 
 ### Errors on MCP invocation
 `POST /mcp/messages` returns these as JSON-RPC errors in an HTTP `200`; the deprecated REST route (`POST /mcp/tools/{service_id}/invoke`) answers with the REST status shown.
-- `idempotency_key_reused` (`-32603`; REST `400`): the `idempotency_key` in `mcpContext` was already used for a different payload. Use a fresh key per distinct invocation (not the same as the permit's idempotency key).
+- `idempotency_key_reused` (`-32603`; REST `409`): the `idempotency_key` in `mcpContext` was already used for a different payload. Use a fresh key per distinct invocation (not the same as the permit's idempotency key).
 - `idempotency_key_required` (`-32003`; REST `400`): governed calls need an `idempotency_key` in `mcpContext`.
 - `Tool not found: <name>` (`-32001`; REST `404`): confirm the tool name exists in `/mcp/tools.json`.
-- `Missing wallet_id in mcpContext` (`-32602`): `wallet_id` must sit inside `params.mcpContext`.
-- REST `422 Unprocessable Entity`: the body failed schema validation (for example `name` is missing). The REST body spells the context `mcp_context`, not `mcpContext`.
+- `Missing wallet_id in mcpContext` (`-32602`): A wallet bound key may omit `wallet_id`; a key without a bound wallet must supply it in `params.mcpContext`.
+- REST `422 Unprocessable Entity`: the body failed schema validation (for example `name` is missing). The REST body accepts `mcp_context` or `mcpContext` for the billing context. Supplying both fields returns `422`, even if their values match or are null.
 
 ### `delivery_uncertain` receipt
 The gateway claimed a send but has no trustworthy terminal result. Delivery and the downstream effect may or may not have occurred; this receipt does not prove upstream acceptance or execution. Under the configured conservative policy, the charge stands and replaying the same key returns the uncertain outcome without redispatching. Do not retry automatically. Reconcile against authoritative downstream state before making a new attempt. See [docs/partner-first-tool-runbook.md](docs/partner-first-tool-runbook.md).
+
+If the upstream exposes a status endpoint, a deployment can register an optional per-origin status lookup. Call `register_upstream_status_lookup(origin, lookup)` from `app.services.mcp_dispatch_reconciliation` in your own startup code. There is no environment setting, and the gateway registers none by default, so out of the box nothing changes. The reconciler asks that lookup about a stale `dispatch_claimed` attempt *before* it writes `delivery_uncertain`, with a 5-second timeout per attempt. The outcomes:
+
+- The provider confirms the call ran and returns its MCP result: the result goes through the same checks as a live response. A normal result gives a `success` receipt and the charge stands. An `isError` result gives a `failed_refunded` receipt (reason `upstream_returned_error`) and is refunded, as on the live path.
+- The provider says the call never ran: you still get `delivery_uncertain` and no refund. A paused worker that holds the claim could still send, so this answer is logged as `mcp_dispatch_status_lookup_not_delivered_unfenced` for your manual reconciliation.
+- The lookup is not registered, raises, times out, returns nothing, returns a malformed answer or a non-boolean `delivered`, or returns a result that fails the checks: you still get `delivery_uncertain`.
+
+The gateway never re-sends the call on this path. Your lookup is your own code, so keep it read-only. The lookup must be an `async def` function, an object with an `async def __call__`, or a `functools.partial` of either. A plain function raises `TypeError` at registration, because the timeout cannot interrupt synchronous code. A non-error (`isError` false) result whose `structuredContent` is missing or does not match the tool's `outputSchema` stays `delivery_uncertain`, as on the live path. `isError` results skip the `outputSchema` check. A lookup that returns something other than an awaitable, such as a sync function marked with `inspect.markcoroutinefunction`, also stays `delivery_uncertain`. The gateway never touches an attempt that already has a signed `delivery_uncertain` receipt, so those still need manual reconciliation. For action-permit calls, the query's `forwarded_idempotency_key` is `None` because the native key sent upstream is not recorded, so match on `invocation_id`. The cleanup log field `dispatch_status_resolved` counts the attempts the lookup resolved.
 
 ---
 
@@ -143,4 +154,18 @@ SQLite-only tests will still pass; PostgreSQL-specific tests skip if unavailable
 - Check [docs/PROOF_MATRIX.md](docs/PROOF_MATRIX.md) for what each proof command asserts (and what it does not).
 - Review [CONTRIBUTING.md](../CONTRIBUTING.md) for development setup and `make` targets.
 
-If you believe you've found a bug, use the [bug report template](https://github.com/PetrefiedThunder/agent-middleware/issues/new?template=bug_report.yml). For security issues, see [SECURITY.md](../SECURITY.md).
+If you believe you've found a bug, use the [bug report template](https://github.com/agentmiddleware/agent-middleware/issues/new?template=bug.md). For security issues, see [SECURITY.md](../SECURITY.md).
+
+For uncertain AWI HTTP callbacks, deployments can register an async, read-only
+`register_awi_status_lookup(lookup)` from `app.services.awi_http_governance`.
+The default is no hook. Return `AwiStatusAnswer("not_dispatched")` only with
+proof that the action did not and cannot later execute; this uses the existing
+refund path. Delivered answers keep the charge and uncertainty because they
+cannot replace the failed response with success. Unknown/None, malformed
+answers, exceptions, and the five-second timeout preserve uncertainty. Never
+retry the action inside a lookup.
+
+Action-permit deployments may use `register_permit_upstream_status_lookup` from
+`app.services.permits` to register in the existing MCP registry. Match queries
+on `invocation_id`, not the absent `forwarded_idempotency_key`. This registration
+helper does not rewrite receipts. Stripe status lookup is not wired.

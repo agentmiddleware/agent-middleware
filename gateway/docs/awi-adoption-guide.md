@@ -35,7 +35,7 @@ To use the Python client today, work from a checkout and put the SDK on your
 path:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware/gateway
 python -m pip install -r requirements.txt
 export PYTHONPATH="$PWD/awi_sdk/python:$PYTHONPATH"
@@ -220,6 +220,6 @@ adapter = AWIFallbackAdapter(
 
 ## Support
 
-- GitHub Issues: https://github.com/PetrefiedThunder/agent-middleware/issues
-- Documentation: https://github.com/PetrefiedThunder/agent-middleware#readme
+- GitHub Issues: https://github.com/agentmiddleware/agent-middleware/issues
+- Documentation: https://github.com/agentmiddleware/agent-middleware#readme
 - arXiv Paper: https://arxiv.org/abs/2506.10953

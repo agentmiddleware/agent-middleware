@@ -1,0 +1,129 @@
+.try-page {
+  max-width: 52rem;
+}
+
+.try-page .page-intro {
+  max-width: 42rem;
+}
+
+.try-page .eyebrow {
+  margin: 0 0 0.8rem;
+  color: var(--brass);
+}
+
+.try-page .page-intro > p:last-child {
+  color: var(--text-dim);
+}
+
+.try-page .key-panel {
+  max-width: 42rem;
+  margin-top: 2rem;
+  padding: clamp(1.25rem, 4vw, 2rem);
+  border: 1px solid var(--paper-line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  color: var(--paper-ink);
+  box-shadow: var(--shadow-soft);
+}
+
+.try-page .primary-button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.try-page .email-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--paper-line);
+  border-radius: var(--radius-sm);
+  background: var(--paper-shade);
+  color: var(--paper-ink);
+  font: inherit;
+}
+
+.try-page .email-help,
+.try-page .email-error {
+  margin: 0.45rem 0 1rem;
+  color: var(--paper-dim);
+}
+
+.try-page .email-error[hidden] {
+  display: none;
+}
+
+#try-key-status {
+  margin: 0.9rem 0 0;
+  color: var(--paper-dim);
+}
+
+#try-key-result {
+  margin-top: 2rem;
+}
+
+#try-key-result[hidden] {
+  display: none;
+}
+
+.try-page .result-heading {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.try-page .result-note {
+  margin: 0.4rem 0 1.5rem;
+  color: var(--paper-dim);
+}
+
+.try-page label {
+  display: block;
+  margin: 1.25rem 0 0.45rem;
+  font-weight: 600;
+}
+
+.try-page .copy-row {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.try-page .copy-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--paper-line);
+  border-radius: var(--radius-sm);
+  background: var(--paper-shade);
+  color: var(--paper-ink);
+  font: 0.9rem var(--font-mono);
+}
+
+.try-page .copy-button {
+  border-color: var(--paper-line);
+  background: transparent;
+  color: var(--paper-ink);
+}
+
+.try-page .copy-button:hover {
+  background: var(--paper-shade);
+  color: var(--paper-ink);
+}
+
+.try-page .quickstart-link {
+  display: inline-block;
+  margin-top: 1.8rem;
+  color: var(--paper-ink);
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+@media (max-width: 32rem) {
+  .try-page .copy-row {
+    flex-wrap: wrap;
+  }
+
+  .try-page .copy-row input {
+    flex-basis: 100%;
+  }
+}

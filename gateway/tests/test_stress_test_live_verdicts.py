@@ -253,7 +253,7 @@ def test_observed_failure_fails_the_run(
     "sub_test", ["test_concurrent_governed_invokes", "test_rapid_fire_idempotency"]
 )
 @pytest.mark.parametrize(
-    "status,body",
+    ("status", "body"),
     [
         (500, {"detail": "synthetic failure"}),
         (409, {"detail": "in progress"}),

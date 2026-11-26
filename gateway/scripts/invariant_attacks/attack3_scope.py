@@ -14,7 +14,7 @@ Sub-tests:
 
 import json
 import sys
-import attacklib as A
+import attacklib as A  # noqa: N812
 
 MARK = "atk3-scope"
 

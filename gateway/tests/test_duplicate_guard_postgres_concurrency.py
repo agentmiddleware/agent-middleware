@@ -169,7 +169,7 @@ async def test_parallel_identical_new_keys_enforce_mode_one_dispatch(monkeypatch
             permit_id = permit_resp.json()["permit_id"]
 
             # Launch N parallel calls with DIFFERENT keys but IDENTICAL arguments
-            N = 5
+            N = 5  # noqa: N806
             identical_message = "duplicate-me-parallel"
 
             async def make_call(idx: int):

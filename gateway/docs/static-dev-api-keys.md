@@ -114,7 +114,7 @@ Scope and safety:
 - The minted key is **wallet-scoped, never bootstrap-admin**: a credential
   anyone can mint must not read the audit plane or touch other tenants.
 - The route answers **404 until the flag is set**, so the surface is never
-  available by accident (same pattern as `ENABLE_STANDARD_MCP_ENDPOINT`).
+  available by accident.
 - **Production-like environments refuse to boot** with the flag set, and
   the handler independently fails closed with 403 there — the same
   containment as `STATIC_DEV_API_KEYS`.
@@ -123,8 +123,11 @@ Scope and safety:
   wildcard CORS a page you merely visit could otherwise `fetch` it against
   your localhost and read the minted key. A browser always sends an `Origin`
   header on such a request; real dev agents (CLIs, SDKs, curl) send none and
-  pass through. This is the same DNS-rebinding hardening the standard MCP
-  endpoint uses.
+  pass through. The comparison is the full origin (scheme, host, and port).
+  When `PUBLIC_URL` is set, the request Host must match it or the route
+  answers 421. Without `PUBLIC_URL`, browser requests require a loopback
+  Host (`localhost`, `127.0.0.1`, or `[::1]`). This is the same check the
+  standard MCP endpoint uses.
 - Self-provisioned keys are ordinary DB-backed wallet keys (`b2a_` class),
   so unlike static env keys they **are** covered by the DB-backed-key
   guidance in the rotation runbook, and they can be rotated or revoked

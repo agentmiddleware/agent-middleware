@@ -20,6 +20,7 @@ from ..core.config import get_settings, public_api_origin
 from ..core.product_positioning import (
     LEGACY_PRODUCT_LOOP,
     LEGACY_PRODUCT_WEDGE,
+    PLAIN_PRODUCT_DESCRIPTION,
     POSITIONING_DESCRIPTION,
     get_product_positioning,
 )
@@ -137,6 +138,29 @@ PROOF_SURFACE_CATALOG: list[dict[str, Any]] = [
 ]
 
 
+# Discovery status of the legacy POST /mcp/messages transport. Shared with
+# GET /v1/discover so both surfaces describe the endpoint the same way.
+MCP_JSON_RPC_STATUS = "deprecated"
+
+
+def mcp_json_rpc_note(standard_mcp_enabled: bool) -> str:
+    """Describe the deprecated /mcp/messages transport for discovery."""
+    legacy = (
+        "Project-specific JSON-RPC endpoint, kept for existing clients; it "
+        "does not implement the standard MCP initialization lifecycle."
+    )
+    if standard_mcp_enabled:
+        return (
+            "Deprecated in favor of the standard MCP Streamable HTTP endpoint "
+            "at POST /mcp (initialize, tools/list, tools/call). " + legacy
+        )
+    return (
+        "Deprecated. The standard MCP Streamable HTTP endpoint (POST /mcp) is "
+        "not enabled on this instance, so this is the only MCP transport "
+        "served here. " + legacy
+    )
+
+
 def get_agent_first_metadata() -> dict[str, Any]:
     """
     Single source of truth for agent-first bootstrap hints.
@@ -174,6 +198,23 @@ def get_agent_first_metadata() -> dict[str, Any]:
             ),
         },
     }
+    if cfg.ENABLE_STANDARD_MCP_ENDPOINT:
+        # Point autonomous clients at the standard transport, not the
+        # deprecated project JSON-RPC path. Values are not bare paths: POST
+        # /mcp answers GET with 405, so nothing here should look fetchable.
+        metadata["mcp_transport"] = {
+            "preferred": "standard_mcp_streamable_http",
+            "endpoint": "POST /mcp",
+            "lifecycle": ["initialize", "tools/list", "tools/call"],
+            "idempotency_key": (
+                "Send an Idempotency-Key header or "
+                'params._meta["io.agentmiddleware/idempotency_key"] on '
+                "tools/call and reuse it on retry to get the stored result "
+                "back without a second charge."
+            ),
+            "legacy_json_rpc": "POST /mcp/messages",
+            "legacy_json_rpc_status": MCP_JSON_RPC_STATUS,
+        }
     if cfg.ENABLE_PROOF_SURFACES:
         # The note explains the proof_surfaces catalog, so it travels with the
         # catalog: an instance running only the wedge advertises only the wedge.
@@ -267,8 +308,8 @@ def _local_try_it_manifest() -> dict[str, Any]:
     """Credential-free proof path for the logical-action transaction loop."""
     return {
         "mode": "local_self_hosted",
-        "repository": "https://github.com/PetrefiedThunder/agent-middleware",
-        "repository_access": "private",
+        "repository": "https://github.com/agentmiddleware/agent-middleware",
+        "repository_access": "public",
         "command": "make prove-trust-plane",
         "live_access": "operator_issued",
         "requires_live_credentials": False,
@@ -284,8 +325,8 @@ def _local_try_it_manifest() -> dict[str, Any]:
             "Runs the real FastAPI transaction-integrity path against a "
             "throwaway local SQLite database. This is a reproducible proof, "
             "not a production or settlement claim. The source repository is "
-            "private; clone access must be granted separately. Authorized "
-            "clones can run the proof locally without live API credentials."
+            "public: clone it and run the proof locally without live API "
+            "credentials."
         ),
     }
 
@@ -300,30 +341,32 @@ def _integration_manifest() -> dict[str, Any]:
             # field describes what ``install`` below produces, so it tracks the
             # source, not the newest tag. The two are named separately because
             # they differ whenever source has moved past the last release.
-            "version": "0.5.0",
+            "version": "0.5.1",
             "path": "sdk/python/",
             "install": "pip install -e ./sdk/python",
-            "latest_release_tag": None,
+            "latest_release_tag": "python-sdk-v0.4.0",
             "note": (
-                "Install from source in sdk/python/. No release has been cut "
-                "from this repository yet. Not published to PyPI."
+                "Install from source in sdk/python/ (import package "
+                "b2a_sdk), which yields 0.5.1 pre-release. Latest cut "
+                "release is tag python-sdk-v0.4.0. Not published to PyPI."
             ),
         },
         "typescript_sdk": {
             "status": "not_published",
             "note": (
-                "No published TypeScript SDK. Use /mcp/messages only with a "
-                "project-specific JSON-RPC client, plus /v1/permits and "
+                "No published TypeScript SDK. Use a standard MCP client "
+                "against POST /mcp (Streamable HTTP), plus /v1/permits and "
                 "/v1/receipts."
+                if standard_mcp_enabled
+                else "No published TypeScript SDK. Use /mcp/messages only "
+                "with a project-specific JSON-RPC client, plus /v1/permits "
+                "and /v1/receipts."
             ),
         },
         "mcp": True,
         "mcp_json_rpc": "/mcp/messages",
-        "mcp_json_rpc_status": "legacy_project_transport",
-        "mcp_json_rpc_note": (
-            "Project-specific JSON-RPC endpoint; it does not implement the "
-            "standard MCP initialization lifecycle."
-        ),
+        "mcp_json_rpc_status": MCP_JSON_RPC_STATUS,
+        "mcp_json_rpc_note": mcp_json_rpc_note(standard_mcp_enabled),
         "mcp_tool_manifest": "/mcp/tools.json",
         "langgraph": "in_repo_wrapper",
         "crewai": "in_repo_wrapper",
@@ -342,6 +385,7 @@ class AgentPluginManifest(BaseModel):
     schema_version: str = Field(default="1.0", description="Manifest schema version")
     name: str = Field(description="Service/plugin name")
     description: str = Field(description="What this service provides")
+    details: str = Field(description="Precise product behavior and scope")
     version: str = Field(description="Current version")
     canonical_api: str = Field(
         default="",
@@ -496,16 +540,17 @@ def _build_agent_manifest() -> AgentPluginManifest:
         # bootstrap payload.
         proof_surfaces = []
 
-    description = POSITIONING_DESCRIPTION
+    details = POSITIONING_DESCRIPTION
     if cfg.ENABLE_PROOF_SURFACES:
-        description += (
+        details += (
             " Additional routers are labeled proof surfaces, outside the "
             "transaction-integrity boundary."
         )
 
     return AgentPluginManifest(
         name="agent-middleware-api",
-        description=description,
+        description=PLAIN_PRODUCT_DESCRIPTION,
+        details=details,
         version=cfg.APP_VERSION,
         canonical_api=public_api_origin(),
         provider=_provider_manifest(cfg),

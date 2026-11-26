@@ -1,11 +1,19 @@
 """Public identity metadata must never invent an escalation path."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import pytest
 
 from app.main import _public_contact_metadata, app
 from app.routers.well_known import _provider_manifest
+
+
+GATEWAY_ROOT = Path(__file__).resolve().parents[1]
+MONOREPO_ROOT = GATEWAY_ROOT.parent
+LICENSE_BLOB_PREFIX = "/agentmiddleware/agent-middleware/blob/main/"
 
 
 def _contact(**overrides):
@@ -21,6 +29,26 @@ def _contact(**overrides):
 def test_openapi_omits_contact_until_real_identity_is_configured() -> None:
     assert _public_contact_metadata(_contact()) is None
     assert "contact" not in app.openapi()["info"]
+
+
+def test_openapi_license_names_the_gateway_fsl_license_file() -> None:
+    # LICENSING.md puts gateway/ under FSL-1.1-ALv2 (gateway/LICENSE.md). The
+    # root LICENSE is Apache-2.0 and covers the other directories, so the
+    # advertised name and link must both point at the gateway's own file.
+    license_info = app.openapi()["info"]["license"]
+    assert "FSL-1.1-ALv2" in license_info["name"]
+    url = urlparse(license_info["url"])
+    assert (url.scheme, url.netloc) == ("https", "github.com")
+    assert url.path.startswith(LICENSE_BLOB_PREFIX)
+    relative = url.path.removeprefix(LICENSE_BLOB_PREFIX)
+    assert relative == "gateway/LICENSE.md"
+    license_file = MONOREPO_ROOT / relative
+    assert license_file.is_file()
+    assert "FSL-1.1-ALv2" in license_file.read_text(encoding="utf-8")
+    committed = json.loads(
+        (GATEWAY_ROOT / "docs" / "openapi.json").read_text(encoding="utf-8")
+    )
+    assert committed["info"]["license"] == license_info
 
 
 def test_openapi_contact_accepts_complete_non_placeholder_identity() -> None:
@@ -52,66 +80,114 @@ def test_agent_manifest_provider_uses_the_same_complete_contact_gate() -> None:
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    ("overrides", "match"),
     [
-        {"PUBLIC_CONTACT_NAME": "Operator"},
-        {
-            "PUBLIC_CONTACT_NAME": "Placeholder Operator",
-            "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
-            "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Operator",
-            "PUBLIC_CONTACT_EMAIL": "support@agent-middleware.dev",
-            "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Operator",
-            "PUBLIC_CONTACT_EMAIL": "not-an-email",
-            "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Operator",
-            "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
-            "PUBLIC_CONTACT_URL": "http://company.test",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Test Operator",
-            "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
-            "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Agent Middleware API",
-            "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
-            "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Operator",
-            "PUBLIC_CONTACT_EMAIL": "operator@company.test",
-            "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Operator",
-            "PUBLIC_CONTACT_EMAIL": "operator@company.invalid",
-            "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Operator",
-            "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
-            "PUBLIC_CONTACT_URL": "https://",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Operator",
-            "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
-            "PUBLIC_CONTACT_URL": "https://calendar.company.test/pilot",
-        },
-        {
-            "PUBLIC_CONTACT_NAME": "Operator",
-            "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
-            "PUBLIC_CONTACT_URL": "https://www.thisisatest.tech/",
-        },
+        (
+            {"PUBLIC_CONTACT_NAME": "Operator"},
+            "must be configured together",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Placeholder Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
+                "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
+            },
+            "placeholder public contact metadata is forbidden",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "support@agent-middleware.dev",
+                "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
+            },
+            "placeholder public contact metadata is forbidden",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "not-an-email",
+                "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
+            },
+            "must be a valid monitored address",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
+                "PUBLIC_CONTACT_URL": "http://company.test",
+            },
+            "must be an absolute HTTPS URL",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Test Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
+                "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
+            },
+            "placeholder public contact metadata is forbidden",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Agent Middleware API",
+                "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
+                "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
+            },
+            "placeholder public contact metadata is forbidden",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@company.test",
+                "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
+            },
+            "PUBLIC_CONTACT_EMAIL must use a routable public domain",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@company.invalid",
+                "PUBLIC_CONTACT_URL": "https://cal.com/design-partner-labs/pilot",
+            },
+            "PUBLIC_CONTACT_EMAIL must use a routable public domain",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
+                "PUBLIC_CONTACT_URL": "https://",
+            },
+            "must be an absolute HTTPS URL",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
+                "PUBLIC_CONTACT_URL": "https://calendar.company.test/pilot",
+            },
+            "PUBLIC_CONTACT_URL must use a routable public domain",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
+                "PUBLIC_CONTACT_URL": "https://www.agentmiddleware.dev/",
+            },
+            "must point to a booking service",
+        ),
+        (
+            {
+                "PUBLIC_CONTACT_NAME": "Operator",
+                "PUBLIC_CONTACT_EMAIL": "operator@designpartnerlabs.co",
+                "PUBLIC_CONTACT_URL": "https://www.thisisatest.tech/",
+            },
+            "must point to a booking service",
+        ),
     ],
 )
-def test_openapi_contact_rejects_partial_or_placeholder_identity(overrides) -> None:
-    with pytest.raises(ValueError):
+def test_openapi_contact_rejects_partial_or_placeholder_identity(
+    overrides, match
+) -> None:
+    # Each identity names its exact refusal: a bare raises would pass if the
+    # checks ran in a different order or the wrong one fired.
+    with pytest.raises(ValueError, match=match):
         _public_contact_metadata(_contact(**overrides))

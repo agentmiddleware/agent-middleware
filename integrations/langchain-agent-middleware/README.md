@@ -14,16 +14,17 @@ This package is not published to PyPI. Install it from a checkout of
 this repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -e ./sdk/python
 python -m pip install -e integrations/langchain-agent-middleware
 ```
 
-`b2a_sdk` must be installed from the local path first: this package
-depends on `b2a-sdk>=0.4.0`, which is not on PyPI, so installing the
-wrapper on its own fails to resolve. That installs the `langchain_b2a`
-module used below.
+`b2a_sdk` remains an import package. The SDK distribution will be published
+as `amw-sdk` (`pip install amw-sdk`). Until then, install it from the local
+path first because this wrapper depends on `amw-sdk>=0.4.0` and cannot
+resolve that dependency from PyPI. Installing the wrapper provides the
+`langchain_b2a` module used below.
 
 ## Quick Start (Governed Flow)
 
@@ -99,6 +100,31 @@ result2 = await tool.ainvoke(
     }
 )
 ```
+
+### Replay after a process restart
+
+The trust plane stores the whole permit body, including its expiry, under
+`permit_idempotency_key`. By default the wrapper keeps that body in memory
+only, so a new process that reuses a permit key builds a new expiry and gets
+`idempotency_key_reused` instead of the original permit. To replay across a
+restart, give the wrapper a durable permit store. It records each permit body
+before the first network call and sends the same body again after a restart.
+A restart with a different wallet, budget, or tool under the same permit key
+is refused before any request. A different lifetime is not: the stored body,
+including its original expiry, is sent again.
+
+```python
+from langchain_b2a import B2AClient, JsonFilePermitStore, get_mcp_tools
+
+tools = get_mcp_tools(
+    B2AClient(api_key="..."),
+    wallet_id="agent-001",
+    permit_store=JsonFilePermitStore("amw-permits.json"),
+)
+```
+
+`JsonFilePermitStore` suits one agent process. Processes that share permit keys
+should implement `PermitStore` (`get` and `put`) on their own database.
 
 ## Permit Configuration
 

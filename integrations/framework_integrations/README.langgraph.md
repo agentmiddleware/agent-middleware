@@ -2,12 +2,22 @@
 
 Use Agent Middleware API tools directly in LangGraph agents.
 
+## Status: use the governed wrapper first
+
+`framework_integrations.LangGraphGovernedTools` runs every call through the
+**permit -> invoke -> signed receipt** loop and is the path to show buyers.
+`get_langgraph_tools` below is a legacy ungoverned factory: its tools call the
+API with no permit, no idempotency key, and no signed receipt, and it emits a
+`DeprecationWarning`.
+
 ## Installation
 
-No PyPI package is published. Work from a checkout of this repository:
+No PyPI package is published. The SDK distribution will be published as
+`amw-sdk` (`pip install amw-sdk`). For now, work from a checkout of this
+repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -r gateway/requirements.txt -e ./sdk/python
 export PYTHONPATH="$PWD/integrations"
@@ -27,7 +37,8 @@ from framework_integrations import B2AClient, get_langgraph_tools
 client = B2AClient(
     api_url="http://localhost:8000",
     api_key="your-api-key",
-    wallet_id="your-wallet-id"
+    wallet_id="your-wallet-id",
+    agent_id="your-registered-agent-id",  # Required for send_message
 )
 
 # Get LangGraph-compatible tools
@@ -66,14 +77,16 @@ tools = get_langgraph_tools(client)
 researcher = create_react_agent(
     model,
     tools=tools,
-    state_modifier="You are a research agent. Use tools to gather information."
+    state_modifier="You are a research agent. Use tools to gather information.",
 )
 
-result = await researcher.ainvoke({
-    "messages": [
-        "Research the latest AI developments and send results to researcher-002"
-    ]
-})
+result = await researcher.ainvoke(
+    {
+        "messages": [
+            "Research the latest AI developments and send results to researcher-002"
+        ]
+    }
+)
 ```
 
 ## Example: Autonomous Task Agent
@@ -84,10 +97,8 @@ tools = get_langgraph_tools(client)
 task_agent = create_react_agent(
     model,
     tools=tools,
-    prompt="You autonomously complete tasks. Monitor your budget and heal when needed."
+    prompt="You autonomously complete tasks. Monitor your budget and heal when needed.",
 )
 
-result = await task_agent.ainvoke({
-    "messages": ["Process the pending task queue"]
-})
+result = await task_agent.ainvoke({"messages": ["Process the pending task queue"]})
 ```

@@ -201,7 +201,7 @@ class TestLlmTxt:
 
     def test_llm_txt_has_trust_plane_quickstart(self):
         """Verify llm.txt points at permit → invoke → receipt, not proof stubs."""
-        with open("static/llm.txt", "r") as f:
+        with open("static/llm.txt") as f:
             content = f.read()
 
         assert "Agent-first" in content, "Missing agent-first preamble"
@@ -217,7 +217,7 @@ class TestLlmTxt:
         llm.txt should meet only the governed permit → invoke → receipt loop.
         The proof-surface catalog lives in docs/PROOF_SURFACES.md.
         """
-        with open("static/llm.txt", "r") as f:
+        with open("static/llm.txt") as f:
             content = f.read()
 
         assert "/v1/permits" in content

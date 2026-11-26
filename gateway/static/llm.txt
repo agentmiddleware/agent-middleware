@@ -4,6 +4,7 @@
 
 **Version:** use `version` from `GET /.well-known/agent.json` (this document may be cached).
 **Base URL:** {{PUBLIC_URL}}
+When served, this token is replaced with the configured `PUBLIC_URL`. If unset, the response asks operators to configure it; `http://localhost:8000` is only a local example.
 **Auth:** `X-API-Key` header on protected routes
 
 ---
@@ -90,11 +91,11 @@ The human site publishes one non-sensitive portable `partner.echo` receipt and
 the matching public-key snapshot:
 
 ```bash
-GET https://www.thisisatest.tech/proof/receipt.json
-GET https://www.thisisatest.tech/proof/trust-keys.json
+GET https://www.agentmiddleware.dev/proof/receipt.json
+GET https://www.agentmiddleware.dev/proof/trust-keys.json
 ```
 
-Use the offline CLI command on `https://www.thisisatest.tech/proof/`. A valid
+Use the offline CLI command on `https://www.agentmiddleware.dev/proof/`. A valid
 signature proves the receipt matches the supplied snapshot. Authenticate or
 pin that snapshot through a trusted channel before treating issuer identity as
 independently established.
@@ -152,7 +153,7 @@ POST /mcp/messages
 - Default: 120 requests/minute per API key, configurable by the operator.
 - No extra burst allowance. Check `/v1/discover` rate-limit metadata for the current limit.
 - Requests without accepted credentials, including unauthenticated requests and rejected credentials, also count against a shared per-client pre-authentication bucket.
-- Shared Redis counts fixed 60-second windows. The in-memory limiter, used when Redis is not configured or when a non-production boot loses Redis, counts a rolling 60 seconds.
+- Shared Redis counts fixed 60-second windows. The in-memory limiter, used when Redis is not configured or when a non-production boot loses Redis, counts a rolling 60 seconds per process.
 - On a production-like boot with `REDIS_URL` set, a Redis outage does not use that in-memory limiter. Requests subject to rate limiting fail with HTTP 503 and error `rate_limiter_unavailable`; exempt public documentation and health routes are not refused by the limiter.
 
 ### Velocity Monitoring
@@ -191,7 +192,7 @@ Install the SDK from source in `sdk/python/`. The agent manifest's
 `integrations.python_sdk` reports both the source version and the available
 release tag; do not infer a package-index install from this document. The SDK
 is **not** published to PyPI. Install from a clone of
-https://github.com/PetrefiedThunder/agent-middleware (repository root):
+https://github.com/agentmiddleware/agent-middleware (repository root):
 
 ```bash
 pip install -e ./sdk/python
@@ -272,4 +273,4 @@ error body instead.
 - OpenAPI Spec: `/openapi.json`
 - Wedge: `/WEDGE.md`
 - Security limitations: `/SECURITY_LIMITATIONS.md`
-- GitHub: https://github.com/PetrefiedThunder/agent-middleware
+- GitHub: https://github.com/agentmiddleware/agent-middleware

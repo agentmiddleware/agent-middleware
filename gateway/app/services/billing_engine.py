@@ -249,7 +249,9 @@ class BillingEngine:
             shadow_ledger = get_shadow_ledger()
             try:
                 session = await shadow_ledger.get_session(session_id)
-                if session is None:
+                # charge() authorized ``wallet_id`` only; a session on another
+                # wallet is answered as missing, like the router does.
+                if session is None or session.wallet_id != wallet_id:
                     raise ValueError(f"Session not found: {session_id}")
                 result = await shadow_ledger.simulate_charge(
                     session_id=session_id,

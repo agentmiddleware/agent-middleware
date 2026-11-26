@@ -2,12 +2,23 @@
 
 Use Agent Middleware API tools with Microsoft AutoGen agents.
 
+## Status: use the governed wrapper first
+
+The governed wrapper in
+[`integrations/autogen-agent-middleware`](../../integrations/autogen-agent-middleware/README.md)
+runs every call through the **permit -> invoke -> signed receipt** loop and is
+the path to show buyers. `get_autogen_tools` below is a legacy ungoverned
+factory: its function map calls the API with no permit, no idempotency key,
+and no signed receipt, and it emits a `DeprecationWarning`.
+
 ## Installation
 
-No PyPI package is published. Work from a checkout of this repository:
+No PyPI package is published. The SDK distribution will be published as
+`amw-sdk` (`pip install amw-sdk`). For now, work from a checkout of this
+repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -r gateway/requirements.txt -e ./sdk/python
 export PYTHONPATH="$PWD/integrations"
@@ -27,7 +38,8 @@ from framework_integrations import B2AClient, get_autogen_tools
 client = B2AClient(
     api_url="http://localhost:8000",
     api_key="your-api-key",
-    wallet_id="your-wallet-id"
+    wallet_id="your-wallet-id",
+    agent_id="your-registered-agent-id",  # Required for send_message
 )
 
 # Get AutoGen-compatible function map
@@ -35,22 +47,17 @@ function_map = get_autogen_tools(client)
 
 # Create assistant agent
 assistant = autogen.AssistantAgent(
-    name="assistant",
-    llm_config=llm_config,
-    function_map=function_map
+    name="assistant", llm_config=llm_config, function_map=function_map
 )
 
 # Create user proxy
 user_proxy = autogen.UserProxyAgent(
-    name="user_proxy",
-    human_input_mode="NEVER",
-    max_consecutive_auto_reply=10
+    name="user_proxy", human_input_mode="NEVER", max_consecutive_auto_reply=10
 )
 
 # Start conversation
 user_proxy.initiate_chat(
-    assistant,
-    message="Check my balance and emit a telemetry event"
+    assistant, message="Check my balance and emit a telemetry event"
 )
 ```
 
@@ -72,28 +79,19 @@ import autogen
 
 # Create agents with B2A tools
 researcher = autogen.AssistantAgent(
-    name="researcher",
-    llm_config=llm_config,
-    function_map=get_autogen_tools(client)
+    name="researcher", llm_config=llm_config, function_map=get_autogen_tools(client)
 )
 
 writer = autogen.AssistantAgent(
-    name="writer",
-    llm_config=llm_config,
-    function_map=get_autogen_tools(client)
+    name="writer", llm_config=llm_config, function_map=get_autogen_tools(client)
 )
 
 # Group chat
-group_chat = autogen.GroupChat(
-    agents=[researcher, writer],
-    messages=[],
-    max_round=10
-)
+group_chat = autogen.GroupChat(agents=[researcher, writer], messages=[], max_round=10)
 
 manager = autogen.GroupChatManager(groupchat=group_chat)
 
 user_proxy.initiate_chat(
-    manager,
-    message="Research AI developments and write a summary"
+    manager, message="Research AI developments and write a summary"
 )
 ```

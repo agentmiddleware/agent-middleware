@@ -7,7 +7,8 @@ ledger entry, audit chain, replay safety, and out-of-scope denial.
 This guide proves technical fit. It does not by itself prove customer demand.
 Use the interview funnel, commercial evidence gate, and partner-owned pilot
 acceptance test in
-`docs/30-day-customer-validation.md`.
+`docs/30-day-customer-validation.md` (not included in this repository; the
+in-repo pass/fail criteria are in [docs/partner-first-tool-runbook.md](docs/partner-first-tool-runbook.md)).
 
 For the concise route through local evaluation, integration, SDK, security, and
 pilot material, use the [documentation guide](docs/README.md).
@@ -79,32 +80,52 @@ gets `429`. A burst of a few dozen requests will not `429` — that is the
 
 - **Authenticated requests:** one bucket per `X-API-Key` value. Two agents
   sharing one key share the 120; two keys get 120 each.
-- **Requests without a key:** one `anonymous` bucket shared by every
-  unauthenticated caller of the deployment. `/health/dependencies` is counted
-  here.
+- **Requests without a key:** one anonymous bucket per client address, so one
+  caller can only spend its own budget, plus an anonymous backstop at 20 times
+  the limit for the whole deployment (`RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER`).
+  Callers behind one shared egress address share that address's bucket.
+  On Railway no setting is needed: the gateway reads the platform's
+  `X-Real-IP`. Behind any other reverse proxy or load balancer that is not on
+  loopback, set `FORWARDED_ALLOW_IPS` in the container environment to its exact
+  address or the narrowest CIDR range covering it (never `*`, `0.0.0.0/0` or
+  `::/0`) so the gateway sees real client addresses; otherwise all callers
+  share the proxy's address. The proxy must overwrite `X-Forwarded-For` with
+  the client address it saw, or append that address to the inbound chain.
+  `/health/dependencies` is counted here. With shared Redis counters these
+  buckets are shared across workers and replicas; without `REDIS_URL` each
+  worker or replica keeps its own per-client buckets and its own backstop.
 - **Unaccepted credentials:** a request whose key the deployment does not
   accept — a `401`, the `403 invalid_api_key` an unknown key gets, or any
   request to a route that never checks the key (public discovery, a `404`) —
-  is also charged to one shared per-client bucket at ten times the limit,
-  because the per-key bucket is chosen from a header before the key is
-  verified. Sending a different `X-API-Key` on every request does not hand you
-  a fresh 120. A key the deployment accepts on an authenticated route never
-  touches that bucket, and neither does a permit denial: being refused on
-  scope is normal governed traffic, not a bad credential.
+  is also charged to one per-client bucket, shared by every key that client
+  sends, at ten times the limit, because the per-key bucket is chosen from a
+  header before the key is verified. Sending a different `X-API-Key` on every
+  request does not hand you a fresh 120. A key the deployment accepts on an
+  authenticated route never touches that bucket, and neither does a permit
+  denial: being refused on scope is normal governed traffic, not a bad
+  credential. Behind a shared address, a valid key can still receive this
+  `429` while other callers send invalid keys; setting `FORWARDED_ALLOW_IPS`
+  (above) so real client addresses are visible removes the shared address.
 - **Window accounting:** the shared Redis limiter counts fixed 60-second
-  buckets; the in-memory fallback (never used in a production-like
-  environment, which fails closed) counts a rolling 60 seconds. Budget and
-  window length are the contract — `rate_limits.window_accounting` in
-  discovery says which backend counts how.
+  buckets; the in-memory limiter counts a rolling 60 seconds. The in-memory
+  limiter counts whenever the deployment has no `REDIS_URL`, in any
+  environment, and each worker or replica then keeps its own counters.
+  Budget and window length are the contract. `rate_limits.window_accounting`
+  in discovery says how the two backends count, and
+  `rate_limits.counter_scope` reports the configured scope (`shared_redis` or
+  `per_process`).
 - **Exempt paths:** `/`, `/health`, `/.well-known/agent.json`, `/llms.txt`,
   `/docs`, `/redoc`, `/openapi.json`, and the served markdown docs.
 - **`POST /mcp/public` (when enabled):** per client IP at the same limit, plus
   a global cap of ten times the limit.
 - **No burst allowance and no per-key override.** Raising the limit for one
   partner today means raising it for the whole deployment.
-- **Redis outage:** production-like environments return `503` instead of
-  falling back to per-process memory, so the limit is never silently wider
-  than declared.
+- **Redis outage:** with `REDIS_URL` set, production-like environments return
+  `503` instead of falling back to per-process memory, so the limit is never
+  silently wider than declared. Without `REDIS_URL` there is no shared limiter
+  to lose: the limit is enforced per process, so the effective limit is the
+  declared limit times the process count, and a production-like deployment is
+  reported as degraded on `/health/dependencies`.
 
 `GET /v1/discover` → `rate_limits` and `GET /` → `rate_limits` report the
 same figure the middleware enforces.
@@ -120,7 +141,7 @@ surfaces are off. Use one operator-configured upstream tool in production;
 dependency on Phase9 / AWI / marketplace stub tool ids and plan a swap to a
 real registered tool.
 Details: `docs/tech-debt-remediation-plan.md`
-(Phase 2).
+(Phase 2, not included in this repository).
 
 If the partner wants the operator narrative instead of the compact proof, run:
 

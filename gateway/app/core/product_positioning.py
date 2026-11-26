@@ -15,6 +15,12 @@ POSITIONING_EFFECTIVE_DATE = "2026-08-28"
 POSITIONING_ID = "transaction_integrity_for_consequential_autonomous_actions"
 POSITIONING_LABEL = "Transaction integrity for consequential autonomous actions"
 POSITIONING_TAGLINE = "Make consequential agent actions transactional."
+PLAIN_PRODUCT_DESCRIPTION = (
+    "Agent Middleware is a gateway for an agent's configured upstream tools. "
+    "For governed calls, it checks a signed permit and sends each accepted "
+    "upstream request at most once per key; its signed receipts can be "
+    "verified offline."
+)
 POSITIONING_DESCRIPTION = (
     "Transaction-integrity boundary for consequential autonomous actions on the "
     "configured upstream-MCP path: one logical action binds scoped authority and "

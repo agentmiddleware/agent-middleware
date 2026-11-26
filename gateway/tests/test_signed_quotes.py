@@ -488,7 +488,9 @@ async def test_quote_read_is_wallet_scoped(client, clean_database, registered_to
         "/v1/quotes/quote-0000000000000000", headers=stranger["agent_headers"]
     )
     assert foreign.status_code == 404, foreign.text
-    assert foreign.json() == missing.json() == {"detail": "quote_not_found"}
+    assert foreign.json() == missing.json()
+    assert foreign.json()["detail"] == "quote_not_found"
+    assert foreign.json()["code"] == "quote_not_found"
     assert agent["agent_wallet_id"] not in foreign.text
     assert agent["sponsor_wallet_id"] not in foreign.text
     assert (

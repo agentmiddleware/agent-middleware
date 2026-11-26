@@ -32,7 +32,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
-import attacklib as A
+import attacklib as A  # noqa: N812
 
 SCRATCH = os.environ.get("TP_WORKDIR", os.getcwd())
 PIDFILE = os.environ.get("TP_PIDFILE", f"{SCRATCH}/server.pid")
@@ -235,7 +235,7 @@ def main():
             request_tag = attempted[idx]
             run_worker_request(
                 request_tag,
-                lambda: A.invoke(
+                lambda request_tag=request_tag, idx=idx: A.invoke(
                     cred["api_key"],
                     wallet,
                     pid_c,

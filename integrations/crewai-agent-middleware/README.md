@@ -14,16 +14,17 @@ This package is not published to PyPI. Install it from a checkout of
 this repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -e ./sdk/python
 python -m pip install -e integrations/crewai-agent-middleware
 ```
 
-`b2a_sdk` must be installed from the local path first: this package
-depends on `b2a-sdk>=0.4.0`, which is not on PyPI, so installing the
-wrapper on its own fails to resolve. That installs the `crewai_b2a`
-module used below.
+`b2a_sdk` remains an import package. The SDK distribution will be published
+as `amw-sdk` (`pip install amw-sdk`). Until then, install it from the local
+path first because this wrapper depends on `amw-sdk>=0.4.0` and cannot
+resolve that dependency from PyPI. Installing the wrapper provides the
+`crewai_b2a` module used below.
 
 ## Quick Start (Governed Flow)
 
@@ -45,6 +46,21 @@ researcher = Agent(
     tools=[b2a_tool],
 )
 ```
+
+Call `b2a_tool.close()` when the agent is finished to close its HTTP client
+and private event loop. The tool also supports `with CrewAIB2ATool(...) as tool`
+for scoped use.
+
+When passing a borrowed `client`, async calls use it on the caller's event loop.
+Sync calls use a separate client on the tool's private event loop. Pass
+`sync_client_factory` to create that client with the same URL, timeout, transport,
+and authentication settings. The tool owns and closes the sync client; the caller
+still closes the borrowed client. A sync call with a borrowed client but no
+factory returns an error before sending a request.
+
+Direct `run()` callers now receive exceptions for terminal gateway errors
+instead of `"Error: ..."` strings. Handle those exceptions when calling the
+tool directly. CrewAI dispatch records them as non-retryable tool failures.
 
 ## Operations
 
@@ -110,6 +126,30 @@ result2 = b2a_tool.run(
 )
 ```
 
+### Replay after a process restart
+
+The trust plane stores the whole permit body, including its expiry, under
+`permit_idempotency_key`. By default the wrapper keeps that body in memory
+only, so a new process that reuses a permit key builds a new expiry and gets
+`idempotency_key_reused` instead of the original permit. To replay across a
+restart, give the wrapper a durable permit store. It records each permit body
+before the first network call and sends the same body again after a restart.
+A restart with a different wallet, budget, tool, or lifetime under the same
+permit key is refused before any request.
+
+```python
+from crewai_b2a import CrewAIB2ATool, JsonFilePermitStore
+
+tool = CrewAIB2ATool(
+    api_key="...",
+    wallet_id="agent-001",
+    permit_store=JsonFilePermitStore("amw-permits.json"),
+)
+```
+
+`JsonFilePermitStore` suits one agent process. Processes that share permit keys
+should implement `PermitStore` (`get` and `put`) on their own database.
+
 ## Permit Configuration
 
 Control permit budget and TTL:
@@ -128,5 +168,5 @@ b2a_tool = CrewAIB2ATool(
 ## Requirements
 
 - Python 3.11+
-- CrewAI 0.1.0+
+- CrewAI 1.15.30+
 - httpx 0.25.0+

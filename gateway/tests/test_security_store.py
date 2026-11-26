@@ -297,7 +297,7 @@ async def test_rtaas_job_round_trip_preserves_targets_and_vulns():
     assert row is not None
     assert "Bearer x" not in (row.targets_json or "")
     assert "auth_header" not in (row.targets_json or "")
-    assert {c for c in got.attack_categories} == {
+    assert set(got.attack_categories) == {
         AttackCategory.INJECTION,
         AttackCategory.RATE_LIMIT_EVASION,
     }

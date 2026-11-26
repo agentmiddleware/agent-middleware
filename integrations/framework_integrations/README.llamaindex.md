@@ -2,12 +2,23 @@
 
 Use Agent Middleware API tools with LlamaIndex agents.
 
+## Status: legacy ungoverned factory
+
+`get_llamaindex_tools` below is a legacy ungoverned factory: its tools call
+the API with no permit, no idempotency key, and no signed receipt, and it
+emits a `DeprecationWarning`. For governed calls, prefer the
+**permit -> invoke -> signed receipt** wrappers (`CrewAIB2ATool`,
+the autogen / langchain / openai integrations, or `LangGraphGovernedTools` /
+`PydanticAIGovernedTools`).
+
 ## Installation
 
-No PyPI package is published. Work from a checkout of this repository:
+No PyPI package is published. The SDK distribution will be published as
+`amw-sdk` (`pip install amw-sdk`). For now, work from a checkout of this
+repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -r gateway/requirements.txt -e ./sdk/python
 export PYTHONPATH="$PWD/integrations"
@@ -27,7 +38,8 @@ from framework_integrations import B2AClient, get_llamaindex_tools
 client = B2AClient(
     api_url="http://localhost:8000",
     api_key="your-api-key",
-    wallet_id="your-wallet-id"
+    wallet_id="your-wallet-id",
+    agent_id="your-registered-agent-id",  # Required for send_message
 )
 
 # Get LlamaIndex-compatible tools
@@ -64,7 +76,7 @@ tools = get_llamaindex_tools(client)
 agent = ReActAgent.from_tools(
     tools,
     llm=llm,
-    system_prompt="You are a data processing agent. Use tools to handle data."
+    system_prompt="You are a data processing agent. Use tools to handle data.",
 )
 
 result = await agent.achat("Process the uploaded dataset")

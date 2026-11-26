@@ -68,6 +68,19 @@ def test_postgres_proof_ci_jobs_exist():
     assert "Prove gated tests actually ran" in workflow
 
 
+def test_postgres_trust_regressions_run_in_proofs():
+    """The asyncpg trust loop and concurrent accounting must not skip in CI."""
+    workflow = CI_WORKFLOW.read_text()
+    assert "TEST_POSTGRES_URL" in workflow
+    assert "test_postgres_datetime_binding.py" in workflow
+    assert (
+        "test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted"
+        in workflow
+    )
+    assert "RUN_POSTGRES_CONCURRENCY_TESTS" in workflow
+    assert "proof-logs-accounting" in workflow
+
+
 def test_trust_release_gate_is_separate_from_required_ci_result():
     """Keep the release gate visible without blocking unrelated changes.
 

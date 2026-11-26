@@ -989,8 +989,12 @@ async def test_existing_receipt_missing_idempotency_completion_replays_full_resu
         state="succeeded",
         result_payload=upstream_result,
         idempotency_endpoint=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
+        max_calls_per_tool=5,
     )
     attempt = await _attempt(seed.attempt_id)
+    assert await McpDispatchReconciliationService()._permit_constraints_snapshot(
+        seed.permit_id
+    ) == {"max_calls_per_tool": {seed.tool_name: 5}}
     audit = await record_audit_event(
         event="mcp.invoke",
         wallet_id=seed.wallet_id,
@@ -1027,6 +1031,7 @@ async def test_existing_receipt_missing_idempotency_completion_replays_full_resu
         outcome="success",
         audit_event_id=audit.event_id,
     )
+    assert receipt.constraints_evaluated == {}
     await get_idempotency_service().mark_charged(
         wallet_id=seed.wallet_id,
         endpoint=seed.idempotency_endpoint,
@@ -1072,6 +1077,112 @@ async def test_existing_receipt_missing_idempotency_completion_replays_full_resu
         )
     assert int(receipt_count or 0) == 1
     assert int(audit_count or 0) == 1
+
+
+@pytest.mark.anyio
+async def test_existing_success_receipt_rejects_conflicting_signed_permit_snapshot(
+    client: AsyncClient,
+    clean_database,
+) -> None:
+    upstream_result = {"content": [{"type": "text", "text": "confirmed"}]}
+    seed = await _seed_attempt(
+        client,
+        suffix="success-conflicting-snapshot",
+        state="succeeded",
+        result_payload=upstream_result,
+        max_calls_per_tool=5,
+    )
+    attempt = await _attempt(seed.attempt_id)
+    audit = await record_audit_event(
+        event="mcp.invoke",
+        wallet_id=seed.wallet_id,
+        tool=seed.tool_name,
+        endpoint=ENDPOINT,
+        auth_source="db",
+        key_id=seed.key_id,
+        ok=True,
+        metadata={"dispatch_attempt_id": seed.attempt_id},
+    )
+    receipt = await get_receipt_service().create_receipt(
+        idempotency_record_id=attempt.idempotency_record_id,
+        dispatch_attempt_id=attempt.attempt_id,
+        response_hash_override=attempt.response_hash,
+        permit_id=attempt.permit_id,
+        wallet_id=attempt.wallet_id,
+        key_id=attempt.key_id,
+        tool=attempt.public_tool_id,
+        request_payload=None,
+        request_hash=attempt.request_hash,
+        response_payload=upstream_result,
+        ledger_entry_id=attempt.ledger_entry_id,
+        credits_authorized=attempt.credits_authorized,
+        credits_charged=attempt.credits_charged,
+        outcome="success",
+        audit_event_id=audit.event_id,
+        constraints_evaluated={"max_calls_per_tool": {seed.tool_name: 4}},
+    )
+    valid, reason, _ = await get_receipt_service().verify_receipt(receipt.receipt_id)
+    assert (valid, reason) == (True, None)
+
+    with pytest.raises(
+        DispatchAttemptError, match="^dispatch_receipt_linkage_conflict$"
+    ):
+        await McpDispatchReconciliationService()._get_or_create_receipt(
+            attempt=attempt,
+            result_payload=upstream_result,
+            outcome="success",
+            audit_event_id=audit.event_id,
+            constraints_evaluated={"max_calls_per_tool": {seed.tool_name: 5}},
+        )
+
+
+def test_assert_receipt_match_maps_jcs_reject_to_linkage_conflict():
+    """Non-I-JSON constraints must conflict, not raise CanonicalizationError."""
+    from types import SimpleNamespace
+
+    attempt = SimpleNamespace(
+        state="succeeded",
+        credits_charged=Decimal("1"),
+        credits_authorized=Decimal("1"),
+        idempotency_record_id="idem_jcs",
+        attempt_id="att_jcs",
+        permit_id="pmt_jcs",
+        wallet_id="w",
+        key_id="k",
+        public_tool_id="tool",
+        request_hash="a" * 64,
+        response_hash="b" * 64,
+        ledger_entry_id=None,
+        approval_id=None,
+    )
+    receipt = SimpleNamespace(
+        idempotency_record_id="idem_jcs",
+        dispatch_attempt_id="att_jcs",
+        permit_id="pmt_jcs",
+        wallet_id="w",
+        key_id="k",
+        tool="tool",
+        request_hash="a" * 64,
+        response_hash="b" * 64,
+        ledger_entry_id=None,
+        credits_authorized=Decimal("1"),
+        credits_charged=Decimal("1"),
+        outcome="success",
+        audit_event_id="aud_jcs",
+        approval_id=None,
+        reason_code=None,
+        constraints_evaluated={"n": 9007199254740993},
+    )
+    with pytest.raises(
+        DispatchAttemptError, match="^dispatch_receipt_linkage_conflict$"
+    ):
+        McpDispatchReconciliationService._assert_receipt_match(
+            receipt,
+            attempt=attempt,
+            outcome="success",
+            audit_event_id="aud_jcs",
+            constraints_evaluated={"n": 9007199254740993},
+        )
 
 
 @pytest.mark.anyio

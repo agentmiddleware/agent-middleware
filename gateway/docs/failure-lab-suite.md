@@ -93,6 +93,27 @@ Building a deliberately weak baseline and beating it would prove nothing. B is
 built the way a competent engineer would build it, and when B handles a
 scenario the report says so.
 
+**A and B are fused to the lab's own tool.** With no gateway in the path, A
+executes what it is sent: `T02` expects it to pay a refund 100 times the
+authorized amount under a spent key, which is the measurement. That is only
+harmless because the tool is `SimulatedRefundService`, in this process. So
+`configured_target` refuses to yield an A or B target unless the agent's
+requests can only reach that target's own in-process app, compared by object
+identity rather than by URL or settings, and unless that app wraps the
+simulated service it just built. The check runs before the tool starts, so a
+refusal sends nothing and shows in the report as a harness error naming
+`UnsafeTargetError`. When the check passes, the target keeps a record of what
+it checked. Every result for an admitted A or B target, in any scenario,
+carries that record in its `extra` as `target_safety_fuse`, including the
+`ERROR` result of an arm that raised after it was admitted. The evidence
+bundle then shows the fuse held for each direct arm that ran, not only the
+source. A refused target records no passed check. Neither do the `NOT_RUN`
+rows the runner writes when a whole scenario raises out of `run()`: those rows
+carry no measurements at all. C and D are not fused here, because the
+gateway's own refusal is what they measure, so their results carry no such
+record. `tests/test_failure_lab_target_fuse.py` pins the fuse and its record,
+and `tests/test_failure_lab_scenarios.py` pins that C and D carry none.
+
 ---
 
 ## 3. The result
@@ -317,8 +338,8 @@ That is the endpoint working as designed and it is also the reason the plan
 requires an independent verifier: to check the artifact in your hand, verify
 its `signing_input` bytes offline, with
 [`failure_lab/verifier.py`](../failure_lab/verifier.py) or
-[`b2a_sdk.receipt_verifier`](../../sdk/python/README.md). Neither imports the
-application.
+the [Agent Middleware (AMW) `amw` verifier](../../sdk/python/README.md).
+Neither imports the application.
 
 **An exported bundle does not carry enough to find the key.** `keys_url` is a
 relative path and `issuer` is whatever `PUBLIC_URL` was set to, which in a

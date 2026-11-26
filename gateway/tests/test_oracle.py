@@ -45,12 +45,9 @@ async def test_crawl_known_api(client, api_headers):
     assert len(data["capabilities"]) > 0
     assert data["compatibility_score"] >= 0
     assert data["compatibility_score"] <= 1.0
-    assert data["compatibility_tier"] in [
-        "native",
-        "compatible",
-        "bridgeable",
-        "incompatible",
-    ]
+    # The simulated directory entry for this API is fixed, so its tier is
+    # fixed too: pin it exactly instead of accepting any of the four tiers.
+    assert data["compatibility_tier"] == "compatible"
 
 
 @pytest.mark.anyio

@@ -161,6 +161,7 @@ def register_dogfood_second_tool() -> None:
             credits_per_unit=1.0,
             unit_name="call",
             require_permit=True,
+            read_only=True,
         )
         _second_registered = True
         logger.info("Registered second dogfood MCP tool: %s", DOGFOOD_SECOND_TOOL_ID)

@@ -166,6 +166,10 @@ async def _setup(
 
 
 async def _invoke(client, agent, permit, key="jev-invoke", *, headers=None):
+    merged = dict(headers or agent["agent_headers"])
+    # Refusals echo the caller correlation id. One fixed id keeps
+    # re-evaluated refusals byte-identical across first and replay.
+    merged.setdefault("X-Request-ID", "jev-fixed-request-id")
     return await client.post(
         f"/mcp/tools/{TOOL}/invoke",
         json={
@@ -177,7 +181,7 @@ async def _invoke(client, agent, permit, key="jev-invoke", *, headers=None):
                 "idempotency_key": key,
             },
         },
-        headers=headers or agent["agent_headers"],
+        headers=merged,
     )
 
 
@@ -238,7 +242,8 @@ async def test_off_has_zero_calls_and_no_metadata(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "mode,injected,verdict", [("log", 0.95, "escalate"), ("enforce", 0.0, "pass")]
+    ("mode", "injected", "verdict"),
+    [("log", 0.95, "escalate"), ("enforce", 0.0, "pass")],
 )
 async def test_success_metadata_and_replay(
     client,
@@ -302,6 +307,15 @@ async def test_enforce_uses_existing_approval_gate(
     if approval_status == "pending":
         assert response.status_code == 202, response.text
         assert response.json()["detail"]["error"] == "human_approval_pending"
+        assert response.json()["code"] == "human_approval_pending"
+        assert response.json()["message"] == "This call is waiting for human approval."
+        assert response.json()["fix"] == (
+            "Wait for a human decision, then send the same call with the same "
+            "request key to check the decision."
+        )
+        assert response.json()["docs_url"] == (
+            "https://www.agentmiddleware.dev/docs/errors#human_approval_pending"
+        )
         assert registered_tool == []
         # Pending frees the record, but the verdict must survive that deletion.
         mock_jev.body = _response(injected=0.0)
@@ -518,7 +532,7 @@ async def test_cross_wallet_denial_never_calls_jev(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "failure,status",
+    ("failure", "status"),
     [
         ("timeout", "timeout"),
         ("http_500", "http_500"),
@@ -567,7 +581,7 @@ async def test_failures_fail_open_with_metadata(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "tier,count,status",
+    ("tier", "count", "status"),
     [
         ("low", 0, "skipped_tier"),
         ("medium", 1, "ok"),
@@ -664,7 +678,7 @@ async def test_reversed_choice_averaging(mock_jev, monkeypatch):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "field,value,tier,approval,reason",
+    ("field", "value", "tier", "approval", "reason"),
     [
         ("injected_instructions", 0.699, "medium", False, None),
         ("injected_instructions", 0.70, "medium", False, "injected_instructions"),
@@ -698,7 +712,7 @@ async def test_thresholds(mock_jev, monkeypatch, field, value, tier, approval, r
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "irreversible,money,tier,escalated",
+    ("irreversible", "money", "tier", "escalated"),
     [
         (0.8, 0.8, "low", True),
         (0.799, 0.8, "low", False),

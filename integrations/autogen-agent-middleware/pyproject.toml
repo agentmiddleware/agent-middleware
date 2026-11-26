@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "b2a-sdk>=0.4.0",
+    "amw-sdk>=0.4.0",
     # AG2 Classic: the maintained distribution of the legacy AutoGen 0.2 API that
     # provides `import autogen` and `ConversableAgent.register_function`, which
     # this wrapper targets. `autogen-agentchat` (0.4+ rewrite) and `ag2>=1.0`
@@ -26,4 +26,7 @@ dev = ["pytest", "pytest-asyncio", "ruff"]
 packages = ["src/autogen_b2a"]
 
 [tool.uv.sources]
-b2a-sdk = { path = "../../sdk/python", editable = true }
+amw-sdk = { path = "../../sdk/python", editable = true }
+
+[tool.ruff.lint.isort]
+known-first-party = ["autogen_b2a"]

@@ -77,6 +77,14 @@ RLS_TABLES: dict[str, tuple[str, ...]] = {
     "refresh_tokens": ("wallet_id",),
 }
 
+# Knowingly excluded: api_key_usage_events (046) is key-scoped and has no
+# wallet column, so the wallet-isolation predicate below cannot name one.
+# Its controls are the bootstrap-admin-only usage route and database
+# privileges. A policy for it would need the EXISTS-join shape used by
+# DELEGATED_READ_PREDICATES, matching rows whose key_id belongs to a
+# visible api_keys row, and belongs with the runtime layer that sets
+# app.current_wallet_id, not before it.
+
 # Tables from this repo's 044 that are absent on an api-chain database when
 # 048 runs there; 053_repair_api_lineage applies the same policy to them.
 LATE_RLS_TABLES: dict[str, tuple[str, ...]] = {

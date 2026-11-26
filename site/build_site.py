@@ -5,11 +5,9 @@ The source HTML deliberately contains non-deployable tokens. Vercel runs this
 script and serves only ``dist/``; a missing or obviously provisional contact
 therefore fails the build instead of leaking a fake funnel into production.
 
-The Vercel Web Analytics loader is emitted only when
-``PUBLIC_ENABLE_VERCEL_ANALYTICS=true``. Deploying the ``/_vercel/insights``
-script tag against a project whose Web Analytics is not enabled makes every
-page load log a 404 plus a MIME-type refusal in the browser console, so the
-default build omits the tag entirely.
+PostHog configuration is emitted only when a valid ``AMW_POSTHOG_KEY`` is
+provided, using the pinned US host. Without a key, analytics stays off.
+Vercel Web Analytics is not loaded.
 """
 
 from __future__ import annotations
@@ -72,15 +70,9 @@ _BOOKING_MARKER_LINE = re.compile(
     rf"^[ \t]*(?:{re.escape(BOOKING_BLOCK_START)}|{re.escape(BOOKING_BLOCK_END)})[ \t]*(?:\r?\n|\Z)",
     flags=re.MULTILINE,
 )
-ANALYTICS_FLAG = "PUBLIC_ENABLE_VERCEL_ANALYTICS"
-ANALYTICS_TOKEN = "@@VERCEL_ANALYTICS_SCRIPTS@@"
-ANALYTICS_FLAG_ENABLED = frozenset({"true"})
-ANALYTICS_FLAG_DISABLED = frozenset({"", "false"})
-# The queue shim lives in /va-init.js rather than an inline <script> so the
-# deployed Content-Security-Policy can stay script-src 'self' with no
-# 'unsafe-inline'. It must load before the insights script reads window.vaq.
-ANALYTICS_SCRIPTS = """<script src="/va-init.js?v=gateway-19"></script>
-    <script defer src="/_vercel/insights/script.js"></script>"""
+POSTHOG_CONFIG_TOKEN = "@@POSTHOG_CONFIG@@"
+# Match the pinned host permitted by vercel.json and analytics.js.
+POSTHOG_HOSTS = frozenset({"https://us.i.posthog.com"})
 # Shared chrome is rendered at build time so it also works without JavaScript.
 SITE_PARTIALS = {
     "@@SITE_NAV@@": "partials/nav.html",
@@ -133,6 +125,7 @@ COPY_ASSETS = (
     "fonts",
     "fonts.css",
     "analytics.js",
+    "posthog.js",
     "home-key.js",
     "pilot-fit.js",
     "pilot",
@@ -147,7 +140,6 @@ COPY_ASSETS = (
     "sitemap.xml",
     "styles.css",
     "utm-capture.js",
-    "va-init.js",
     "wave.js",
 )
 REQUIRED_PUBLIC_ASSETS = (
@@ -324,20 +316,30 @@ def render_booking_blocks(markup: str, *, configured: bool) -> str:
     return rendered
 
 
-def vercel_analytics_enabled(environment: dict[str, str]) -> bool:
-    """Return whether the build should emit the Vercel Web Analytics loader.
+def render_posthog_config(environment: dict[str, str]) -> str:
+    """Render environment-only browser configuration, or nothing without a key."""
 
-    A misspelled value fails the build instead of silently disabling analytics
-    the operator meant to turn on.
-    """
-
-    raw = environment.get(ANALYTICS_FLAG, "").strip().casefold()
-    if raw in ANALYTICS_FLAG_ENABLED:
-        return True
-    if raw in ANALYTICS_FLAG_DISABLED:
-        return False
-    raise LaunchConfigurationError(
-        f'{ANALYTICS_FLAG} must be "true", "false", or unset'
+    key = environment.get("AMW_POSTHOG_KEY", "").strip()
+    if not key:
+        return ""
+    if not re.fullmatch(r"phc_[A-Za-z0-9]+", key):
+        raise LaunchConfigurationError("AMW_POSTHOG_KEY must match ^phc_[A-Za-z0-9]+$")
+    host = (
+        environment.get("AMW_POSTHOG_HOST", "https://us.i.posthog.com")
+        .strip()
+        .removesuffix("/")
+    )
+    if host not in POSTHOG_HOSTS:
+        raise LaunchConfigurationError(
+            "AMW_POSTHOG_HOST must be https://us.i.posthog.com "
+            "when AMW_POSTHOG_KEY is set"
+        )
+    return (
+        '<meta name="amw-posthog-key" content="'
+        + html.escape(key, quote=True)
+        + '" />\n    <meta name="amw-posthog-host" content="'
+        + html.escape(host, quote=True)
+        + '" />'
     )
 
 
@@ -901,7 +903,7 @@ def render_site(output: Path, environment: dict[str, str]) -> None:
     timestamps = _build_timestamps()
     markup_replacements.update(timestamps)
     text_replacements.update(timestamps)
-    analytics_enabled = vercel_analytics_enabled(environment)
+    posthog_config = render_posthog_config(environment)
     missing_assets = [
         relative_path
         for relative_path in REQUIRED_PUBLIC_ASSETS
@@ -962,15 +964,15 @@ def render_site(output: Path, environment: dict[str, str]) -> None:
                 )
             rendered = rendered.replace(STYLES_CSS_VERSION_TOKEN, styles_version)
             rendered = rendered.replace(CONCEPT_CSS_VERSION_TOKEN, concept_version)
-        if analytics_enabled:
-            rendered = rendered.replace(ANALYTICS_TOKEN, ANALYTICS_SCRIPTS)
+        if posthog_config:
+            rendered = rendered.replace(POSTHOG_CONFIG_TOKEN, posthog_config)
         else:
             # Drop the token's whole line regardless of indentation so no
             # blank line or stray whitespace is left behind; the
             # unresolved-token check below still fails loudly if the token
             # ever stops sitting on its own line.
             rendered = re.sub(
-                rf"^[ \t]*{re.escape(ANALYTICS_TOKEN)}[ \t]*\n",
+                rf"^[ \t]*{re.escape(POSTHOG_CONFIG_TOKEN)}[ \t]*\n",
                 "",
                 rendered,
                 flags=re.MULTILINE,

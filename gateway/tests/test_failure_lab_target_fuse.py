@@ -31,6 +31,7 @@ from failure_lab.configurations import (
 )
 from failure_lab.effect_ledger import EffectLedger
 from failure_lab.refund_tool import SimulatedRefundService
+from failure_lab.scenarios import SCENARIO_CLASSES
 from failure_lab.scenarios.base import Verdict
 from failure_lab.scenarios.t02_same_key_different_arguments import (
     SameKeyDifferentArguments,
@@ -180,6 +181,14 @@ def test_unknown_httpx_internals_fail_closed():
     assert configurations._client_routes_only_to(NotAClient(), object()) is False
 
 
+def test_transport_without_app_fails_closed():
+    """An exact ``ASGITransport`` whose ``app`` is gone refuses, not crashes."""
+    app = object()
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=_foreign_app))
+    del client._transport.app
+    assert configurations._client_routes_only_to(client, app) is False
+
+
 @pytest.mark.anyio
 async def test_t02_direct_naive_is_refused_not_executed(tmp_path, monkeypatch):
     """The arm this fuse exists for: refused, recorded as an error, nothing paid."""
@@ -194,3 +203,109 @@ async def test_t02_direct_naive_is_refused_not_executed(tmp_path, monkeypatch):
     assert requests == []
     ledger = EffectLedger(tmp_path / "effects-A_direct_naive-T02.db")
     assert ledger.execution_count() == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("configuration", DIRECT_CONFIGURATIONS)
+async def test_direct_targets_carry_a_record_of_the_fuse_they_passed(
+    tmp_path, configuration
+):
+    """The record says what was checked, and that each check came out true."""
+    async with configured_target(_env(tmp_path), configuration) as target:
+        fuse = target.safety_fuse
+    assert fuse is not None
+    _assert_passed_fuse_record(fuse)
+
+
+def _assert_passed_fuse_record(record: dict) -> None:
+    """The record names what enforced the fuse and shows both checks passed."""
+    assert record["enforced_by"] == "failure_lab.configurations.configured_target"
+    assert record["downstream_wraps_the_simulated_service_this_target_built"] is True
+    assert record["agent_requests_end_only_in_this_targets_in_process_app"] is True
+
+
+#: Every scenario that drives at least one direct configuration. Derived from
+#: the registry, so a scenario that gains a direct arm is covered here too.
+DIRECT_SCENARIOS = tuple(
+    scenario_class
+    for scenario_class in SCENARIO_CLASSES
+    if any(
+        not configuration.uses_gateway
+        for configuration in scenario_class.configurations
+    )
+)
+
+
+def test_the_direct_scenario_list_is_not_empty():
+    """Guards the parametrized test below against silently running nothing."""
+    assert SameKeyDifferentArguments in DIRECT_SCENARIOS
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "scenario_class", DIRECT_SCENARIOS, ids=lambda cls: cls.test_id
+)
+async def test_every_direct_arm_records_the_fuse_in_its_evidence(
+    tmp_path, scenario_class
+):
+    """Each direct arm shows the fuse in the evidence, not only the source.
+
+    Read through ``as_dict``, the form the evidence bundle stores, and checked
+    against the verdicts each scenario documents: recording the fuse must not
+    change what an arm measures.
+    """
+    scenario = scenario_class()
+    selected = [c for c in DIRECT_CONFIGURATIONS if c in scenario.configurations]
+    result = await scenario.run(_env(tmp_path), configurations=selected)
+    assert len(result.configurations) == len(selected)
+    for outcome in result.configurations:
+        assert outcome.verdict is not Verdict.ERROR, outcome.error
+        assert outcome.verdict.value == scenario.expected[outcome.configuration]
+        _assert_passed_fuse_record(outcome.as_dict()["extra"]["target_safety_fuse"])
+
+
+@pytest.mark.anyio
+async def test_a_direct_arm_that_raises_after_admission_keeps_the_fuse_record(
+    tmp_path, monkeypatch
+):
+    """An arm that fails after it was admitted still shows the fuse held.
+
+    The scenario raises once the target has been yielded, so the result is the
+    harness ERROR row, not one the scenario built. That arm was admitted and
+    could already have sent its requests, so its evidence must keep the record.
+    """
+
+    async def raise_after_admission(self, target, log):
+        raise RuntimeError("the scenario failed after its target was admitted")
+
+    monkeypatch.setattr(
+        SameKeyDifferentArguments, "run_configuration", raise_after_admission
+    )
+    result = await SameKeyDifferentArguments().run(
+        _env(tmp_path), configurations=DIRECT_CONFIGURATIONS
+    )
+    assert len(result.configurations) == len(DIRECT_CONFIGURATIONS)
+    for outcome in result.configurations:
+        assert outcome.verdict is Verdict.ERROR
+        # The downstream's task group wraps what the scenario raised, so the
+        # scenario's own error is named in the traceback, not the observation.
+        assert "the scenario failed after its target was admitted" in outcome.error
+        _assert_passed_fuse_record(outcome.as_dict()["extra"]["target_safety_fuse"])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("configuration", DIRECT_CONFIGURATIONS)
+async def test_a_refused_direct_arm_records_no_passed_fuse(
+    tmp_path, monkeypatch, configuration
+):
+    """A refusal is an ERROR that must not claim a check that did not pass."""
+    requests: list[httpx.Request] = []
+    _install_client(monkeypatch, _recording_client(requests))
+    result = await SameKeyDifferentArguments().run(
+        _env(tmp_path), configurations=[configuration]
+    )
+    (outcome,) = result.configurations
+    assert outcome.verdict is Verdict.ERROR
+    assert "UnsafeTargetError" in outcome.observation
+    assert "target_safety_fuse" not in outcome.as_dict()["extra"]
+    assert requests == []

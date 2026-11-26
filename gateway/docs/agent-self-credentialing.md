@@ -71,7 +71,7 @@ the claims that carry economic weight, exiting non-zero on any failure:
 | 1 | charge-once | one governed invoke → exactly one debit |
 | 2 | replay | same idempotency key → cached receipt, no new debit, no second side effect |
 | 3 | concurrency | 5 identical in-flight calls → one success, one debit, one side effect |
-| 4 | reuse-conflict | same key, different body → 400, no debit |
+| 4 | reuse-conflict | same key, different body → 409, no debit |
 | 5 | scope-denial | tool outside the permit → 403 `permit_tool_not_allowed`, signed denial receipt, zero charged |
 | 6 | no-permit | governed tool without a permit → 403, no debit |
 | 7 | signature | every receipt verifies under the published Ed25519 key; tampered copies do not |
@@ -85,7 +85,7 @@ is skipped, so no check can pass vacuously.
 
 Two behaviors worth knowing before you read the output as a bug:
 
-- Under true concurrency the losing callers get **400**, not a replayed 200.
+- Under true concurrency the losing callers get **409** (`idempotency_in_progress`), not a replayed 200.
   The gateway fails closed while the first call is in flight; the cached
   receipt is served on retry once the winner settles.
 - A denial still mints a **signed receipt** with `credits_charged` 0. Denials

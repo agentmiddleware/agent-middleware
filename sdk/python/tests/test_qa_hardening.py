@@ -993,7 +993,10 @@ class TestB2AEdgeClient:
         body = json.loads(seen[0].content)
         assert body["method"] == "tools/call"
         assert body["params"]["mcpContext"] == {"wallet_id": "wallet-1"}
-        assert body["id"] == 1
+        # The client mints a key per call and sends it as both the rpc id
+        # and the Idempotency-Key header.
+        assert isinstance(body["id"], str) and body["id"].strip()
+        assert body["id"] == seen[0].headers["idempotency-key"]
 
     @pytest.mark.asyncio
     async def test_call_mcp_tool_without_wallet_omits_context(self):

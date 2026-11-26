@@ -13,7 +13,7 @@ and checks the invariants that matter economically:
                       no second side effect
   3. concurrency      N identical in-flight calls -> one success, one debit,
                       one side effect (losers fail closed, never double-charge)
-  4. reuse-conflict   same key with a different body -> 400, no debit
+  4. reuse-conflict   same key with a different body -> 409, no debit
   5. scope-denial     tool outside the permit -> 403 with a signed denial
                       receipt and zero credits charged
   6. no-permit        governed tool without a permit -> 403, no debit
@@ -233,7 +233,7 @@ async def run(base_url: str) -> int:
             f"/mcp/tools/{ALLOWED_TOOL}/invoke",
             json=invoke_body(wallet, permit, idem, "a different payload"),
         )
-        check("conflict rejected", r4.status_code == 400, f"HTTP {r4.status_code}")
+        check("conflict rejected", r4.status_code == 409, f"HTTP {r4.status_code}")
         check("no debit", len(await debits(cl, wallet)) == before)
 
         step(f"5. {BLOCKED_TOOL} is outside the permit and must be denied free")

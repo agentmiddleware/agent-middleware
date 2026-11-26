@@ -15,7 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 
 from ..core.auth import AuthContext, get_auth_context
@@ -39,7 +39,10 @@ from ..schemas.awi_enhanced import (
     RAGQueryResponse,
     SessionContextResponse,
 )
-from ..services.awi_playwright_bridge import BrowserSessionLimitExceeded
+from ..services.awi_playwright_bridge import (
+    BrowserSessionLimitExceeded,
+    NavigationBlocked,
+)
 
 if TYPE_CHECKING:
     from ..services.awi_rag_engine import SessionMemory
@@ -477,6 +480,11 @@ async def attach_dom_bridge(
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={"error": "dom_session_limit_exceeded", "message": str(e)},
+        )
+    except NavigationBlocked as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "navigation_blocked", "message": str(e)},
         )
     except ValueError as e:
         raise HTTPException(
@@ -1129,7 +1137,8 @@ async def delete_memory(
 async def get_session_context(
     session_id: str,
     session_type: str | None = None,
-    top_k: int = 3,
+    # Same bounds as RAGQueryRequest.top_k on /rag/query.
+    top_k: int = Query(default=3, ge=1, le=20),
     auth: AuthContext = Depends(get_auth_context),
 ):
     """

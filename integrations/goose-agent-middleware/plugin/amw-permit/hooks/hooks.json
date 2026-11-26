@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^amw__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "goose-amw-hook --policy /path/to/policy.json --state-dir /path/to/state",
+            "on_failure": "block",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

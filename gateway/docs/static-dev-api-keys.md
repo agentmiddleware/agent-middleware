@@ -123,8 +123,11 @@ Scope and safety:
   wildcard CORS a page you merely visit could otherwise `fetch` it against
   your localhost and read the minted key. A browser always sends an `Origin`
   header on such a request; real dev agents (CLIs, SDKs, curl) send none and
-  pass through. This is the same DNS-rebinding hardening the standard MCP
-  endpoint uses.
+  pass through. The comparison is the full origin (scheme, host, and port).
+  When `PUBLIC_URL` is set, the request Host must match it or the route
+  answers 421. Without `PUBLIC_URL`, browser requests require a loopback
+  Host (`localhost`, `127.0.0.1`, or `[::1]`). This is the same check the
+  standard MCP endpoint uses.
 - Self-provisioned keys are ordinary DB-backed wallet keys (`b2a_` class),
   so unlike static env keys they **are** covered by the DB-backed-key
   guidance in the rotation runbook, and they can be rotated or revoked

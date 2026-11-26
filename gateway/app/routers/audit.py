@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.auth import AuthContext, get_auth_context
 from app.schemas.audit import (
@@ -159,7 +159,23 @@ async def get_audit_summary(
     return AuditSummaryResponse(**summary)
 
 
-@router.post("/verify-chain", response_model=AuditChainVerifyResponse)
+@router.post(
+    "/verify-chain",
+    response_model=AuditChainVerifyResponse,
+    description=(
+        "Verifies a wallet's hash-linked audit chain. One call walks at most "
+        "`AUDIT_VERIFY_MAX_EVENTS` events (default 1000); `limit` can lower "
+        "that and is clamped to it. `valid` means no defect was found in the "
+        "walked span. `complete` is true only when the walk reached the end "
+        "of the chain and ran the head and deleted-tail checks. When "
+        "`complete` is false on a single-wallet request, pass `next_after_seq` and "
+        "`next_after_event_id` as `after_seq` and `after_event_id` to resume. "
+        "A global (operator) verification applies the cap to each wallet chain "
+        "separately, so one request can walk more than the cap in total. It "
+        "reports `complete=false` if any chain was capped and returns no shared "
+        "cursor; resume each wallet on its own with `wallet_id`."
+    ),
+)
 async def verify_chain(
     request: AuditChainVerifyRequest,
     auth: AuthContext = Depends(get_auth_context),
@@ -174,9 +190,27 @@ async def verify_chain(
         wallet_id = auth.wallet_id
     else:
         auth.require_bootstrap_admin()
+    if wallet_id is None and (
+        request.after_seq is not None or request.after_event_id is not None
+    ):
+        # Same list shape as FastAPI validation errors, which is what the
+        # route documents for 422 (HTTPValidationError).
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {
+                    "loc": ["body", "after_seq"],
+                    "msg": "after_seq and after_event_id require a wallet_id",
+                    "type": "value_error",
+                }
+            ],
+        )
     result = await verify_audit_chain(
         wallet_id=wallet_id,
         created_after=request.created_after,
         created_before=request.created_before,
+        after_seq=request.after_seq,
+        after_event_id=request.after_event_id,
+        limit=request.limit,
     )
     return AuditChainVerifyResponse(**asdict(result))

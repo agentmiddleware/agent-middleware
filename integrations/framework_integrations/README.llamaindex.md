@@ -2,6 +2,15 @@
 
 Use Agent Middleware API tools with LlamaIndex agents.
 
+## Status: legacy ungoverned factory
+
+`get_llamaindex_tools` below is a legacy ungoverned factory: its tools call
+the API with no permit, no idempotency key, and no signed receipt, and it
+emits a `DeprecationWarning`. For governed calls, prefer the
+**permit -> invoke -> signed receipt** wrappers (`CrewAIB2ATool`,
+the autogen / langchain / openai integrations, or `LangGraphGovernedTools` /
+`PydanticAIGovernedTools`).
+
 ## Installation
 
 No PyPI package is published. The SDK distribution will be published as
@@ -9,7 +18,7 @@ No PyPI package is published. The SDK distribution will be published as
 repository:
 
 ```bash
-git clone https://github.com/PetrefiedThunder/agent-middleware.git
+git clone https://github.com/agentmiddleware/agent-middleware.git
 cd agent-middleware
 python -m pip install -r gateway/requirements.txt -e ./sdk/python
 export PYTHONPATH="$PWD/integrations"
@@ -27,7 +36,10 @@ from framework_integrations import B2AClient, get_llamaindex_tools
 
 # Initialize client
 client = B2AClient(
-    api_url="http://localhost:8000", api_key="your-api-key", wallet_id="your-wallet-id"
+    api_url="http://localhost:8000",
+    api_key="your-api-key",
+    wallet_id="your-wallet-id",
+    agent_id="your-registered-agent-id",  # Required for send_message
 )
 
 # Get LlamaIndex-compatible tools

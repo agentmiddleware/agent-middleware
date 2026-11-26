@@ -1,5 +1,11 @@
 """The simulated business tool: a refund API with a durable ledger.
 
+SIMULATION NOTICE: no real money moves here. ``refund.create`` records a
+simulated effect in the lab ledger only; there is no payment rail or wallet
+settlement behind it. A paid pilot must configure an actual upstream tool
+through ``register_configured_upstream_mcp``. This lab configures only its
+simulated refund tool, so its results transfer as method, not money movement.
+
 One consequential operation, modelled two ways:
 
 * **naive** -- every request executes. This is what an integration looks like
@@ -306,7 +312,16 @@ def build_downstream_app(
 
     def _control_ok(request: Request) -> bool:
         provided = request.headers.get(CONTROL_HEADER)
-        return provided is not None and hmac.compare_digest(provided, control_token)
+        if not provided:
+            return False
+        try:
+            # compare_digest on str raises TypeError for non-ASCII. Compare
+            # UTF-8 bytes so a latin-1 header is a denial, not a 500.
+            return hmac.compare_digest(
+                provided.encode("utf-8"), control_token.encode("utf-8")
+            )
+        except (TypeError, ValueError, UnicodeError):
+            return False
 
     def _denied() -> JSONResponse:
         return JSONResponse({"detail": "failure_lab_control_denied"}, status_code=403)

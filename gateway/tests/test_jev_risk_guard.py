@@ -166,6 +166,10 @@ async def _setup(
 
 
 async def _invoke(client, agent, permit, key="jev-invoke", *, headers=None):
+    merged = dict(headers or agent["agent_headers"])
+    # Refusals echo the caller correlation id. One fixed id keeps
+    # re-evaluated refusals byte-identical across first and replay.
+    merged.setdefault("X-Request-ID", "jev-fixed-request-id")
     return await client.post(
         f"/mcp/tools/{TOOL}/invoke",
         json={
@@ -177,7 +181,7 @@ async def _invoke(client, agent, permit, key="jev-invoke", *, headers=None):
                 "idempotency_key": key,
             },
         },
-        headers=headers or agent["agent_headers"],
+        headers=merged,
     )
 
 

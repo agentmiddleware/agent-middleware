@@ -7,8 +7,10 @@ import inspect
 import json
 from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,15 +66,25 @@ def test_review_claim_names_local_receipt_exception():
 def test_ci_recipe_exports_one_provisioned_identity(tmp_path):
     doc = read("constant-test-loop.md")
     recipe = doc.split("# Provision an agent key once", 1)[1].split(
-        "# Or use a restrictive", 1
+        "# Run the constant test", 1
     )[0]
     recipe = "# Provision an agent key once" + recipe
+    # Runtime-generated values only: the fake provisioner writes the secret
+    # to --key-file and prints identity JSON (no api_key on stdout).
+    agent_key = f"agt-{secrets.token_hex(16)}"
+    wallet_id = f"wal-{uuid.uuid4().hex[:12]}"
+    key_id = f"key-{uuid.uuid4().hex[:12]}"
     fake_python = tmp_path / "python"
     fake_python.write_text(
         "#!/bin/sh\n"
         'count=0; [ ! -f "$COUNT_FILE" ] || count=$(cat "$COUNT_FILE")\n'
         'count=$((count + 1)); printf "%s" "$count" > "$COUNT_FILE"\n'
-        'printf \'{"api_key":"synthetic-%s","wallet_id":"wallet-%s","key_id":"key-%s"}\\n\' "$count" "$count" "$count"\n'
+        'key_file=""; prev=""; for arg in "$@"; do\n'
+        '  if [ "$prev" = "--key-file" ]; then key_file="$arg"; fi\n'
+        '  prev="$arg"\n'
+        "done\n"
+        'if [ -n "$key_file" ]; then printf "%s" "$FAKE_AGENT_KEY" > "$key_file"; fi\n'
+        'printf \'{"wallet_id":"%s","key_id":"%s"}\\n\' "$FAKE_WALLET_ID" "$FAKE_KEY_ID"\n'
     )
     fake_python.chmod(0o755)
     jq = shutil.which("jq")
@@ -80,6 +92,9 @@ def test_ci_recipe_exports_one_provisioned_identity(tmp_path):
     env = {
         "PATH": f"{tmp_path}:{Path(jq).parent}:/usr/bin:/bin",
         "COUNT_FILE": str(tmp_path / "count"),
+        "FAKE_AGENT_KEY": agent_key,
+        "FAKE_WALLET_ID": wallet_id,
+        "FAKE_KEY_ID": key_id,
     }
     result = subprocess.run(
         [
@@ -93,7 +108,7 @@ def test_ci_recipe_exports_one_provisioned_identity(tmp_path):
         capture_output=True,
         check=True,
     )
-    assert result.stdout.splitlines() == ["synthetic-1", "wallet-1", "key-1"]
+    assert result.stdout.splitlines() == [agent_key, wallet_id, key_id]
     assert (tmp_path / "count").read_text() == "1"
 
 

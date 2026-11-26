@@ -58,6 +58,7 @@ from app.services.permits import (
 )
 from app.services.receipts import ReceiptError, ReceiptService, get_receipt_service
 from app.services.service_registry import get_service_registry
+from app.services.jcs import CanonicalizationError
 from app.services.signing_keys import canonical_json, sha256_hex
 from app.services.upstream_mcp import UpstreamMcpAdapter
 
@@ -1148,24 +1149,33 @@ class McpDispatchReconciliationService:
             raise DispatchAttemptError("dispatch_receipt_linkage_conflict")
         signed_constraints = receipt.constraints_evaluated
         expected_constraints = constraints_evaluated or {}
-        if canonical_json(signed_constraints) != canonical_json(expected_constraints):
+        try:
+            constraints_equal = canonical_json(signed_constraints) == canonical_json(
+                expected_constraints
+            )
+        except (CanonicalizationError, TypeError, ValueError) as exc:
+            raise DispatchAttemptError("dispatch_receipt_linkage_conflict") from exc
+        if not constraints_equal:
             # Older direct finalization paths signed valid receipts before permit-v2
             # snapshots were attached. Recover only that exact legacy shape;
             # a receipt with any signed permit evidence must match in full.
-            legacy_omission = (
-                outcome in _LEGACY_UNSNAPSHOTTED_OUTCOMES
-                and set(signed_constraints) <= {"jev_risk_guard"}
-                and set(expected_constraints)
-                <= _PERMIT_SNAPSHOT_KEYS | {"jev_risk_guard"}
-                and canonical_json(signed_constraints)
-                == canonical_json(
-                    {
-                        key: value
-                        for key, value in expected_constraints.items()
-                        if key == "jev_risk_guard"
-                    }
+            try:
+                legacy_omission = (
+                    outcome in _LEGACY_UNSNAPSHOTTED_OUTCOMES
+                    and set(signed_constraints) <= {"jev_risk_guard"}
+                    and set(expected_constraints)
+                    <= _PERMIT_SNAPSHOT_KEYS | {"jev_risk_guard"}
+                    and canonical_json(signed_constraints)
+                    == canonical_json(
+                        {
+                            key: value
+                            for key, value in expected_constraints.items()
+                            if key == "jev_risk_guard"
+                        }
+                    )
                 )
-            )
+            except (CanonicalizationError, TypeError, ValueError) as exc:
+                raise DispatchAttemptError("dispatch_receipt_linkage_conflict") from exc
             if not legacy_omission:
                 raise DispatchAttemptError("dispatch_receipt_linkage_conflict")
         expected_reason_code = (

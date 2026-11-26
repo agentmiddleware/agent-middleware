@@ -91,8 +91,20 @@ wait for a restart.
 Who may call them:
 
 - A bootstrap admin key may act on any wallet.
-- A database key may act only on its own `wallet_id`. Any other wallet is
-  `403` `wallet_access_denied`.
+- A database key may act on its own `wallet_id`. Create and rotate stay on
+  the key's own wallet only.
+- A database key whose wallet is a strict ancestor of the target wallet (a
+  sponsor over its agent wallets, or an agent over its child wallets) may
+  also list a descendant's keys and permits, revoke its keys and permits,
+  emergency revoke it, and read its rotation logs
+  (`GET /v1/api-keys/{wallet_id}`,
+  `DELETE /v1/api-keys/{wallet_id}/{key_id}`,
+  `POST /v1/api-keys/emergency-revoke`, `GET /v1/api-keys/{wallet_id}/logs`,
+  `GET /v1/permits?wallet_id=` and `POST /v1/permits/{permit_id}/revoke`).
+  A permit is revoked through its issuer wallet. The target's parent chain
+  must reach its root within 31 parent hops. The reverse direction,
+  siblings, unrelated wallets, and any wallet whose parent chain is missing,
+  cyclic or longer than that get `403` `wallet_access_denied`.
 - A JWT cannot mint a replacement key (`403` `jwt_cannot_mint_api_key`).
 - A bounded database key (`max_uses` or `expires_at`) cannot create a fresh
   key or rotate another key. An omitted or different `key_id` on rotate is
@@ -101,6 +113,11 @@ Who may call them:
   `revoke_old: true`, or rotate returns `422` `invalid_rotation_request`.
 - A bounded wallet key may call emergency revoke. If it requests a replacement,
   the new key inherits only the caller key's remaining bounds.
+- An ancestor using a database key ignores `create_new_key`: it mints no
+  replacement key (`new_key` is null). An authorized JWT ancestor must set
+  `create_new_key` to false; the default true returns `403`
+  `jwt_cannot_mint_api_key` before revocation. Each ancestor revoke is
+  logged with the ancestor's wallet and key id.
 
 ### Rotate one key
 

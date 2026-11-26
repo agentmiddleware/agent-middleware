@@ -182,6 +182,25 @@ def test_loaded_manifest_cannot_promote_negative_rows_to_pass(tmp_path, row_verd
     assert supported_claims(loaded) == []
 
 
+@pytest.mark.parametrize("reported", ["false", "true", "yes", 1])
+def test_a_non_boolean_match_flag_does_not_grant_support(tmp_path, reported):
+    """The gate accepts JSON true, not every truthy value.
+
+    The string "false" is truthy in Python. A hand-written manifest must not
+    become supportable because of that.
+    """
+    manifest = build_claims_manifest([_scenario("T01")], environment="local")
+    document = manifest.as_dict()
+    document["claims"][0]["matches_documented_expectation"] = reported
+    path = tmp_path / "claims.json"
+    path.write_text(json.dumps(document))
+    loaded = load_claims_manifest(path)
+    assert loaded.records[0].matches_documented_expectation is False
+    with pytest.raises(UnsupportedClaimError):
+        assert_claim_is_supported(loaded, CLAIM)
+    assert supported_claims(loaded) == []
+
+
 @pytest.mark.parametrize("documented", [Verdict.PASS, Verdict.FAIL])
 def test_loaded_manifest_keeps_passing_rows_and_expectation_gate(tmp_path, documented):
     manifest = build_claims_manifest(

@@ -413,15 +413,17 @@ class SandboxEngine:
             if action_type == "submit_transform":
                 # Check if agent guessed the transformation rule
                 guess = str(action_value).lower()
-                for _rule in env.hidden_rules:
+                for rule in env.hidden_rules:
                     if any(
-                        keyword in guess
+                        keyword in rule.lower() and keyword in guess
                         for keyword in [
                             "rotate",
                             "mirror",
                             "increment",
                             "invert",
                             "shift",
+                            "color",
+                            "swap",
                         ]
                     ):
                         return 10.0, "Correct transformation detected!", True

@@ -320,9 +320,10 @@ async def test_governed_refund_failure_keeps_refund_store_text_server_side(
     assert resp.status_code == 200
     error = resp.json()["error"]
     assert error["code"] == -32603
-    assert error["message"] == "refund_failed; tool_error:tool exploded"
+    assert error["message"] == "refund_failed"
     assert error["data"]["receipt"]["outcome"] == "failed_unrefunded"
     assert "SELECT" not in resp.text
+    assert "tool exploded" not in resp.text
 
 
 @pytest.mark.anyio

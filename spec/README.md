@@ -11,20 +11,29 @@ gateway, without reading the gateway's code.
 | [`permit-v0.1.md`](permit-v0.1.md) | The scoped, signed authority an operator issues to an agent |
 | [`receipt-v0.1.md`](receipt-v0.1.md) | The signed record of one governed tool call, and replay rules |
 | [`key-set-v0.1.md`](key-set-v0.1.md) | How verification keys are published, rotated, and disabled |
-| [`test-vectors/`](test-vectors/) | Signed receipt bundles plus tampered variants, with expected verifier results |
+| [`test-vectors/`](test-vectors/) | Signed receipt and permit bundles plus tampered variants, with expected verifier results |
+| [`INTEROP.md`](INTEROP.md) | One-page interop statement: version promise, live key-set URL, how to verify without us |
 
 Status: **draft**. The format is what the reference gateway in
 [`../gateway/`](../gateway/) emits today. Field additions are expected;
 breaking changes will bump the version. Propose changes with a spec RFC issue
-(see [`../CONTRIBUTING.md`](../CONTRIBUTING.md)).
+(see [`../CONTRIBUTING.md`](../CONTRIBUTING.md)). The version promise, the
+live key-set location, and the limits of offline verification are written
+for evaluators in [`INTEROP.md`](INTEROP.md).
 
 ## Conventions
 
 - **Signature:** Ed25519 over the UTF-8 bytes of `signing_input`, exactly as
   transmitted. Verifiers must not re-serialize before verifying.
-- **Canonical JSON (`awi-canonical-json/1`):** object keys sorted at every
-  level, no insignificant whitespace (`,` and `:` separators), non-ASCII
-  escaped as lowercase `\uXXXX`.
+- **Canonical JSON (`awi-canonical-json/1`):** RFC 8785 (JCS) over JSON-native
+  values: ECMAScript number serialization, object keys sorted by UTF-16 code
+  units, UTF-8 string contents with only the JCS escapes, no insignificant
+  whitespace. `Decimal` / `datetime` values are mapped to strings before JCS
+  (Appendix D/E). The profile name stays `awi-canonical-json/1`; it does not
+  distinguish pre-JCS vs JCS byte layouts. Verifiers that check the transmitted
+  `signing_input` bytes are unaffected. Gateway re-serializing verifiers try
+  JCS first, then the pre-cutover `json.dumps` form, so historical float and
+  non-ASCII signatures keep verifying.
 - **Amounts and timestamps:** credit amounts and timestamps are strings before
   they are signed. Amount strings are fixed point, with no exponent and with
   trailing zeros removed (`2.50` is signed as `2.5`, `10.00` as `10`).
@@ -35,9 +44,8 @@ breaking changes will bump the version. Propose changes with a spec RFC issue
   payload *without* the `payload_hash` member. It is itself part of the signed
   bytes, so the signature covers it: editing it without re-signing is
   `invalid`. Verifiers treat it as advisory and never recompute it, because
-  signed payloads may carry JSON numbers (floats, exponents, integers above
-  2^53) whose rendering differs between languages, and re-serializing the
-  parsed payload would reject genuine receipts.
+  signed payloads may carry JSON numbers whose pre-image must stay verbatim,
+  and re-serializing a parsed payload would reject genuine receipts.
 - **`kid`:** the signing key id, inside the signed payload. Key selection uses
   the signed `kid`, never the unauthenticated envelope.
 

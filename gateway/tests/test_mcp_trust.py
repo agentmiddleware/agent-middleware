@@ -33,6 +33,13 @@ from tests.test_trust_helpers import (
 )
 
 
+def _error_without_request_id(error: dict) -> dict:
+    """Replay identity ignores the per-call correlation id."""
+    data = dict(error.get("data") or {})
+    data.pop("request_id", None)
+    return {**error, "data": data}
+
+
 @pytest.fixture
 async def client():
     transport = ASGITransport(app=app)
@@ -120,7 +127,7 @@ async def test_governed_mcp_invoke_returns_receipt_and_replay_does_not_double_ch
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("transport", ["jsonrpc", "http"])
+@pytest.mark.parametrize("transport", ["jsonrpc", "http", "http_camel"])
 @pytest.mark.parametrize(
     "wallet_case", ["absent", "null", "empty", "matching", "foreign", "invalid"]
 )
@@ -176,9 +183,10 @@ async def test_legacy_mcp_wallet_defaults_only_when_omitted(
                 headers=provisioned["agent_headers"],
             )
         else:
+            context_key = "mcpContext" if transport == "http_camel" else "mcp_context"
             response = await client.post(
                 f"/mcp/tools/{tool_name}/invoke",
-                json={"name": tool_name, "arguments": {}, "mcp_context": context},
+                json={"name": tool_name, "arguments": {}, context_key: context},
                 headers=provisioned["agent_headers"],
             )
 
@@ -188,11 +196,16 @@ async def test_legacy_mcp_wallet_defaults_only_when_omitted(
                 assert response.status_code == 200
                 error = response.json()["error"]
                 assert error["code"] == -32602
-                assert error["message"] == (
-                    "Invalid params: mcpContext.wallet_id must be a string"
-                )
+                assert error["message"] == "Invalid params"
                 assert error["data"]["code"] == "invalid_params"
-                assert set(error["data"]) == {"code", "message", "fix", "docs_url"}
+                assert "request_id" in error["data"]
+                assert set(error["data"]) == {
+                    "code",
+                    "message",
+                    "fix",
+                    "docs_url",
+                    "request_id",
+                }
             else:
                 assert response.status_code == 422
         elif wallet_case == "foreign":
@@ -280,7 +293,14 @@ async def test_legacy_mcp_missing_wallet_still_rejected_without_bound_key(
         assert error["code"] == -32602
         assert error["message"] == "Missing wallet_id in mcpContext"
         assert error["data"]["code"] == "missing_wallet_id"
-        assert set(error["data"]) == {"code", "message", "fix", "docs_url"}
+        assert "request_id" in error["data"]
+        assert set(error["data"]) == {
+            "code",
+            "message",
+            "fix",
+            "docs_url",
+            "request_id",
+        }
     else:
         response = await client.post(
             "/mcp/tools/anything/invoke",
@@ -372,7 +392,9 @@ async def test_frozen_wallet_denial_returns_receipt_and_replays_without_charge(
         assert receipt["credits_charged"] == "0"
 
         assert replay.status_code == 200
-        assert replay.json()["error"] == first_error
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert calls["count"] == 0
 
         stored_permit = await get_permit_service().get_permit(permit["permit_id"])
@@ -476,7 +498,9 @@ async def test_velocity_auto_freeze_returns_receipted_denial_and_releases_budget
         assert receipt["ledger_entry_id"] is None
         assert receipt["credits_charged"] == "0"
         assert replay.status_code == 200
-        assert replay.json()["error"] == first_error
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert calls["count"] == 0
 
         stored_permit = await get_permit_service().get_permit(permit["permit_id"])
@@ -895,7 +919,11 @@ async def test_governed_tool_failure_returns_refunded_receipt(client, clean_data
 
     assert resp.status_code == 200
     payload = resp.json()
-    assert payload["error"]["message"] == "tool exploded"
+    # A refunded tool failure is classified: -32006 with the canned reason
+    # code (docs/failure-semantics.md), never the tool's own text.
+    assert payload["error"]["code"] == -32006
+    assert payload["error"]["message"] == "tool_execution_failed"
+    assert "tool exploded" not in resp.text
     receipt = payload["error"]["data"]["receipt"]
     assert receipt["outcome"] == "failed_refunded"
     assert receipt["ledger_entry_id"]
@@ -980,11 +1008,18 @@ async def test_governed_refund_failure_keeps_permit_budget_reserved(
 
     assert first.status_code == 200
     assert first.json()["error"]["code"] == -32603
-    # The reason names the tool's own error; the refund store's text stays
+    # The public message is canned; the tool error and refund store text stay
     # server-side (server log and audit event), as on the upstream path.
-    assert first.json()["error"]["message"] == "refund_failed; tool_error:tool exploded"
+    assert first.json()["error"]["message"] == "refund_failed"
     assert "refund down" not in first.text
-    assert replay.json()["error"] == first.json()["error"]
+    assert "tool exploded" not in first.text
+    first_error = first.json()["error"]
+    replay_error = replay.json()["error"]
+    assert replay_error["code"] == first_error["code"]
+    assert replay_error["message"] == first_error["message"]
+    first_data = {k: v for k, v in first_error["data"].items() if k != "request_id"}
+    replay_data = {k: v for k, v in replay_error["data"].items() if k != "request_id"}
+    assert replay_data == first_data
     receipt = first.json()["error"]["data"]["receipt"]
     assert receipt["outcome"] == "failed_unrefunded"
     assert receipt["ledger_entry_id"]
@@ -1491,7 +1526,9 @@ async def test_insufficient_funds_returns_receipt_and_replays_without_charge(
         assert receipt["credits_charged"] == "0"
 
         assert replay.status_code == 200
-        assert replay.json()["error"] == first_error
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert calls["count"] == 0
 
         stored_permit = await get_permit_service().get_permit(permit["permit_id"])

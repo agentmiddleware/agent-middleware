@@ -384,14 +384,14 @@ async def test_standard_distinct_valid_keys_stay_distinct_operations(
 
 
 @pytest.mark.parametrize("meta", [_ABSENT, None], ids=["no-entry", "json-null"])
-async def test_standard_unkeyed_calls_are_documented_as_new_operations(
+async def test_standard_unkeyed_retry_is_one_operation(
     client, standard_mcp_enabled, clean_database, counted_tool, meta
 ):
-    """No key anywhere (or a JSON null entry) means each call is a new charge.
+    """No key anywhere (or a JSON null entry) gets a derived retry key.
 
-    This pins the documented contract for un-keyed clients so it cannot drift
-    silently in either direction: absent must not be refused like malformed,
-    and it must not be quietly deduplicated either.
+    SEL-484: an identical un-keyed call inside the retry window replays the
+    first receipt instead of charging, dispatching, or minting again. Absent
+    must still not be refused like malformed.
     """
     provisioned = await provision_agent_wallet(client)
     headers = {**provisioned["agent_headers"], **MCP_HEADERS}
@@ -403,11 +403,11 @@ async def test_standard_unkeyed_calls_are_documented_as_new_operations(
         ]["receipt_id"]
         for _ in range(2)
     ]
-    assert len(set(receipts)) == 2
+    assert len(set(receipts)) == 1
     snapshot = await _snapshot(client, provisioned, counted_tool)
-    assert snapshot["effects"] == 2
-    assert snapshot["ledger_entries"] == base["ledger_entries"] + 2
-    assert snapshot["permits"] == base["permits"] + 2
+    assert snapshot["effects"] == 1
+    assert snapshot["ledger_entries"] == base["ledger_entries"] + 1
+    assert snapshot["permits"] == base["permits"] + 1
 
 
 # --------------------------------------------------------------------------- #
@@ -692,8 +692,9 @@ async def test_legacy_context_null_key_reads_as_absent(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize("context_key", ["mcp_context", "mcpContext"])
 async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
-    client, governed_legacy, counted_tool
+    client, governed_legacy, counted_tool, context_key
 ):
     provisioned, permit = governed_legacy
     before = await _snapshot(client, provisioned, counted_tool)
@@ -707,7 +708,7 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
         json={
             "name": counted_tool.name,
             "arguments": {"text": "one"},
-            "mcp_context": context,
+            context_key: context,
         },
         headers=provisioned["agent_headers"],
     )
@@ -722,7 +723,7 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
         json={
             "name": counted_tool.name,
             "arguments": {"text": "one"},
-            "mcp_context": context,
+            context_key: context,
         },
         headers={
             **provisioned["agent_headers"],
@@ -752,7 +753,7 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
         json={
             "name": counted_tool.name,
             "arguments": {"text": "one"},
-            "mcp_context": context,
+            context_key: context,
         },
         headers=headers,
     )
@@ -762,7 +763,7 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
         json={
             "name": counted_tool.name,
             "arguments": {"text": "one"},
-            "mcp_context": context,
+            context_key: context,
         },
         headers=headers,
     )
@@ -772,14 +773,15 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
     assert counted_tool.effects == ["one"]
 
 
+@pytest.mark.parametrize("context_key", ["mcp_context", "mcpContext"])
 async def test_rest_invoke_changed_excluded_argument_conflicts(
-    client, governed_legacy, counted_tool
+    client, governed_legacy, counted_tool, context_key
 ):
     """Dropping a field from the key does not drop it from the gateway request."""
     provisioned, permit = governed_legacy
     key = request_key(counted_tool.name, {"text": "one"}, exclude=["text"])
     assert key == request_key(counted_tool.name, {"text": "two"}, exclude=["text"])
-    headers = {**provisioned["agent_headers"], "Idempotency-Key": key}
+    headers = provisioned["agent_headers"]
     context = {
         "wallet_id": provisioned["agent_wallet_id"],
         "permit_id": permit["permit_id"],
@@ -788,12 +790,30 @@ async def test_rest_invoke_changed_excluded_argument_conflicts(
     body = {
         "name": counted_tool.name,
         "arguments": {"text": "one"},
-        "mcp_context": context,
+        context_key: context,
     }
     first = await client.post(
         f"/mcp/tools/{counted_tool.name}/invoke", json=body, headers=headers
     )
     assert first.status_code == 200, first.text
+    receipt = first.json()["receipt"]
+    assert receipt["wallet_id"] == context["wallet_id"]
+    assert receipt["permit_id"] == context["permit_id"]
+    after_first = await _snapshot(client, provisioned, counted_tool)
+
+    # Both spellings normalize to the same request for replay hashing.
+    other_key = "mcpContext" if context_key == "mcp_context" else "mcp_context"
+    replay = await client.post(
+        f"/mcp/tools/{counted_tool.name}/invoke",
+        json={
+            "name": counted_tool.name,
+            "arguments": {"text": "one"},
+            other_key: context,
+        },
+        headers=headers,
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["receipt"]["receipt_id"] == receipt["receipt_id"]
 
     changed = await client.post(
         f"/mcp/tools/{counted_tool.name}/invoke",
@@ -801,5 +821,43 @@ async def test_rest_invoke_changed_excluded_argument_conflicts(
         headers=headers,
     )
     assert changed.status_code == 409, changed.text
-    assert changed.json()["detail"] == "idempotency_key_reused"
+    assert changed.json()["detail"] == {"error": "idempotency_key_reused"}
+    assert changed.headers["X-Request-ID"]
     assert counted_tool.effects == ["one"]
+    assert await _snapshot(client, provisioned, counted_tool) == after_first
+
+
+@pytest.mark.parametrize(
+    "context_case", ["same", "different", "snake-null", "camel-null", "both-null"]
+)
+async def test_rest_invoke_rejects_both_context_spellings_before_any_effect(
+    client, governed_legacy, counted_tool, context_case
+):
+    provisioned, permit = governed_legacy
+    before = await _snapshot(client, provisioned, counted_tool)
+    context = {
+        "wallet_id": provisioned["agent_wallet_id"],
+        "permit_id": permit["permit_id"],
+        "idempotency_key": "rest-context-alias",
+    }
+    body = {
+        "name": counted_tool.name,
+        "arguments": {"text": "one"},
+        "mcp_context": context,
+        "mcpContext": {**context},
+    }
+    if context_case == "different":
+        body["mcpContext"]["idempotency_key"] = "rest-context-alias-other"
+    if context_case in {"snake-null", "both-null"}:
+        body["mcp_context"] = None
+    if context_case in {"camel-null", "both-null"}:
+        body["mcpContext"] = None
+
+    response = await client.post(
+        f"/mcp/tools/{counted_tool.name}/invoke",
+        json=body,
+        headers=provisioned["agent_headers"],
+    )
+    assert response.status_code == 422, response.text
+    assert "mcp_context and mcpContext cannot both be supplied" in response.text
+    assert await _snapshot(client, provisioned, counted_tool) == before

@@ -15,6 +15,11 @@ migration performs an initial scrub, while the deploy workflow performs the
 same idempotent scrub and assertion again after Railway reports that only the
 new deployment is active. A later contract migration may drop the empty
 compatibility columns once no old binary can be running.
+
+Chain note: the shared "025" numeric filename prefix is sequential, not a
+branch. Alembic follows ``down_revision``: this revision depends on
+``025_refresh_token_key_binding``. Do not infer migration order from filename
+sorting or read the repeated prefix as a conflict.
 """
 
 from typing import Sequence, Union

@@ -81,7 +81,7 @@ CONCLUSION_GLOSS: dict[str, str] = {
         "and no comparison was made either way"
     ),
     ConclusionKind.INCONCLUSIVE.value: (
-        "too few configurations ran for this test to say anything"
+        "the measurements are not enough to say a baseline handled this test"
     ),
 }
 
@@ -293,6 +293,28 @@ def _differences(
     return added, lost
 
 
+def _baseline_is_credible(column: ConfigurationView | None) -> bool:
+    """A baseline column the report may treat as having run the operation.
+
+    Zero duplicate effects is not evidence on its own. A column that never
+    reached the one intended execution suppressed duplicates by doing
+    nothing. OBSERVED records measurements without establishing that the
+    baseline handled the test correctly; only PASS supports that claim.
+    """
+    return (
+        column is not None
+        and column.ran
+        and column.verdict == Verdict.PASS.value
+        and column.downstream_effects >= INTENDED_EXECUTIONS
+    )
+
+
+def _baseline_supports_sufficiency(column: ConfigurationView | None) -> bool:
+    if column is None or not _baseline_is_credible(column):
+        return False
+    return column.duplicate_effects == 0
+
+
 def _conclude(
     result: ScenarioResult,
     existing: ConfigurationView | None,
@@ -371,7 +393,7 @@ def _conclude(
             disadvantages,
         )
 
-    if existing is not None and existing.ran and existing.duplicate_effects == 0:
+    if _baseline_supports_sufficiency(existing):
         return Conclusion(
             ConclusionKind.EXISTING_INTEGRATION_SUFFICIENT,
             "Your existing integration handled this test correctly. We did not "
@@ -384,28 +406,42 @@ def _conclude(
             disadvantages,
         )
 
-    if native is not None and native.ran and native.duplicate_effects == 0:
-        if prevented_vs_native == 0:
-            cost = (
-                " On this test the baseline also did something the gateway did "
-                "not: see what it cost, below."
-                if disadvantages
-                else ""
-            )
+    if _baseline_supports_sufficiency(native):
+        cost = (
+            " On this test the baseline also did something the gateway did "
+            "not: see what it cost, below."
+            if disadvantages
+            else ""
+        )
+        return Conclusion(
+            ConclusionKind.NATIVE_CONTROLS_SUFFICIENT,
+            "Correct native controls handled this test on their own. We did "
+            "not observe an additional duplicate effect prevented by Agent "
+            "Middleware in this scenario. If your downstream already honors "
+            "a durable operation id the way this baseline does, this "
+            "failure mode is already covered for you." + cost,
+            prevented_vs_native,
+            prevented_vs_existing,
+            differences,
+            disadvantages,
+        )
+
+    if prevented_vs_native == 0 and prevented_vs_existing == 0:
+        if (existing_ran or native_ran) and not (
+            _baseline_is_credible(existing) or _baseline_is_credible(native)
+        ):
             return Conclusion(
-                ConclusionKind.NATIVE_CONTROLS_SUFFICIENT,
-                "Correct native controls handled this test on their own. We did "
-                "not observe an additional duplicate effect prevented by Agent "
-                "Middleware in this scenario. If your downstream already honors "
-                "a durable operation id the way this baseline does, this "
-                "failure mode is already covered for you." + cost,
-                prevented_vs_native,
-                prevented_vs_existing,
+                ConclusionKind.INCONCLUSIVE,
+                "The available baseline measurements do not establish success "
+                "in this test: none has both a PASS verdict and "
+                "the required downstream execution. A zero duplicate count "
+                "alone cannot establish that the intended business action "
+                "succeeded.",
+                0,
+                0,
                 differences,
                 disadvantages,
             )
-
-    if prevented_vs_native == 0 and prevented_vs_existing == 0:
         if differences:
             return Conclusion(
                 ConclusionKind.GATEWAY_ADDED_EVIDENCE_ONLY,
@@ -418,9 +454,9 @@ def _conclude(
                 disadvantages,
             )
         return Conclusion(
-            ConclusionKind.NATIVE_CONTROLS_SUFFICIENT,
-            "No difference was observed between the baseline and the gateway "
-            "in this scenario.",
+            ConclusionKind.INCONCLUSIVE,
+            "No difference was observed, but no baseline established that it "
+            "handled the intended business action without duplicates.",
             prevented_vs_native,
             prevented_vs_existing,
             differences,

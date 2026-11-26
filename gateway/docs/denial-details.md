@@ -49,13 +49,14 @@ not depend on the missing context (`permit_not_found`, `permit_expired`,
 
 ## Reason-code and remediation catalog
 
-This is the authoritative catalog for the `reason_code` values emitted by the
-current governed MCP receipt paths. It excludes errors that happen before a
-receipt can be created, such as a missing permit, quote failure, or idempotency
-conflict. The signed reason names the failure class; use the signed `outcome`
-and credit fields to determine whether a debit was retained, refunded, or never
-made. API details and audit metadata remain adjacent context, not receipt-signed
-claims.
+This catalog lists stable governed denials and the permit-issuance and
+idempotency admission reasons below. Generic API errors such as
+`invalid_api_key`, `rate_limited`, and `internal_error` use their own envelope
+codes. A terminal permit-bound denial can carry a signed receipt; an API-only
+error has no receipt. The signed reason names the failure class; use the
+signed `outcome` and credit fields to determine whether a debit was
+retained, refunded, or never made. API details and audit metadata remain
+adjacent context, not receipt-signed claims.
 
 ### Permit and recipient binding
 
@@ -88,6 +89,96 @@ value to the signed, stable `permit_forbidden_field` reason code because field
 names are not constrained to the receipt's safe machine-code grammar. The
 adjacent `details.field` value identifies the rejected field.
 
+### Permit issuance
+
+These refusals happen before a permit is issued or an invocation can produce
+a signed denial receipt. They are API-only.
+
+| Reason code | Meaning | Remediation |
+|-------------|---------|-------------|
+| `action_permit_requires_trusted_issuance` | A caller tried to mint an action permit through ordinary permit issuance. | Use the trusted action-permit flow. |
+| `aggregate_value_cap_not_storable` | The aggregate cap cannot be represented in the permit store. | Supply a valid finite cap within the supported range. |
+| `demo_permit_out_of_bounds` | A demo key requested authority outside its wallet, tool, credit, or lifetime limits. | Issue a permit within the demo key's limits. |
+| `issuer_wallet_not_found` | The requested issuer wallet does not exist. | Use an existing authorized issuer wallet. |
+| `max_credits_must_be_positive` | The requested permit budget is zero or negative. | Supply a positive budget. |
+| `max_credits_not_storable` | The requested budget cannot be represented in the permit store. | Supply a valid finite budget within the supported range. |
+| `permit_budget_exceeds_wallet_balance` | The subject wallet cannot cover the requested permit budget. | Fund the wallet, lower the budget, or request additional authority. |
+| `permit_expired_at_creation` | The requested permit has already expired. | Set a future expiry and issue a new permit. |
+| `repeat_window_issuance_disabled` | Repeat-window permit issuance is disabled. | Omit the repeat window until issuance is enabled. |
+| `subject_wallet_access_denied` | The caller cannot issue a permit against the subject wallet. | Use a wallet the key may access. |
+| `subject_wallet_not_found` | The requested subject wallet does not exist. | Use an existing authorized subject wallet. |
+
+### Admission, credentials, and action binding
+
+These refusals cover admission and action validation before dispatch. Rows
+marked API-only occur before a signed denial receipt can be created.
+
+| Reason code | Meaning | Remediation |
+|-------------|---------|-------------|
+| `permit_not_found` | API-only: the referenced permit does not exist; no signed receipt is created. | Check the permit ID or mint a new permit. |
+| `permit_credits_invalid` | The call's estimated credit amount cannot be stored or compared against the permit budget. | Fix the tool's pricing or request amount, then retry with a new idempotency key. |
+| `wallet_access_denied` | The authenticated key may not act on the named wallet. | Authenticate with a key scoped to that wallet. |
+| `wallet_scoped_key_required` | The standard `/mcp` surface mints permits from the caller's wallet, so it needs a wallet-scoped key. The message may carry a `: <explanation>` suffix. | Authenticate with a wallet-scoped API key. |
+| `key_tool_not_allowed` | The API key's own tool allowlist excludes the tool. | Use a key that allows the tool. |
+| `demo_tool_not_allowed` | Demo-tenant wallets may call only the demo allowlist. | Use an allowed demo tool or a non-demo wallet. |
+| `demo_auto_permit_budget_exceeded` | The tool costs more than the demo auto-permit credit cap. | Use a cheaper tool or a non-demo wallet. |
+| `idempotency_key_required` | An unkeyed MCP `tools/call` got no derived retry key (a `read_only` tool, `MCP_UNKEYED_RETRY_WINDOW_SECONDS=0`, or an enterprise bearer that fails verification). Refused before any permit, dispatch, or charge instead of minting a random key. | Send an `Idempotency-Key` and reuse it when retrying the same call. |
+| `idempotency_key_required_for_human_approval` | The wallet policy requires approval, and without a client idempotency key each retry would page a human again. | Send an `Idempotency-Key` and retry the same call with the same key to poll the decision. |
+| `idempotency_key_not_a_string` | API-only: a supplied request key is not a string. | Send a string key. |
+| `idempotency_key_blank` | API-only: the key is empty or only whitespace. | Send a non-blank key. |
+| `idempotency_key_too_long` | API-only: the key exceeds the allowed length. | Send a shorter key. |
+| `idempotency_key_control_characters` | API-only: the key contains a control character. | Remove control characters and resend. |
+| `idempotency_key_not_utf8` | API-only: an HTTP header key is not valid UTF-8. | Send a UTF-8 string key. |
+| `idempotency_key_conflict` | API-only: header and body supply different keys. | Send the same key in both places or use one source. |
+| `idempotency_key_reused` | API-only: the idempotency key was already used for a different request; no signed receipt is created. | Use a new idempotency key. |
+| `action_permit_required` | The tool has an action binding and needs an explicit action permit. | Mint an action permit for the tool and pass its ID. |
+| `action_tool_binding_required` | The permit is an action permit but the tool has no action binding. | Use a tool with an action binding or a standard permit. |
+| `action_binding_mismatch` | The tool's current upstream binding differs from the one the action permit was minted for. | Mint a new action permit against the current binding. |
+| `action_quote_unsupported` | Quotes cannot be combined with action permits. | Invoke without a quote. |
+| `action_permit_denied` | Action permit validation failed without a narrower reason. | Inspect the adjacent audit event and replace the permit. |
+| `unsupported_action_contract_version` | The permit uses an action contract other than v1. | Mint a v1 action permit. |
+| `invalid_action_binding` | The action permit or tool binding is missing a required identity field. | Repair the registered tool binding or mint a new permit. |
+| `invalid_action_digest` | A signed action or upstream binding digest is malformed. | Mint a new action permit against the current binding. |
+| `invalid_action_permit_scope` | The action permit's tool list or one-call cap is malformed. | Mint a new action permit with the required tool and cap. |
+| `unsupported_action_constraints` | The permit carries options the action path cannot enforce. | Mint an action permit without those options. |
+| `action_payload_mismatch` | The call arguments do not match the payload signed in the action permit. | Send the exact bound arguments or mint a new permit. |
+| `action_arguments_must_be_object` | The arguments or registered input schema is not an object. | Send object arguments or repair the tool schema. |
+| `action_arguments_must_be_strict_json` | The arguments or schema contain a value outside strict JSON. | Remove unsupported values and retry with a new permit. |
+| `invalid_action_schema` | The registered action input schema is malformed. | Repair the tool schema and mint a new permit. |
+| `unsupported_action_schema` | The registered action input schema uses a feature outside the supported v1 profile. | Use a supported schema and mint a new permit. |
+| `action_argument_type_mismatch` | An argument has the wrong JSON type. | Send the type required by the tool schema. |
+| `action_argument_unknown_property` | An argument names a property the schema does not allow. | Remove that property or update the registered schema. |
+| `action_argument_required` | A required argument is missing. | Supply the required property. |
+| `action_argument_constraint` | An argument violates a length, count, or numeric bound. | Send a value within the schema bound. |
+| `action_argument_const` | An argument differs from the schema's fixed value. | Send the required fixed value. |
+| `action_argument_enum` | An argument is outside the schema's allowed choices. | Send one of the allowed values. |
+
+### Enterprise identity and group policy
+
+Enterprise bearer verification and IGA policy checks can refuse a governed
+call before dispatch. A token rejected by authentication has no receipt; an
+IGA denial after a permit-bound call reaches the governed gate can have a
+signed denial receipt.
+
+| Reason code | Meaning | Remediation |
+|-------------|---------|-------------|
+| `iga_config_invalid` | The pinned issuer or group-policy configuration is invalid. | Have an operator repair the IGA configuration. |
+| `iga_token_malformed` | The enterprise bearer cannot be parsed or lacks a required claim. | Obtain a well-formed token from the configured IdP. |
+| `iga_token_invalid` | Token verification failed without a narrower reason. | Obtain a fresh valid token from the configured IdP. |
+| `iga_token_expired` | The bearer has expired. | Obtain a fresh token. |
+| `iga_token_not_yet_valid` | The bearer's validity window has not begun. | Wait until it is valid or correct the IdP clock. |
+| `iga_issuer_not_trusted` | The token issuer is not configured as trusted. | Authenticate with a configured issuer. |
+| `iga_algorithm_not_allowed` | The token uses a signing algorithm outside the allowlist. | Use the configured IdP and signing algorithm. |
+| `iga_signing_key_not_found` | No pinned signing key matches the token. | Refresh the configured signing keys or obtain a token signed by a pinned key. |
+| `iga_signature_invalid` | The token signature does not verify. | Obtain a correctly signed token. |
+| `iga_audience_mismatch` | The token is not intended for this gateway. | Request a token with the configured audience. |
+| `iga_no_matching_role` | The principal has no group mapped to a gateway policy. | Have an administrator grant an authorized mapped group. |
+| `iga_policy_not_found` | A mapped policy bundle no longer exists. | Have an administrator repair the group-policy mapping. |
+| `iga_policy_inactive` | A mapped policy bundle is inactive. | Have an administrator activate an appropriate policy. |
+| `iga_tool_not_allowed` | A mapped policy does not allow the requested tool. | Use an allowed tool or obtain an authorized policy change. |
+| `iga_max_uses_exceeded` | The grant's lifetime use cap is exhausted. | Obtain a new grant or have an administrator revise the cap. |
+| `iga_velocity_exceeded` | The grant's short-window call cap is exhausted. | Wait for the window to clear or have an administrator revise the cap. |
+
 ### Wallet and standing policy
 
 | Reason code | Meaning | Remediation |
@@ -99,6 +190,7 @@ adjacent `details.field` value identifies the rejected field.
 | `tool_not_allowed` | A wallet policy excludes the requested tool. | Use a policy-allowed tool or update the policy allowlist. |
 | `service_category_not_allowed` | A wallet policy excludes the tool's service category. | Use an allowed category or update the category allowlist. |
 | `policy_constraint_corrupt` | A wallet policy's allow-list column is not a JSON array of strings, so the policy cannot be applied. | Have an administrator repair or recreate the policy bundle; the action stays denied until then. |
+| `policy_cost_invalid` | The action's cost could not be evaluated against the policy (non-finite or unstorable). Fail-closed denial. | Fix the tool's pricing, then retry with a new idempotency key. |
 | `max_cost_per_action_exceeded` | The quoted action cost exceeds the wallet policy's per-action limit. | Lower the action cost or raise the policy limit. |
 | `daily_spend_limit_exceeded` | Current daily spend plus this action exceeds the wallet policy limit. | Wait for the policy window to reset or have an administrator change the limit. |
 | `real_effects_required` | The policy forbids a simulated execution path. | Use a real-effects tool configuration or revise the policy. |
@@ -219,3 +311,10 @@ VERIFIED  rcpt-example
   credits     0 charged of 5 authorized
   at          2026-08-11T00:00:00Z
 ```
+
+## Stable registry
+
+Every code in the tables above is registered in `app/core/reason_codes.py`
+(`REFUSAL_REASON_CODES`). These values are a public contract; new refusals add
+a new code. `tests/test_reason_code_registry.py` pins the set, checks it
+against this page, and scans known refusal producers for unregistered literals.

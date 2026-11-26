@@ -13,7 +13,7 @@ and checks the invariants that matter economically:
                       no second side effect
   3. concurrency      N identical in-flight calls -> one success, one debit,
                       one side effect (losers fail closed, never double-charge)
-  4. reuse-conflict   same key with a different body -> 400, no debit
+  4. reuse-conflict   same key with a different body -> 409, no debit
   5. scope-denial     tool outside the permit -> 403 with a signed denial
                       receipt and zero credits charged
   6. no-permit        governed tool without a permit -> 403, no debit
@@ -45,6 +45,12 @@ from typing import Any
 
 import httpx
 from cryptography.exceptions import InvalidSignature
+
+if __package__:
+    from .live_script_target import LiveTargetError, require_loopback_origin
+else:
+    from live_script_target import LiveTargetError, require_loopback_origin
+
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 ALLOWED_TOOL = "partner.notes.write"
@@ -125,7 +131,19 @@ async def verify_receipts(cl: httpx.AsyncClient, receipt_ids: list[str]) -> None
 
 
 async def run(base_url: str) -> int:
-    async with httpx.AsyncClient(base_url=base_url, timeout=30) as cl:
+    try:
+        base_url = require_loopback_origin(base_url)
+    except LiveTargetError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    # Stay on the named origin: an ambient proxy or a redirect can move the
+    # key this run mints.
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        timeout=30,
+        trust_env=False,
+        follow_redirects=False,
+    ) as cl:
         step("self-provisioning a wallet-scoped key (no pre-shared secret)")
         r = await cl.post(
             "/v1/dev-keys/self-provision",
@@ -215,7 +233,7 @@ async def run(base_url: str) -> int:
             f"/mcp/tools/{ALLOWED_TOOL}/invoke",
             json=invoke_body(wallet, permit, idem, "a different payload"),
         )
-        check("conflict rejected", r4.status_code == 400, f"HTTP {r4.status_code}")
+        check("conflict rejected", r4.status_code == 409, f"HTTP {r4.status_code}")
         check("no debit", len(await debits(cl, wallet)) == before)
 
         step(f"5. {BLOCKED_TOOL} is outside the permit and must be denied free")

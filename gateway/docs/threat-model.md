@@ -1,6 +1,6 @@
 # Threat Model
 
-This threat model covers the production-beta surface of Agent Middleware API:
+This threat model covers the production-beta surface of the Agent Middleware gateway:
 authentication, wallet billing, MCP/tool invocation, telemetry, IoT bridging,
 and sandboxed execution.
 
@@ -70,8 +70,11 @@ boot refusals and the "Rate Limit Posture" section.
 - API-key dependency protects normal authenticated routes.
 - Env keys act as bootstrap/admin credentials and are compared with
   `hmac.compare_digest`.
-- DB-created keys are stored as SHA-256 hashes, compared constant-time
-  (`APIKeyService.validate_key`), and can be revoked or expired.
+- DB-created keys are stored as salted, peppered scrypt digests found by a
+  non-secret lookup id, compared constant-time (`APIKeyService.validate_key`),
+  and can be revoked or expired. The pepper (`API_KEY_HASH_PEPPER`) is a
+  secret asset: production-like boots refuse to start without it, and losing it
+  invalidates every stored key. See [api-key-hashing.md](api-key-hashing.md).
 - Wallet-scoped auth context enforces exact wallet ownership for DB keys.
 - API-key management requires bootstrap/admin or exact wallet access.
 - Behavioral sandbox routes (`/v1/sandbox/behavioral`, a proof surface)

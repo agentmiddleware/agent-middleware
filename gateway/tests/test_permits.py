@@ -21,6 +21,7 @@ from app.services.idempotency import get_idempotency_service
 from app.services.ownership import CallerIdentity
 from app.services.permits import PermitError, get_permit_service
 from tests.test_trust_helpers import (
+    resign_permit_model,
     BOOTSTRAP_HEADERS,
     create_tool_permit,
     provision_agent_wallet,
@@ -640,6 +641,7 @@ async def test_authorize_and_reserve_rechecks_terminal_state_after_stale_prechec
             model.revoked_at = utc_now()
         else:
             model.expires_at = utc_now() - timedelta(seconds=1)
+            await resign_permit_model(model)
         session.add(model)
         await session.commit()
 
@@ -776,6 +778,7 @@ async def test_permit_service_validation_denial_reasons(client, clean_database):
         assert model is not None
         model.allowed_tools_json = json.dumps([])
         model.scopes_json = json.dumps(["billing:charge"])
+        await resign_permit_model(model)
         session.add(model)
         await session.commit()
 
@@ -853,6 +856,7 @@ async def test_reserve_budget_refuses_an_expired_permit(
             model = await session.get(PermitModel, permit.permit_id)
             assert model is not None
             model.expires_at = utc_now() - timedelta(seconds=1)
+            await resign_permit_model(model)
             session.add(model)
 
     with pytest.raises(PermitError) as excinfo:
@@ -974,6 +978,46 @@ async def test_permit_at_full_storage_scale_mints_and_verifies(client, clean_dat
     )
     assert verify_resp.status_code == 200
     assert verify_resp.json()["valid"] is True, verify_resp.json()
+
+
+@pytest.mark.anyio
+async def test_live_verify_rejects_revoked_permit(client, clean_database):
+    """Live verify catches revocation after it happens.
+
+    Revocation is enforced by live validation, not by breaking the permit's
+    Ed25519 signature, so an offline signature check of an exported permit
+    still passes after revocation. This pins the honest story: exported
+    signatures must be rechecked against live status.
+    """
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="trust-echo",
+        idem_key="permit-revoke-verify-1",
+    )
+
+    revoke_resp = await client.post(
+        f"/v1/permits/{permit['permit_id']}/revoke",
+        headers=provisioned["agent_headers"],
+    )
+    assert revoke_resp.status_code == 200
+    assert revoke_resp.json()["status"] == "revoked"
+
+    verify_resp = await client.post(
+        "/v1/permits/verify",
+        json={
+            "permit_id": permit["permit_id"],
+            "wallet_id": provisioned["agent_wallet_id"],
+            "tool": "trust-echo",
+            "estimated_credits": 2,
+        },
+        headers=provisioned["agent_headers"],
+    )
+    assert verify_resp.status_code == 200
+    assert verify_resp.json()["valid"] is False
+    assert verify_resp.json()["reason"] == "permit_revoked"
 
 
 @pytest.mark.parametrize("amount", ["0.00000001", "999999999999"])

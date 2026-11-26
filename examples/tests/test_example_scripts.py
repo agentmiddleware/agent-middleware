@@ -13,9 +13,12 @@ import os
 import sys
 from pathlib import Path
 
-import dry_run_example
-import mcp_tool_example
 import pytest
+
+import dry_run_example
+import httpx
+import mcp_tool_example
+import one_tool_call
 
 _REPO_ROOT = Path(os.path.abspath(dry_run_example.__file__)).parents[1]
 _SDK_SRC = _REPO_ROOT / "sdk" / "python" / "src"
@@ -131,3 +134,86 @@ def test_retry_tool_error_returns_nonzero(
     monkeypatch.setenv("AGENT_API_KEY", "local-test-key")
     monkeypatch.setattr(call_with_retry, "call_once", fake)
     assert asyncio.run(call_with_retry.main()) == 1
+
+
+def _status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://127.0.0.1:9/v1/billing/wallets/sponsor")
+    return httpx.HTTPStatusError(
+        "error", request=request, response=httpx.Response(status, request=request)
+    )
+
+
+def test_dry_run_403_names_the_admin_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #361: a wallet-scoped key gets 403; say which key the script needs."""
+    hints = " ".join(dry_run_example._failure_hints(_status_error(403)))
+    assert "bootstrap admin key" in hints
+    assert "VALID_API_KEYS" in hints
+    assert "localhost:8000" not in hints
+
+
+def test_dry_run_connection_hint_uses_configured_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(dry_run_example, "API_URL", "http://127.0.0.1:9")
+    hints = " ".join(dry_run_example._failure_hints(httpx.ConnectError("refused")))
+    assert "http://127.0.0.1:9" in hints
+    assert "localhost:8000" not in hints
+    not_found = " ".join(dry_run_example._failure_hints(_status_error(404)))
+    assert "ENABLE_PROOF_SURFACES=true" in not_found
+    assert "http://127.0.0.1:9" in not_found
+
+
+def test_dry_run_prints_server_initial_balance() -> None:
+    source = Path(dry_run_example.__file__).read_text()
+    assert "Initial virtual balance: {sim.initial_balance}" in source
+
+
+def test_one_tool_call_runs_without_error(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one_tool_call example must complete successfully and print expected output."""
+    # Isolate env changes and clear cached settings after the example runs
+    import sys
+    from importlib import reload
+
+    original_env = dict(os.environ)
+
+    try:
+        assert asyncio.run(one_tool_call.main()) == 0
+        out = capsys.readouterr().out
+        # Verify the output format matches the documented example exactly
+        assert "Receipt ID: rcpt-" in out
+        assert "Tool: partner.notes.write\n" in out
+        assert "Outcome: success\n" in out
+        assert "Credits charged: 2.00000000\n" in out
+        assert "Verification: valid\n" in out
+    finally:
+        # Restore environment and clear gateway module cache
+        os.environ.clear()
+        os.environ.update(original_env)
+        if "app.config" in sys.modules:
+            reload(sys.modules["app.config"])
+
+
+def test_serve_awaits_the_async_server_inside_the_running_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #359: --serve runs under asyncio.run, so it must not call asyncio.run again."""
+    import b2a_sdk.mcp
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_serve_async(**kwargs: object) -> None:
+        asyncio.get_running_loop()
+        calls.append(kwargs)
+
+    def nested_serve(**kwargs: object) -> None:
+        asyncio.run(fake_serve_async(**kwargs))
+
+    monkeypatch.setenv("B2A_API_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(b2a_sdk.mcp, "serve_async", fake_serve_async)
+    monkeypatch.setattr(b2a_sdk.mcp, "serve", nested_serve)
+
+    asyncio.run(mcp_tool_example.main_serve())
+
+    assert calls == [{"transport": "stdio", "api_url": "http://127.0.0.1:9"}]

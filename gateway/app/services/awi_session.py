@@ -563,6 +563,10 @@ class AWISessionManager:
         if not await self._load_session(session_id):
             return False
 
+        # Purge first: if it fails the session stays, so its owner can still
+        # reach the memories and retry the delete.
+        await self._purge_session_memories(session_id)
+
         # Cleanup DOM bridge if attached
         await self.detach_dom_bridge(session_id)
 
@@ -573,6 +577,20 @@ class AWISessionManager:
 
         logger.info(f"Destroyed AWI session: {session_id}")
         return True
+
+    async def _purge_session_memories(self, session_id: str) -> int:
+        """Delete the RAG memories indexed under ``session_id``.
+
+        Memory access is authorized through the owning session, so once the
+        session is gone its owner can no longer read or delete them while a
+        bootstrap admin still can. They are removed with the session.
+        """
+        from .awi_rag_engine import get_awi_rag_engine
+
+        deleted = await get_awi_rag_engine().delete_session_memories(session_id)
+        if deleted:
+            logger.info(f"Deleted {deleted} RAG memories of AWI session {session_id}")
+        return deleted
 
     # ─────────────────────────────────────────────────────────────────────────
     # Phase 9: Playwright DOM Bridge Integration
@@ -776,7 +794,18 @@ class AWISessionManager:
             if session.expires_at < datetime.now(timezone.utc)
         ]
 
+        removed = 0
         for session_id in expired_ids:
+            try:
+                await self._purge_session_memories(session_id)
+            except Exception:
+                # Keep the session so the next sweep retries the purge.
+                logger.exception(
+                    "awi_session_memory_purge_failed",
+                    extra={"session_id": session_id},
+                )
+                continue
+            removed += 1
             dom_session_id = self._dom_sessions.pop(session_id, None)
             if dom_session_id:
                 await self._playwright_bridge.destroy_session(dom_session_id)
@@ -786,10 +815,10 @@ class AWISessionManager:
             await self._state.delete(self._session_key(session_id))
             await self._state.delete(self._session_state_key(session_id))
 
-        if expired_ids:
-            logger.info(f"Cleaned up {len(expired_ids)} expired sessions")
+        if removed:
+            logger.info(f"Cleaned up {removed} expired sessions")
 
-        return {"sessions_removed": len(expired_ids)}
+        return {"sessions_removed": removed}
 
 
 _awi_session_manager: AWISessionManager | None = None

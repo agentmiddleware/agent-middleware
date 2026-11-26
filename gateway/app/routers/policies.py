@@ -10,6 +10,7 @@ from app.schemas.policies import (
     PolicyBundleResponse,
 )
 from app.services.policies import (
+    PolicyWalletNotFoundError,
     create_policy_bundle,
     get_policy_bundle,
     list_policy_bundles,
@@ -27,7 +28,13 @@ async def create_policy(
     auth: AuthContext = Depends(get_auth_context),
 ) -> PolicyBundleResponse:
     auth.require_bootstrap_admin()
-    return await create_policy_bundle(request)
+    try:
+        return await create_policy_bundle(request)
+    except PolicyWalletNotFoundError as e:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "wallet_not_found", "message": str(e)},
+        ) from None
 
 
 @router.get("", response_model=PolicyBundleListResponse)

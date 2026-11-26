@@ -58,9 +58,9 @@
     <link rel="stylesheet" href="/fonts.css?v=@@FONTS_CSS_VERSION@@" />
     <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
     <script src="/a11y-preload.js?v=gateway-19"></script>
-    @@VERCEL_ANALYTICS_SCRIPTS@@
-    <script defer src="/analytics.js?v=gateway-19"></script>
-    <script defer src="/utm-capture.js?v=utm-1"></script>
+    @@POSTHOG_CONFIG@@
+    <script defer src="/analytics.js?v=posthog-2"></script>
+    <script defer src="/utm-capture.js?v=utm-2"></script>
     <script defer src="/a11y.js?v=gateway-19"></script>
     <script defer src="/demo-key/demo-key.js?v=demo-key-5"></script>
   </head>
@@ -115,7 +115,7 @@ PERMIT=$(curl -fsS -X POST "$API/v1/permits" \
 CALL_IDEM=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
 INVOKE=$(curl -fsS -X POST "$API/mcp/tools/partner.echo/invoke" \
   -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"partner.echo\",\"arguments\":{\"message\":\"hello from demo\"},\"mcpContext\":{\"wallet_id\":\"$WALLET\",\"permit_id\":\"$PERMIT\",\"idempotency_key\":\"$CALL_IDEM\"}}")
+  -d "{\"name\":\"partner.echo\",\"arguments\":{\"message\":\"hello from demo\"},\"mcp_context\":{\"wallet_id\":\"$WALLET\",\"permit_id\":\"$PERMIT\",\"idempotency_key\":\"$CALL_IDEM\"}}")
 RECEIPT=$(printf '%s' "$INVOKE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["receipt"]["receipt_id"])')
 
 # 3. Fetch the portable receipt and public trust keys.

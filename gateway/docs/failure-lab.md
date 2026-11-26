@@ -124,9 +124,11 @@ one means the caller is not shaped the way the fuse expects, and the fuse
 fails closed rather than guessing. An arbitrarily wrapped in-process rail does
 not pass.
 
-A refusal exits **2**, deliberately distinct from the **1** the lab exits when
-an expectation merely broke. A safety refusal is not a failed measurement, and
-an operator reading exit codes should not have to tell them apart by eye. The
+A refusal exits **3**, deliberately distinct from the **1** the lab exits when
+an expectation merely broke and the **2** `argparse` exits with on a bad
+command line. A safety refusal is neither a failed measurement nor a usage
+error, and an operator or a CI step reading exit codes should not have to tell
+them apart by eye. The
 refusal is raised inside the MCP server's task group, so `main` unwraps the
 `BaseExceptionGroup` it arrives in and prints the message alone rather than a
 traceback.
@@ -152,9 +154,10 @@ only. The arms that deliberately cause a *duplicate* of an action the operator
 did authorize (`existing.lost_response` and both agent-restart arms) are not
 fused: a duplicate costs nothing against the simulated rail, and each would
 need its own authorization before this lab was pointed anywhere real. The
-fuse is also local to this script: the larger `failure_lab/` package linked at
-the top of this document carries its own equivalent scenario, and this fuse
-does not cover it.
+fuse is also local to this script. The larger `failure_lab/` package linked at
+the top of this document has its own equivalent check, applied to every direct
+configuration in `configured_target`: see
+[`failure-lab-suite.md`](failure-lab-suite.md).
 
 ## What one run shows
 

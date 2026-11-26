@@ -77,6 +77,9 @@ These are **proof surfaces**. Start the API with `ENABLE_PROOF_SURFACES=true` to
 ### `410 Gone` on `POST /v1/billing/top-up`
 Direct top-ups are disabled by design. Use `POST /v1/billing/top-up/prepare` to create a Stripe PaymentIntent instead. See README.md "Core API surfaces" and [docs/settlement-rails.md](docs/settlement-rails.md).
 
+### `503 payments_not_configured` on `POST /v1/billing/top-up/prepare`
+No `STRIPE_SECRET_KEY` is set, so the gateway cannot create a PaymentIntent. Nothing is recorded, so once the key is set the same `Idempotency-Key` can be retried. A `502 payment_provider_error` means the gateway could not complete the call to Stripe (bad key, connection failure, rate limit, or a Stripe outage); the server log names the Stripe error type. A `400 topup_prepare_error` with a `provider_code` means Stripe rejected the request itself, for example an amount below its minimum.
+
 ### `401 Unauthorized` or `403 Forbidden`
 - Check that `X-API-Key` header is present and matches a valid wallet-scoped or bootstrap key.
 - Bootstrap keys go in `VALID_API_KEYS` (comma-separated). Wallet keys are created via `POST /v1/api-keys`.
@@ -92,11 +95,11 @@ You reused an `Idempotency-Key` with different payload. Use a fresh UUID for eac
 
 ### Errors on MCP invocation
 `POST /mcp/messages` returns these as JSON-RPC errors in an HTTP `200`; the deprecated REST route (`POST /mcp/tools/{service_id}/invoke`) answers with the REST status shown.
-- `idempotency_key_reused` (`-32603`; REST `400`): the `idempotency_key` in `mcpContext` was already used for a different payload. Use a fresh key per distinct invocation (not the same as the permit's idempotency key).
+- `idempotency_key_reused` (`-32603`; REST `409`): the `idempotency_key` in `mcpContext` was already used for a different payload. Use a fresh key per distinct invocation (not the same as the permit's idempotency key).
 - `idempotency_key_required` (`-32003`; REST `400`): governed calls need an `idempotency_key` in `mcpContext`.
 - `Tool not found: <name>` (`-32001`; REST `404`): confirm the tool name exists in `/mcp/tools.json`.
 - `Missing wallet_id in mcpContext` (`-32602`): A wallet bound key may omit `wallet_id`; a key without a bound wallet must supply it in `params.mcpContext`.
-- REST `422 Unprocessable Entity`: the body failed schema validation (for example `name` is missing). The REST body spells the context `mcp_context`, not `mcpContext`.
+- REST `422 Unprocessable Entity`: the body failed schema validation (for example `name` is missing). The REST body accepts `mcp_context` or `mcpContext` for the billing context. Supplying both fields returns `422`, even if their values match or are null.
 
 ### `delivery_uncertain` receipt
 The gateway claimed a send but has no trustworthy terminal result. Delivery and the downstream effect may or may not have occurred; this receipt does not prove upstream acceptance or execution. Under the configured conservative policy, the charge stands and replaying the same key returns the uncertain outcome without redispatching. Do not retry automatically. Reconcile against authoritative downstream state before making a new attempt. See [docs/partner-first-tool-runbook.md](docs/partner-first-tool-runbook.md).
@@ -152,3 +155,17 @@ SQLite-only tests will still pass; PostgreSQL-specific tests skip if unavailable
 - Review [CONTRIBUTING.md](../CONTRIBUTING.md) for development setup and `make` targets.
 
 If you believe you've found a bug, use the [bug report template](https://github.com/agentmiddleware/agent-middleware/issues/new?template=bug.md). For security issues, see [SECURITY.md](../SECURITY.md).
+
+For uncertain AWI HTTP callbacks, deployments can register an async, read-only
+`register_awi_status_lookup(lookup)` from `app.services.awi_http_governance`.
+The default is no hook. Return `AwiStatusAnswer("not_dispatched")` only with
+proof that the action did not and cannot later execute; this uses the existing
+refund path. Delivered answers keep the charge and uncertainty because they
+cannot replace the failed response with success. Unknown/None, malformed
+answers, exceptions, and the five-second timeout preserve uncertainty. Never
+retry the action inside a lookup.
+
+Action-permit deployments may use `register_permit_upstream_status_lookup` from
+`app.services.permits` to register in the existing MCP registry. Match queries
+on `invocation_id`, not the absent `forwarded_idempotency_key`. This registration
+helper does not rewrite receipts. Stripe status lookup is not wired.

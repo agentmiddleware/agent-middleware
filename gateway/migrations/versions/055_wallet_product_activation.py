@@ -35,9 +35,9 @@ WITH RECURSIVE used AS (
     GROUP BY wallet_id
 ),
 anc (wallet_id, ancestor_id, depth) AS (
-    SELECT wallet_id, wallet_id, 0 FROM used
+    SELECT CAST(wallet_id AS TEXT), CAST(wallet_id AS TEXT), 0 FROM used
     UNION ALL
-    SELECT a.wallet_id, w.parent_wallet_id, a.depth + 1
+    SELECT CAST(a.wallet_id AS TEXT), CAST(w.parent_wallet_id AS TEXT), a.depth + 1
     FROM anc a
     JOIN wallets w ON w.wallet_id = a.ancestor_id
     WHERE w.parent_wallet_id IS NOT NULL AND a.depth < {MAX_WALLET_DEPTH}

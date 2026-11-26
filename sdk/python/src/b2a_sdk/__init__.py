@@ -48,7 +48,7 @@ from .resolution_verifier import (
     verify_resolution_chain,
 )
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 # The HTTP client surface (client, edge_client, and the decorators that wrap it)
 # pulls in httpx. Load those names lazily via PEP 562 so importing the package —

@@ -119,9 +119,9 @@
          first paint. Kept in a file rather than inline so the Content-Security-
          Policy can be script-src 'self' with no 'unsafe-inline'. -->
     <script src="/a11y-preload.js?v=gateway-19"></script>
-    @@VERCEL_ANALYTICS_SCRIPTS@@
-    <script defer src="/analytics.js?v=gateway-19"></script>
-    <script defer src="/utm-capture.js?v=utm-1"></script>
+    @@POSTHOG_CONFIG@@
+    <script defer src="/analytics.js?v=posthog-2"></script>
+    <script defer src="/utm-capture.js?v=utm-2"></script>
     <script defer src="/a11y.js?v=gateway-19"></script>
   </head>
   <body class="site-light">
@@ -431,7 +431,7 @@
               you take on our word. Clone the public source repository and run
               <code>make prove-trust-plane</code> without live API credentials.
               Verify a published receipt offline, without us, on the
-              <a href="/proof/" data-analytics-event="proof_click">proof page</a>.
+              <a href="/proof/" data-analytics-event="proof_click" data-cta-id="compare-proof-inline">proof page</a>.
             </p>
             <p>
               <a
@@ -462,14 +462,14 @@
               <a
                 class="button button-primary"
                 href="@@PILOT_EMAIL_HREF@@"
-                data-analytics-event="email_click"
+                data-analytics-event="email_click" data-cta-id="compare-intake-email"
                 aria-label="Start a pilot by email (opens your mail app)"
                 >Start a pilot by email</a
               >
               <a
                 class="button button-secondary"
                 href="/proof/"
-                data-analytics-event="proof_click"
+                data-analytics-event="proof_click" data-cta-id="compare-proof-cta"
                 >Run the local proof</a
               >
               <!-- booking:start -->
@@ -477,7 +477,7 @@
                 href="@@PUBLIC_BOOKING_URL@@"
                 target="_blank"
                 rel="noopener noreferrer"
-                data-analytics-event="booking_click"
+                data-analytics-event="booking_click" data-cta-id="compare-booking"
                 aria-label="Book a call if your scenario needs one (opens in a new tab)"
                 >Book a call if your scenario needs one <span aria-hidden="true">↗</span></a
               >

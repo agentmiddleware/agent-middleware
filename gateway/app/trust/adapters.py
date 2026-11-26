@@ -47,11 +47,13 @@ class GovernedRequest:
 class GovernedRequestInvalid(ValueError):
     """The protocol request cannot be normalized into a governed request.
 
-    Raised before any permit, idempotency, metering, or dispatch step runs.
-    Transports map it to their invalid-params shape (JSON-RPC ``-32602``,
-    HTTP 400); every message starts with ``Invalid params`` so the shared
-    JSON-RPC code mapping recognizes it even when it propagates as a plain
-    ``ValueError``.
+    Raised before any permit, idempotency, metering, or dispatch step runs
+    when the failure is request normalization. A subclass raised later in
+    the pipeline documents its own phase; that earlier timing is not
+    inherited. Transports map it to their invalid-params shape (JSON-RPC
+    ``-32602``, HTTP 400); every message starts with ``Invalid params`` so
+    the shared JSON-RPC code mapping recognizes it even when it propagates
+    as a plain ``ValueError``.
     """
 
 

@@ -369,6 +369,81 @@ def test_unevaluable_schema_is_skipped_not_a_client_error() -> None:
     validate_local_tool_arguments(invalid, {"anything": 1})
 
 
+def test_external_ref_is_not_retrieved_and_local_ref_still_validates(
+    monkeypatch, caplog
+) -> None:
+    """Remote ``$ref`` retrieval stays at zero. An in-document ``$ref`` still validates."""
+    import urllib.request
+
+    from app.services.tool_arguments import (
+        ToolArgumentsInvalid,
+        validate_local_tool_arguments,
+    )
+
+    attempts: list[object] = []
+
+    def refuse_retrieval(*args: object, **kwargs: object) -> None:
+        attempts.append(args[0] if args else kwargs)
+        raise OSError("remote schema retrieval is disabled")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse_retrieval)
+    caplog.set_level("WARNING", logger="app.services.tool_arguments")
+
+    external = {
+        "service_id": "external-ref",
+        "execution_backend": "local",
+        "input_schema": {"$ref": "https://192.0.2.1/schema.json"},
+    }
+    validate_local_tool_arguments(external, {"anything": 1})
+    assert attempts == []
+    assert any(
+        record.message == "local_tool_input_schema_unevaluable tool=external-ref"
+        for record in caplog.records
+    )
+
+    local = {
+        "service_id": "local-ref",
+        "execution_backend": "local",
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"text": {"$ref": "#/$defs/text"}},
+            "required": ["text"],
+            "$defs": {"text": {"type": "string", "minLength": 1}},
+        },
+    }
+    caplog.clear()
+    validate_local_tool_arguments(local, {"text": "ok"})
+    with pytest.raises(ToolArgumentsInvalid) as refused:
+        validate_local_tool_arguments(local, {"text": ""})
+    assert refused.value.argument == "text"
+    assert refused.value.violation == "minLength"
+    assert attempts == []
+    assert not any(
+        "local_tool_input_schema_unevaluable" in record.message
+        for record in caplog.records
+    )
+
+
+def test_malformed_schema_dialect_is_logged_and_skipped(caplog) -> None:
+    """``$schema`` metadata that ``validator_for`` cannot read is a registration bug."""
+    from app.services.tool_arguments import validate_local_tool_arguments
+
+    caplog.set_level("WARNING", logger="app.services.tool_arguments")
+    for dialect in ([], {}, 42):
+        caplog.clear()
+        service = {
+            "service_id": "bad-dialect",
+            "execution_backend": "local",
+            "input_schema": {"$schema": dialect, "type": "string"},
+        }
+        validate_local_tool_arguments(service, {"anything": 1})
+        assert any(
+            record.message == "local_tool_input_schema_invalid tool=bad-dialect"
+            for record in caplog.records
+        ), dialect
+
+
 def _model_backed_local_tools() -> list[tuple[str, Any, Any]]:
     from app.services.mcp_phase9_tools import MCP_PHASE9_TOOLS
 

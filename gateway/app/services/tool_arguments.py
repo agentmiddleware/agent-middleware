@@ -1,9 +1,13 @@
 """Check local tool arguments against the advertised ``inputSchema``.
 
-Runs before any permit is minted or reserved, any idempotency record is begun,
-and any wallet is charged. Without it a wrong type or an unknown property
-reached the tool, the tool raised, and the caller's client error became a
-debit, a refund and a ``failed_refunded`` receipt (issue #348).
+In the governed pipeline the check runs after the permit decision and after
+the idempotency claim has begun, and before the IGA use, the wallet policy,
+the approval gate, the quote consume and the charge. A refusal releases that
+claim so the corrected call can reuse the same key. ``POST /mcp`` and the
+demo auto-permit path run the check before a permit is minted. Without the
+check a wrong type or an unknown property reached the tool, the tool raised,
+and the caller's client error became a debit, a refund and a
+``failed_refunded`` receipt (issue #348).
 
 Only local tools are checked. Their schema is derived from code the gateway
 ships (a pydantic input model or the handler's typed signature), so it is what
@@ -19,6 +23,7 @@ from typing import Any
 
 from jsonschema import exceptions as jsonschema_exceptions
 from jsonschema import validators as jsonschema_validators
+from referencing import Registry
 
 from app.trust.adapters import GovernedRequestInvalid
 
@@ -30,9 +35,21 @@ INVALID_TOOL_ARGUMENTS = "invalid_tool_arguments"
 # capped before it is echoed back.
 _MAX_ARGUMENT_NAME_CHARS = 64
 
+# jsonschema 4.26 still retrieves an external ``$ref`` through urllib, with
+# no timeout, when the validator uses the default registry. An empty registry
+# does not retrieve, so that reference raises and the unevaluable-schema
+# fallback applies. An in-document ``$ref`` still resolves.
+_NO_REMOTE_RETRIEVAL = Registry()
+
 
 class ToolArgumentsInvalid(GovernedRequestInvalid):
     """The tool arguments do not satisfy the tool's ``inputSchema``.
+
+    Unlike request-normalization errors, which are raised before any permit
+    or idempotency step, the governed pipeline raises this after the permit
+    decision and after the idempotency claim has begun, then releases that
+    claim. Auto-mint paths raise it before a permit is minted. Metering and
+    dispatch have not run.
 
     The message is fixed. ``argument`` and ``violation`` say which argument
     failed and which schema keyword it failed; the offending value itself is
@@ -82,17 +99,27 @@ def validate_local_tool_arguments(
     """Raise ``ToolArgumentsInvalid`` when ``arguments`` break the tool schema.
 
     A tool that advertises no schema accepts anything, as before. A schema
-    that is not itself valid JSON Schema, or that cannot be evaluated (an
-    unresolvable ``$ref``: jsonschema retrieves no remote references by
-    default), is a registration bug, not a client error, so it is logged and
-    the call proceeds as it did before this check.
+    that is not itself valid JSON Schema, whose ``$schema`` cannot be read,
+    or that cannot be evaluated, is a registration bug, not a client error,
+    so it is logged and the call proceeds as it did before this check.
+    Evaluation uses a registry that does not retrieve remote references, so
+    an external ``$ref`` is unresolvable and takes that same fallback. An
+    in-document ``$ref`` still validates.
     """
     if not service or service.get("execution_backend") != "local":
         return
     schema = service.get("input_schema")
     if not isinstance(schema, dict):
         return
-    validator_cls = jsonschema_validators.validator_for(schema)
+    try:
+        validator_cls = jsonschema_validators.validator_for(schema)
+    except Exception:
+        logger.warning(
+            "local_tool_input_schema_invalid tool=%s",
+            service.get("service_id"),
+            exc_info=True,
+        )
+        return
     try:
         validator_cls.check_schema(schema)
     except jsonschema_exceptions.SchemaError:
@@ -102,7 +129,7 @@ def validate_local_tool_arguments(
         return
     try:
         error = jsonschema_exceptions.best_match(
-            validator_cls(schema).iter_errors(arguments)
+            validator_cls(schema, registry=_NO_REMOTE_RETRIEVAL).iter_errors(arguments)
         )
     except Exception:
         logger.warning(

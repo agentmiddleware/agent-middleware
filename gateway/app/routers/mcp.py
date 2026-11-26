@@ -30,7 +30,7 @@ from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from sqlalchemy.exc import IntegrityError
 
 from ..audit.lightweight import record_audit
@@ -644,7 +644,18 @@ class ToolCallRequest(BaseModel):
     arguments: dict[str, Any] = Field(
         default_factory=dict, description="Tool arguments"
     )
-    mcp_context: McpContext | None = Field(None, description="Billing context")
+    mcp_context: McpContext | None = Field(
+        None,
+        validation_alias=AliasChoices("mcp_context", "mcpContext"),
+        description="Billing context",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_duplicate_context(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "mcp_context" in data and "mcpContext" in data:
+            raise ValueError("mcp_context and mcpContext cannot both be supplied")
+        return data
 
 
 class ToolCallResponse(BaseModel):

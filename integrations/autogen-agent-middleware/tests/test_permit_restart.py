@@ -118,3 +118,21 @@ async def test_restart_with_changed_terms_is_refused_before_the_network(tmp_path
     with pytest.raises(ValueError, match="different permit terms"):
         await _call(changed)
     assert len(wire.permit_bodies) == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_with_a_different_lifetime_replays_the_stored_body(tmp_path):
+    # Unlike crewai, this wrapper does not refuse a changed lifetime. The
+    # stored body, including its original expiry, is sent again.
+    wire = DroppedConnection()
+    path = tmp_path / "permits.json"
+
+    await _attempt(
+        _tool(wire, permit_store=JsonFilePermitStore(path), permit_ttl_minutes=30)
+    )
+    await _attempt(
+        _tool(wire, permit_store=JsonFilePermitStore(path), permit_ttl_minutes=5)
+    )
+
+    assert len(wire.permit_bodies) == 2
+    assert wire.permit_bodies[0] == wire.permit_bodies[1]

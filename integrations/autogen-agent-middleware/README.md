@@ -162,8 +162,9 @@ only, so a new process that reuses a permit key builds a new expiry and gets
 `idempotency_key_reused` instead of the original permit. To replay across a
 restart, give the wrapper a durable permit store. It records each permit body
 before the first network call and sends the same body again after a restart.
-A restart with a different wallet, budget, tool, or lifetime under the same
-permit key is refused before any request.
+A restart with a different wallet, budget, or tool under the same permit key
+is refused before any request. A different lifetime is not: the stored body,
+including its original expiry, is sent again.
 
 ```python
 from autogen_b2a import B2AFunctionTool, JsonFilePermitStore

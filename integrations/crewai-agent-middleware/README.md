@@ -126,6 +126,30 @@ result2 = b2a_tool.run(
 )
 ```
 
+### Replay after a process restart
+
+The trust plane stores the whole permit body, including its expiry, under
+`permit_idempotency_key`. By default the wrapper keeps that body in memory
+only, so a new process that reuses a permit key builds a new expiry and gets
+`idempotency_key_reused` instead of the original permit. To replay across a
+restart, give the wrapper a durable permit store. It records each permit body
+before the first network call and sends the same body again after a restart.
+A restart with a different wallet, budget, tool, or lifetime under the same
+permit key is refused before any request.
+
+```python
+from crewai_b2a import CrewAIB2ATool, JsonFilePermitStore
+
+tool = CrewAIB2ATool(
+    api_key="...",
+    wallet_id="agent-001",
+    permit_store=JsonFilePermitStore("amw-permits.json"),
+)
+```
+
+`JsonFilePermitStore` suits one agent process. Processes that share permit keys
+should implement `PermitStore` (`get` and `put`) on their own database.
+
 ## Permit Configuration
 
 Control permit budget and TTL:

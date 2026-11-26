@@ -127,7 +127,7 @@ async def test_governed_mcp_invoke_returns_receipt_and_replay_does_not_double_ch
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("transport", ["jsonrpc", "http"])
+@pytest.mark.parametrize("transport", ["jsonrpc", "http", "http_camel"])
 @pytest.mark.parametrize(
     "wallet_case", ["absent", "null", "empty", "matching", "foreign", "invalid"]
 )
@@ -183,9 +183,10 @@ async def test_legacy_mcp_wallet_defaults_only_when_omitted(
                 headers=provisioned["agent_headers"],
             )
         else:
+            context_key = "mcpContext" if transport == "http_camel" else "mcp_context"
             response = await client.post(
                 f"/mcp/tools/{tool_name}/invoke",
-                json={"name": tool_name, "arguments": {}, "mcp_context": context},
+                json={"name": tool_name, "arguments": {}, context_key: context},
                 headers=provisioned["agent_headers"],
             )
 
@@ -918,7 +919,10 @@ async def test_governed_tool_failure_returns_refunded_receipt(client, clean_data
 
     assert resp.status_code == 200
     payload = resp.json()
-    assert payload["error"]["message"] == "internal_error"
+    # A refunded tool failure is classified: -32006 with the canned reason
+    # code (docs/failure-semantics.md), never the tool's own text.
+    assert payload["error"]["code"] == -32006
+    assert payload["error"]["message"] == "tool_execution_failed"
     assert "tool exploded" not in resp.text
     receipt = payload["error"]["data"]["receipt"]
     assert receipt["outcome"] == "failed_refunded"

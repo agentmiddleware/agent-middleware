@@ -74,6 +74,7 @@ from mcp.server.lowlevel import Server
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.server.streamable_http_manager import RequestBodyLimitMiddleware
 from mcp.shared.exceptions import McpError
+from pydantic import ValidationError
 from starlette.responses import JSONResponse, Response
 from starlette.types import Message, Receive, Scope, Send
 
@@ -989,6 +990,25 @@ def _build_standard_mcp_server() -> Server:
 _standard_mcp_server = _build_standard_mcp_server()
 
 
+def _jsonrpc_shape_refusal(parsed: Any) -> tuple[int, int, str] | None:
+    """Refuse a parsed POST body that is not a single JSON-RPC message.
+
+    The SDK answers such a body itself, but with the full pydantic validation
+    text (library version link included) as the message and ``"server-error"``
+    as the id (#351). JSON-RPC 2.0 asks for ``id: null`` when the request id
+    cannot be determined, and the message here is a fixed string. A batch
+    (JSON array) gets its own message: this endpoint does not support batches,
+    and saying so tells the client what to change.
+    """
+    if isinstance(parsed, list):
+        return (400, -32600, "Invalid Request: batch requests are not supported")
+    try:
+        mcp_types.JSONRPCMessage.model_validate(parsed)
+    except ValidationError:
+        return (400, -32600, "Invalid Request: body is not a JSON-RPC 2.0 message")
+    return None
+
+
 def _require_enabled() -> None:
     if not get_settings().ENABLE_STANDARD_MCP_ENDPOINT:
         raise HTTPException(status_code=404, detail="Not Found")
@@ -1082,13 +1102,16 @@ class _SdkTransportResponse(Response):
         # Malformed JSON is left to the SDK, which answers -32700 itself.
         refusal: tuple[int, int, str] | None = None
         try:
-            _loads_strict_json(bytes(body))
+            parsed = _loads_strict_json(bytes(body))
         except json.JSONDecodeError:
             pass
         except UnicodeDecodeError:
             refusal = (400, -32700, "Parse error: request body is not valid UTF-8")
         except ValueError as exc:
             refusal = (400, -32600, f"Invalid Request: {exc}")
+        else:
+            if scope.get("method") == "POST":
+                refusal = _jsonrpc_shape_refusal(parsed)
         if refusal is not None:
             status_code, code, reason = refusal
             error_response = JSONResponse(

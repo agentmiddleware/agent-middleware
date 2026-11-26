@@ -74,6 +74,7 @@ from mcp.server.lowlevel import Server
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp.server.streamable_http_manager import RequestBodyLimitMiddleware
 from mcp.shared.exceptions import McpError
+from pydantic import ValidationError
 from starlette.responses import JSONResponse, Response
 from starlette.types import Message, Receive, Scope, Send
 
@@ -94,9 +95,11 @@ from app.services.mcp_retry_key import (
 )
 from app.routers.mcp import (
     _MAX_JSON_NESTING_DEPTH,
+    TOOL_FAILURE_JSONRPC_CODE,
     GovernedToolError,
     HumanApprovalPendingSignal,
     TerminalRecordContendedError,
+    ToolExecutionError,
     ToolPermissionDenied,
     _ensure_local_mcp_tools_registered,
     _handle_tools_call,
@@ -904,7 +907,13 @@ async def _governed_tools_call(
         data = dict(e.extra_data)
         if e.receipt:
             data["receipt"] = e.receipt
-        raise _mcp_error(e.jsonrpc_code, str(e), data or None) from e
+        # The tool's own exception text stays in the server log: a tool
+        # failure answers the canned reason code, as on /mcp/messages.
+        message = "tool_execution_failed" if e.tool_originated else str(e)
+        raise _mcp_error(e.jsonrpc_code, message, data or None) from e
+    except ToolExecutionError as e:
+        logger.error("mcp_tool_execution_failed surface=/mcp request_id=%s", request_id)
+        raise _mcp_error(TOOL_FAILURE_JSONRPC_CODE, "tool_execution_failed") from e
     except PermissionError as e:
         raise _mcp_error(-32003, str(e)) from e
     except InvalidIdempotencyKeyError as e:
@@ -1009,6 +1018,25 @@ def _build_standard_mcp_server() -> Server:
 _standard_mcp_server = _build_standard_mcp_server()
 
 
+def _jsonrpc_shape_refusal(parsed: Any) -> tuple[int, int, str] | None:
+    """Refuse a parsed POST body that is not a single JSON-RPC message.
+
+    The SDK answers such a body itself, but with the full pydantic validation
+    text (library version link included) as the message and ``"server-error"``
+    as the id (#351). JSON-RPC 2.0 asks for ``id: null`` when the request id
+    cannot be determined, and the message here is a fixed string. A batch
+    (JSON array) gets its own message: this endpoint does not support batches,
+    and saying so tells the client what to change.
+    """
+    if isinstance(parsed, list):
+        return (400, -32600, "Invalid Request: batch requests are not supported")
+    try:
+        mcp_types.JSONRPCMessage.model_validate(parsed)
+    except ValidationError:
+        return (400, -32600, "Invalid Request: body is not a JSON-RPC 2.0 message")
+    return None
+
+
 def _require_enabled() -> None:
     if not get_settings().ENABLE_STANDARD_MCP_ENDPOINT:
         raise HTTPException(status_code=404, detail="Not Found")
@@ -1102,13 +1130,16 @@ class _SdkTransportResponse(Response):
         # Malformed JSON is left to the SDK, which answers -32700 itself.
         refusal: tuple[int, int, str] | None = None
         try:
-            _loads_strict_json(bytes(body))
+            parsed = _loads_strict_json(bytes(body))
         except json.JSONDecodeError:
             pass
         except UnicodeDecodeError:
             refusal = (400, -32700, "Parse error: request body is not valid UTF-8")
         except ValueError as exc:
             refusal = (400, -32600, f"Invalid Request: {exc}")
+        else:
+            if scope.get("method") == "POST":
+                refusal = _jsonrpc_shape_refusal(parsed)
         if refusal is not None:
             status_code, code, reason = refusal
             error_response = JSONResponse(

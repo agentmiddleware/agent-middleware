@@ -28,7 +28,7 @@ env:
   # PYTEST_VERSION is installed over requirements.txt in every Python job, so it
   # must satisfy the pytest floor in gateway/requirements.txt. Bump them in the
   # same change. gateway/tests/test_dev_tool_pins.py enforces this.
-  RUFF_VERSION: "0.17.3"
+  RUFF_VERSION: "0.17.6"
   MYPY_VERSION: "2.4.1"
   PYTEST_VERSION: "9.2.0"
 

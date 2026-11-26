@@ -11,9 +11,11 @@ from sqlalchemy import select
 from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, ReceiptModel
 from app.main import app
-from app.schemas.billing import ServiceCategory
+from app.schemas.billing import InsufficientFundsResponse, ServiceCategory
+from app.services.agent_money import get_agent_money
 from app.services.idempotency import get_idempotency_service
 from app.services.receipts import ReceiptError, get_receipt_service
+from app.services.ownership import CallerIdentity
 from app.services.service_registry import get_service_registry
 from tests.support.db_gate import collection_mark, require_live_postgres
 from tests.test_trust_helpers import (
@@ -449,6 +451,111 @@ async def test_receipt_evidence_detects_ledger_tampering(
 
     evidence_resp = await client.get(
         f"/v1/receipts/{receipt['receipt_id']}/evidence",
+        headers=provisioned["agent_headers"],
+    )
+
+    assert evidence_resp.status_code == 200
+    evidence = evidence_resp.json()
+    assert evidence["valid"] is False
+    checks = {check["name"]: check for check in evidence["checks"]}
+    assert checks["ledger_linkage"]["status"] == "failed"
+    assert checks["ledger_linkage"]["reason"] == "ledger_amount_mismatch"
+
+
+async def _create_zero_charge_receipt_with_ledger_entry(
+    client,
+    *,
+    provisioned: dict,
+    tool_name: str,
+    entry_amount: Decimal,
+    idem_key: str,
+):
+    """Seed a zero-charge receipt against a debit the billing service wrote.
+
+    The debit, its entry id and its balance come from ``charge`` rather than
+    being written here: AGENTS.md allows a test to inject faults but requires
+    anything the product records to come from the product. Only the amount is
+    then moved, which is the fault each caller is testing -- the engine refuses
+    non-positive units, so a zero-amount debit cannot be charged directly.
+    """
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name=tool_name,
+        idem_key=f"{idem_key}-permit",
+    )
+    charge = await get_agent_money().charge(
+        provisioned["agent_wallet_id"],
+        ServiceCategory.AGENT_COMMS,
+        Decimal("1"),
+        caller=CallerIdentity(wallet_id=provisioned["agent_wallet_id"]),
+    )
+    assert not isinstance(charge, InsufficientFundsResponse), charge
+    entry_id = charge.entry_id
+    if charge.amount != entry_amount:
+        factory = get_session_factory()
+        async with factory() as session:
+            entry = await session.get(LedgerEntryModel, entry_id)
+            assert entry is not None
+            entry.amount = entry_amount
+            session.add(entry)
+            await session.commit()
+    return await get_receipt_service().create_receipt(
+        permit_id=permit["permit_id"],
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool=tool_name,
+        request_payload={"message": "hello"},
+        response_payload={"message": "hello"},
+        ledger_entry_id=entry_id,
+        credits_authorized=Decimal("0"),
+        credits_charged=Decimal("0"),
+        outcome="success",
+        audit_event_id=None,
+    )
+
+
+@pytest.mark.anyio
+async def test_receipt_evidence_zero_charge_matches_zero_ledger_entry(
+    client,
+    clean_database,
+):
+    provisioned = await provision_agent_wallet(client)
+    receipt = await _create_zero_charge_receipt_with_ledger_entry(
+        client,
+        provisioned=provisioned,
+        tool_name="receipt-evidence-zero-match",
+        entry_amount=Decimal("0"),
+        idem_key="receipt-evidence-zero-match",
+    )
+
+    evidence_resp = await client.get(
+        f"/v1/receipts/{receipt.receipt_id}/evidence",
+        headers=provisioned["agent_headers"],
+    )
+
+    assert evidence_resp.status_code == 200
+    checks = {check["name"]: check for check in evidence_resp.json()["checks"]}
+    assert checks["ledger_linkage"]["status"] == "passed"
+
+
+@pytest.mark.anyio
+async def test_receipt_evidence_zero_charge_rejects_nonzero_ledger_entry(
+    client,
+    clean_database,
+):
+    provisioned = await provision_agent_wallet(client)
+    receipt = await _create_zero_charge_receipt_with_ledger_entry(
+        client,
+        provisioned=provisioned,
+        tool_name="receipt-evidence-zero-mismatch",
+        entry_amount=Decimal("-2"),
+        idem_key="receipt-evidence-zero-mismatch",
+    )
+
+    evidence_resp = await client.get(
+        f"/v1/receipts/{receipt.receipt_id}/evidence",
         headers=provisioned["agent_headers"],
     )
 

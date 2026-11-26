@@ -173,9 +173,9 @@
          first paint. Kept in a file rather than inline so the Content-Security-
          Policy can be script-src 'self' with no 'unsafe-inline'. -->
     <script src="/a11y-preload.js?v=gateway-19"></script>
-    @@VERCEL_ANALYTICS_SCRIPTS@@
-    <script defer src="/analytics.js?v=gateway-19"></script>
-    <script defer src="/utm-capture.js?v=utm-1"></script>
+    @@POSTHOG_CONFIG@@
+    <script defer src="/analytics.js?v=posthog-2"></script>
+    <script defer src="/utm-capture.js?v=utm-2"></script>
     <script defer src="/proof/proof.js?v=gateway-20"></script>
     <script defer src="/a11y.js?v=gateway-19"></script>
   </head>
@@ -237,7 +237,7 @@
               class="button button-primary"
               href="/proof/receipt.json"
               download
-              data-analytics-event="proof_click"
+              data-analytics-event="proof_click" data-cta-id="proof-download-receipt"
               aria-label="Download receipt.json: sample Ed25519 receipt"
               >Download receipt.json</a
             >
@@ -245,7 +245,7 @@
               class="button button-secondary"
               href="/proof/trust-keys.json"
               download
-              data-analytics-event="proof_click"
+              data-analytics-event="proof_click" data-cta-id="proof-download-trust-keys"
               aria-label="Download trust-keys.json: Ed25519 public keys"
               >Download trust-keys.json</a
             >
@@ -253,7 +253,7 @@
               class="button button-secondary"
               href="/proof/verify_receipt.py"
               download
-              data-analytics-event="proof_click"
+              data-analytics-event="proof_click" data-cta-id="proof-download-verifier"
               aria-label="Download verify_receipt.py: standalone offline verifier"
               >Download verify_receipt.py</a
             >
@@ -261,7 +261,7 @@
               class="button button-secondary"
               href="/proof/jcs.py"
               download
-              data-analytics-event="proof_click"
+              data-analytics-event="proof_click" data-cta-id="proof-download-jcs"
               aria-label="Download jcs.py: RFC 8785 canonicalization helper required by verify_receipt.py"
               >Download jcs.py</a
             >
@@ -345,13 +345,13 @@ curl -sS https://api.thisisatest.tech/.well-known/trust-keys.json</code></pre>
             <a
               class="button button-primary"
               href="@@PILOT_EMAIL_HREF@@"
-              data-analytics-event="email_click"
+              data-analytics-event="email_click" data-cta-id="proof-intake-email"
               aria-label="Start a pilot by email (opens your mail app)"
               >Start a pilot by email</a
             >
             <a
               href="mailto:@@PUBLIC_CONTACT_EMAIL@@"
-              data-analytics-event="email_click"
+              data-analytics-event="email_click" data-cta-id="proof-contact-email"
               aria-label="Email @@PUBLIC_CONTACT_EMAIL@@"
               >Email @@PUBLIC_CONTACT_EMAIL@@</a
             >
@@ -360,7 +360,7 @@ curl -sS https://api.thisisatest.tech/.well-known/trust-keys.json</code></pre>
               href="@@PUBLIC_BOOKING_URL@@"
               target="_blank"
               rel="noopener noreferrer"
-              data-analytics-event="booking_click"
+              data-analytics-event="booking_click" data-cta-id="proof-booking"
               aria-label="Book a call if your scenario needs one (opens in a new tab)"
               >Book a call if your scenario needs one <span aria-hidden="true">↗</span></a
             >

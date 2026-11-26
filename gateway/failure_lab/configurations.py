@@ -189,12 +189,17 @@ def _client_routes_only_to(client: httpx.AsyncClient, app: object) -> bool:
     foreign rather than being walked. The type is matched exactly: a subclass
     could keep the right ``app`` and still send its requests somewhere else.
     Mounted transports route some URLs elsewhere, so any mount reads as
-    foreign too. Both attributes are httpx internals; read with a default, a
-    rename makes this return ``False`` and the lab refuse, which is the safe
+    foreign too. Every attribute read here is read with a default: the
+    client's transport and mounts are httpx internals, and the transport's
+    ``app`` is read the same way, so a rename makes this return ``False`` and
+    the lab refuse with :class:`UnsafeTargetError`, which is the safe
     direction.
     """
     transport = getattr(client, "_transport", None)
-    if type(transport) is not httpx.ASGITransport or transport.app is not app:
+    if (
+        type(transport) is not httpx.ASGITransport
+        or getattr(transport, "app", None) is not app
+    ):
         return False
     mounts = getattr(client, "_mounts", None)
     if mounts is None:
@@ -414,6 +419,11 @@ class Target:
     gateway: GatewayUnderTest | None = None
     tenant: Tenant | None = None
     permit: dict[str, Any] | None = None
+    #: What :func:`configured_target` checked, and found true, before it
+    #: yielded this direct target. ``None`` on the gateway configurations,
+    #: which are deliberately not fused. ``Scenario.result`` copies it into
+    #: the evidence of every direct result as ``target_safety_fuse``.
+    safety_fuse: dict[str, Any] | None = None
 
     @property
     def uses_gateway(self) -> bool:
@@ -474,6 +484,7 @@ async def configured_target(
         control_token=env.control_token,
     )
     direct_agent: DirectAgent | None = None
+    safety_fuse: dict[str, Any] | None = None
     if not configuration.uses_gateway:
         direct_agent = DirectAgent(configuration, downstream)
         # Checked before the downstream's lifespan starts, so a refusal happens
@@ -482,13 +493,15 @@ async def configured_target(
         # an anonymous ExceptionGroup. It surfaces as a harness error for this
         # configuration (see Scenario.run), never as a measurement.
         try:
-            if downstream.service is not service:
+            wraps_built_service = downstream.service is service
+            if not wraps_built_service:
                 raise UnsafeTargetError(
                     f"{configuration.value}: the downstream does not wrap the "
                     "simulated refund service this target built; refusing to "
                     "drive a direct configuration against it"
                 )
-            if not direct_agent.routes_only_to(downstream):
+            routes_only_to_own_app = direct_agent.routes_only_to(downstream)
+            if not routes_only_to_own_app:
                 raise UnsafeTargetError(
                     f"{configuration.value}: the direct agent's requests do not "
                     "end in this target's own in-process downstream app; "
@@ -497,6 +510,25 @@ async def configured_target(
         except BaseException:
             await direct_agent.aclose()
             raise
+        # Built from the same two results the checks above acted on, so the
+        # record cannot say a check passed that did not run.
+        safety_fuse = {
+            "enforced_by": "failure_lab.configurations.configured_target",
+            "checked": (
+                "before the downstream started, so before this configuration "
+                "could send any request"
+            ),
+            "downstream_wraps_the_simulated_service_this_target_built": (
+                wraps_built_service
+            ),
+            "agent_requests_end_only_in_this_targets_in_process_app": (
+                routes_only_to_own_app
+            ),
+            "on_refusal": (
+                "UnsafeTargetError before any request, recorded as this "
+                "configuration's ERROR result, never as a measurement"
+            ),
+        }
     if direct_agent is not None:
         # The agent now exists before the lifespan, so its client is closed
         # even if the lifespan itself fails to start.
@@ -508,6 +540,7 @@ async def configured_target(
                     injector=injector,
                     downstream=downstream,
                     agent=direct_agent,
+                    safety_fuse=safety_fuse,
                 )
         finally:
             await direct_agent.aclose()

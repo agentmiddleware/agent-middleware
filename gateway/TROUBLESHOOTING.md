@@ -77,6 +77,9 @@ These are **proof surfaces**. Start the API with `ENABLE_PROOF_SURFACES=true` to
 ### `410 Gone` on `POST /v1/billing/top-up`
 Direct top-ups are disabled by design. Use `POST /v1/billing/top-up/prepare` to create a Stripe PaymentIntent instead. See README.md "Core API surfaces" and [docs/settlement-rails.md](docs/settlement-rails.md).
 
+### `503 payments_not_configured` on `POST /v1/billing/top-up/prepare`
+No `STRIPE_SECRET_KEY` is set, so the gateway cannot create a PaymentIntent. Nothing is recorded, so once the key is set the same `Idempotency-Key` can be retried. A `502 payment_provider_error` means the gateway could not complete the call to Stripe (bad key, connection failure, rate limit, or a Stripe outage); the server log names the Stripe error type. A `400 topup_prepare_error` with a `provider_code` means Stripe rejected the request itself, for example an amount below its minimum.
+
 ### `401 Unauthorized` or `403 Forbidden`
 - Check that `X-API-Key` header is present and matches a valid wallet-scoped or bootstrap key.
 - Bootstrap keys go in `VALID_API_KEYS` (comma-separated). Wallet keys are created via `POST /v1/api-keys`.

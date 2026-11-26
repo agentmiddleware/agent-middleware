@@ -21,6 +21,7 @@ from crewai.tools.structured_tool import CrewStructuredTool
 from crewai.tools.tool_failure import ToolFailure, ToolFailurePolicy
 from pydantic import BaseModel, Field, PrivateAttr
 
+from ._permit_store import permit_record, request_from_record, same_terms
 from .client import B2AClient
 
 _MAX_KEY_LENGTH = 128
@@ -156,6 +157,10 @@ class CrewAIB2ATool(BaseTool):
     wallet_id: str
     permit_budget: Decimal = Decimal(100)
     permit_ttl_minutes: int = 30
+    # Keeps each permit request body under its permit key. A durable store,
+    # such as JsonFilePermitStore, lets a restarted process replay a permit.
+    # Typed Any: pydantic cannot build a schema for a Protocol. See PermitStore.
+    permit_store: Any = Field(default=None, exclude=True, repr=False)
 
     # One dict per instance. A shared class dict would let one wallet reuse
     # another wallet's permit when both agents pick the same permit key.
@@ -233,34 +238,36 @@ class CrewAIB2ATool(BaseTool):
 
     def _permit_request(self, tool_name: str, permit_key: str) -> PermitRequest:
         # Both sync and async entry points retain the body before sending it.
-        # A lost response therefore cannot change the expiry on retry.
-        expected_scopes = [f"tool:{tool_name}:invoke", "billing:charge"]
+        # A lost response therefore cannot change the expiry on retry. The
+        # permit store carries that body across a process restart.
+        fresh = PermitRequest(
+            issuer_wallet_id=self.wallet_id,
+            subject_wallet_id=self.wallet_id,
+            max_credits=self.permit_budget,
+            expires_at=datetime.now(UTC) + timedelta(minutes=self.permit_ttl_minutes),
+            allowed_tools=[tool_name],
+            scopes=[f"tool:{tool_name}:invoke", "billing:charge"],
+        )
+        store = self.permit_store
         with self._permit_lock:
             request = self._permit_requests.get(permit_key)
+            ttl = self._permit_ttls.get(permit_key)
+            if request is None and store is not None:
+                record = store.get(permit_key)
+                if record is not None:
+                    request = request_from_record(record)
+                    ttl = record.get("permit_ttl_minutes")
             if request is None:
-                request = PermitRequest(
-                    issuer_wallet_id=self.wallet_id,
-                    subject_wallet_id=self.wallet_id,
-                    max_credits=self.permit_budget,
-                    expires_at=datetime.now(UTC)
-                    + timedelta(minutes=self.permit_ttl_minutes),
-                    allowed_tools=[tool_name],
-                    scopes=expected_scopes,
-                )
-                self._permit_requests[permit_key] = request
-                self._permit_ttls[permit_key] = self.permit_ttl_minutes
-                return request
-            if (
-                request.issuer_wallet_id != self.wallet_id
-                or request.subject_wallet_id != self.wallet_id
-                or request.max_credits != self.permit_budget
-                or request.allowed_tools != [tool_name]
-                or list(request.scopes) != expected_scopes
-                or self._permit_ttls.get(permit_key) != self.permit_ttl_minutes
-            ):
+                request = fresh
+                ttl = self.permit_ttl_minutes
+                if store is not None:
+                    store.put(permit_key, permit_record(request, ttl))
+            elif not same_terms(request, fresh) or ttl != self.permit_ttl_minutes:
                 raise ValueError(
                     "permit_idempotency_key reused with different permit terms"
                 )
+            self._permit_requests[permit_key] = request
+            self._permit_ttls[permit_key] = ttl
             return request
 
     def _begin_permit_call(self, operation: str, permit_key: str) -> bool:

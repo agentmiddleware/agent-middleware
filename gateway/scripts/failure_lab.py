@@ -540,12 +540,21 @@ class PaymentRail:
 # --------------------------------------------------------------------------- #
 
 
+#: Exit code for a safety refusal. Not 2, which ``argparse`` already exits with
+#: on a bad command line: a wrapper keying on the code would otherwise read a
+#: mistyped flag as the fuse firing, and the reverse. Not 1, which this script
+#: exits with when an expectation merely broke. Neither is a safety refusal.
+EXIT_UNSAFE_TARGET = 3
+
+
 class UnsafeTargetError(RuntimeError):
     """An arm that sends an unauthorized payload faced a target it must not.
 
-    Raised instead of making the call. ``main`` exits 2 on this, which is
-    deliberately distinct from the 1 it exits when an expectation merely broke:
-    a safety refusal is not a failed measurement.
+    Raised instead of making the call. ``main`` exits
+    :data:`EXIT_UNSAFE_TARGET` on this, distinct from the 1 it exits when an
+    expectation merely broke and the 2 ``argparse`` exits with on a bad
+    command line: a safety refusal is neither a failed measurement nor a
+    usage error.
     """
 
 
@@ -2462,7 +2471,7 @@ def main() -> None:
         if not refused:
             raise
         print(f"failure-lab: {refused[0]}", file=sys.stderr)
-        sys.exit(2)
+        sys.exit(EXIT_UNSAFE_TARGET)
     if not summary["ok"]:
         failed = [
             f"{item['scenario']}: {check['check']} (observed {check['observed']!r}, "

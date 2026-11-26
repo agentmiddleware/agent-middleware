@@ -3,7 +3,9 @@
 mypy used to be `>=2.4.0` in requirements.txt, and the CI type-check step
 installed whatever `uv pip install mypy` resolved that day. ruff was pinned
 in CI (`RUFF_VERSION`) but not for local runs. These checks fail if either
-tool can change versions without a repo change.
+tool can change versions without a repo change. CI also installs an exact
+pytest (`PYTEST_VERSION`) over requirements.txt, which must satisfy the floor
+declared there.
 """
 
 from __future__ import annotations
@@ -82,6 +84,36 @@ def test_ci_installs_pinned_mypy_and_ruff() -> None:
     assert "uv pip install mypy\n" not in workflow
 
 
+def test_ci_pytest_pin_satisfies_the_requirements_floor() -> None:
+    """CI installs ``PYTEST_VERSION`` over the install from requirements.txt.
+
+    The floor in requirements.txt moved to 9.2.0 while CI kept installing
+    9.1.1, so CI never ran the version the repository declares. The two differ:
+    ``monkeypatch.undo()`` of an instance attribute on a singleton leaves a stray
+    copy of the method behind on 9.1.1 and removes it on 9.2.0.
+    """
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    pin = _workflow_env(workflow, "PYTEST_VERSION")
+    runtime = _requirements_from_lines(
+        (GATEWAY / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    )
+
+    floor = runtime["pytest"].specifier
+    assert floor.contains(pin), (
+        f"CI installs pytest {pin} but requirements.txt asks for {floor}; "
+        "bump PYTEST_VERSION in .github/workflows/ci.yml in the same change"
+    )
+
+
+def test_ci_never_hard_codes_a_pytest_version() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    pinned = [line.strip() for line in workflow.splitlines() if "pytest==" in line]
+
+    assert pinned, "CI never installs a pinned pytest"
+    for line in pinned:
+        assert "pytest==${PYTEST_VERSION}" in line, line
+
+
 def test_local_gate_uses_the_dev_lock() -> None:
     gate = (GATEWAY / "scripts" / "core_quality_gate.sh").read_text(encoding="utf-8")
     env_script = (GATEWAY / "scripts" / "lib" / "python_env.sh").read_text(
@@ -102,5 +134,6 @@ def test_contributing_documents_blessed_versions() -> None:
 
     assert _workflow_env(workflow, "RUFF_VERSION") in contributing
     assert _workflow_env(workflow, "MYPY_VERSION") in contributing
+    assert _workflow_env(workflow, "PYTEST_VERSION") in contributing
     assert "gateway/requirements-dev.txt" in contributing
     assert "blessed" in contributing

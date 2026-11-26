@@ -14,6 +14,7 @@ consequential MCP tool behind a governed boundary. Start with the
 | Use the typed Python SDK and offline verifier | [Python SDK](../../sdk/python/README.md) |
 | Make stable keys for governed retries | [Request keys](concepts/request-keys.md) |
 | Understand retry, debit, and crash outcomes | [Failure semantics](failure-semantics.md) |
+| Understand what a receipt proves (and what it does not) | [Receipt boundary](receipt-boundary.md) |
 | Measure the lost-response fault against a correctly used native idempotency key | [Failure lab](failure-lab.md) |
 | Run fourteen injected failures and get a signed evidence bundle | [Failure lab suite](failure-lab-suite.md) |
 | Review security claims and limits | [Security limitations](../SECURITY_LIMITATIONS.md) and [security review kit](security-review-kit.md) |
@@ -22,6 +23,7 @@ consequential MCP tool behind a governed boundary. Start with the
 | Plan a design-partner evaluation | [Design partner guide](../DESIGN_PARTNER_GUIDE.md) |
 | Tell plain pytest, Postgres, and live runs apart | [Test tiers](TESTING_TIERS.md) |
 | Contribute to the repository | [Contributing guide](../../CONTRIBUTING.md) |
+| Review GitHub organization and repository settings | [GitHub organization configuration](github-org-configuration.md) |
 
 ## Agent and API discovery
 

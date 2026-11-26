@@ -249,3 +249,20 @@ audit integrity and detects silent mutation.
 The database stores public keys and key metadata only. Production private keys
 must come from configured secret material or KMS-backed injection. Local tests
 may use process-ephemeral keys; they are not persisted.
+
+AWI HTTP deployments may install `register_awi_status_lookup(lookup)` from
+`app.services.awi_http_governance`. No hook is registered by default. Before
+finalizing an uncertain callback result or exception, the hook receives a frozen
+request identity (including a hash of normalized arguments) with a five-second
+await timeout. Only authoritative `AwiStatusAnswer("not_dispatched")` evidence
+that rules out any later effect takes the existing refund path. Delivered
+answers retain the charge and uncertain outcome because these paths already
+have a failed response. None, unknown, malformed answers, exceptions, and
+timeouts preserve uncertainty. Lookups must be async and read-only; they must
+never execute or retry the action.
+
+For action permits, `register_permit_upstream_status_lookup(origin, lookup)` in
+`app.services.permits` delegates to the MCP registry and its async validation.
+Match on `invocation_id`, since `forwarded_idempotency_key` is None for these
+attempts. Registration does not update receipts or reconcile budgets. These
+hooks cover AWI HTTP and MCP action-permit dispatches; Stripe is not wired.

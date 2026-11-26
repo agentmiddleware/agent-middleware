@@ -311,9 +311,9 @@ async def test_transfer_reports_a_destination_that_vanished(
 ) -> None:
     """A credit matching no row must surface as a plain not-found.
 
-    The destination credit is guarded on ``wallet_id`` alone, so the only way
-    it matches nothing is that the row is gone. The debit is already applied by
-    then, so the transfer has to abort -- and it has to abort with the reason,
+    The destination credit is guarded on ``wallet_id`` and a non-closed status.
+    Here the guarded write misses because the destination row is gone. The
+    debit is already applied by then, so the transfer has to abort with the reason,
     not with whatever SQLAlchemy raises first. Refreshing an instance whose row
     no longer exists raises ``InvalidRequestError``, which would otherwise
     reach the caller in place of the real answer.

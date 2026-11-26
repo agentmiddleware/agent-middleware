@@ -23,6 +23,7 @@ from app.main import app
 from app.schemas.billing import InsufficientFundsResponse, ServiceCategory
 from app.services.agent_money import get_agent_money
 from app.services.wallet_engine import MAX_CHILD_WALLET_TTL_SECONDS
+from tests.conftest import requires_sqlite_row_lock_noop
 
 BOOTSTRAP = {"X-API-Key": "test-key"}
 
@@ -739,6 +740,7 @@ async def test_transfer_into_frozen_wallet_still_lands(client, clean_database):
 
 
 @pytest.mark.anyio
+@requires_sqlite_row_lock_noop
 async def test_transfer_credit_guard_refuses_destination_closed_after_read(
     clean_database, client
 ):
@@ -780,3 +782,7 @@ async def test_transfer_credit_guard_refuses_destination_closed_after_read(
         row = await session.get(WalletModel, child)
         assert row is not None
         assert row.balance == Decimal("100")
+        assert row.status == "closed"
+        source = await session.get(WalletModel, agent)
+        assert source is not None
+        assert source.balance == Decimal("4900")

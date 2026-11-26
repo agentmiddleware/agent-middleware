@@ -187,8 +187,7 @@ def test_cli_offline_pair_and_call_override(tmp_path):
 
 
 @pytest.mark.anyio
-@pytest.mark.usefixtures("clean_database")
-async def test_reject_digest_is_signed_in_real_denial_receipt():
+async def test_reject_digest_is_signed_in_real_denial_receipt(clean_database):
     fixture = load_fixture("reject.json")
     call = json.loads(fixture["artifact_canonical"])
     result = check(fixture, fixture["artifact_canonical"])

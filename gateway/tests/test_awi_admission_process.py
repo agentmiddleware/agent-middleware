@@ -148,12 +148,20 @@ async def worker(directory, crash, phase):
         idle_seconds=0
     )
     replay = False
+    # PT017: no asserts inside the except block. Capture the outcome first,
+    # then assert on it, so a 500 from the wrong failure also fails here.
+    context = None
+    collision = None
     try:
         context = await begin_awi_http_governed(**arguments)
+    except HTTPException as exc:
+        collision = exc
+    if collision is None:
+        assert context is not None
         assert context.replay_response and context.replay_response["reconciled"]
         replay = True
-    except HTTPException as exc:
-        assert exc.status_code == 409
+    else:
+        assert collision.status_code == 409, collision.detail
     async with get_session_factory()() as db:
         debits = (
             (

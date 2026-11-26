@@ -253,11 +253,25 @@ async def test_deployment_without_baked_stamp_reports_null_not_stale(
     get_settings.cache_clear()
 
 
-def test_dockerfile_requires_staged_build_commit_sha_file():
-    """Dockerfile must reject a release upload that lacks the staged stamp."""
-    # Use relative path from test file location to repo root
+def test_dockerfile_bakes_commit_stamp_without_copying_gitignored_file():
+    """Production image build must not COPY a gitignored stamp that is absent.
+
+    A named COPY fails on a clean tree before the build starts. The image
+    still refuses to finish without a staged file or RELEASE_COMMIT_SHA.
+    The arg must not be COMMIT_SHA or BUILD_COMMIT_SHA: those names match
+    untrusted Railway service variables.
+    """
     repo_root = Path(__file__).parent.parent
     dockerfile = (repo_root / "Dockerfile").read_text(encoding="utf-8")
 
-    assert "COPY .build_commit_sha /app/.build_commit_sha" in dockerfile
+    assert "COPY .build_commit_sha" not in dockerfile
+    assert "COPY . /context/" in dockerfile
+    assert "ARG RELEASE_COMMIT_SHA" in dockerfile
+    assert "STAGED_SHA_PATH=/context/.build_commit_sha" in dockerfile
+    assert "BUILD_SHA_PATH=/stamp/.build_commit_sha" in dockerfile
+    assert "python /context/gateway/scripts/write_build_commit_sha.py" in dockerfile
+    assert dockerfile.index("COPY gateway/ /app/") < dockerfile.index(
+        "COPY --from=build-metadata /stamp/.build_commit_sha /app/.build_commit_sha"
+    )
     assert "ARG COMMIT_SHA" not in dockerfile
+    assert "ARG BUILD_COMMIT_SHA" not in dockerfile

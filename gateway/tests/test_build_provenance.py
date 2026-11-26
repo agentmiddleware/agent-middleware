@@ -50,7 +50,7 @@ def test_stamped_is_case_insensitive(baked, monkeypatch):
 
 
 def test_stamped_tolerates_trailing_newline(baked, monkeypatch):
-    # The Dockerfile writes the stamp with `echo`, so it carries a newline.
+    # The image stamp is written with a trailing newline.
     baked(SHA_A + "\n")
     monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", SHA_A)
     assert get_build_provenance() == "stamped"

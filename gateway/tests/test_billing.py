@@ -12,6 +12,7 @@ from httpx import AsyncClient, ASGITransport
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from b2a_sdk import request_key
 from app.main import app
 from app.services.ownership import CallerIdentity
 from app.core.config import Settings, get_settings
@@ -19,6 +20,7 @@ from app.db.database import get_session_factory
 from app.db.models import LedgerEntryModel, WalletModel
 from app.services.agent_money import get_agent_money
 from app.services.audit_log import list_audit_events
+from tests.test_request_key_vectors import VECTORS
 
 
 @pytest.fixture
@@ -1006,16 +1008,25 @@ async def test_charge_reused_idempotency_key_with_different_payload_conflicts(
     )
     agent_wallet_id = agent_resp.json()["wallet_id"]
 
-    headers = {**api_headers, "Idempotency-Key": "retry-key-2"}
-    await client.post(
+    args = {"service": "iot_bridge", "units": 10}
+    key = request_key("billing.charge", args)
+    vector = next(
+        case for case in VECTORS["vectors"] if case["name"] == "billing_charge"
+    )
+    assert key == vector["expected"]
+    assert request_key("billing.charge", {**args, "units": 20}) != key
+    headers = {**api_headers, "Idempotency-Key": key}
+    first = await client.post(
         f"/v1/billing/charge?wallet_id={agent_wallet_id}&service=iot_bridge&units=10",
         headers=headers,
     )
+    assert first.status_code == 200, first.text
     conflict = await client.post(
         f"/v1/billing/charge?wallet_id={agent_wallet_id}&service=iot_bridge&units=20",
         headers=headers,
     )
     assert conflict.status_code == 409
+    assert conflict.json()["detail"]["error"] == "idempotency_key_reused"
 
 
 @pytest.mark.anyio
@@ -1250,7 +1261,6 @@ async def test_rejected_charge_does_not_inflate_velocity_counters(
     """A charge rejected for insufficient funds must not leave the wallet's
     hourly/daily spend counters inflated (which would trip false daily-limit
     rejections and velocity auto-freeze despite zero real spend)."""
-    from decimal import Decimal as _D
     from app.db.database import get_session_factory
     from app.db.models import WalletModel
 
@@ -1282,8 +1292,8 @@ async def test_rejected_charge_does_not_inflate_velocity_counters(
     async with factory() as session:
         wallet = await session.get(WalletModel, wallet_id)
         # All three rejected charges were reversed out of the counters.
-        assert wallet.daily_spent == _D("0")
-        assert wallet.hourly_spent == _D("0")
+        assert wallet.daily_spent == Decimal("0")
+        assert wallet.hourly_spent == Decimal("0")
 
 
 @pytest.mark.anyio
@@ -1759,6 +1769,39 @@ async def test_dry_run_session_does_not_leak_another_tenants_session(
     )
     assert own.status_code == 200, own.text
     assert own.json()["wallet_id"] == wallet_b
+
+
+@pytest.mark.anyio
+async def test_engine_dry_run_refuses_a_session_bound_to_another_wallet(
+    clean_database,
+):
+    """The engine binds a dry-run session to the wallet it authorized.
+
+    ``charge`` checks ownership of ``wallet_id`` only. A caller owning wallet A
+    who passes wallet B's session id used to add simulated charges to B's
+    session, which ``commit_session`` later charges to B. The router already
+    refuses this; the engine is the choke point the governed MCP path and the
+    SDK reach without it.
+    """
+    from app.schemas.billing import ServiceCategory
+    from app.services import shadow_ledger as shadow_ledger_module
+
+    ledger = shadow_ledger_module.get_shadow_ledger()
+    victim = await ledger.create_session("wal-victim", real_balance=Decimal("100"))
+
+    with pytest.raises(ValueError, match="Dry-run session not found"):
+        await get_agent_money().charge(
+            wallet_id="wal-attacker",
+            service_category=ServiceCategory.IOT_BRIDGE,
+            units=Decimal("1"),
+            dry_run=True,
+            dry_run_session_id=victim.session_id,
+            caller=CallerIdentity.for_wallet("wal-attacker"),
+        )
+
+    after = await ledger.get_session(victim.session_id)
+    assert after is not None
+    assert after.simulated_charges == []
 
 
 @pytest.mark.anyio
@@ -2561,6 +2604,12 @@ async def test_agent_wallet_provisioning_replays_on_idempotency_key(
     )
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["error"] == "idempotency_key_reused"
+    assert conflict.json()["code"] == "idempotency_key_reused"
+    assert conflict.json()["message"] == (
+        "This request key was already used with different arguments."
+    )
+    assert conflict.json()["fix"] == "Use a new request key for a new action."
+    assert conflict.json()["docs_url"].endswith("#idempotency_key_reused")
 
 
 @pytest.mark.anyio

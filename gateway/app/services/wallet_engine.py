@@ -57,6 +57,23 @@ class WalletExpiredError(RuntimeError):
         super().__init__(f"Wallet {wallet_id} expired at {expires_at.isoformat()}")
 
 
+class CrossTenantTransferError(ValueError):
+    """Credits may not move between wallets with different tenant labels."""
+
+    def __init__(self, from_wallet_id: str, to_wallet_id: str):
+        self.from_wallet_id = from_wallet_id
+        self.to_wallet_id = to_wallet_id
+        super().__init__(
+            "cross_tenant_transfer_refused: wallets "
+            f"{from_wallet_id} and {to_wallet_id} are in different tenants"
+        )
+
+
+def _refuse_cross_tenant_movement(source: WalletModel, dest: WalletModel) -> None:
+    if getattr(source, "tenant", None) != getattr(dest, "tenant", None):
+        raise CrossTenantTransferError(source.wallet_id, dest.wallet_id)
+
+
 def _validate_child_wallet_ttl(ttl_seconds: int | None) -> None:
     """Keep service callers within the persisted PostgreSQL INTEGER range."""
     if ttl_seconds is None:
@@ -292,6 +309,7 @@ class WalletEngine:
         metadata: dict | None = None,
         require_kyc: bool | None = None,
         session: AsyncSession | None = None,
+        tenant: str | None = None,
     ) -> WalletResponse:
         """Create a human sponsor (liability sink) root wallet.
 
@@ -319,6 +337,7 @@ class WalletEngine:
                 currency,
                 metadata,
                 kyc_required,
+                tenant,
             )
 
         async with self._session_factory()() as session:
@@ -331,6 +350,7 @@ class WalletEngine:
                     currency,
                     metadata,
                     kyc_required,
+                    tenant,
                 )
             await session.commit()
             logger.info(f"Created sponsor wallet {result.wallet_id} for {sponsor_name}")
@@ -345,6 +365,7 @@ class WalletEngine:
         currency: str,
         metadata: dict | None,
         kyc_required: bool,
+        tenant: str | None = None,
     ) -> WalletResponse:
         """Core sponsor-creation logic against an already-open session.
 
@@ -371,6 +392,7 @@ class WalletEngine:
             balance=initial_credits,
             lifetime_credits=initial_credits,
             metadata_json=self._metadata_to_json(metadata),
+            tenant=tenant,
             kyc_status=(
                 KYCStatus.PENDING.value
                 if kyc_required
@@ -532,6 +554,7 @@ class WalletEngine:
             lifetime_credits=budget_credits,
             parent_wallet_id=sponsor_wallet_id,
             agent_id=agent_id,
+            tenant=getattr(sponsor, "tenant", None),
             daily_limit=daily_limit,
             auto_refill=auto_refill,
             auto_refill_threshold=auto_refill_threshold,
@@ -689,6 +712,7 @@ class WalletEngine:
                     balance=budget_credits,
                     lifetime_credits=budget_credits,
                     parent_wallet_id=parent_wallet_id,
+                    tenant=getattr(parent, "tenant", None),
                     child_agent_id=child_agent_id,
                     max_spend=max_spend,
                     task_description=task_description,
@@ -784,6 +808,8 @@ class WalletEngine:
                     raise ValueError("Wallet already closed")
                 if not parent:
                     raise self._wallet_not_found_error(parent_wallet_id)
+
+                _refuse_cross_tenant_movement(child, parent)
 
                 reclaim_amount = child.balance
 
@@ -947,6 +973,8 @@ class WalletEngine:
                     raise self._wallet_not_found_error(from_wallet_id)
                 if not dest:
                     raise self._wallet_not_found_error(to_wallet_id)
+
+                _refuse_cross_tenant_movement(source, dest)
 
                 if source.status not in SPENDABLE_WALLET_STATUSES:
                     raise ValueError(

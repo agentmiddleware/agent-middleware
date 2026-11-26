@@ -31,13 +31,16 @@ It does not run the SQLite demo. The demo intentionally controls its own
 throwaway database and signing seed, including destructive tamper checks;
 passing it a deployment database is not a supported proof mode.
 
-CI's `postgres_trust` job migrates PostgreSQL first and sets `DATABASE_URL`
-for the permit, receipt, MCP, audit, key-management, and idempotency suites.
-Those suites share one event loop for asyncpg. The datetime regression suite
-runs separately with `TEST_POSTGRES_URL`, because its fixture rebuilds the
-application and owns its own connections. Wallet-status guards also run
-against PostgreSQL. The separate `postgres_permit_concurrency` job covers
-process crashes and real row-lock contention.
+CI's `postgres-proofs` job migrates disposable PostgreSQL databases, then
+runs the checks the default SQLite suite skips: `TestPostgresTrustLoop`
+with `TEST_POSTGRES_URL` (asyncpg driver proof) and
+`test_rapid_fire_invokes_all_accounted` with `DATABASE_URL` and
+`RUN_POSTGRES_CONCURRENCY_TESTS=1` (concurrent-invoke accounting proof).
+The job sets `CI_STRICT=1` and its final step fails if any proof logged a
+skip. `postgres-concurrency` is the row-lock job
+(`RUN_POSTGRES_CONCURRENCY_TESTS=1`). Neither job is the multi-process
+crash harness, and neither runs the rest of the trust-primitive suites
+on PostgreSQL.
 
 Before this correction, the named Make target migrated PostgreSQL then
 silently ran the SQLite demo; most CI trust primitive tests also used SQLite
@@ -163,13 +166,19 @@ or any application table that already holds rows, and it takes an advisory lock
 so two runs cannot overlap. Without the opt-in environment variables it skips,
 so it never interferes with `make test`.
 
-CI runs these in the `postgres_permit_concurrency` job, as two steps against
-one PostgreSQL service: **16** crash/reconciliation cases plus **one**
-fixture-saturation guard in `tests/test_mcp_postgres_multiprocess.py`, then the **17** row-lock
-concurrency tests in `tests/test_permit_postgres_concurrency.py`. That job
-installs dependencies with `pip` rather than `uv`, so its step is spelled
-inline; the Make target is the operator-facing equivalent, not a literal
-copy of the CI step.
+CI runs these in two jobs of `.github/workflows/ci.yml`, `postgres-concurrency`
+and `postgres-proofs`, each against its own disposable PostgreSQL service. The
+**16** crash/reconciliation cases plus **one** fixture-saturation guard in
+`tests/test_mcp_postgres_multiprocess.py` (17 tests) run in the `postgres-proofs`
+step "Run multiprocess crash proofs". The **21** row-lock concurrency tests in
+`tests/test_permit_postgres_concurrency.py` run in both jobs. Both jobs install
+dependencies with `uv pip install`; the Make target is the operator-facing
+equivalent, not a literal copy of the CI steps. On pull requests both jobs run
+only when the change touches any path under `gateway/`, a project gateway
+depends on, or a shared path, and are skipped for docs-only pull requests, where
+every changed file in the whole pull request is documentation (see
+[TESTING_TIERS.md](TESTING_TIERS.md)); on every push to `main`, merge-group run
+and manual run they always run.
 
 ### Claim-fence evidence
 
@@ -261,9 +270,9 @@ Being explicit about the boundary is what makes the proofs worth anything.
   is still first-party.** A receipt exported via
   `GET /v1/receipts/{receipt_id}/portable` can be checked by anyone against the
   unauthenticated `/.well-known/trust-keys.json`, using
-  `b2a_sdk.receipt_verifier`, which imports none of this application and needs
-  no network. That closes the "no independent offline verifier" gap for
-  signatures. Three limits remain, and they are not small:
+  the Agent Middleware (AMW) `amw` verifier, which imports none of this
+  application and needs no network. That closes the "no independent offline
+  verifier" gap for signatures. Three limits remain, and they are not small:
   - **Key distribution is first-party.** Keys are fetched over TLS from the
     issuing origin, so an attacker controlling that origin can serve a key set
     that validates forged receipts. Out-of-band key pinning is not
@@ -296,15 +305,19 @@ Being explicit about the boundary is what makes the proofs worth anything.
   wallet-status, and row-lock suites described above; production configuration
   is enforced separately by the `production_trust` CI job. Local execution of
   those checks does not establish hosted deployment readiness.
-- **Tenant isolation is application-layer.** PostgreSQL row-level security is
-  not implemented and no public multi-tenant isolation guarantee is made.
+- **Tenant isolation is application-layer.** Migration 048 creates row-level
+  security policies and `TENANT_RLS_MODE` exists, but it defaults to `off`, the
+  gateway does not yet set the per-transaction wallet scope that `enforce` mode
+  needs ([schema-048-rollout.md](schema-048-rollout.md)), and the proof that
+  `enforce` forces RLS (`tests/test_tenant_rls_migration.py`) does not run in
+  CI. No public multi-tenant isolation guarantee is made.
 
 ## Where provability goes next
 
 These would strengthen claims. They are not a build queue under Narrow.
 
 1. **A receipt-style permit envelope, and a portable audit-chain verifier.**
-   Receipts are done — `b2a_sdk.receipt_verifier` verifies an exported receipt
+   Receipts are done. The `amw` verifier checks an exported receipt
    against the published key document with no running server, and
    `make prove-trust-plane` asserts it. Permits are already independently
    verifiable: `GET /v1/permits/{id}` returns every signed field plus

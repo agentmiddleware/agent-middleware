@@ -41,7 +41,9 @@ async def require_fresh_action_schema():
     async with get_engine().connect() as connection:
         await _assert_migrated_empty_database(connection)
         for table in ("permits", "receipts"):
-            columns = await connection.run_sync(lambda c: inspect(c).get_columns(table))
+            columns = await connection.run_sync(
+                lambda c, table=table: inspect(c).get_columns(table)
+            )
             assert set(FIELDS) <= {c["name"] for c in columns}, "stale 042 schema"
 
 

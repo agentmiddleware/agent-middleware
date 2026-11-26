@@ -244,7 +244,7 @@ class _BearerAuthMiddleware:
 
     def __init__(self, wrapped_app: Any) -> None:
         self._wrapped_app = wrapped_app
-        self._expected = f"Bearer {_BEARER_TOKEN}".encode("utf-8")
+        self._expected = f"Bearer {_BEARER_TOKEN}".encode()
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         path = str(scope.get("path", ""))

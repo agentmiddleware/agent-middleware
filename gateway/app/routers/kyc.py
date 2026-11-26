@@ -6,6 +6,7 @@ Handles identity verification for sponsor wallets.
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..core.auth import AuthContext, get_auth_context
+from ..core.wallet_resolution import resolve_wallet_id
 from ..services.kyc_service import (
     get_kyc_service,
     KYCNotRequiredError,
@@ -57,12 +58,12 @@ async def create_kyc_session(
     4. After completion, Stripe redirects to return_url
     5. Stripe sends webhook with verification result
     """
-    auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
     kyc_service = get_kyc_service()
 
     try:
         result = await kyc_service.create_verification_session(
-            wallet_id=request.wallet_id,
+            wallet_id=wallet_id,
             return_url=request.return_url,
             document_type=request.document_type,
         )

@@ -59,7 +59,7 @@ def test_credentialed_requests_never_follow_redirects(
 
 
 @pytest.mark.parametrize(
-    "status,body,expected",
+    ("status", "body", "expected"),
     [
         (200, b'{"ok":true}', {"ok": True}),
         (403, b'{"detail":"denied"}', {"detail": "denied"}),

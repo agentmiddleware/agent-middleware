@@ -43,20 +43,35 @@ of its own, is a `mismatch`.
 | `created_at` | ISO-8601 UTC |
 | `alg`, `kid`, `payload_hash` | See [`README.md`](README.md) |
 
-Additional members (approval ids, action bindings, constraint denials) are
-additive, as for permits. `reason_code`, `approval_id`,
-`constraints_evaluated`, and the action-binding members are omitted when they
-have no value. `idempotency_record_id` and `dispatch_attempt_id` are omitted
-unless that signature included linkage, so an older success receipt can omit
-both. `response_hash` and `ledger_entry_id` are not omitted: they are JSON
-`null` instead. Dropping a null changes the signed bytes.
+Additional members (approval ids, digests, chain links, action bindings,
+constraint denials, enforcement posture) are additive, as for permits.
+`enforcement_mode` is `"enforce"` or `"permissive"`, the trust posture the
+issuing gateway enforced. `gateway_build` is the commit SHA of the issuing
+gateway build. `reason_code`, `approval_id`, `constraints_evaluated`,
+`enforcement_mode`, `gateway_build`, and the action-binding members are
+omitted when they have no value. `idempotency_record_id` and
+`dispatch_attempt_id` are omitted unless that signature included linkage, so
+an older success receipt can omit both. `response_hash` and `ledger_entry_id`
+are not omitted: they are JSON `null` instead. Dropping a null changes the
+signed bytes.
 
-Two members need care. `ledger_entry_id` and `response_hash` are always
-signed, with null when there is no value: a denied receipt signs
-`"ledger_entry_id":null` and `"response_hash":null`, so verifiers must keep
-those nulls in the bytes they hash. `idempotency_record_id` and
-`dispatch_attempt_id` are signed only when set; receipts that predate the
-linkage fields carry neither.
+### Permit binding, counterparty, and per-permit chain
+
+These members are signed only when set, so receipts issued before they existed
+keep verifying:
+
+| Member | Meaning |
+|---|---|
+| `permit_digest` | Lowercase hex SHA-256 of the permit's exact `signing_input` UTF-8 bytes (same digest rule as `receipt_hash` in [`resolution-v0.1.md`](resolution-v0.1.md)). Identifies which signed permit limits applied, not only `permit_id` |
+| `approval_digest` | Lowercase hex SHA-256 of the signed approval's exact `signing_input` UTF-8 bytes the executor verified. Omitted when no signed approval was used (or when only an `approval_id` exists without signed approval bytes) |
+| `counterparty` | The other party of the call (hostname or domain) so a checker can compare it to the permit's `recipient_domain` |
+| `sequence` | Per-permit sequence number starting at `0` for the first receipt under that permit |
+| `prev_receipt_digest` | Lowercase hex SHA-256 of the previous receipt's exact `signing_input` UTF-8 bytes under the same permit. **Omitted when `sequence` is `0`** (there is no previous receipt). Present if and only if `sequence` is greater than 0 |
+
+A gap in `sequence` values under one permit shows a missing middle receipt.
+`permit_digest` and `approval_digest` never invent values: each is computed
+with the same SHA-256-over-`signing_input` tooling used for golden
+`signing_input_sha256` fields.
 
 ## Outcomes
 
@@ -87,10 +102,15 @@ Full trigger table: [`../gateway/docs/failure-semantics.md`](../gateway/docs/fai
 |---|---|---|
 | `verified` | Signature holds over the signed bytes and the envelope agrees | yes |
 | `invalid` | Signature does not verify | reject (tampered) |
-| `mismatch` | Signature verified, but the bundle disagrees with the signed payload. Covers a different envelope `receipt_id`, `kid`, `alg`, or `canonicalization`, and a `payload_hash` that is not the SHA-256 of the canonical payload with that member removed | reject |
+| `mismatch` | Signature verified, but the bundle disagrees with the signed payload. Covers a different envelope `receipt_id`, `kid`, `alg`, or `canonicalization`. A `payload_hash` that does not match a recomputation is not a mismatch: verifiers never recompute it (see `payload_hash` in [`README.md`](README.md)) | reject |
 | `unknown_key` | Verifier does not hold the signed `kid`, including when that key is present but `disabled` | cannot judge; refresh keys |
-| `malformed` | Bundle cannot be parsed, or the signature is not 64 bytes of base64 | cannot judge |
-| `unsupported` | The signed payload's `alg` or `canonicalization` is not implemented, and the signature over `signing_input` checked out. The envelope alone must not produce this status | cannot judge |
+| `malformed` | Bundle cannot be parsed, or the signature or published key is malformed for its algorithm | cannot judge |
+| `unsupported` | The signature over `signing_input` checked out under the published key, but the signed payload's `alg` or `canonicalization` is not accepted by receipt v0.1. A genuine `ECDSA-P256-SHA256` receipt reaches this status; an envelope claim alone cannot produce it | cannot judge |
+
+The key document's per-key `alg` selects Ed25519 or P-256/SHA-256 signature
+verification. Receipt v0.1 accepts Ed25519 receipts only. P-256 verification
+exists to distinguish a genuine future-algorithm receipt from altered bytes;
+it does not enable the dormant KMS signing path.
 
 Reference verifiers: Python (`sdk/python`, CLI `b2a-verify-receipt`) and
 TypeScript (`sdk/typescript`). Both pass [`test-vectors/`](test-vectors/).

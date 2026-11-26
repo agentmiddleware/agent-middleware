@@ -221,19 +221,21 @@ async def test_discover_and_awi_execute_forward_required_headers_verbatim():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("permit_id", "key"),
+    ("permit_id", "key", "match"),
     [
-        ("", "key"),
-        (" ", "key"),
-        (None, "key"),
-        ("permit", ""),
-        ("permit", " "),
-        ("permit", None),
-        ("permit", "x" * 129),
-        ("permit", " " + "x" * 128),
+        ("", "key", "permit_id must not be blank"),
+        (" ", "key", "permit_id must not be blank"),
+        (None, "key", "permit_id must not be blank"),
+        ("permit", "", "idempotency_key must not be blank"),
+        ("permit", " ", "idempotency_key must not be blank"),
+        ("permit", None, "idempotency_key must not be blank"),
+        ("permit", "x" * 129, "idempotency_key must be at most 128 characters"),
+        ("permit", " " + "x" * 128, "idempotency_key must be at most 128 characters"),
     ],
 )
-async def test_awi_execute_refuses_invalid_headers_before_transport(permit_id, key):
+async def test_awi_execute_refuses_invalid_headers_before_transport(
+    permit_id, key, match
+):
     sent = []
     client = B2AClient(api_url="http://b2a.test", api_key="synthetic")
     await client._client.aclose()
@@ -243,7 +245,8 @@ async def test_awi_execute_refuses_invalid_headers_before_transport(permit_id, k
         )
     )
     try:
-        with pytest.raises(ValueError):
+        # Each header failure names its own refusal, and nothing is sent.
+        with pytest.raises(ValueError, match=match):
             await client.execute_awi_action(
                 "session", "navigate_to", {}, permit_id=permit_id, idempotency_key=key
             )

@@ -284,7 +284,7 @@ class BehavioralSandboxEngine:
             if request.dry_run:
                 execution.cost_estimate = result.get("cost_estimate", 0.0)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             execution.status = ExecutionStatus.TIMEOUT
             execution.error = f"Execution timed out after {env.timeout_seconds}s"
         except Exception as e:
@@ -472,7 +472,7 @@ print(json.dumps(result))
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout_seconds
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.wait()
             return {
@@ -534,7 +534,7 @@ print(json.dumps(result))
                     stdout, stderr = await asyncio.wait_for(
                         proc.communicate(), timeout=timeout_seconds
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     proc.kill()
                     await proc.wait()
                     return {

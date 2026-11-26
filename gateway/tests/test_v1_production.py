@@ -246,7 +246,7 @@ class TestStructuredLogging:
             call_count += 1
             raise ValueError("Test error")
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="Test error"):
             asyncio.run(failing_func())
 
         assert call_count == 2  # Initial + 1 retry

@@ -131,7 +131,7 @@ async def count_duplicate_denial_receipts() -> tuple[int | None, str | None]:
             _query_duplicate_denial_receipts(),
             timeout=DUPLICATE_DENIAL_COUNT_TIMEOUT_SECONDS,
         )
-    except (RuntimeError, SQLAlchemyError, asyncio.TimeoutError) as exc:
+    except (TimeoutError, RuntimeError, SQLAlchemyError) as exc:
         logger.warning("duplicate_denial_count_unavailable: %s", type(exc).__name__)
         return None, type(exc).__name__
     return count, None

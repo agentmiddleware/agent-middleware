@@ -172,10 +172,12 @@ def test_reserialized_bytes_with_identical_json_are_rejected():
 
 
 def test_unicode_escape_flip_is_rejected():
+    """RFC 8785 emits UTF-8 code units for non-ASCII; swapping in a \\u escape tampers."""
     bundle, key_set = _verified_bundle(tool="caf\u00e9-echo")
-    assert "\\u00e9" in bundle["signing_input"]
+    assert "café-echo" in bundle["signing_input"]
+    assert "\\u00e9" not in bundle["signing_input"]
 
-    result = verify_bundle(_retarget(bundle, "\\u00e9", "\u00e9"), key_set)
+    result = verify_bundle(_retarget(bundle, "café-echo", "caf\\u00e9-echo"), key_set)
 
     assert result.status is VerificationStatus.INVALID
     assert result.is_tampered
@@ -269,6 +271,84 @@ def test_payload_without_payload_hash_verifies():
     assert result.status is VerificationStatus.VERIFIED, result.reason
 
 
+def test_signed_payload_hash_is_advisory():
+    """A wrong but signed payload_hash still verifies; the signature covers it."""
+    kid, key_set, sign = _local_signer()
+    payload = _payload(kid=kid)
+    payload["payload_hash"] = "0" * 64
+
+    result = verify_bundle(_signed_bundle(payload, kid=kid, sign=sign), key_set)
+
+    assert result.status is VerificationStatus.VERIFIED, result.reason
+
+
+def test_editing_payload_hash_without_resigning_is_invalid():
+    bundle, key_set = _verified_bundle()
+    good = json.loads(bundle["signing_input"])["payload_hash"]
+
+    result = verify_bundle(_retarget(bundle, good, "0" * 64), key_set)
+
+    assert result.status is VerificationStatus.INVALID
+    assert result.is_tampered
+
+
+def test_float_bearing_payload_verifies_without_reserialization():
+    """RFC 8785 Number::toString emits 0/1 for 0.0/1.0; verifier trusts signed bytes."""
+    kid, key_set, sign = _local_signer()
+    payload = _payload(kid=kid)
+    del payload["payload_hash"]
+    payload["constraints_evaluated"] = {
+        "jev_risk_guard": {"latency_ms": 0.0, "injected_instructions": 1.0}
+    }
+    inner = {k: v for k, v in payload.items() if k != "payload_hash"}
+    payload["payload_hash"] = hashlib.sha256(canonical_json(inner).encode("utf-8")).hexdigest()
+    bundle = _signed_bundle(payload, kid=kid, sign=sign)
+    assert (
+        ',"latency_ms":0}' in bundle["signing_input"]
+        or '"latency_ms":0,' in bundle["signing_input"]
+    )
+    assert (
+        '"injected_instructions":1,' in bundle["signing_input"]
+        or '"injected_instructions":1}' in bundle["signing_input"]
+    )
+    assert '"latency_ms":0.0' not in bundle["signing_input"]
+    assert '"injected_instructions":1.0' not in bundle["signing_input"]
+
+    result = verify_bundle(bundle, key_set)
+
+    assert result.status is VerificationStatus.VERIFIED, result.reason
+
+
+def test_historical_python_float_lexemes_still_verify():
+    """Pre-JCS 1.0/0.0 signed bytes must verify; the verifier must not reserialize."""
+    kid, key_set, sign = _local_signer()
+    # Hand-built signing_input keeps historical Python json.dumps lexemes.
+    inner = (
+        '{"constraints_evaluated":{"jev_risk_guard":{"injected_instructions":1.0,'
+        '"latency_ms":0.0}},"kid":"' + kid + '","receipt_id":"rcpt-1"}'
+    )
+    payload_hash = hashlib.sha256(inner.encode("utf-8")).hexdigest()
+    signing_input = inner.replace(
+        ',"receipt_id"',
+        f',"payload_hash":"{payload_hash}","receipt_id"',
+        1,
+    )
+    assert "1.0" in signing_input and "0.0" in signing_input
+    bundle = {
+        "receipt_id": "rcpt-1",
+        "issuer": "https://api.example.com",
+        "alg": "Ed25519",
+        "kid": kid,
+        "canonicalization": "awi-canonical-json/1",
+        "signing_input": signing_input,
+        "signature": sign(signing_input),
+    }
+
+    result = verify_bundle(bundle, key_set)
+
+    assert result.status is VerificationStatus.VERIFIED, result.reason
+
+
 def test_extra_envelope_fields_are_ignored():
     bundle, key_set = _verified_bundle()
     bundle = {**bundle, "keys_url": "/.well-known/trust-keys.json", "future_field": {"n": 1}}
@@ -345,6 +425,92 @@ def test_key_set_drops_keys_it_cannot_verify_with(entry):
 def test_key_set_rejects_a_non_object_document():
     with pytest.raises(VerificationError):
         key_set_from_document(["not", "a", "dict"])
+
+
+def test_genuine_p256_receipt_is_unsupported_only_after_signature_verification():
+    """The dormant KMS algorithm is recognizable without accepting it as v0.1."""
+    pytest.importorskip("cryptography")
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_der = private_key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    kid = "p256-test-key"
+    algorithm = "ECDSA-P256-SHA256"
+    signing_input = canonical_json(_payload(kid=kid, alg=algorithm))
+    signature = private_key.sign(signing_input.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
+    bundle = {
+        "kid": kid,
+        "alg": algorithm,
+        "signing_input": signing_input,
+        "signature": base64.b64encode(signature).decode(),
+    }
+    document = {
+        "keys": [
+            {
+                "kid": kid,
+                "alg": algorithm,
+                "status": "active",
+                "public_key_b64": base64.b64encode(public_der).decode(),
+            }
+        ]
+    }
+    keys = key_set_from_document(document)
+
+    assert kid in keys
+    assert verify_bundle(bundle, {}).status is VerificationStatus.UNKNOWN_KEY
+    genuine = verify_bundle(bundle, keys)
+    assert genuine.status is VerificationStatus.UNSUPPORTED
+    assert not genuine.is_tampered
+
+    ed_claim = canonical_json(_payload(kid=kid, alg="Ed25519"))
+    ed_claim_signature = private_key.sign(ed_claim.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
+    mislabeled = dict(
+        bundle,
+        alg="Ed25519",
+        signing_input=ed_claim,
+        signature=base64.b64encode(ed_claim_signature).decode(),
+    )
+    mismatched_algorithm = verify_bundle(mislabeled, keys)
+    assert mismatched_algorithm.status is VerificationStatus.UNSUPPORTED
+    assert "verification key algorithm" in (mismatched_algorithm.reason or "")
+
+    altered = dict(
+        bundle, signing_input=signing_input.replace('"outcome":"success"', '"outcome":"denied"')
+    )
+    assert verify_bundle(altered, keys).status is VerificationStatus.INVALID
+
+    other_key = ec.generate_private_key(ec.SECP256R1())
+    wrong_signature = other_key.sign(signing_input.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
+    assert (
+        verify_bundle(
+            dict(bundle, signature=base64.b64encode(wrong_signature).decode()), keys
+        ).status
+        is VerificationStatus.INVALID
+    )
+    assert (
+        verify_bundle(dict(bundle, signature=base64.b64encode(b"\x30\x00").decode()), keys).status
+        is VerificationStatus.MALFORMED
+    )
+
+    document["keys"][0]["status"] = "disabled"
+    assert (
+        verify_bundle(bundle, key_set_from_document(document)).status
+        is VerificationStatus.UNKNOWN_KEY
+    )
+    document["keys"][0]["status"] = "active"
+    document["keys"][0]["public_key_b64"] = base64.b64encode(b"not DER").decode()
+    assert (
+        verify_bundle(bundle, key_set_from_document(document)).status
+        is VerificationStatus.MALFORMED
+    )
+    document["keys"][0]["public_key_b64"] = "!!!!"
+    assert (
+        verify_bundle(bundle, key_set_from_document(document)).status
+        is VerificationStatus.MALFORMED
+    )
 
 
 def _write_cli_inputs(tmp_path, bundle, key_set):

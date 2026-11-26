@@ -11,7 +11,7 @@ VALID_URL = "postgresql+asyncpg://sellers@127.0.0.1:55439/amw_action_guard_1"
 
 
 @pytest.mark.parametrize(
-    "module,flag",
+    ("module", "flag"),
     [
         ("test_action_multiprocess", "RUN_MCP_MULTIPROCESS_TESTS"),
         ("test_action_postgres", "RUN_POSTGRES_CONCURRENCY_TESTS"),

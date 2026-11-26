@@ -12,7 +12,7 @@ hygiene, DEBUG, rate limit), so it requires a bootstrap admin key. A
 wallet-scoped tenant key is refused with 403 admin_access_denied.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -91,7 +91,7 @@ class PreflightResponse(BaseModel):
     ),
 )
 async def run_preflight(
-    request: PreflightRequest = PreflightRequest(),
+    request: PreflightRequest = Body(default_factory=PreflightRequest),
     auth: AuthContext = Depends(get_auth_context),
 ):
     # The report is operator configuration, not tenant data: a wallet-scoped

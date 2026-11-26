@@ -26,7 +26,18 @@ from app.services.idempotency import (
 from app.services.permits import get_permit_service
 from app.services.receipts import ReceiptService
 from app.services.service_registry import get_service_registry
-from tests.test_trust_helpers import create_tool_permit, provision_agent_wallet
+from tests.test_trust_helpers import (
+    BOOTSTRAP_HEADERS,
+    create_tool_permit,
+    provision_agent_wallet,
+)
+
+
+def _error_without_request_id(error: dict) -> dict:
+    """Replay identity ignores the per-call correlation id."""
+    data = dict(error.get("data") or {})
+    data.pop("request_id", None)
+    return {**error, "data": data}
 
 
 @pytest.fixture
@@ -116,6 +127,190 @@ async def test_governed_mcp_invoke_returns_receipt_and_replay_does_not_double_ch
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("transport", ["jsonrpc", "http"])
+@pytest.mark.parametrize(
+    "wallet_case", ["absent", "null", "empty", "matching", "foreign", "invalid"]
+)
+async def test_legacy_mcp_wallet_defaults_only_when_omitted(
+    client, clean_database, transport, wallet_case
+):
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    tool_name = "wallet-default-tool"
+    calls = []
+    registry = get_service_registry()
+    registry.register_local(
+        service_id=tool_name,
+        name="Wallet Default Tool",
+        description="Wallet selection test tool",
+        category=ServiceCategory.AGENT_COMMS,
+        func=lambda: calls.append(True) or {"ok": True},
+        credits_per_unit=2.0,
+        unit_name="call",
+    )
+    try:
+        permit = await create_tool_permit(
+            client,
+            wallet_id=wallet_id,
+            key_id=provisioned["key_id"],
+            tool_name=tool_name,
+        )
+        context = {
+            "permit_id": permit["permit_id"],
+            "idempotency_key": f"wallet-default-{transport}-{wallet_case}",
+        }
+        if wallet_case != "absent":
+            context["wallet_id"] = {
+                "null": None,
+                "empty": "",
+                "matching": wallet_id,
+                "foreign": provisioned["sponsor_wallet_id"],
+                "invalid": 123,
+            }[wallet_case]
+        if transport == "jsonrpc":
+            response = await client.post(
+                "/mcp/messages",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "wallet-default-call",
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": {},
+                        "mcpContext": context,
+                    },
+                },
+                headers=provisioned["agent_headers"],
+            )
+        else:
+            response = await client.post(
+                f"/mcp/tools/{tool_name}/invoke",
+                json={"name": tool_name, "arguments": {}, "mcp_context": context},
+                headers=provisioned["agent_headers"],
+            )
+
+        if wallet_case == "invalid":
+            assert calls == []
+            if transport == "jsonrpc":
+                assert response.status_code == 200
+                error = response.json()["error"]
+                assert error["code"] == -32602
+                assert error["message"] == "Invalid params"
+                assert error["data"]["code"] == "invalid_params"
+                assert "request_id" in error["data"]
+                assert set(error["data"]) == {
+                    "code",
+                    "message",
+                    "fix",
+                    "docs_url",
+                    "request_id",
+                }
+            else:
+                assert response.status_code == 422
+        elif wallet_case == "foreign":
+            assert calls == []
+            if transport == "jsonrpc":
+                assert response.status_code == 200
+                assert response.json()["error"]["code"] == -32003
+                assert response.json()["error"]["message"] == "wallet_access_denied"
+            else:
+                assert response.status_code == 403
+                assert response.json()["detail"]["error"] == "wallet_access_denied"
+        else:
+            assert response.status_code == 200, response.text
+            result = (
+                response.json()["result"] if transport == "jsonrpc" else response.json()
+            )
+            assert result["isError"] is False
+            assert result["receipt"]["wallet_id"] == wallet_id
+            assert calls == [True]
+    finally:
+        registry.unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("argument_wallet", ["absent", None, ""])
+async def test_http_invoke_without_context_uses_bound_key_wallet(
+    client, clean_database, argument_wallet
+):
+    provisioned = await provision_agent_wallet(client)
+    tool_name = "wallet-default-arguments-tool"
+    registry = get_service_registry()
+    registry.register_local(
+        service_id=tool_name,
+        name="Wallet Default Arguments Tool",
+        description="Legacy HTTP wallet selection test tool",
+        category=ServiceCategory.AGENT_COMMS,
+        func=lambda wallet_id=None: {"wallet_id": wallet_id},
+        credits_per_unit=2.0,
+        unit_name="call",
+    )
+    try:
+        arguments = (
+            {} if argument_wallet == "absent" else {"wallet_id": argument_wallet}
+        )
+        response = await client.post(
+            f"/mcp/tools/{tool_name}/invoke",
+            json={"name": tool_name, "arguments": arguments},
+            headers=provisioned["agent_headers"],
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["isError"] is False
+        ledger = await client.get(
+            f"/v1/billing/ledger/{provisioned['agent_wallet_id']}",
+            headers=provisioned["agent_headers"],
+        )
+        assert ledger.status_code == 200
+        debits = [
+            entry
+            for entry in ledger.json()["entries"]
+            if tool_name in entry.get("description", "")
+        ]
+        assert len(debits) == 1
+    finally:
+        registry.unregister_local(tool_name)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("transport", ["jsonrpc", "http"])
+async def test_legacy_mcp_missing_wallet_still_rejected_without_bound_key(
+    client, transport
+):
+    if transport == "jsonrpc":
+        response = await client.post(
+            "/mcp/messages",
+            json={
+                "jsonrpc": "2.0",
+                "id": "missing-wallet",
+                "method": "tools/call",
+                "params": {"name": "anything", "arguments": {}, "mcpContext": {}},
+            },
+            headers=BOOTSTRAP_HEADERS,
+        )
+        assert response.status_code == 200
+        error = response.json()["error"]
+        assert error["code"] == -32602
+        assert error["message"] == "Missing wallet_id in mcpContext"
+        assert error["data"]["code"] == "missing_wallet_id"
+        assert "request_id" in error["data"]
+        assert set(error["data"]) == {
+            "code",
+            "message",
+            "fix",
+            "docs_url",
+            "request_id",
+        }
+    else:
+        response = await client.post(
+            "/mcp/tools/anything/invoke",
+            json={"name": "anything", "arguments": {}, "mcp_context": {}},
+            headers=BOOTSTRAP_HEADERS,
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Missing wallet_id"
+
+
+@pytest.mark.anyio
 async def test_frozen_wallet_denial_returns_receipt_and_replays_without_charge(
     client,
     clean_database,
@@ -196,7 +391,9 @@ async def test_frozen_wallet_denial_returns_receipt_and_replays_without_charge(
         assert receipt["credits_charged"] == "0"
 
         assert replay.status_code == 200
-        assert replay.json()["error"] == first_error
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert calls["count"] == 0
 
         stored_permit = await get_permit_service().get_permit(permit["permit_id"])
@@ -300,7 +497,9 @@ async def test_velocity_auto_freeze_returns_receipted_denial_and_releases_budget
         assert receipt["ledger_entry_id"] is None
         assert receipt["credits_charged"] == "0"
         assert replay.status_code == 200
-        assert replay.json()["error"] == first_error
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert calls["count"] == 0
 
         stored_permit = await get_permit_service().get_permit(permit["permit_id"])
@@ -719,7 +918,8 @@ async def test_governed_tool_failure_returns_refunded_receipt(client, clean_data
 
     assert resp.status_code == 200
     payload = resp.json()
-    assert payload["error"]["message"] == "tool exploded"
+    assert payload["error"]["message"] == "internal_error"
+    assert "tool exploded" not in resp.text
     receipt = payload["error"]["data"]["receipt"]
     assert receipt["outcome"] == "failed_refunded"
     assert receipt["ledger_entry_id"]
@@ -804,11 +1004,18 @@ async def test_governed_refund_failure_keeps_permit_budget_reserved(
 
     assert first.status_code == 200
     assert first.json()["error"]["code"] == -32603
-    # The reason names the tool's own error; the refund store's text stays
+    # The public message is canned; the tool error and refund store text stay
     # server-side (server log and audit event), as on the upstream path.
-    assert first.json()["error"]["message"] == "refund_failed; tool_error:tool exploded"
+    assert first.json()["error"]["message"] == "refund_failed"
     assert "refund down" not in first.text
-    assert replay.json()["error"] == first.json()["error"]
+    assert "tool exploded" not in first.text
+    first_error = first.json()["error"]
+    replay_error = replay.json()["error"]
+    assert replay_error["code"] == first_error["code"]
+    assert replay_error["message"] == first_error["message"]
+    first_data = {k: v for k, v in first_error["data"].items() if k != "request_id"}
+    replay_data = {k: v for k, v in replay_error["data"].items() if k != "request_id"}
+    assert replay_data == first_data
     receipt = first.json()["error"]["data"]["receipt"]
     assert receipt["outcome"] == "failed_unrefunded"
     assert receipt["ledger_entry_id"]
@@ -1315,7 +1522,9 @@ async def test_insufficient_funds_returns_receipt_and_replays_without_charge(
         assert receipt["credits_charged"] == "0"
 
         assert replay.status_code == 200
-        assert replay.json()["error"] == first_error
+        assert _error_without_request_id(
+            replay.json()["error"]
+        ) == _error_without_request_id(first_error)
         assert calls["count"] == 0
 
         stored_permit = await get_permit_service().get_permit(permit["permit_id"])

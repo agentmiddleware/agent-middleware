@@ -323,7 +323,7 @@ async def test_concurrent_refreshes_cannot_fork_the_chain(
         if armed and entity is RefreshTokenModel:
             try:
                 await asyncio.wait_for(barrier.wait(), timeout=2)
-            except (asyncio.TimeoutError, asyncio.BrokenBarrierError):
+            except (TimeoutError, asyncio.BrokenBarrierError):
                 pass
         return row
 

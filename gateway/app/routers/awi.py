@@ -86,6 +86,8 @@ async def create_session(
     Sessions provide stateful context for web agent interactions,
     enabling higher-level unified actions instead of raw DOM manipulation.
     """
+    if request.wallet_id is None:
+        request.wallet_id = auth.wallet_id
     if request.wallet_id:
         auth.require_wallet_access(request.wallet_id)
     else:

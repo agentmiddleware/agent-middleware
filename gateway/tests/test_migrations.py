@@ -33,6 +33,8 @@ def test_alembic_upgrade_creates_auth_schema(tmp_path, monkeypatch):
         "signing_keys",
         "permits",
         "receipts",
+        "receipt_resolutions",
+        "resolution_chain_heads",
         "idempotency_records",
         "mcp_dispatch_attempts",
         "human_approvals",
@@ -43,6 +45,48 @@ def test_alembic_upgrade_creates_auth_schema(tmp_path, monkeypatch):
     receipt_columns = {col["name"] for col in inspector.get_columns("receipts")}
     assert "approval_id" in receipt_columns
     assert {"idempotency_record_id", "dispatch_attempt_id"} <= receipt_columns
+
+    resolution_columns = {
+        col["name"] for col in inspector.get_columns("receipt_resolutions")
+    }
+    assert {
+        "resolution_id",
+        "receipt_id",
+        "wallet_id",
+        "sequence",
+        "prev_hash",
+        "receipt_hash",
+        "outcome",
+        "created_at",
+        "signing_input",
+        "signature",
+        "signature_key_id",
+        "payload_hash",
+        "resolution_hash",
+    } <= resolution_columns
+    head_columns = {
+        col["name"] for col in inspector.get_columns("resolution_chain_heads")
+    }
+    assert {"wallet_id", "last_sequence", "last_hash"} <= head_columns
+    resolution_fks = inspector.get_foreign_keys("receipt_resolutions")
+    assert any(
+        foreign_key["constrained_columns"] == ["receipt_id"]
+        and foreign_key["referred_table"] == "receipts"
+        for foreign_key in resolution_fks
+    )
+    assert any(
+        foreign_key["constrained_columns"] == ["wallet_id"]
+        and foreign_key["referred_table"] == "wallets"
+        for foreign_key in resolution_fks
+    )
+    assert any(
+        constraint["column_names"] == ["wallet_id", "sequence"]
+        for constraint in inspector.get_unique_constraints("receipt_resolutions")
+    )
+    assert {"ck_receipt_resolutions_sequence", "ck_receipt_resolutions_outcome"} <= {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("receipt_resolutions")
+    }
 
     ledger_columns = {col["name"] for col in inspector.get_columns("ledger_entries")}
     assert "operation_key" in ledger_columns
@@ -740,7 +784,7 @@ def test_041_scrubs_legacy_plaintext_owner_keys_from_content_tables(
 
     Rows whose owner_key is a known wallet id (what the factory routers write
     now) keep their owner, and an already-blank row stays blank. The rows are
-    inserted at head and the scrub is exercised by stepping back to 040 and
+    inserted at 044 and the scrub is exercised by stepping back to 040 and
     forward again, which also pins that the downgrade is a no-op (the scrubbed
     values were credentials and are unrecoverable) and the upgrade idempotent.
     """
@@ -752,7 +796,7 @@ def test_041_scrubs_legacy_plaintext_owner_keys_from_content_tables(
 
     monkeypatch.setenv("DATABASE_URL", async_url)
     config = Config("alembic.ini")
-    command.upgrade(config, "head")
+    command.upgrade(config, "044_receipt_resolutions")
     asyncio.set_event_loop(asyncio.new_event_loop())
 
     engine = create_engine(sync_url)
@@ -828,7 +872,7 @@ def test_041_scrubs_legacy_plaintext_owner_keys_from_content_tables(
 
     command.downgrade(config, "040_permit_repeat_window")
     asyncio.set_event_loop(asyncio.new_event_loop())
-    command.upgrade(config, "head")
+    command.upgrade(config, "044_receipt_resolutions")
     asyncio.set_event_loop(asyncio.new_event_loop())
 
     pipelines, campaigns = owners()
@@ -839,6 +883,6 @@ def test_041_scrubs_legacy_plaintext_owner_keys_from_content_tables(
     # Idempotent: a second pass changes nothing.
     command.downgrade(config, "040_permit_repeat_window")
     asyncio.set_event_loop(asyncio.new_event_loop())
-    command.upgrade(config, "head")
+    command.upgrade(config, "044_receipt_resolutions")
     asyncio.set_event_loop(asyncio.new_event_loop())
     assert owners() == (pipelines, campaigns)

@@ -582,7 +582,8 @@ async def test_billing_ownership_backstop_replays_exact_denial(
         }
     }
     assert first.status_code == 403
-    assert first.json() == expected
+    assert first.json()["detail"] == expected["detail"]
+    assert first.json()["code"] == "wallet_access_denied"
     stored = await idem.get_record(
         wallet_id=wallet_id, endpoint=endpoint, idempotency_key=key
     )

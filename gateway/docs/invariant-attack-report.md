@@ -323,14 +323,16 @@ offline verifier catching it, and "forged" is reported distinctly from "cannot
 verify" (unknown key) — an outage must never read as fraud.
 
 **Method.** Fetch a genuine receipt bundle and the public key set (the key set
-needs no credential), verify offline with the shipped `b2a_sdk` verifier (imports
-no server code), then tamper representative high-value signed facts and
+needs no credential), verify offline with the Agent Middleware (AMW) verifier
+(imports no server code), then tamper representative high-value signed facts and
 re-verify.
+
+Current reproduction command:
 
 ```bash
 curl -s "$API_URL/v1/receipts/<rid>/portable" -H "X-API-Key: b2a_****" -o bundle.json
 curl -s "$API_URL/.well-known/trust-keys.json" -o keys.json
-PYTHONPATH=../sdk/python/src python -m b2a_sdk.verify_cli --bundle bundle.json --keys keys.json
+uv run --with "../sdk/python[verify]" amw verify --bundle bundle.json --keys keys.json
 ```
 
 **Observed (exit code in parentheses — 0 verified / 1 forged / 2 undetermined):**

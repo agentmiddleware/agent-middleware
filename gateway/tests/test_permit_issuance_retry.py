@@ -67,7 +67,7 @@ async def issuance(request, clean_database, action_registry):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "invalid,reason",
+    ("invalid", "reason"),
     [
         ("expired", "permit_expired_at_creation"),
         ("budget", "permit_budget_exceeds_wallet_balance"),

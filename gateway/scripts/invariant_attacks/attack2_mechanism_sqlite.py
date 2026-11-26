@@ -12,7 +12,7 @@ own spent_credits is far below what the wallet ledger actually debited.
 import json
 import sys
 
-import attacklib as A
+import attacklib as A  # noqa: N812
 
 CAP = 6  # cost 2/call -> cap should allow exactly 3 successful calls
 N = 8

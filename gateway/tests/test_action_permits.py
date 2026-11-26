@@ -65,10 +65,21 @@ def test_strict_action_digest():
     assert digest == action_payload_hash(BINDING, "wallet", {**args, "currency": "USD"})
     for changed in ({**args, "recipient": "bob"}, {**args, "amount_minor": 2}):
         assert digest != action_payload_hash(BINDING, "wallet", changed)
-    for value in ("1", True, 1.0, float("nan"), float("inf"), Decimal("1"), object()):
-        with pytest.raises(ValueError):
+    # Each input names its exact refusal: type errors and non-strict-JSON
+    # inputs fail in different checks, and a bare raises would pass if the
+    # wrong one fired.
+    for value, match in (
+        ("1", "action_argument_type_mismatch"),
+        (True, "action_argument_type_mismatch"),
+        (1.0, "action_argument_type_mismatch"),
+        (float("nan"), "action_arguments_must_be_strict_json"),
+        (float("inf"), "action_arguments_must_be_strict_json"),
+        (Decimal("1"), "action_arguments_must_be_strict_json"),
+        (object(), "action_arguments_must_be_strict_json"),
+    ):
+        with pytest.raises(ValueError, match=match):
             action_payload_hash(BINDING, "wallet", {**args, "amount_minor": value})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="action_arguments_must_be_strict_json"):
         action_payload_hash(BINDING, "wallet", {1: "bad", **args})
     for binding in (
         replace(BINDING, public_tool_id="other"),
@@ -92,7 +103,7 @@ def test_number_representations_remain_distinct():
     assert action_payload_hash(binding, "wallet", {"value": 1}) != action_payload_hash(
         binding, "wallet", {"value": 1.0}
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="action_argument_type_mismatch"):
         action_payload_hash(binding, "wallet", {"value": "1"})
 
 
@@ -107,7 +118,7 @@ def test_action_fields_all_or_none():
             ActionPermitFields(**{**FIELDS, "action_contract_version": version})
     with pytest.raises(ValidationError):
         ActionPermitFields(**{**FIELDS, "action_payload_hash": "bad"})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="incomplete_action_binding"):
         PermitService._unsigned_payload(_base_model(action_contract_version=1))
 
 
@@ -138,7 +149,7 @@ def test_action_signature_covers_every_binding_field():
 )
 def test_unsupported_schema_rejects(invalid):
     schema = {**MONEY_SCHEMA, **invalid}
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="unsupported_action_schema"):
         action_payload_hash(
             replace(BINDING, input_schema=schema),
             "wallet",
@@ -176,20 +187,23 @@ def test_nested_defaults_constraints_and_raw_json_rejection():
         binding, "wallet", {"items": [{"amount": 1, "currency": "USD"}]}
     )
     assert original == {"items": [{"amount": 1}]}
-    for invalid in (
-        {"items": []},
-        {"items": [{"amount": 0}]},
-        {"items": [{"amount": 1, "currency": "EUR"}]},
-        {"items": [{"amount": 1, "other": None}]},
-        {"items": [{"amount": 1}], "extra": object()},
+    for invalid, match in (
+        ({"items": []}, "action_argument_constraint"),
+        ({"items": [{"amount": 0}]}, "action_argument_constraint"),
+        ({"items": [{"amount": 1, "currency": "EUR"}]}, "action_argument_enum"),
+        ({"items": [{"amount": 1, "other": None}]}, "action_argument_unknown_property"),
+        (
+            {"items": [{"amount": 1}], "extra": object()},
+            "action_arguments_must_be_strict_json",
+        ),
     ):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=match):
             action_payload_hash(binding, "wallet", invalid)
     invalid_default = {
         "type": "object",
         "properties": {"value": {"type": "integer", "default": "1"}},
     }
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="action_argument_type_mismatch"):
         action_payload_hash(
             replace(BINDING, input_schema=invalid_default), "wallet", {}
         )

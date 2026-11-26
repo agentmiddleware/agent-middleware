@@ -8,7 +8,6 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-
 DOCS_SOURCE = Path(__file__).resolve().parent / "docs-src"
 SITE_URL = "https://www.agentmiddleware.dev"
 LICENSE_LINE = "Apache 2.0 (gateway is Fair Source, FSL-1.1)"
@@ -200,9 +199,9 @@ def _page_template(
     <link rel="stylesheet" href="/fonts.css?v=@@FONTS_CSS_VERSION@@" />
     <link rel="stylesheet" href="/styles.css?v=@@STYLES_CSS_VERSION@@" />
     <script src="/a11y-preload.js?v=gateway-19"></script>
-    @@VERCEL_ANALYTICS_SCRIPTS@@
-    <script defer src="/analytics.js?v=gateway-19"></script>
-    <script defer src="/utm-capture.js?v=utm-1"></script>
+    @@POSTHOG_CONFIG@@
+    <script defer src="/analytics.js?v=posthog-2"></script>
+    <script defer src="/utm-capture.js?v=utm-2"></script>
     <script defer src="/a11y.js?v=gateway-19"></script>
   </head>
   <body class="site-light">

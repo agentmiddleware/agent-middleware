@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  RUFF_VERSION: "0.17.3"
+  RUFF_VERSION: "0.17.6"
 
 jobs:
   lint:

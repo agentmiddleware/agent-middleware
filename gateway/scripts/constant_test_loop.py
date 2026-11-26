@@ -21,7 +21,7 @@ Run locally (auto-provisions agent key)::
 
 Run against production (once CI_SMOKE_AGENT_KEY is set in CI)::
 
-    API_URL=https://api.thisisatest.tech \\
+    API_URL=https://api.agentmiddleware.dev \\
         python scripts/constant_test_loop.py
 """
 
@@ -314,7 +314,13 @@ def run_constant_test(
     # If credentials not provided, self-provision
     if not agent_key:
         print("[constant-test] self-provisioning agent key", file=sys.stderr)
-        with httpx.Client(base_url=api_url, timeout=30.0) as provision_client:
+        # Stay on the named origin: an ambient proxy or a redirect can move this key.
+        with httpx.Client(
+            base_url=api_url,
+            timeout=30.0,
+            trust_env=False,
+            follow_redirects=False,
+        ) as provision_client:
             provision_resp = _post_json(
                 provision_client,
                 "/v1/dev-keys/self-provision",
@@ -336,7 +342,11 @@ def run_constant_test(
             "Content-Type": "application/json",
         }
         with httpx.Client(
-            base_url=api_url, headers=headers, timeout=30.0
+            base_url=api_url,
+            headers=headers,
+            timeout=30.0,
+            trust_env=False,
+            follow_redirects=False,
         ) as fetch_client:
             wallets_resp = _get_json(
                 fetch_client, "/v1/billing/wallets", expected_status=200
@@ -383,7 +393,13 @@ def run_constant_test(
         "Content-Type": "application/json",
     }
 
-    with httpx.Client(base_url=api_url, headers=headers, timeout=30.0) as client:
+    with httpx.Client(
+        base_url=api_url,
+        headers=headers,
+        timeout=30.0,
+        trust_env=False,
+        follow_redirects=False,
+    ) as client:
         # Discover tools
         print("[constant-test] discovering tools", file=sys.stderr)
         tools = _get_json(client, "/mcp/tools.json", expected_status=200)

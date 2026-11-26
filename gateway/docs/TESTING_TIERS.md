@@ -61,12 +61,25 @@ two-process crash harness (`make prove-crash-recovery`,
 `tests/test_mcp_postgres_multiprocess.py`) additionally needs
 `STATE_BACKEND=postgres` and `MCP_STRESS_DB_ISOLATED=1`.
 
-CI runs tier 2 on every pull request in `postgres-concurrency` and
-`postgres-proofs` (`.github/workflows/ci.yml`). Both jobs use disposable
+CI runs tier 2 in `postgres-concurrency` and `postgres-proofs`
+(`.github/workflows/ci.yml`) on every push to `main`, every merge-group run and
+every manual run. On pull requests the two jobs run when the change touches
+any path under `gateway/` (documentation files included), a project gateway
+depends on (for example `sdk/python`), or a shared path. They skip a pull
+request that changes only another project, for example `sdk/typescript`
+(`limit_matrix` in `.github/scripts/project_dependents.py`), and a docs-only
+pull request, where every changed file in the whole pull request has a
+documentation suffix such as Markdown (changes under `spec/`, nested READMEs and
+deletions never count as docs-only; the `detect` job in
+`.github/workflows/ci.yml`). A pull request that mixes documentation with any
+other file is not docs-only, so a documentation file under `gateway/` then
+selects both jobs. Both jobs use disposable
 Postgres service databases and set `AMW_TEST_DB_DISPOSABLE=1` in their job
 environment; the shared fixture then accepts PostgreSQL URLs with
 `ENVIRONMENT=test`. `postgres-proofs` runs row-lock, action
-accounting, migration, asyncpg driver, and both multiprocess crash suites
+accounting, migration, asyncpg driver, concurrent-invoke accounting
+(`tests/test_security_fuzz_battery.py::test_rapid_fire_invokes_all_accounted`),
+and both multiprocess crash suites
 (`tests/test_mcp_postgres_multiprocess.py` and
 `tests/test_action_multiprocess.py`) with `CI_STRICT=1`; its final step
 fails if any proof logged a skip.

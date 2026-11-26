@@ -200,7 +200,9 @@ class PodService:
                     )
 
                     provisioned: list[ProvisionedMember] = []
-                    for member, member_budget in zip(members, member_budgets):
+                    for member, member_budget in zip(
+                        members, member_budgets, strict=True
+                    ):
                         agent_id_in_flight = (
                             member.agent_id or f"pod-member-{len(provisioned)}"
                         )

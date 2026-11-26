@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
+import pytest
 
 from b2a_sdk import PermitRequest, SyncAgentMiddlewareClient
 
@@ -137,3 +139,91 @@ def test_sync_permit_and_invoke_round_trip() -> None:
     assert result.receipt.receipt_id == "receipt-success"
 
     assert client.api_key == "test-key"
+
+
+def test_sync_calls_reuse_pooled_connections_across_calls() -> None:
+    """Sequential calls over a real keep-alive socket must all succeed.
+
+    ``asyncio.run`` per call closed the loop that owned the pooled
+    connection, so the second call raised ``Event loop is closed``.
+    ``MockTransport`` has no pool and cannot show this; a real server can.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:  # noqa: N802
+            body = json.dumps({"tools": []}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = SyncAgentMiddlewareClient(
+            api_key="test-key",
+            base_url=f"http://127.0.0.1:{server.server_address[1]}",
+        )
+        assert client.discover_tools() == []
+        assert client.discover_tools() == []
+        assert client.discover_tools() == []
+        client.close()
+        client.close()  # idempotent
+        with pytest.raises(RuntimeError, match="closed"):
+            client.discover_tools()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_sync_client_refuses_to_run_inside_an_event_loop() -> None:
+    client = SyncAgentMiddlewareClient(api_key="test-key")
+
+    async def inside() -> None:
+        with pytest.raises(RuntimeError, match="inside an event loop"):
+            client.discover_tools()
+
+    try:
+        asyncio.run(inside())
+    finally:
+        client.close()
+
+
+def test_sync_client_close_inside_event_loop_can_be_retried() -> None:
+    client = SyncAgentMiddlewareClient(
+        api_key="test-key",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"tools": []})),
+    )
+    owned_loop = client._loop
+
+    async def inside() -> None:
+        with pytest.raises(RuntimeError, match="inside an event loop"):
+            client.close()
+
+    try:
+        asyncio.run(inside())
+        assert client._loop is owned_loop
+        assert owned_loop is not None and not owned_loop.is_closed()
+        assert not client._client._client.is_closed
+        assert client.discover_tools() == []
+    finally:
+        client.close()
+
+    assert client._client._client.is_closed
+    assert owned_loop is not None and owned_loop.is_closed()
+    assert client._loop is None
+    client.close()  # idempotent after a successful retry
+
+    async def inside_closed() -> None:
+        client.close()  # idempotent even inside a running event loop
+
+    asyncio.run(inside_closed())

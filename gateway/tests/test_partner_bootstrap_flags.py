@@ -1,15 +1,46 @@
 """Operator bounds on partner_api_key_bootstrap: --daily-limit,
 --expires-in-days, --max-uses reach the right request bodies, and stay
-absent when not requested (so older servers see unchanged payloads)."""
+absent when not requested (so older servers see unchanged payloads).
+
+CLI modes never print the minted secret; --key-file writes it at mode 0600.
+"""
 
 from __future__ import annotations
 
 import json
+import os
+import secrets
+import stat
 import sys
+import time
+import uuid
+from pathlib import Path
 
 import pytest
 
 import scripts.partner_api_key_bootstrap as bootstrap
+
+# Runtime-generated fixtures only (no hardcoded secrets or ids). Distinct
+# "mnt-"/"kpfx-" alphabets keep the minted secret's head/tail out of the
+# server-provided prefix shown on stdout; the guard loop below removes any
+# residual hex collision so leak assertions stay meaningful every run.
+MINTED_KEY = f"mnt-{secrets.token_hex(16)}-{time.time_ns():x}"
+BOOTSTRAP_SECRET = f"boot-{secrets.token_hex(16)}-{time.time_ns():x}"
+KEY_ID = f"key-{uuid.uuid4().hex[:12]}"
+KEY_PREFIX = f"kpfx-{secrets.token_hex(3)}"
+WAL_SPONSOR = f"wal-{uuid.uuid4().hex[:12]}"
+WAL_AGENT = f"wal-{uuid.uuid4().hex[:12]}"
+while (
+    MINTED_KEY[:8] in KEY_PREFIX
+    or MINTED_KEY[-4:] in KEY_PREFIX
+    or MINTED_KEY[-4:] in KEY_ID
+    or MINTED_KEY[-4:] in WAL_AGENT
+    or MINTED_KEY[-4:] in WAL_SPONSOR
+):
+    KEY_PREFIX = f"kpfx-{secrets.token_hex(3)}"
+    KEY_ID = f"key-{uuid.uuid4().hex[:12]}"
+    WAL_SPONSOR = f"wal-{uuid.uuid4().hex[:12]}"
+    WAL_AGENT = f"wal-{uuid.uuid4().hex[:12]}"
 
 
 class _FakeResponse:
@@ -40,11 +71,11 @@ class _FakeClient:
     def post(self, path, json):
         self.posts.append((path, json))
         if path == "/v1/billing/wallets/sponsor":
-            return _FakeResponse({"wallet_id": "wal_sponsor"})
+            return _FakeResponse({"wallet_id": WAL_SPONSOR})
         if path == "/v1/billing/wallets/agent":
-            return _FakeResponse({"wallet_id": "wal_agent"})
+            return _FakeResponse({"wallet_id": WAL_AGENT})
         return _FakeResponse(
-            {"api_key": "b2a_test", "key_id": "key_1", "key_prefix": "b2a_test"}
+            {"api_key": MINTED_KEY, "key_id": KEY_ID, "key_prefix": KEY_PREFIX}
         )
 
 
@@ -72,6 +103,33 @@ def _provision(monkeypatch, **overrides):
     return result, dict(captured["client"].posts)
 
 
+def _cli_args(*extra: str) -> list[str]:
+    return [
+        "partner_api_key_bootstrap.py",
+        "--api-url",
+        "https://api.example.test",
+        "--sponsor-name",
+        "Synthetic Partner",
+        "--agent-id",
+        "synthetic-agent",
+        *extra,
+    ]
+
+
+def _run_main(monkeypatch, extra: list[str]) -> int:
+    monkeypatch.setenv("BOOTSTRAP_KEY", BOOTSTRAP_SECRET)
+    monkeypatch.setattr(bootstrap.httpx, "Client", _FakeClient)
+    monkeypatch.setattr(sys, "argv", _cli_args(*extra))
+    return bootstrap.main()
+
+
+def _assert_no_secret_leak(combined: str) -> None:
+    assert MINTED_KEY not in combined
+    assert MINTED_KEY[:8] not in combined
+    assert MINTED_KEY[-4:] not in combined
+    assert BOOTSTRAP_SECRET not in combined
+
+
 def test_bounds_flags_reach_request_bodies(monkeypatch):
     result, posts = _provision(
         monkeypatch,
@@ -82,7 +140,7 @@ def test_bounds_flags_reach_request_bodies(monkeypatch):
     assert posts["/v1/billing/wallets/agent"]["daily_limit"] == 250.0
     assert posts["/v1/api-keys"]["expires_in_days"] == 30
     assert posts["/v1/api-keys"]["max_uses"] == 1000
-    assert result["api_key"] == "b2a_test"
+    assert result["api_key"] == MINTED_KEY
 
 
 def test_bounds_default_to_absent(monkeypatch):
@@ -92,33 +150,285 @@ def test_bounds_default_to_absent(monkeypatch):
     assert "max_uses" not in posts["/v1/api-keys"]
 
 
+@pytest.mark.parametrize("mode", ["--json", None])
+def test_cli_output_modes_never_print_full_key(monkeypatch, capsys, tmp_path, mode):
+    key_path = tmp_path / f"{uuid.uuid4()}.key"
+    extra = ["--key-file", str(key_path)]
+    if mode:
+        extra.append(mode)
+    assert _run_main(monkeypatch, extra) == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    _assert_no_secret_leak(combined)
+    assert "[created]" in captured.err
+    assert "[created]" not in captured.out
+    if mode == "--json":
+        payload = json.loads(captured.out)
+        assert "api_key" not in payload
+        assert "api_key_masked" not in payload
+        assert payload["key_file"] == str(key_path)
+        assert payload["key_id"] == KEY_ID
+        assert payload["wallet_id"] == WAL_AGENT
+        assert payload["key_prefix"] == KEY_PREFIX
+    else:
+        assert captured.out.startswith("Partner API key bootstrap OK\n")
+        assert f"key_id:             {KEY_ID}\n" in captured.out
+        assert f"key_prefix:         {KEY_PREFIX}\n" in captured.out
+        assert "api_key" not in captured.out
+        assert f"key_file:           {key_path}\n" in captured.out
+
+
 @pytest.mark.parametrize("mode", ["--key-only", "--json", None])
-def test_cli_output_modes_keep_status_and_bootstrap_key_out_of_stdout(
-    monkeypatch, capsys, mode
+def test_cli_key_file_writes_0600_and_omits_full_key_from_stdio(
+    monkeypatch, capsys, tmp_path, mode
 ):
-    monkeypatch.setenv("BOOTSTRAP_KEY", "synthetic-bootstrap-secret")
-    monkeypatch.setattr(bootstrap.httpx, "Client", _FakeClient)
-    arguments = [
+    key_path = tmp_path / "minted.key"
+    extra = ["--key-file", str(key_path)]
+    if mode:
+        extra.append(mode)
+    assert _run_main(monkeypatch, extra) == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    _assert_no_secret_leak(combined)
+    assert str(key_path) in captured.out
+    assert key_path.read_text(encoding="utf-8") == MINTED_KEY
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+    if mode == "--key-only":
+        assert captured.out == f"{key_path}\n"
+    elif mode == "--json":
+        payload = json.loads(captured.out)
+        assert "api_key" not in payload
+        assert "api_key_masked" not in payload
+        assert payload["key_file"] == str(key_path)
+        assert payload["key_id"] == KEY_ID
+    else:
+        assert "api_key" not in captured.out
+        assert f"key_file:           {key_path}\n" in captured.out
+
+
+def test_key_file_refuses_existing_path(monkeypatch, capsys, tmp_path):
+    key_path = tmp_path / "minted.key"
+    preexisting = f"preexisting-{secrets.token_urlsafe(16)}"
+    key_path.write_text(preexisting, encoding="utf-8")
+    with pytest.raises(SystemExit, match="already exists"):
+        _run_main(monkeypatch, ["--key-file", str(key_path)])
+    captured = capsys.readouterr()
+    assert MINTED_KEY not in captured.out + captured.err
+    assert key_path.read_text(encoding="utf-8") == preexisting
+
+
+# Runtime-generated values for the reserve/mint/write tests below.
+WRITE_KEY = secrets.token_urlsafe(32)
+BODY_SENTINEL = secrets.token_urlsafe(32)
+
+
+def test_reserve_key_file_uses_exclusive_0600_create(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+    real_open = os.open
+    seen: dict[str, int] = {}
+
+    def _record_open(path, flags, mode=0o777):
+        seen["flags"] = flags
+        seen["mode"] = mode
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(os, "open", _record_open)
+    fd = bootstrap._reserve_key_file(str(key_path))
+    os.close(fd)
+    assert seen["flags"] == (os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    assert seen["mode"] == 0o600
+
+
+def test_existing_key_file_skips_mint(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+    preexisting_content = f"preexisting-{secrets.token_urlsafe(16)}"
+    key_path.write_text(preexisting_content, encoding="utf-8")
+
+    def _no_mint(**kwargs):
+        raise AssertionError("provision must not run when --key-file exists")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", BOOTSTRAP_SECRET)
+    monkeypatch.setattr(bootstrap, "provision", _no_mint)
+    monkeypatch.setattr(sys, "argv", _cli_args("--key-file", str(key_path)))
+    with pytest.raises(SystemExit, match="already exists"):
+        bootstrap.main()
+    assert key_path.read_text(encoding="utf-8") == preexisting_content
+
+
+def test_failed_mint_removes_reserved_key_file(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+    failure_marker = f"mint-failure-{uuid.uuid4().hex}"
+
+    def _fail(**kwargs):
+        raise SystemExit(f"error: {failure_marker}")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", BOOTSTRAP_SECRET)
+    monkeypatch.setattr(bootstrap, "provision", _fail)
+    monkeypatch.setattr(sys, "argv", _cli_args("--key-file", str(key_path)))
+    with pytest.raises(SystemExit, match=failure_marker):
+        bootstrap.main()
+    assert not key_path.exists()
+
+
+def test_write_key_fd_handles_short_writes_and_fsyncs(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+    fd = bootstrap._reserve_key_file(str(key_path))
+    real_write = os.write
+    real_fsync = os.fsync
+    fsynced: list[int] = []
+
+    def _short_write(target_fd, data):
+        if target_fd != fd:
+            return real_write(target_fd, data)
+        return real_write(target_fd, bytes(data[:1]))
+
+    def _record_fsync(target_fd):
+        fsynced.append(target_fd)
+        return real_fsync(target_fd)
+
+    monkeypatch.setattr(os, "write", _short_write)
+    monkeypatch.setattr(os, "fsync", _record_fsync)
+    bootstrap._write_key_fd(fd, str(key_path), WRITE_KEY)
+    assert key_path.read_text(encoding="utf-8") == WRITE_KEY
+    assert fsynced == [fd]
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+
+
+def test_write_key_fd_failure_removes_file_and_closes_fd(monkeypatch, tmp_path):
+    key_path = tmp_path / "minted.key"
+    fd = bootstrap._reserve_key_file(str(key_path))
+    real_write = os.write
+
+    write_failure = f"write-failure-{uuid.uuid4().hex}"
+
+    def _fail_write(target_fd, data):
+        if target_fd == fd:
+            raise OSError(write_failure)
+        return real_write(target_fd, data)
+
+    monkeypatch.setattr(os, "write", _fail_write)
+    with pytest.raises(SystemExit, match=write_failure):
+        bootstrap._write_key_fd(fd, str(key_path), WRITE_KEY)
+    assert not key_path.exists()
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(fd)
+
+
+def test_post_error_omits_response_body():
+    class _ErrorResponse:
+        status_code = 502
+        text = BODY_SENTINEL
+
+    class _ErrorClient:
+        def post(self, path, json):
+            return _ErrorResponse()
+
+    key_name = f"key-{uuid.uuid4()}"
+    with pytest.raises(SystemExit) as excinfo:
+        bootstrap._post(_ErrorClient(), "/v1/api-keys", {"key_name": key_name})
+    message = str(excinfo.value)
+    assert "502" in message
+    assert BODY_SENTINEL not in message
+
+
+def test_key_only_without_key_file_is_argparse_error(monkeypatch, capsys):
+    def _no_mint(**kwargs):
+        raise AssertionError("provision must not run without --key-file")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", BOOTSTRAP_SECRET)
+    monkeypatch.setattr(bootstrap, "provision", _no_mint)
+    monkeypatch.setattr(sys, "argv", _cli_args("--key-only"))
+    with pytest.raises(SystemExit) as excinfo:
+        bootstrap.main()
+    assert excinfo.value.code == 2
+    assert "requires --key-file" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode", ["--json", None])
+def test_missing_key_file_exits_and_skips_mint(monkeypatch, capsys, mode):
+    bootstrap_secret = secrets.token_urlsafe(32)
+    sponsor_name = f"sponsor-{uuid.uuid4()}"
+    agent_id = f"agent-{uuid.uuid4()}"
+    key_name = f"key-{uuid.uuid4()}"
+    argv = [
         "partner_api_key_bootstrap.py",
         "--api-url",
         "https://api.example.test",
         "--sponsor-name",
-        "Synthetic Partner",
+        sponsor_name,
         "--agent-id",
-        "synthetic-agent",
+        agent_id,
+        "--key-name",
+        key_name,
     ]
     if mode:
-        arguments.append(mode)
-    monkeypatch.setattr(sys, "argv", arguments)
-    assert bootstrap.main() == 0
+        argv.append(mode)
+
+    def _no_mint(**kwargs):
+        raise AssertionError("provision must not run without --key-file")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", bootstrap_secret)
+    monkeypatch.setattr(bootstrap, "provision", _no_mint)
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as excinfo:
+        bootstrap.main()
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "--key-file is required" in err
+    assert bootstrap_secret not in err
+
+
+def test_write_failure_after_mint_prints_key_id_not_secret(
+    monkeypatch, capsys, tmp_path
+):
+    bootstrap_secret = secrets.token_urlsafe(32)
+    sponsor_name = f"sponsor-{uuid.uuid4()}"
+    agent_id = f"agent-{uuid.uuid4()}"
+    key_name = f"key-{uuid.uuid4()}"
+    key_path = tmp_path / f"{uuid.uuid4()}.key"
+    failure_marker = f"write-failure-{uuid.uuid4().hex}"
+
+    def _fail_write(fd, path, api_key):
+        raise SystemExit(f"error: {failure_marker}")
+
+    monkeypatch.setenv("BOOTSTRAP_KEY", bootstrap_secret)
+    monkeypatch.setattr(bootstrap.httpx, "Client", _FakeClient)
+    monkeypatch.setattr(bootstrap, "_write_key_fd", _fail_write)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "partner_api_key_bootstrap.py",
+            "--api-url",
+            "https://api.example.test",
+            "--sponsor-name",
+            sponsor_name,
+            "--agent-id",
+            agent_id,
+            "--key-name",
+            key_name,
+            "--key-file",
+            str(key_path),
+        ],
+    )
+    with pytest.raises(SystemExit, match=failure_marker):
+        bootstrap.main()
     captured = capsys.readouterr()
-    assert "synthetic-bootstrap-secret" not in captured.out + captured.err
-    assert "[created]" in captured.err
-    assert "[created]" not in captured.out
-    if mode == "--key-only":
-        assert captured.out == "b2a_test\n"
-    elif mode == "--json":
-        assert json.loads(captured.out)["api_key"] == "b2a_test"
-    else:
-        assert captured.out.startswith("Partner API key bootstrap OK\n")
-        assert "api_key (once):     b2a_test\n" in captured.out
+    combined = captured.out + captured.err
+    assert KEY_ID in captured.err
+    assert agent_id in captured.err
+    assert "active" in captured.err
+    assert "revoke" in captured.err.lower()
+    assert MINTED_KEY not in combined
+    assert MINTED_KEY[:8] not in combined
+    assert MINTED_KEY[-4:] not in combined
+    assert bootstrap_secret not in combined
+
+
+def test_bootstrap_doc_creates_config_dir_before_key_file():
+    doc = (
+        Path(__file__).resolve().parents[1] / "docs" / "partner-api-key-bootstrap.md"
+    ).read_text(encoding="utf-8")
+    mkdir_at = doc.index("mkdir -p -m 700 ~/.config/amw")
+    key_file_at = doc.index("--key-file")
+    assert mkdir_at < key_file_at

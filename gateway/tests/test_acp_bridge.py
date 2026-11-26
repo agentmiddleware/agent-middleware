@@ -860,7 +860,7 @@ async def test_cancel_payment_intent_runs_stripe_io_off_the_event_loop(
     assert seen["kwargs"] == {}
 
     # Best-effort or not, an empty id is a caller bug, refused outright.
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="missing_payment_intent_id"):
         await StripeIntegration().cancel_payment_intent("")
 
 

@@ -7,7 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Column, Index, Text, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, Column, Index, Text, UniqueConstraint, text
 from sqlmodel import SQLModel, Field
 
 from app.core.time import utc_now
@@ -53,6 +53,11 @@ class WalletModel(SQLModel, table=True):
     daily_limit: Optional[Decimal] = Field(default=None, decimal_places=8)
     daily_spent: Decimal = Field(default=Decimal("0"), decimal_places=8)
     daily_reset_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
+    # Account-level product activation claim (root wallets only), set once by
+    # a conditional UPDATE on the first key use; see 055 migration.
+    product_activated_at: Optional[datetime] = Field(
+        sa_type=NaiveUTCDateTime, default=None
+    )
 
     # Velocity monitoring (spend per hour for anomaly detection)
     hourly_limit: Optional[Decimal] = Field(default=None, decimal_places=8)
@@ -70,6 +75,7 @@ class WalletModel(SQLModel, table=True):
 
     # Status and metadata
     status: str = Field(default="active", max_length=20)
+    tenant: Optional[str] = Field(default=None, max_length=32, index=True)
     kyc_status: str = Field(default="not_required", max_length=30)
     kyc_verified_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
     metadata_json: Optional[str] = Field(default=None)
@@ -272,7 +278,10 @@ class APIKeyModel(SQLModel, table=True):
     key_id: str = Field(primary_key=True, max_length=50)
     wallet_id: str = Field(max_length=50, foreign_key="wallets.wallet_id", index=True)
 
-    key_hash: str = Field(max_length=64, index=True)
+    # Salted, peppered scrypt hash (see docs/api-key-hashing.md).
+    key_hash: str = Field(max_length=255, index=True)
+    # Non-secret lookup id (first 16 chars of the key), indexed for lookup.
+    key_lookup: str | None = Field(default=None, max_length=16, index=True)
     key_prefix: str = Field(max_length=8)
 
     status: str = Field(default="active", max_length=20)
@@ -282,17 +291,28 @@ class APIKeyModel(SQLModel, table=True):
 
     last_used_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
     last_used_ip: Optional[str] = Field(default=None, max_length=45)
+    first_used_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
 
     created_at: datetime = Field(
         sa_type=NaiveUTCDateTime, default_factory=utc_now, index=True
     )
     expires_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
 
-    # Bounded-use keys: None = unlimited. use_count only advances through the
-    # guarded UPDATE in APIKeyService.validate_key so the cap cannot be
-    # overshot by concurrent requests.
+    # Bounded-use keys: None = unlimited. use_count tracks capped-key budget
+    # consumption, not total calls. api_key_usage_events is the call source
+    # of truth; it also includes unbounded keys and response outcomes.
     max_uses: Optional[int] = Field(default=None)
     use_count: int = Field(default=0)
+
+    # NULL permits all tools; a JSON empty list permits none.
+    allowed_tools_json: Optional[str] = Field(default=None)
+    tenant: Optional[str] = Field(default=None, max_length=32, index=True)
+    utm_source: Optional[str] = Field(default=None, max_length=128)
+    utm_medium: Optional[str] = Field(default=None, max_length=128)
+    utm_campaign: Optional[str] = Field(default=None, max_length=128)
+    utm_content: Optional[str] = Field(default=None, max_length=128)
+    utm_term: Optional[str] = Field(default=None, max_length=128)
+    referrer: Optional[str] = Field(default=None, max_length=512)
 
     revoked_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
     revoke_reason: Optional[str] = Field(default=None, max_length=255)
@@ -300,6 +320,26 @@ class APIKeyModel(SQLModel, table=True):
     metadata_json: Optional[str] = Field(default=None)
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+class APIKeyUsageEventModel(SQLModel, table=True):
+    """One metadata-only HTTP outcome for a resolved database API key."""
+
+    __tablename__ = "api_key_usage_events"
+    __table_args__ = (
+        Index("ix_api_key_usage_events_key_created", "key_id", "created_at"),
+        Index("ix_api_key_usage_events_created", "created_at"),
+    )
+
+    id: str = Field(primary_key=True, max_length=36)
+    # Historical events survive key revocation or deletion.
+    key_id: str = Field(max_length=50)
+    tenant: Optional[str] = Field(default=None, max_length=32)
+    method: str = Field(max_length=16)
+    endpoint: str = Field(max_length=512)
+    status_code: int
+    latency_ms: int
+    created_at: datetime = Field(sa_type=NaiveUTCDateTime, default_factory=utc_now)
 
 
 class TelemetryEventModel(SQLModel, table=True):
@@ -830,6 +870,18 @@ class ReceiptModel(SQLModel, table=True):
     """Signed receipt for a governed MCP invocation attempt."""
 
     __tablename__ = "receipts"
+    __table_args__ = (
+        # Partial unique: multiple NULL sequences (pre-056 / non-chain) allowed.
+        # Migration 057 installs the same index; create_all needs it for SQLite tests.
+        Index(
+            "uq_receipts_permit_sequence",
+            "permit_id",
+            "sequence",
+            unique=True,
+            postgresql_where=text("sequence IS NOT NULL"),
+            sqlite_where=text("sequence IS NOT NULL"),
+        ),
+    )
 
     receipt_id: str = Field(primary_key=True, max_length=64)
     idempotency_record_id: Optional[str] = Field(
@@ -865,6 +917,10 @@ class ReceiptModel(SQLModel, table=True):
     # Signed only when present so receipts created before migration 032 keep
     # verifying byte-for-byte.
     reason_code: Optional[str] = Field(default=None, max_length=128)
+    # Provenance signed into receipts issued from 052 onward. NULL on legacy
+    # receipts, whose signatures do not cover these fields.
+    enforcement_mode: Optional[str] = Field(default=None, max_length=16)
+    gateway_build: Optional[str] = Field(default=None, max_length=64)
     audit_event_id: Optional[str] = Field(
         default=None,
         max_length=50,
@@ -876,6 +932,23 @@ class ReceiptModel(SQLModel, table=True):
     # receipt signatures stay valid. Plain string (no FK) — the column is
     # ALTER-added and SQLite cannot add FK constraints via ALTER (see 020).
     approval_id: Optional[str] = Field(default=None, max_length=64, index=True)
+    # Digest of the signed permit this receipt ran under (SHA-256 of that
+    # permit's exact signing_input UTF-8 bytes). Signed only when set so
+    # pre-056 receipts keep verifying.
+    permit_digest: Optional[str] = Field(default=None, max_length=64)
+    # Digest of the signed approval the executor verified, when one was used.
+    # Signed only when set. Absent when no signed approval artifact exists.
+    approval_digest: Optional[str] = Field(default=None, max_length=64)
+    # Other party of the call (hostname/domain) so recipient_domain can be
+    # checked. Signed only when set.
+    counterparty: Optional[str] = Field(default=None, max_length=255)
+    # Per-permit sequence starting at 0. Signed only when set so pre-056
+    # receipts keep verifying. When sequence is 0, prev_receipt_digest is
+    # omitted.
+    sequence: Optional[int] = Field(default=None)
+    # SHA-256 of the previous receipt's exact signing_input UTF-8 bytes under
+    # the same permit. Omitted when sequence is 0 or unset.
+    prev_receipt_digest: Optional[str] = Field(default=None, max_length=64)
     # Permit schema v2: snapshot of constraints that were evaluated at invoke time
     constraints_evaluated_json: Optional[str] = Field(default=None)
     created_at: datetime = Field(
@@ -896,6 +969,58 @@ class ReceiptModel(SQLModel, table=True):
     action_upstream_binding_hash: Optional[str] = Field(default=None)
 
     model_config = {"arbitrary_types_allowed": True}
+
+
+class ResolutionChainHeadModel(SQLModel, table=True):
+    """Optimistic per-wallet head for signed receipt resolutions."""
+
+    __tablename__ = "resolution_chain_heads"
+    __table_args__ = (
+        CheckConstraint(
+            "last_sequence >= 0", name="ck_resolution_chain_heads_sequence"
+        ),
+    )
+
+    wallet_id: str = Field(
+        primary_key=True, max_length=50, foreign_key="wallets.wallet_id"
+    )
+    last_sequence: int = Field(default=0)
+    last_hash: Optional[str] = Field(default=None, max_length=64)
+    updated_at: datetime = Field(sa_type=NaiveUTCDateTime, default_factory=utc_now)
+
+
+class ReceiptResolutionModel(SQLModel, table=True):
+    """One immutable, signed final outcome for an uncertain receipt."""
+
+    __tablename__ = "receipt_resolutions"
+    __table_args__ = (
+        UniqueConstraint(
+            "wallet_id", "sequence", name="uq_receipt_resolutions_wallet_seq"
+        ),
+        CheckConstraint("sequence >= 1", name="ck_receipt_resolutions_sequence"),
+        CheckConstraint(
+            "outcome IN ('confirmed_success', 'confirmed_not_delivered')",
+            name="ck_receipt_resolutions_outcome",
+        ),
+    )
+
+    resolution_id: str = Field(primary_key=True, max_length=64)
+    receipt_id: str = Field(
+        max_length=64, foreign_key="receipts.receipt_id", index=True, unique=True
+    )
+    wallet_id: str = Field(max_length=50, foreign_key="wallets.wallet_id", index=True)
+    sequence: int
+    prev_hash: Optional[str] = Field(default=None, max_length=64)
+    receipt_hash: str = Field(max_length=64, index=True)
+    outcome: str = Field(max_length=32)
+    created_at: datetime = Field(sa_type=NaiveUTCDateTime, default_factory=utc_now)
+    payload_hash: str = Field(max_length=64)
+    resolution_hash: str = Field(max_length=64, unique=True, index=True)
+    signing_input: str = Field(sa_type=Text)
+    signature: str
+    signature_key_id: str = Field(
+        max_length=64, foreign_key="signing_keys.key_id", index=True
+    )
 
 
 class HumanApprovalModel(SQLModel, table=True):
@@ -1169,6 +1294,21 @@ class McpDispatchAttemptModel(SQLModel, table=True):
     completed_at: Optional[datetime] = Field(
         sa_type=NaiveUTCDateTime, default=None, index=True
     )
+    # Provider-status reconciliation (047_dispatch_reconcile_lease, ported from
+    # the agent-middleware-api chain). Nothing in this service writes them yet;
+    # they are mapped so the model matches databases migrated by either chain.
+    reconcile_status: Optional[str] = Field(default=None, max_length=32, index=True)
+    reconcile_lease_owner: Optional[str] = Field(default=None, max_length=64)
+    reconcile_lease_expires_at: Optional[datetime] = Field(
+        sa_type=NaiveUTCDateTime, default=None, index=True
+    )
+    reconcile_next_probe_at: Optional[datetime] = Field(
+        sa_type=NaiveUTCDateTime, default=None, index=True
+    )
+    reconcile_probe_count: int = Field(
+        default=0, sa_column_kwargs={"server_default": "0"}
+    )
+    reconciled_at: Optional[datetime] = Field(sa_type=NaiveUTCDateTime, default=None)
 
     model_config = {"arbitrary_types_allowed": True}
 

@@ -22,6 +22,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
+from b2a_sdk import request_key
 from app.core.config import get_settings
 from app.db.database import get_session_factory
 from app.db.models import IdempotencyRecordModel, PermitModel
@@ -34,6 +35,7 @@ from tests.test_trust_helpers import (
     create_tool_permit,
     provision_agent_wallet,
 )
+from tests.test_request_key_vectors import VECTORS
 
 META_KEY = "io.agentmiddleware/idempotency_key"
 MCP_HEADERS = {
@@ -173,7 +175,7 @@ INVALID_META_KEYS = [
 ]
 
 
-@pytest.mark.parametrize("bad_key,reason_code", INVALID_META_KEYS)
+@pytest.mark.parametrize(("bad_key", "reason_code"), INVALID_META_KEYS)
 async def test_standard_meta_key_invalid_is_refused_before_any_effect(
     client, standard_mcp_enabled, clean_database, counted_tool, bad_key, reason_code
 ):
@@ -205,7 +207,7 @@ async def test_standard_meta_key_invalid_is_refused_before_any_effect(
 
 
 @pytest.mark.parametrize(
-    "bad_header,reason_code",
+    ("bad_header", "reason_code"),
     [
         pytest.param("", "idempotency_key_blank", id="empty-header"),
         pytest.param("   ", "idempotency_key_blank", id="blank-header"),
@@ -382,14 +384,14 @@ async def test_standard_distinct_valid_keys_stay_distinct_operations(
 
 
 @pytest.mark.parametrize("meta", [_ABSENT, None], ids=["no-entry", "json-null"])
-async def test_standard_unkeyed_calls_are_documented_as_new_operations(
+async def test_standard_unkeyed_retry_is_one_operation(
     client, standard_mcp_enabled, clean_database, counted_tool, meta
 ):
-    """No key anywhere (or a JSON null entry) means each call is a new charge.
+    """No key anywhere (or a JSON null entry) gets a derived retry key.
 
-    This pins the documented contract for un-keyed clients so it cannot drift
-    silently in either direction: absent must not be refused like malformed,
-    and it must not be quietly deduplicated either.
+    SEL-484: an identical un-keyed call inside the retry window replays the
+    first receipt instead of charging, dispatching, or minting again. Absent
+    must still not be refused like malformed.
     """
     provisioned = await provision_agent_wallet(client)
     headers = {**provisioned["agent_headers"], **MCP_HEADERS}
@@ -401,11 +403,11 @@ async def test_standard_unkeyed_calls_are_documented_as_new_operations(
         ]["receipt_id"]
         for _ in range(2)
     ]
-    assert len(set(receipts)) == 2
+    assert len(set(receipts)) == 1
     snapshot = await _snapshot(client, provisioned, counted_tool)
-    assert snapshot["effects"] == 2
-    assert snapshot["ledger_entries"] == base["ledger_entries"] + 2
-    assert snapshot["permits"] == base["permits"] + 2
+    assert snapshot["effects"] == 1
+    assert snapshot["ledger_entries"] == base["ledger_entries"] + 1
+    assert snapshot["permits"] == base["permits"] + 1
 
 
 # --------------------------------------------------------------------------- #
@@ -504,7 +506,7 @@ MALFORMED_ENVELOPES = [
 ]
 
 
-@pytest.mark.parametrize("body,code,echoed_id", MALFORMED_ENVELOPES)
+@pytest.mark.parametrize(("body", "code", "echoed_id"), MALFORMED_ENVELOPES)
 async def test_legacy_malformed_envelope_returns_controlled_jsonrpc_error(
     client, body, code, echoed_id
 ):
@@ -690,8 +692,9 @@ async def test_legacy_context_null_key_reads_as_absent(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize("context_key", ["mcp_context", "mcpContext"])
 async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
-    client, governed_legacy, counted_tool
+    client, governed_legacy, counted_tool, context_key
 ):
     provisioned, permit = governed_legacy
     before = await _snapshot(client, provisioned, counted_tool)
@@ -705,35 +708,52 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
         json={
             "name": counted_tool.name,
             "arguments": {"text": "one"},
-            "mcp_context": context,
+            context_key: context,
         },
         headers=provisioned["agent_headers"],
     )
     assert blank.status_code == 400, blank.text
     assert blank.json()["detail"]["reason_code"] == "idempotency_key_blank"
 
-    context["idempotency_key"] = "rest-body-1"
+    context["idempotency_key"] = request_key(counted_tool.name, {"text": "one"})
+    vector = next(case for case in VECTORS["vectors"] if case["name"] == "rest_invoke")
+    assert context["idempotency_key"] == vector["expected"]
     conflict = await client.post(
         f"/mcp/tools/{counted_tool.name}/invoke",
         json={
             "name": counted_tool.name,
             "arguments": {"text": "one"},
-            "mcp_context": context,
+            context_key: context,
         },
-        headers={**provisioned["agent_headers"], "Idempotency-Key": "rest-header-1"},
+        headers={
+            **provisioned["agent_headers"],
+            "Idempotency-Key": request_key(counted_tool.name, {"text": "two"}),
+        },
     )
     assert conflict.status_code == 400, conflict.text
     assert conflict.json()["detail"]["reason_code"] == "idempotency_key_conflict"
+    assert conflict.json()["code"] == "idempotency_key_conflict"
+    assert conflict.json()["message"] == (
+        "The request key in the header and the body do not match. "
+        "Send the same key in both."
+    )
+    assert conflict.json()["fix"] == (
+        "Send one request key, or use the same key in the header and the body."
+    )
+    assert conflict.json()["docs_url"].endswith("#idempotency_key_conflict")
     assert await _snapshot(client, provisioned, counted_tool) == before
 
     # Control: the same body with agreeing sources executes once and replays.
-    headers = {**provisioned["agent_headers"], "Idempotency-Key": "rest-body-1"}
+    headers = {
+        **provisioned["agent_headers"],
+        "Idempotency-Key": context["idempotency_key"],
+    }
     first = await client.post(
         f"/mcp/tools/{counted_tool.name}/invoke",
         json={
             "name": counted_tool.name,
             "arguments": {"text": "one"},
-            "mcp_context": context,
+            context_key: context,
         },
         headers=headers,
     )
@@ -743,7 +763,7 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
         json={
             "name": counted_tool.name,
             "arguments": {"text": "one"},
-            "mcp_context": context,
+            context_key: context,
         },
         headers=headers,
     )
@@ -751,3 +771,93 @@ async def test_rest_invoke_refuses_blank_or_conflicting_keys_before_any_effect(
         replay.json()["receipt"]["receipt_id"] == first.json()["receipt"]["receipt_id"]
     )
     assert counted_tool.effects == ["one"]
+
+
+@pytest.mark.parametrize("context_key", ["mcp_context", "mcpContext"])
+async def test_rest_invoke_changed_excluded_argument_conflicts(
+    client, governed_legacy, counted_tool, context_key
+):
+    """Dropping a field from the key does not drop it from the gateway request."""
+    provisioned, permit = governed_legacy
+    key = request_key(counted_tool.name, {"text": "one"}, exclude=["text"])
+    assert key == request_key(counted_tool.name, {"text": "two"}, exclude=["text"])
+    headers = provisioned["agent_headers"]
+    context = {
+        "wallet_id": provisioned["agent_wallet_id"],
+        "permit_id": permit["permit_id"],
+        "idempotency_key": key,
+    }
+    body = {
+        "name": counted_tool.name,
+        "arguments": {"text": "one"},
+        context_key: context,
+    }
+    first = await client.post(
+        f"/mcp/tools/{counted_tool.name}/invoke", json=body, headers=headers
+    )
+    assert first.status_code == 200, first.text
+    receipt = first.json()["receipt"]
+    assert receipt["wallet_id"] == context["wallet_id"]
+    assert receipt["permit_id"] == context["permit_id"]
+    after_first = await _snapshot(client, provisioned, counted_tool)
+
+    # Both spellings normalize to the same request for replay hashing.
+    other_key = "mcpContext" if context_key == "mcp_context" else "mcp_context"
+    replay = await client.post(
+        f"/mcp/tools/{counted_tool.name}/invoke",
+        json={
+            "name": counted_tool.name,
+            "arguments": {"text": "one"},
+            other_key: context,
+        },
+        headers=headers,
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["receipt"]["receipt_id"] == receipt["receipt_id"]
+
+    changed = await client.post(
+        f"/mcp/tools/{counted_tool.name}/invoke",
+        json={**body, "arguments": {"text": "two"}},
+        headers=headers,
+    )
+    assert changed.status_code == 409, changed.text
+    assert changed.json()["detail"] == {"error": "idempotency_key_reused"}
+    assert changed.headers["X-Request-ID"]
+    assert counted_tool.effects == ["one"]
+    assert await _snapshot(client, provisioned, counted_tool) == after_first
+
+
+@pytest.mark.parametrize(
+    "context_case", ["same", "different", "snake-null", "camel-null", "both-null"]
+)
+async def test_rest_invoke_rejects_both_context_spellings_before_any_effect(
+    client, governed_legacy, counted_tool, context_case
+):
+    provisioned, permit = governed_legacy
+    before = await _snapshot(client, provisioned, counted_tool)
+    context = {
+        "wallet_id": provisioned["agent_wallet_id"],
+        "permit_id": permit["permit_id"],
+        "idempotency_key": "rest-context-alias",
+    }
+    body = {
+        "name": counted_tool.name,
+        "arguments": {"text": "one"},
+        "mcp_context": context,
+        "mcpContext": {**context},
+    }
+    if context_case == "different":
+        body["mcpContext"]["idempotency_key"] = "rest-context-alias-other"
+    if context_case in {"snake-null", "both-null"}:
+        body["mcp_context"] = None
+    if context_case in {"camel-null", "both-null"}:
+        body["mcpContext"] = None
+
+    response = await client.post(
+        f"/mcp/tools/{counted_tool.name}/invoke",
+        json=body,
+        headers=provisioned["agent_headers"],
+    )
+    assert response.status_code == 422, response.text
+    assert "mcp_context and mcpContext cannot both be supplied" in response.text
+    assert await _snapshot(client, provisioned, counted_tool) == before

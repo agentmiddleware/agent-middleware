@@ -141,6 +141,7 @@ def validate_trust_mode_config(
     enable_proof_surfaces: bool = True,
     static_dev_api_keys: str = "",
     enable_dev_key_self_provision: bool = False,
+    enable_demo_tenant: bool = False,
     enable_public_mcp_endpoint: bool = False,
     allow_private_network_targets: bool = False,
     allow_unsafe_host_python_sandbox: bool = False,
@@ -160,10 +161,10 @@ def validate_trust_mode_config(
     """
     production_like = is_production_like_environment(environment)
     violations: list[str] = []
-    # redis_url / public_url used to gate anonymous public MCP. That surface is
-    # now refused outright in production-like boots, but the parameters stay so
+    # public_url used to gate anonymous public MCP. That surface is now
+    # refused outright in production-like boots, but the parameter stays so
     # existing call sites keep working.
-    _ = redis_url, public_url
+    _ = public_url
 
     if production_like:
         if not trust_mode_enabled:
@@ -213,6 +214,11 @@ def validate_trust_mode_config(
                 "ENABLE_DEV_KEY_SELF_PROVISION must be false in "
                 "production-like environments (self-serve dev key minting "
                 "is local-only — see docs/static-dev-api-keys.md)"
+            )
+        if enable_demo_tenant and not (redis_url or "").strip():
+            violations.append(
+                "REDIS_URL is required when ENABLE_DEMO_TENANT is true in "
+                "production-like environments (issuance limits must be shared)"
             )
         if enable_public_mcp_endpoint:
             violations.append(
@@ -315,6 +321,7 @@ def validate_trust_mode_guardrails(settings: Settings) -> None:
         enable_proof_surfaces=settings.ENABLE_PROOF_SURFACES,
         static_dev_api_keys=settings.STATIC_DEV_API_KEYS,
         enable_dev_key_self_provision=settings.ENABLE_DEV_KEY_SELF_PROVISION,
+        enable_demo_tenant=settings.ENABLE_DEMO_TENANT,
         enable_public_mcp_endpoint=settings.ENABLE_PUBLIC_MCP_ENDPOINT,
         allow_private_network_targets=settings.ALLOW_PRIVATE_NETWORK_TARGETS,
         allow_unsafe_host_python_sandbox=settings.ALLOW_UNSAFE_HOST_PYTHON_SANDBOX,
@@ -347,8 +354,15 @@ def describe_permissive_trust_mode(
     if not trust_mode_enabled:
         parts.append("TRUST_MODE_ENABLED=false (no permit validation)")
     if allow_legacy_unpermitted_mcp:
+        # Narrower than "ungoverned calls accepted" (#352): a tool registered
+        # with require_permit (the dogfood tool, every upstream tool, the
+        # Phase 9 tools) still refuses an unpermitted call with
+        # permit_required in this posture.
         parts.append(
-            "ALLOW_LEGACY_UNPERMITTED_MCP=true (ungoverned MCP calls accepted)"
+            "ALLOW_LEGACY_UNPERMITTED_MCP=true (unpermitted MCP calls accepted "
+            "only for tools registered without require_permit; permit-required "
+            "tools, including the dogfood and upstream tools, still refuse "
+            "them with permit_required)"
         )
     return "; ".join(parts)
 
@@ -360,7 +374,8 @@ def warn_if_trust_mode_permissive(settings: Settings) -> None:
     production-like environments the validator has already refused to boot
     under a permissive posture, so this only fires in local/dev/test
     environments that explicitly opted out — exactly when we want a visible
-    reminder that ungoverned MCP calls are accepted.
+    reminder that unpermitted MCP calls are accepted for tools that do not
+    require a permit.
     """
     description = describe_permissive_trust_mode(
         trust_mode_enabled=settings.TRUST_MODE_ENABLED,

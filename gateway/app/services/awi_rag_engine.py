@@ -744,7 +744,7 @@ class AWIRAGEngine:
                     if isinstance(entity, str)
                 )
 
-        return sorted(list(entities))[:100]
+        return sorted(entities)[:100]
 
     def _infer_session_type(
         self,
@@ -886,7 +886,7 @@ class AWIRAGEngine:
         if len(a) != len(b):
             return 0.0
 
-        dot_product = sum(x * y for x, y in zip(a, b))
+        dot_product = sum(x * y for x, y in zip(a, b, strict=True))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(x * x for x in b))
 
@@ -937,7 +937,7 @@ class AWIRAGEngine:
 
         suggested = []
 
-        for action, score in sorted_actions[:5]:
+        for action, _score in sorted_actions[:5]:
             if action not in suggested:
                 suggested.append(action)
 

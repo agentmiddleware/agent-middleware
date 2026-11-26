@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from failure_lab import TEST_DEFINITION_VERSION
-from failure_lab import __version__ as LAB_VERSION
+from failure_lab import __version__
 from failure_lab.evidence import SecretLeakError
 from failure_lab.runner import (
     BUNDLE_DIRECTORY_NAME,
@@ -60,6 +60,8 @@ from failure_lab.runner import (
     summary_lines,
 )
 from failure_lab.telemetry import TrafficSource
+
+LAB_VERSION = __version__
 
 PROGRAM = "python -m failure_lab"
 

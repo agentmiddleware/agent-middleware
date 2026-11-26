@@ -12,10 +12,10 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import Self
 
 import pytest
 from mcp.types import CallToolResult
-from typing_extensions import Self
 
 HERE = Path(__file__).resolve().parent
 MODULE_PATH = HERE / "call_with_retry.py"
@@ -173,9 +173,15 @@ def test_call_once_sends_key_headers_and_does_not_put_the_secret_in_the_url(
     seen: dict = {}
 
     class _Client:
-        def __init__(self, url: str, headers: dict | None = None) -> None:
+        def __init__(self, url: str, http_client: object = None) -> None:
             seen["url"] = url
-            seen["headers"] = dict(headers or {})
+            sent = http_client.headers  # type: ignore[attr-defined]
+            seen["headers"] = {
+                name: sent[name]
+                for name in ("X-API-Key", "Idempotency-Key")
+                if name in sent
+            }
+            seen["timeout"] = http_client.timeout  # type: ignore[attr-defined]
 
         async def __aenter__(self) -> tuple:
             return (None, None, None)
@@ -183,7 +189,7 @@ def test_call_once_sends_key_headers_and_does_not_put_the_secret_in_the_url(
         async def __aexit__(self, *exc: object) -> bool:
             return False
 
-    monkeypatch.setattr(client, "streamablehttp_client", _Client)
+    monkeypatch.setattr(client, "streamable_http_client", _Client)
     monkeypatch.setattr(
         client,
         "ClientSession",
@@ -237,7 +243,7 @@ def test_call_once_keeps_wire_meta_when_an_extra_meta_claims_success(
             return False
 
     monkeypatch.setattr(
-        client, "streamablehttp_client", lambda *args, **kwargs: _Client()
+        client, "streamable_http_client", lambda *args, **kwargs: _Client()
     )
     monkeypatch.setattr(client, "ClientSession", lambda read, write: _Session(wire, {}))
 
@@ -257,7 +263,7 @@ def test_call_once_refuses_a_blank_or_short_api_key_before_connecting(
     def _boom(*args: object, **kwargs: object) -> None:
         raise AssertionError("client connected")
 
-    monkeypatch.setattr(client, "streamablehttp_client", _boom)
+    monkeypatch.setattr(client, "streamable_http_client", _boom)
     for api_key in ("", "   ", "short", "bad\nkey-value"):
         with pytest.raises(SystemExit):
             asyncio.run(client.call_once(api_key, "retry-key-1"))
@@ -269,7 +275,7 @@ def test_call_once_refuses_an_unusable_idempotency_key_before_connecting(
     def _boom(*args: object, **kwargs: object) -> None:
         raise AssertionError("client connected")
 
-    monkeypatch.setattr(client, "streamablehttp_client", _boom)
+    monkeypatch.setattr(client, "streamable_http_client", _boom)
     for key in ("", "   ", "x" * 129, "bad\nkey", "bad\x7fkey"):
         with pytest.raises(SystemExit):
             asyncio.run(client.call_once(API_KEY, key))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -8,6 +9,10 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.core.auth import AuthContext, get_auth_context
 from app.core.config import get_settings
+from app.core.wallet_resolution import (
+    require_governing_wallet_access,
+    resolve_wallet_id,
+)
 from app.schemas.trust import (
     ActionPermitFields,
     ActionPermitCreateRequest,
@@ -18,7 +23,13 @@ from app.schemas.trust import (
     PermitVerifyResponse,
     ReceiptListResponse,
 )
+from app.routers.http_idempotency import resolve_idempotency_key_lines
 from app.services.ownership import CallerIdentity
+from app.services.demo_tenant_boundary import (
+    DemoPermitDenied,
+    KeyAllowlistDenied,
+    enforce_permit_bounds,
+)
 from app.trust import (
     AgentMoney,
     IdempotencyConflictError,
@@ -35,6 +46,8 @@ from app.trust import (
 )
 
 action_router = APIRouter(prefix="/v1/action-permits", tags=["Trust Permits"])
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/permits", tags=["Trust Permits"])
 
@@ -64,9 +77,11 @@ async def list_permits(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
+    money: AgentMoney = Depends(get_agent_money),
 ) -> PermitListResponse:
     if wallet_id:
-        auth.require_wallet_access(wallet_id)
+        # A strict ancestor may list a descendant's permits.
+        await require_governing_wallet_access(auth, wallet_id, money)
     elif auth.wallet_id:
         # An unscoped list is an operator view. A wallet key asking for it means
         # "my permits", so scope it to the caller rather than refusing: the
@@ -102,10 +117,17 @@ async def list_permits(
 @router.post("", response_model=PermitResponse, status_code=status.HTTP_201_CREATED)
 async def create_permit(
     request: PermitCreateRequest,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] = Header(..., alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
     money: AgentMoney = Depends(get_agent_money),
 ) -> PermitResponse:
+    try:
+        await enforce_permit_bounds(request, auth)
+    except (KeyAllowlistDenied, DemoPermitDenied) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": exc.error, "message": exc.message},
+        ) from exc
     if request.action_contract_version is not None:
         raise HTTPException(
             status_code=400, detail="action_permit_requires_trusted_issuance"
@@ -130,6 +152,9 @@ async def create_permit(
                 ),
             },
         )
+    idempotency_key = resolve_idempotency_key_lines(
+        idempotency_key_lines, required=True
+    )
     idem = get_idempotency_service()
     # Nullable action fields must not change historical envelope issuance hashes.
     request_payload = request.model_dump(
@@ -162,7 +187,7 @@ async def create_permit(
 
     try:
         permit = await get_permit_service().create_permit(
-            request, subject_key_id=auth.key_id
+            request, subject_key_id=auth.key_id, auth=auth
         )
     except PermitCreationRejectedError as exc:
         if not await idem.abandon(
@@ -241,20 +266,35 @@ async def list_permit_receipts(
 async def revoke_permit(
     permit_id: str,
     auth: AuthContext = Depends(get_auth_context),
+    money: AgentMoney = Depends(get_agent_money),
 ) -> PermitResponse:
     service = get_permit_service()
     existing = await service.get_permit(permit_id)
     if not existing:
         raise HTTPException(status_code=404, detail="permit_not_found")
-    auth.require_wallet_access(existing.issuer_wallet_id)
+    # The issuer wallet, or a strict ancestor of it, may revoke.
+    via_ancestry = await require_governing_wallet_access(
+        auth, existing.issuer_wallet_id, money
+    )
     try:
         permit = await service.revoke_permit(
-            permit_id, caller=CallerIdentity.from_auth(auth)
+            permit_id,
+            caller=CallerIdentity.from_auth(auth),
+            allow_ancestor=via_ancestry,
         )
     except PermitAccessDeniedError as exc:
         raise HTTPException(status_code=403, detail=exc.reason)
     except PermitError as exc:
         raise HTTPException(status_code=404, detail=exc.reason)
+    if via_ancestry:
+        logger.warning(
+            "permit %s revoked by ancestor wallet %s (key %s) for descendant "
+            "issuer wallet %s",
+            permit_id,
+            auth.wallet_id,
+            auth.key_id,
+            existing.issuer_wallet_id,
+        )
     return permit
 
 
@@ -263,12 +303,11 @@ async def verify_permit(
     request: PermitVerifyRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitVerifyResponse:
-    if request.wallet_id:
-        auth.require_wallet_access(request.wallet_id)
+    wallet_id = resolve_wallet_id(request.wallet_id, auth)
     estimated = request.estimated_credits or Decimal("0")
     validation = await get_permit_service().validate_for_action(
         permit_id=request.permit_id,
-        wallet_id=request.wallet_id or "",
+        wallet_id=wallet_id,
         tool_name=request.tool or "",
         estimated_credits=estimated,
         key_id=auth.key_id,
@@ -280,26 +319,15 @@ async def verify_permit(
     if permit is not None and not auth.is_bootstrap_admin:
         if auth.wallet_id not in {permit.issuer_wallet_id, permit.subject_wallet_id}:
             raise HTTPException(status_code=403, detail="permit_access_denied")
-    # ``verify`` answers "would this exact action be admitted?", so it needs
-    # the action: which wallet acts, and which tool it calls. Evaluated against
-    # an empty string, an omitted field produces a verdict about a call nobody
-    # meant to make — a binding reason that reads as "this permit is not yours"
-    # to the permit's own subject, or, for a permit with an empty allowlist and
-    # a matching empty-tool scope, an outright ``valid: true``. Neither is an
-    # answer, so name the missing context instead of returning one.
+    # ``verify`` answers "would this exact action be admitted?" The wallet
+    # comes from the authenticated key when omitted, but an omitted tool still
+    # cannot produce a verdict about a real action.
     #
     # Lifecycle reasons are exempt: a permit that is expired or no longer
     # active is refused whatever action you name, so that verdict is real even
     # from an incomplete request. ``permit_not_found`` (no permit at all) is
     # likewise left to speak for itself below.
-    missing = [
-        field
-        for field, value in (
-            ("wallet_id", request.wallet_id),
-            ("tool", request.tool),
-        )
-        if not value
-    ]
+    missing = ["tool"] if not request.tool else []
     lifecycle_denial = validation.reason == "permit_expired" or (
         permit is not None and permit.status != "active"
     )
@@ -321,7 +349,7 @@ async def verify_permit(
 @action_router.post("", response_model=PermitResponse, status_code=201)
 async def issue_action_permit(
     request: ActionPermitCreateRequest,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    idempotency_key_lines: list[str] = Header(..., alias="Idempotency-Key"),
     auth: AuthContext = Depends(get_auth_context),
 ) -> PermitResponse:
     from app.services.action_permits import (
@@ -330,6 +358,9 @@ async def issue_action_permit(
     )
 
     await authorize_action_issuer(request, auth)
+    idempotency_key = resolve_idempotency_key_lines(
+        idempotency_key_lines, required=True
+    )
     idem = get_idempotency_service()
     identity: dict[str, Any] = dict(
         wallet_id=request.issuer_wallet_id,

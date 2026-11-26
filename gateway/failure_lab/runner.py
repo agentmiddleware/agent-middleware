@@ -70,7 +70,7 @@ from pathlib import Path
 from typing import Any
 
 from failure_lab import TEST_DEFINITION_VERSION
-from failure_lab import __version__ as LAB_VERSION
+from failure_lab import __version__
 from failure_lab.claims import (
     ClaimsManifest,
     build_claims_manifest,
@@ -111,6 +111,8 @@ from failure_lab.telemetry import (
     TrafficSource,
     pseudonymous_subject,
 )
+
+LAB_VERSION = __version__
 
 #: The run agreed with every documented expectation and nothing errored.
 EXIT_OK = 0

@@ -91,6 +91,7 @@ _PUBLIC_DISCOVERY_PATHS = frozenset(
         "/redoc",
         "/docs/oauth2-redirect",
         "/docs/index",
+        "/docs/concepts/request-keys",
         "/openapi.json",
         "/health",
         "/health/ready",

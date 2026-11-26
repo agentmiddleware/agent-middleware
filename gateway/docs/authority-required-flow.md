@@ -58,8 +58,8 @@ it actually possesses.
 ## What already exists (verified against code)
 
 This flow is not greenfield. Roughly 80% of it is shipped, live behind the
-opt-in standard MCP surface (`POST /mcp`, `ENABLE_STANDARD_MCP_ENDPOINT`,
-default `false` — `app/core/config.py`), and specified in
+standard MCP surface (`POST /mcp`, `ENABLE_STANDARD_MCP_ENDPOINT`,
+default `true` — `app/core/config.py`), and specified in
 `docs/tool-interface-authority.md`:
 
 - **Auto-minted authority.** `POST /mcp` mints a bounded single-tool permit
@@ -267,8 +267,9 @@ documentation (`static/llm.txt`, manifests) then teaches only:
    envelope, not new behavior).
 3. **D4** pre-created permit requests, once a design partner exercises the
    D1 loop and the abuse bounds survive contact with a real tool.
-4. **Flip `ENABLE_STANDARD_MCP_ENDPOINT` default on** only after a partner
-   agent has driven deny → approve → resume end to end on a partner tool.
+4. **Flip `ENABLE_STANDARD_MCP_ENDPOINT` default on.** Done by owner
+   decision ahead of the partner deny → approve → resume evidence this step
+   originally waited for.
 
 Each step requires the customer evidence named at the top; the order exists
 so the evidence unlocks work, not debate.

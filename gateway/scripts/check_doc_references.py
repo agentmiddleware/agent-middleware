@@ -142,7 +142,7 @@ def _qualified_members(sources: dict[Path, str]) -> dict[str, set[str]]:
                 found.add(statement.target.id)
         return found
 
-    for path, source in sources.items():
+    for _path, source in sources.items():
         try:
             tree = ast.parse(source)
         except SyntaxError:

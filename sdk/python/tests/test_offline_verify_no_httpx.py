@@ -98,12 +98,13 @@ def _write_signed_bundle(tmp_path: Path) -> tuple[Path, Path]:
     return bundle_path, keys_path
 
 
-def test_package_and_verifier_import_without_httpx():
+@pytest.mark.parametrize("sdk_name", ["b2a_sdk", "amw"])
+def test_package_and_verifier_import_without_httpx(sdk_name):
     # Import only — needs neither httpx nor cryptography. This is the exact
     # step that used to fail: importing b2a_sdk pulled in the httpx client.
     result = _run(
-        "import b2a_sdk\n"
-        "from b2a_sdk import verify_bundle, key_set_from_document\n"
+        f"import {sdk_name}\n"
+        f"from {sdk_name} import verify_bundle, key_set_from_document\n"
         "import b2a_sdk.verify_cli\n"
         "print('ok')\n",
         block_httpx=True,
@@ -112,22 +113,109 @@ def test_package_and_verifier_import_without_httpx():
     assert "ok" in result.stdout
 
 
-def test_verify_cli_keys_path_runs_without_httpx(tmp_path):
+@pytest.mark.parametrize(
+    "imports",
+    ["import b2a_sdk", "import amw\nimport b2a_sdk"],
+    ids=["legacy-first", "new-package-first"],
+)
+def test_legacy_import_emits_deprecation_warning(imports):
+    result = _run(
+        "import warnings\n"
+        "with warnings.catch_warnings(record=True) as caught:\n"
+        "    warnings.simplefilter('always', DeprecationWarning)\n"
+        + "\n".join(f"    {line}" for line in imports.splitlines())
+        + "\n"
+        "assert len(caught) == 1, caught\n"
+        "assert caught[0].category is DeprecationWarning\n"
+        "assert 'b2a_sdk is deprecated; import amw instead' in str(caught[0].message)\n",
+        block_httpx=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_amw_import_and_offline_exports_do_not_warn():
+    result = _run(
+        "import warnings\n"
+        "with warnings.catch_warnings(record=True) as caught:\n"
+        "    warnings.simplefilter('always', DeprecationWarning)\n"
+        "    import amw\n"
+        "    from amw import Receipt, request_key, verify_bundle\n"
+        "assert not caught, caught\n",
+        block_httpx=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_amw_client_import_does_not_warn():
+    result = _run(
+        "import warnings\n"
+        "with warnings.catch_warnings(record=True) as caught:\n"
+        "    warnings.simplefilter('always', DeprecationWarning)\n"
+        "    from amw import Client\n"
+        "assert Client is not None\n"
+        "assert not caught, caught\n",
+        block_httpx=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_amw_reexports_every_public_sdk_name():
+    import amw
+    import b2a_sdk
+
+    assert amw.__all__ == b2a_sdk.__all__
+    assert amw.__version__ == b2a_sdk.__version__
+    for name in b2a_sdk.__all__:
+        assert getattr(amw, name) is getattr(b2a_sdk, name), name
+
+
+@pytest.mark.parametrize(
+    ("cli_module", "command"),
+    [("b2a_sdk.verify_cli", []), ("amw.cli", ["verify"])],
+    ids=["b2a-verify-receipt", "amw verify"],
+)
+def test_verify_cli_keys_path_runs_without_httpx(tmp_path, cli_module, command):
     pytest.importorskip("cryptography")
     bundle_path, keys_path = _write_signed_bundle(tmp_path)
     # Drive the CLI's main() exactly as `python -m b2a_sdk.verify_cli` would,
     # which imports the b2a_sdk package first — the step that used to fail.
+    args = [*command, "--bundle", str(bundle_path), "--keys", str(keys_path)]
     result = _run(
-        "from b2a_sdk.verify_cli import main\n"
-        f"raise SystemExit(main(['--bundle', {str(bundle_path)!r}, "
-        f"'--keys', {str(keys_path)!r}]))\n",
+        f"from {cli_module} import main\nraise SystemExit(main({args!r}))\n",
         block_httpx=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "VERIFIED" in result.stdout
 
 
-def test_tampered_bundle_rejected_without_httpx(tmp_path):
+def test_verify_cli_aliases_match_default_output(tmp_path):
+    pytest.importorskip("cryptography")
+    bundle_path, keys_path = _write_signed_bundle(tmp_path)
+
+    for path, expected_code in [(bundle_path, 0), (tmp_path / "missing.json", 2)]:
+        args = ["--bundle", str(path), "--keys", str(keys_path)]
+        legacy = _run(
+            f"from b2a_sdk.verify_cli import main\nraise SystemExit(main({args!r}))\n",
+            block_httpx=True,
+        )
+        new = _run(
+            f"from amw.cli import main\nraise SystemExit(main({['verify', *args]!r}))\n",
+            block_httpx=True,
+        )
+        assert (legacy.returncode, legacy.stdout, legacy.stderr) == (
+            new.returncode,
+            new.stdout,
+            new.stderr,
+        )
+        assert legacy.returncode == expected_code
+
+
+@pytest.mark.parametrize(
+    ("cli_module", "command"),
+    [("b2a_sdk.verify_cli", []), ("amw.cli", ["verify"])],
+    ids=["b2a-verify-receipt", "amw verify"],
+)
+def test_tampered_bundle_rejected_without_httpx(tmp_path, cli_module, command):
     """The dependency-minimal path must still REJECT a forged bundle.
 
     VERIFY.md tells partners to branch on exit code 1; prove that contract
@@ -142,10 +230,9 @@ def test_tampered_bundle_rejected_without_httpx(tmp_path):
     assert '"outcome":"denied"' in bundle["signing_input"]  # the edit must bite
     forged = tmp_path / "forged-bundle.json"
     forged.write_text(json.dumps(bundle), encoding="utf-8")
+    args = [*command, "--bundle", str(forged), "--keys", str(keys_path)]
     result = _run(
-        "from b2a_sdk.verify_cli import main\n"
-        f"raise SystemExit(main(['--bundle', {str(forged)!r}, "
-        f"'--keys', {str(keys_path)!r}]))\n",
+        f"from {cli_module} import main\nraise SystemExit(main({args!r}))\n",
         block_httpx=True,
     )
     # 1 = well-formed but does not verify; must not be 0 and must not crash (2).

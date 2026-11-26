@@ -622,7 +622,7 @@ async def test_duplicate_detection_opt_out(client, clean_database, monkeypatch):
 
 @pytest.mark.anyio
 async def test_same_key_replay_unchanged(client, clean_database):
-    """Same-key replay returns original receipt with no second call or charge.
+    """a retry with the same key returns the original receipt instead of dispatching again.
 
     This behavior must not regress.
     """
@@ -1283,7 +1283,7 @@ async def test_reserve_contention_is_retryable_and_frees_the_key(
         assert "error" in body1, body1
         assert body1["error"]["code"] == -32005
         assert body1["error"]["message"] == "permit_write_contended"
-        assert "data" not in body1["error"]
+        assert body1["error"]["data"]["code"] == "permit_write_contended"
         assert misses["count"] == 1
         assert executor.dispatch_count == 0
         counts, spent = await _permit_slot_state(permit_id)

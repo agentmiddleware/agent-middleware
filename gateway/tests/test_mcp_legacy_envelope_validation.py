@@ -195,8 +195,9 @@ async def test_non_finite_argument_is_refused_before_execution(
     params = json.dumps(
         _params(agent, idempotency_key="nonfinite-arg-1", text="__NAN__")
     )
+    # Concatenated, not str.format: `params` is JSON and its braces are data.
     raw = (
-        '{"jsonrpc":"2.0","id":"x","method":"tools/call","params":%s}' % params
+        '{"jsonrpc":"2.0","id":"x","method":"tools/call","params":' + params + "}"
     ).replace('"__NAN__"', "NaN")
     resp = await client.post(
         "/mcp/messages",

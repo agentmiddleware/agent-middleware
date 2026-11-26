@@ -27,17 +27,19 @@ os.environ["ALLOW_LEGACY_UNPERMITTED_MCP"] = "false"
 os.environ["ENABLE_DOGFOOD_TOOL"] = "true"
 os.environ["VALID_API_KEYS"] = "pg-test-key"
 
-import httpx
+# Settings and the engine are captured at import. Env must be set first.
+import httpx  # noqa: E402
 
-from app.core import config as config_module
-from app.db import database as database_module
+from app.core import config as config_module  # noqa: E402
+from app.db import database as database_module  # noqa: E402
 
 config_module.get_settings.cache_clear()
 database_module._engine = None
 database_module._session_factory = None
 
-import importlib
-import app.main as main_module
+import importlib  # noqa: E402
+
+import app.main as main_module  # noqa: E402
 
 importlib.reload(main_module)
 

@@ -341,6 +341,30 @@ def test_production_accepts_isolated_or_disabled_sandbox_backend(backend: str):
     )
 
 
+def test_production_demo_issuance_requires_shared_redis_counter():
+    with pytest.raises(TrustModeGuardrailError, match="REDIS_URL is required"):
+        validate_trust_mode_config(
+            environment="production",
+            trust_mode_enabled=True,
+            signing_private_key_b64=VALID_SIGNING_PRIVATE_KEY_B64,
+            allow_legacy_unpermitted_mcp=False,
+            enable_proof_surfaces=False,
+            database_url=VALID_PRODUCTION_DATABASE_URL,
+            enable_demo_tenant=True,
+        )
+
+    validate_trust_mode_config(
+        environment="production",
+        trust_mode_enabled=True,
+        signing_private_key_b64=VALID_SIGNING_PRIVATE_KEY_B64,
+        allow_legacy_unpermitted_mcp=False,
+        enable_proof_surfaces=False,
+        database_url=VALID_PRODUCTION_DATABASE_URL,
+        enable_demo_tenant=True,
+        redis_url="redis://localhost:6379/0",
+    )
+
+
 @pytest.mark.parametrize("environment", ["", "local", "development", "test", "ci"])
 def test_local_environments_accept_local_only_escape_hatches(environment: str):
     validate_trust_mode_config(

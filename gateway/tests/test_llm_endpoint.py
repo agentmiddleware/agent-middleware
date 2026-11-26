@@ -10,7 +10,7 @@ from app.services.llm import LLMService
 
 
 @pytest.mark.parametrize(
-    "base_url, expected",
+    ("base_url", "expected"),
     [
         ("https://api.openai.com/v1", "https://api.openai.com/v1/chat/completions"),
         ("https://api.openai.com/v1/", "https://api.openai.com/v1/chat/completions"),

@@ -5,7 +5,7 @@ All settings are loaded from environment variables for zero-GUI deployment.
 
 from decimal import Decimal
 from enum import Enum
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # --- Server ---
-    HOST: str = "0.0.0.0"
+    # Loopback by default, matching uvicorn's own default bind. DEBUG open
+    # mode only serves requests when HOST is an explicit loopback bind, so a
+    # shared-interface default would refuse every local open-mode call.
+    # Deployments that bind a public interface set HOST explicitly.
+    HOST: str = "127.0.0.1"
     PORT: int = 8000
     CORS_ORIGINS: str = ""
 
@@ -58,11 +62,23 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     REDIS_URL: str = ""
     SQLITE_URL: str = ""
+    # PostgreSQL row-level security for wallet-scoped tables (migration
+    # 048_tenant_rls), ported from the archived agent-middleware-api Settings
+    # with the same name, default and validation. "off" (default): the
+    # migration creates the policies but leaves RLS disabled, so nothing
+    # changes for any client. "enforce": migrating in this mode enables and
+    # forces RLS. This gateway does not yet set app.current_wallet_id per
+    # transaction, so enforce fails closed for a NOSUPERUSER NOBYPASSRLS
+    # runtime role; see docs/schema-048-rollout.md. No effect on SQLite.
+    TENANT_RLS_MODE: str = "off"
 
     # --- Database Pool Settings ---
     # Used for SQLModel/SQLAlchemy async sessions
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
+
+    # Opt-in only; no automatic usage-event cleanup is scheduled.
+    API_KEY_USAGE_RETENTION_DAYS: int | None = Field(default=None, ge=0)
 
     # --- Authentication ---
     API_KEY_HEADER: str = "X-API-Key"
@@ -83,6 +99,88 @@ class Settings(BaseSettings):
     # production-like environments refuse to boot when this is true, and the
     # handler independently fails closed there. See docs/static-dev-api-keys.md.
     ENABLE_DEV_KEY_SELF_PROVISION: bool = False
+
+    # --- Self-serve demo tenant (POST /v1/demo/keys) ---
+    ENABLE_DEMO_TENANT: bool = False
+    DEMO_ALLOWED_TOOLS: str = ""
+    DEMO_KEY_TTL_DAYS: int | None = None
+    DEMO_KEY_MAX_USES: int | None = None
+    DEMO_WALLET_CREDITS: Decimal = Decimal("1000")
+    DEMO_WALLET_DAILY_LIMIT: Decimal | None = None
+    DEMO_MAX_PERMIT_CREDITS: Decimal | None = None
+    DEMO_MAX_PERMIT_TTL_MINUTES: int | None = None
+    DEMO_AUTO_PERMIT_MAX_CREDITS: Decimal = Decimal("5")
+    DEMO_AUTO_PERMIT_TTL_SECONDS: int = 120
+    DEMO_ISSUE_PER_IP_PER_DAY: int = 3
+    DEMO_ISSUE_GLOBAL_PER_HOUR: int = 30
+    DEMO_ISSUE_GLOBAL_PER_DAY: int = 200
+    DEMO_MAX_LIVE_KEYS: int = 500
+    DEMO_ALLOWED_ORIGINS: str = (
+        "https://www.thisisatest.tech,"
+        "https://thisisatest.tech,"
+        "https://www.agentmiddleware.dev,"
+        "https://agentmiddleware.dev"
+    )
+
+    @field_validator(
+        "DEMO_KEY_TTL_DAYS",
+        "DEMO_KEY_MAX_USES",
+        "DEMO_MAX_PERMIT_TTL_MINUTES",
+        "DEMO_AUTO_PERMIT_TTL_SECONDS",
+        "DEMO_ISSUE_PER_IP_PER_DAY",
+        "DEMO_ISSUE_GLOBAL_PER_HOUR",
+        "DEMO_ISSUE_GLOBAL_PER_DAY",
+        "DEMO_MAX_LIVE_KEYS",
+    )
+    @classmethod
+    def _validate_demo_ints(cls, value: int | None, info) -> int | None:
+        if value is None:
+            if info.field_name in (
+                "DEMO_KEY_TTL_DAYS",
+                "DEMO_KEY_MAX_USES",
+                "DEMO_MAX_PERMIT_TTL_MINUTES",
+            ):
+                return None
+            raise ValueError(f"{info.field_name} is required")
+        bounds = {
+            "DEMO_KEY_TTL_DAYS": (1, 30),
+            "DEMO_KEY_MAX_USES": (1, 10_000),
+            "DEMO_MAX_PERMIT_TTL_MINUTES": (1, 1_440),
+            "DEMO_AUTO_PERMIT_TTL_SECONDS": (1, 600),
+            "DEMO_ISSUE_PER_IP_PER_DAY": (1, 1_000),
+            "DEMO_ISSUE_GLOBAL_PER_HOUR": (1, 100_000),
+            "DEMO_ISSUE_GLOBAL_PER_DAY": (1, 1_000_000),
+            "DEMO_MAX_LIVE_KEYS": (1, 100_000),
+        }
+        low, high = bounds[info.field_name]
+        if not low <= value <= high:
+            raise ValueError(f"{info.field_name} must be between {low} and {high}")
+        return value
+
+    @field_validator(
+        "DEMO_WALLET_CREDITS",
+        "DEMO_MAX_PERMIT_CREDITS",
+        "DEMO_WALLET_DAILY_LIMIT",
+        "DEMO_AUTO_PERMIT_MAX_CREDITS",
+    )
+    @classmethod
+    def _validate_demo_credits(cls, value: Decimal | None, info) -> Decimal | None:
+        if value is None:
+            if info.field_name in (
+                "DEMO_MAX_PERMIT_CREDITS",
+                "DEMO_WALLET_DAILY_LIMIT",
+            ):
+                return None
+            raise ValueError(f"{info.field_name} is required")
+        if not value.is_finite() or value <= 0 or value > Decimal("100000"):
+            raise ValueError(
+                f"{info.field_name} must be a positive amount up to 100000"
+            )
+        return value
+
+    @property
+    def demo_allowed_tools_list(self) -> list[str]:
+        return [t.strip() for t in self.DEMO_ALLOWED_TOOLS.split(",") if t.strip()]
 
     # --- Enterprise IGA bridge (OIDC -> PolicyBundle) ---
     # JSON object mapping a trusted enterprise OIDC issuer URL to its pinned
@@ -128,13 +226,15 @@ class Settings(BaseSettings):
     ENABLE_DOGFOOD_SECOND_TOOL: bool = False
 
     # --- Governed upstream MCP partner tool ---
-    # One explicitly configured Streamable HTTP server/tool for the
+    # One explicitly configured Streamable HTTP server, with one or more tools, for the
     # design-partner pilot. The adapter fails closed at startup when enabled
     # with incomplete or unsafe configuration.
     MCP_UPSTREAM_ENABLED: bool = False
     MCP_UPSTREAM_URL: str = ""
     MCP_UPSTREAM_TOOL_NAME: str = ""
     MCP_UPSTREAM_PUBLIC_TOOL_ID: str = ""
+    MCP_UPSTREAM_MULTI_TOOL_ENABLED: bool = False
+    MCP_UPSTREAM_TOOL_ALLOWLIST: str = ""
     MCP_UPSTREAM_BEARER_TOKEN: SecretStr = SecretStr("")
     MCP_UPSTREAM_CREDITS_PER_CALL: Decimal = Decimal("0")
     MCP_UPSTREAM_CONNECT_TIMEOUT_SECONDS: float = 5.0
@@ -152,6 +252,14 @@ class Settings(BaseSettings):
     JEV_RISK_GUARD_TIMEOUT_SECONDS: float = 1.5
     JEV_RISK_GUARD_TIERS: str = "medium,high"
     TYPESAFE_API_KEY: SecretStr = SecretStr("")
+    # Optional PostHog product tracking (docs/product-analytics.md). Blank
+    # key = tracking off. Declared here so .env entries load.
+    POSTHOG_API_KEY: SecretStr = SecretStr("")
+    POSTHOG_HOST: str = ""
+    # Server pepper for HMAC-SHA256 API-key digests. Required in
+    # production-like environments (startup refuses to boot without it).
+    # See docs/api-key-hashing.md. Never log it.
+    API_KEY_HASH_PEPPER: SecretStr = SecretStr("")
     TYPESAFE_BASE_URL: str = "https://api.typesafe.ai"
     # Default repeat detection window in seconds. Duplicates outside this window
     # are not detected.
@@ -183,7 +291,9 @@ class Settings(BaseSettings):
     #
     # To run a local demo or a legacy integration without permits, set both
     # `TRUST_MODE_ENABLED=false` and `ALLOW_LEGACY_UNPERMITTED_MCP=true`
-    # explicitly in the environment. The startup banner in
+    # explicitly in the environment. Tools registered with `require_permit`
+    # (the dogfood tool, every upstream tool) still refuse an unpermitted call
+    # with `permit_required` in that posture. The startup banner in
     # `app.core.trust_mode.warn_if_trust_mode_permissive` makes it loud when
     # this opt-out is in effect, and the
     # `app.core.trust_mode.validate_trust_mode_guardrails` check refuses to
@@ -197,11 +307,45 @@ class Settings(BaseSettings):
     # Spec-compliant stateless Streamable HTTP surface for standard MCP
     # clients. tools/call mints a bounded single-tool permit from the
     # caller's wallet before entering the governed invoke path, so the
-    # permit -> meter -> receipt -> audit loop is unchanged. Off by default:
-    # do not advertise (or registry-publish) a transport that is not
-    # deliberately enabled.
-    ENABLE_STANDARD_MCP_ENDPOINT: bool = False
+    # permit -> meter -> receipt -> audit loop is unchanged. On by default
+    # (owner decision); it always requires an API key. Set false to stop
+    # serving and advertising it.
+    ENABLE_STANDARD_MCP_ENDPOINT: bool = True
     STANDARD_MCP_PERMIT_TTL_SECONDS: int = 120
+
+    # Unkeyed tools/call retry safety (SEL-484 / G1, MCP issue #3394).
+    # A mutating call without a client idempotency key gets a deterministic
+    # key derived from wallet, API key, verified enterprise principal, tool and
+    # canonical arguments. The window slides from the first call (a retry that
+    # crosses a bucket edge still joins it), so a lost-response retry within
+    # this many seconds replays the original receipt instead of dispatching
+    # again; a refunded pre-dispatch failure is retried, not replayed.
+    # Read-only tools get no derived key, so unkeyed read-only calls are
+    # refused with idempotency_key_required (SEL-498); there is never a
+    # random per-call key. Identical deliberate unkeyed calls inside one
+    # window collapse to one dispatch; callers needing repeats must send
+    # distinct keys. 0 disables derived keys, so every unkeyed call is
+    # refused. The effective window is capped at the auto-permit TTL
+    # (STANDARD_MCP_PERMIT_TTL_SECONDS, default 120; lower for demo): a
+    # joined slot reuses its auto permit. With defaults the window is 120 s,
+    # and a later identical retry runs and bills again.
+    MCP_UNKEYED_RETRY_WINDOW_SECONDS: int = 300
+
+    @field_validator("MCP_UNKEYED_RETRY_WINDOW_SECONDS")
+    @classmethod
+    def _validate_unkeyed_retry_window(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError(
+                "MCP_UNKEYED_RETRY_WINDOW_SECONDS must be >= 0 (0 disables)"
+            )
+        return value
+
+    # --- Audit chain verification bound ---
+    # Upper bound on audit events one verify_audit_chain call may load and
+    # walk, per wallet chain. A longer chain yields an explicit partial
+    # verdict (complete=false plus a next_after_seq cursor) instead of an
+    # unbounded read. Callers may ask for less via `limit`, never more.
+    AUDIT_VERIFY_MAX_EVENTS: int = Field(default=1000, ge=1, le=10000)
 
     # --- Public MCP endpoint (POST /mcp/public) ---
     # Unauthenticated, read-only Streamable HTTP surface for MCP clients
@@ -231,6 +375,15 @@ class Settings(BaseSettings):
     # re-declare it as a module constant — a second copy silently lets the
     # advertised rate drift from the rate real money converts at.
     EXCHANGE_RATE: Decimal = Decimal("1000.0")
+
+    @field_validator("TENANT_RLS_MODE")
+    @classmethod
+    def _validate_tenant_rls_mode(cls, value: str) -> str:
+        """Only the two documented modes; a typo must not silently mean off."""
+        normalized = (value or "").strip().lower()
+        if normalized not in {"off", "enforce"}:
+            raise ValueError("TENANT_RLS_MODE must be 'off' or 'enforce'")
+        return normalized
 
     @field_validator("EXCHANGE_RATE")
     @classmethod
@@ -313,6 +466,8 @@ class Settings(BaseSettings):
     # Authenticated routes use the API key. The unauthenticated public MCP
     # route uses a canonical client IP plus a deployment-wide backstop.
     RATE_LIMIT_PER_MINUTE: int = 120
+    # Deployment-wide anonymous ceiling, as a multiple of RATE_LIMIT_PER_MINUTE.
+    RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER: int = Field(default=20, ge=1)
 
     # --- LLM / AI Agent Intelligence ---
     # Provider: openai, azure, anthropic, ollama
@@ -410,7 +565,7 @@ class Settings(BaseSettings):
     )
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     return Settings()
 

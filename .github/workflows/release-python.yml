@@ -1,0 +1,79 @@
+name: Release Python SDK
+
+on:
+  push:
+    tags:
+      - 'python-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Python SDK version to publish'
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install build tools
+        run: python -m pip install build twine
+      - name: Build distributions
+        working-directory: sdk/python
+        run: python -m build
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_INPUT_VERSION: ${{ inputs.version }}
+        run: python .github/scripts/check_python_release.py
+      - name: Check distributions
+        working-directory: sdk/python
+        run: python -m twine check dist/*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-distributions
+          path: sdk/python/dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-distributions
+          path: dist
+      - name: Select publishing credentials
+        id: credentials
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$PYPI_API_TOKEN" ]; then
+            echo 'has_token=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'has_token=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish with trusted publishing
+        if: steps.credentials.outputs.has_token == 'false'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist
+      - name: Publish with API token
+        if: steps.credentials.outputs.has_token == 'true'
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist
+          password: ${{ secrets.PYPI_API_TOKEN }}

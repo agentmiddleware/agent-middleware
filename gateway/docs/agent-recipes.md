@@ -12,9 +12,9 @@
 > [PROOF_SURFACES.md](PROOF_SURFACES.md). The snippets are also illustrative
 > pseudocode: most `client.*` calls shown (for example `decide`, `heal`,
 > `emit_telemetry`, `send_message`, `register_service`, `set_memory`) are not
-> methods of `b2a_sdk.AgentMiddlewareClient`.
+> methods of `amw.AgentMiddlewareClient`.
 
-Practical examples for building autonomous agents with the Agent Middleware API.
+Practical examples for building autonomous agents with the Agent Middleware (AMW) API.
 
 ## Table of Contents
 
@@ -35,7 +35,7 @@ Practical examples for building autonomous agents with the Agent Middleware API.
 ### Basic Agent Initialization
 
 ```python
-from b2a_sdk import AgentMiddlewareClient
+from amw import AgentMiddlewareClient
 
 client = AgentMiddlewareClient(
     base_url="http://localhost:8000",
@@ -50,7 +50,7 @@ print(f"Current balance: {balance}")
 ### Agent with Memory Persistence
 
 ```python
-from b2a_sdk import AgentMiddlewareClient
+from amw import AgentMiddlewareClient
 
 client = AgentMiddlewareClient(base_url="http://localhost:8000", api_key="key")
 
@@ -90,7 +90,7 @@ curl -X POST http://localhost:8000/v1/billing/wallets \
 ### Track Usage Automatically
 
 ```python
-from b2a_sdk.decorators import billable
+from amw import billable
 
 b2a = AgentMiddlewareClient(api_key="key")
 
@@ -313,23 +313,8 @@ print(f"Credits spent: {metrics['credits_spent']}")
 
 ### Create and Register MCP Tools
 
-```python
-from b2a_sdk.decorators import mcp_tool
-
-
-@mcp_tool(
-    service_id="image-processor",
-    name="Image Processor",
-    description="Process and transform images",
-    category="media",
-    credits_per_unit=10.0,
-    unit_name="image",
-)
-async def process_image(image_url: str, operations: list[str]) -> dict:
-    """Your tool implementation."""
-    result = await transform_image(image_url, operations)
-    return {"processed_url": result, "operations_applied": operations}
-```
+The legacy `mcp_tool` decorator is outside the `amw` public import surface.
+Use the [governed quickstart](quickstart.md) for a supported tool call.
 
 ### Discover and Call Tools
 
@@ -604,4 +589,4 @@ async def agent_shutdown(agent_id: str):
 
 - [AWI Adoption Guide](awi-adoption-guide.md) - Make your site agent-native
 - [API Reference](http://localhost:8000/docs) - Full API documentation
-- [B2A SDK](../../sdk/python/README.md) - Python SDK documentation
+- [Agent Middleware (AMW) Python SDK](../../sdk/python/README.md): Python SDK documentation

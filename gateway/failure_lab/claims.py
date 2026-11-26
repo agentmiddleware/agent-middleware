@@ -37,7 +37,9 @@ from pathlib import Path
 from typing import Any
 
 from failure_lab import TEST_DEFINITION_VERSION
-from failure_lab import __version__ as FAILURE_LAB_VERSION
+from failure_lab import __version__
+
+FAILURE_LAB_VERSION = __version__
 
 CLAIMS_SCHEMA_VERSION = "failure-lab-claims/1"
 
@@ -163,7 +165,8 @@ class ClaimRecord:
         if reported is None:
             matches = bool(expected) and not rows_diverge
         else:
-            matches = bool(reported) and not rows_diverge
+            # Only a real boolean true counts. The string "false" is truthy.
+            matches = reported is True and not rows_diverge
         status, status_lines = _observed_status(
             str(document.get("status", "")), observed
         )

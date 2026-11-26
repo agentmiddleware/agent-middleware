@@ -1,7 +1,57 @@
 target-version = "py311"
 
 [lint]
-# Pyflakes: unused imports/variables, undefined names, redefinitions.
-# Previously this file selected only E501 and then immediately ignored it,
-# so `ruff check` passed with zero rules actually enforced.
-select = ["F"]
+# Match sdk/python (pyproject.toml [tool.ruff.lint]): pycodestyle, pyflakes,
+# warnings, isort, pep8-naming, pyupgrade, bugbear, and comprehensions.
+# CI runs `ruff check` (.github/workflows/ci.yml). Selecting only F let bug
+# classes such as B023, B905, and E402 pass with the rest of this set.
+# PT (flake8-pytest-style) is added for Pattern 9 (tests that cannot fail):
+# PT011 bans bare `pytest.raises` with no `match`, PT006/PT007 pin parametrize
+# shapes; with B, B007 flags loop cases whose expected value is never asserted
+# and B023 flags late-bound loop closures. Ruff has no per-path `select`, so
+# pre-existing non-test patterns are baselined in per-file-ignores below.
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "PT"]
+ignore = [
+    # Same as the SDK. `ruff format --check` is the formatting gate.
+    "E501",
+    # Existing import-sort backlog across the tree. A mechanical isort rewrite
+    # is a separate change, so I001 does not gate new code until that lands.
+    "I001",
+    # Pyupgrade backlog. UP042 (StrEnum) and UP035 (moved imports) can change
+    # runtime behavior; UP007/UP017/UP045 are annotation and datetime rewrites
+    # large enough to belong in their own change.
+    "UP007",
+    "UP017",
+    "UP035",
+    "UP042",
+    "UP045",
+    # Exception-chaining backlog: `raise` inside `except` without `from`.
+    # That changes traceback context only. Fixing it is a separate sweep,
+    # so B904 does not gate new code until that lands.
+    "B904",
+    # `dict()` / `list()` call style. Some rewrites share a mutable value.
+    "C408",
+    # Adding an `Error` suffix renames public exception types.
+    "N818",
+]
+
+[lint.per-file-ignores]
+# - PT018: a composite `assert a and b` still fails, only with a poorer
+#   message. Splitting 100 sites is message-quality churn, not vacuity,
+#   so new code splits asserts and old code is grandfathered.
+"tests/**" = ["PT018"]
+
+[lint.flake8-bugbear]
+# FastAPI requires these calls in parameter defaults. B008 still flags every
+# other function call used as a default (the shared mutable-default bug).
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.Body",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Security",
+    "fastapi.Cookie",
+]

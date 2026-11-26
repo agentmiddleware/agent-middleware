@@ -10,7 +10,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "b2a-sdk>=0.4.0",
+    "amw-sdk>=0.4.0",
     "langchain>=1.3.9",
     "langgraph>=1.0.10",
     "httpx>=0.25.0",
@@ -26,4 +26,4 @@ packages = ["src/langchain_b2a"]
 line-length = 100
 
 [tool.uv.sources]
-b2a-sdk = { path = "../../sdk/python", editable = true }
+amw-sdk = { path = "../../sdk/python", editable = true }

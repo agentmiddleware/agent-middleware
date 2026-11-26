@@ -1058,7 +1058,7 @@ async def test_release_tool_call_compensation_semantics(client, clean_database):
 
     # Two concurrent-style reservations, one release: the surviving count is
     # exactly one — the release never clobbers the other reservation.
-    for idx in range(2):
+    for _ in range(2):
         validation = await permits.authorize_and_reserve(
             permit_id=permit_id,
             wallet_id=wallet_id,
@@ -1524,7 +1524,7 @@ async def test_x402_incomplete_compensation_preserves_original_owner(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "receipt_committed,lookup_fails", [(False, False), (True, False), (True, True)]
+    ("receipt_committed", "lookup_fails"), [(False, False), (True, False), (True, True)]
 )
 async def test_x402_uncertain_receipt_write_never_releases_authority_or_owner(
     client, clean_database, monkeypatch, receipt_committed, lookup_fails

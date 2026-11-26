@@ -80,6 +80,8 @@ async def test_init_db_sqlite_non_prod_uses_create_all(tmp_path, monkeypatch):
     assert "permits" in tables
     assert "repeat_window_seconds" in permit_columns
     assert "receipts" in tables
+    assert "receipt_resolutions" in tables
+    assert "resolution_chain_heads" in tables
     assert "idempotency_records" in tables
     # create_all does not create alembic_version
     assert "alembic_version" not in tables
@@ -164,6 +166,8 @@ async def test_production_boot_fails_with_only_legacy_four_trust_tables(
         "audit_chain_heads",
         "signing_keys",
         "human_approvals",
+        "receipt_resolutions",
+        "resolution_chain_heads",
     ):
         assert missing in message
     assert "alembic upgrade head" in message
@@ -196,6 +200,7 @@ async def test_init_db_production_like_accepts_legacy_create_all_tables(
     tables = set(inspect(sync).get_table_names())
     sync.dispose()
     assert REQUIRED_TRUST_TABLES <= tables
+    assert {"receipt_resolutions", "resolution_chain_heads"} <= REQUIRED_TRUST_TABLES
     assert "alembic_version" not in tables
 
     await init_db()  # must not raise SchemaInitError
@@ -209,7 +214,21 @@ async def test_init_db_production_like_accepts_legacy_create_all_tables(
     ("table_name", "column_name"),
     [
         ("mcp_dispatch_attempts", "dispatch_claim_hash"),
+        *[
+            ("mcp_dispatch_attempts", column)
+            for column in (
+                "reconcile_status",
+                "reconcile_lease_owner",
+                "reconcile_lease_expires_at",
+                "reconcile_next_probe_at",
+                "reconcile_probe_count",
+                "reconciled_at",
+            )
+        ],
         ("permits", "repeat_window_seconds"),
+        ("receipt_resolutions", "payload_hash"),
+        ("receipt_resolutions", "signing_input"),
+        ("resolution_chain_heads", "last_hash"),
         *[
             (table, column)
             for table in ("permits", "receipts")
@@ -237,6 +256,10 @@ async def test_init_db_rejects_unstamped_legacy_table_missing_required_column(
 
     sync = create_engine(f"sqlite:///{db_path}")
     with sync.begin() as connection:
+        # SQLite cannot drop an indexed column; drop its indexes first.
+        for index in inspect(connection).get_indexes(table_name):
+            if column_name in index["column_names"]:
+                connection.exec_driver_sql(f"DROP INDEX {index['name']}")
         connection.exec_driver_sql(
             f"ALTER TABLE {table_name} DROP COLUMN {column_name}"
         )

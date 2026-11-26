@@ -104,9 +104,12 @@ async def test_discover_and_health_stripe_truth_match(
     """Discover's KYC presence must match health's stripe.status truth."""
     import app.routers.discover as discover_mod
 
+    # A fake key fails the live Stripe balance check, so health reports
+    # "down" (not "not_configured"), while discover still lists KYC because
+    # a key is configured. Both sides are pinned exactly.
     for stripe_key, expected_health_status, should_have_kyc in [
         ("", "not_configured", False),
-        ("sk_test_fake", "not_configured", True),
+        ("sk_test_fake", "down", True),
     ]:
         monkeypatch.setenv("STRIPE_SECRET_KEY", stripe_key)
         get_settings.cache_clear()
@@ -118,12 +121,21 @@ async def test_discover_and_health_stripe_truth_match(
         assert health_resp.status_code == 200
         health_data = health_resp.json()
         stripe_status = health_data["dependencies"]["stripe"]["status"]
+        # The parametrized expectations pin both sides of the truth match:
+        # without these two lines the loop cases never assert their values.
+        assert stripe_status == expected_health_status, (
+            f"STRIPE_SECRET_KEY={stripe_key!r} reported stripe={stripe_status}"
+        )
 
         discover_resp = await client.get("/v1/discover")
         assert discover_resp.status_code == 200
         discover_data = discover_resp.json()
         capability_names = {cap["name"] for cap in discover_data["capabilities"]}
         has_kyc = "kyc" in capability_names
+        assert has_kyc == should_have_kyc, (
+            f"stripe={stripe_status}: discover has_kyc={has_kyc}, "
+            f"expected {should_have_kyc}"
+        )
 
         if stripe_status == "not_configured":
             assert not has_kyc, (

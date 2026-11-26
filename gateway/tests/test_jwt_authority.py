@@ -52,6 +52,62 @@ async def exchange(client, key, scopes):
     return response.json()
 
 
+@pytest.mark.parametrize("label", ["key", "wallet"])
+@pytest.mark.parametrize(
+    ("enabled", "expected_error"),
+    [(False, "demo_tenant_disabled"), (True, "demo_key_route_forbidden")],
+)
+async def test_demo_key_cannot_mint_jwt_or_record_first_use(
+    client, monkeypatch, label, enabled, expected_error
+):
+    key = await seed(f"qa_demo_auth_{label}_{enabled}")
+    async with get_session_factory()() as session:
+        row = await session.get(APIKeyModel, key["key_id"])
+        wallet = await session.get(WalletModel, key["wallet_id"])
+        if label == "key":
+            row.tenant = "demo"
+        else:
+            wallet.tenant = "demo"
+        await session.commit()
+    monkeypatch.setattr(get_settings(), "ENABLE_DEMO_TENANT", enabled)
+
+    response = await client.post("/v1/auth/token", json={"api_key": key["api_key"]})
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == expected_error
+    async with get_session_factory()() as session:
+        row = await session.get(APIKeyModel, key["key_id"])
+        assert row.first_used_at is None
+        assert row.use_count == 0
+
+
+@pytest.mark.parametrize("label", ["key", "wallet"])
+async def test_demo_origin_refresh_token_cannot_renew(client, monkeypatch, label):
+    key = await seed(f"qa_demo_refresh_{label}")
+    tokens = await exchange(client, key, ["billing:read"])
+    async with get_session_factory()() as session:
+        row = await session.get(APIKeyModel, key["key_id"])
+        wallet = await session.get(WalletModel, key["wallet_id"])
+        if label == "key":
+            row.tenant = "demo"
+        else:
+            wallet.tenant = "demo"
+        await session.commit()
+    monkeypatch.setattr(get_settings(), "ENABLE_DEMO_TENANT", True)
+
+    response = await client.post(
+        "/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    replay = await client.post(
+        "/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "demo_key_route_forbidden"
+    assert replay.status_code == 401
+    assert replay.json()["detail"]["error"] == "revoked_refresh_token"
+
+
 @pytest.mark.parametrize("scopes", [["billing:read"], [], ["custom:read"]])
 async def test_refresh_preserves_requested_scopes(client, scopes):
     key = await seed("qa_refresh_scope")

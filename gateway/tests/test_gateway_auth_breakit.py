@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from app.core.auth import get_auth_context
@@ -158,7 +159,7 @@ async def test_jwt_signed_by_wrong_key_rejected(signing_key):
         other,
         algorithm="EdDSA",
     )
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         await get_auth_context(api_key=None, authorization=f"Bearer {token}")
 
 
@@ -307,12 +308,9 @@ async def test_garbage_api_keys_never_500(client, clean_database):
     from fastapi import HTTPException as _HTTPException
 
     for bad in ("b2a_caf\xe9key", "clé secrète"):
-        try:
+        with pytest.raises(_HTTPException) as exc_info:
             await get_auth_context(api_key=bad)
-        except _HTTPException as exc:
-            assert exc.status_code in (401, 403)
-        else:
-            raise AssertionError(bad)
+        assert exc_info.value.status_code in (401, 403), bad
 
 
 @pytest.mark.anyio
@@ -356,7 +354,7 @@ async def test_expired_jwt_rejected(signing_key):
         private,
         algorithm="EdDSA",
     )
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         await get_auth_context(api_key=None, authorization=f"Bearer {token}")
 
 

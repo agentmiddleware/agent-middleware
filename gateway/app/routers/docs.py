@@ -61,6 +61,13 @@ _TRUST_PLANE_SECTIONS = [
         ),
     },
     {
+        "id": "request_keys",
+        "title": "Request keys",
+        "path": "/docs/concepts/request-keys",
+        "content_type": "text/markdown",
+        "summary": "Python helper for stable request keys.",
+    },
+    {
         "id": "overview",
         "title": "API Overview (llms.txt)",
         "path": "/llms.txt",
@@ -115,11 +122,25 @@ _TRUST_PLANE_SERVICES = [
     {
         "id": "mcp-trust-plane",
         "name": "Consequential-action transaction integrity",
-        "base_path": "/mcp/messages",
-        "transport": "legacy_project_json_rpc",
+        # Standard MCP is the canonical governed-invoke surface: any conforming
+        # client speaks it unmodified. The legacy project transport stays
+        # advertised, and get_doc_index() swaps it back into base_path when
+        # ENABLE_STANDARD_MCP_ENDPOINT is off, because /mcp answers 404 then and
+        # naming it would send a client to a dead path.
+        "base_path": "/mcp",
+        "transport": "standard_streamable_http",
         "transport_note": (
+            "Standards-compliant MCP Streamable HTTP on the official SDK, in "
+            "stateless JSON mode. A caller presents a permit another issuer "
+            'granted in params._meta["io.agentmiddleware/permit_id"]; the '
+            "server mints a bounded single-tool permit from the caller's "
+            "wallet only when none is supplied."
+        ),
+        "legacy_json_rpc_endpoint": "/mcp/messages",
+        "legacy_json_rpc_note": (
             "Project-specific JSON-RPC endpoint; it does not implement the "
-            "standard MCP initialization lifecycle."
+            "standard MCP initialization lifecycle. It accepts the same "
+            "externally issued permit in params.mcpContext.permit_id."
         ),
         "surface": "product",
         "transaction_scope": "configured_upstream_mcp_tool_only",
@@ -133,7 +154,7 @@ _TRUST_PLANE_SERVICES = [
             "delivery-uncertain-no-automatic-redispatch",
             "linked-gateway-evidence",
         ],
-        "quickstart_endpoint": "POST /mcp/messages",
+        "quickstart_endpoint": "POST /mcp",
     },
     {
         "id": "permits",
@@ -228,10 +249,17 @@ _PROOF_SURFACE_SERVICES = [
 )
 async def get_doc_index():
     services = [dict(service) for service in _TRUST_PLANE_SERVICES]
-    if get_settings().ENABLE_STANDARD_MCP_ENDPOINT:
+    if not get_settings().ENABLE_STANDARD_MCP_ENDPOINT:
+        # /mcp answers 404 in this configuration, so the catalog falls back to
+        # the transport this deployment actually serves rather than advertising
+        # one it does not.
         for service in services:
             if service["id"] == "mcp-trust-plane":
-                service["standard_streamable_http_endpoint"] = "/mcp"
+                service["base_path"] = service["legacy_json_rpc_endpoint"]
+                service["transport"] = "legacy_project_json_rpc"
+                service["transport_note"] = service["legacy_json_rpc_note"]
+                service["quickstart_endpoint"] = "POST /mcp/messages"
+                service["standard_streamable_http_status"] = "disabled"
                 break
     if get_settings().ENABLE_PROOF_SURFACES:
         services.extend(_PROOF_SURFACE_SERVICES)

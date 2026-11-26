@@ -103,7 +103,7 @@ class ScanRequest(BaseModel):
         description="Which service pillars to attack. Default: all.",
     )
     attack_categories: list[AttackCategory] = Field(
-        default=[c for c in AttackCategory],
+        default=list(AttackCategory),
         description="Which attack vectors to deploy. Default: all.",
     )
     intensity: str = Field(

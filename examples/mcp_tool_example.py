@@ -152,8 +152,21 @@ def on_registration(service_id: str, func, input_schema, output_schema):
 
 
 async def register_tools():
-    """Register all tools with the backend."""
+    """Show the tools through the registration callback.
+
+    @mcp_tool notifies callbacks when the function is decorated. These tools
+    were decorated at import, before this callback existed, so replay the
+    stored metadata through the callback here.
+    """
     register_mcp_tool_callback(on_registration)
+    for func in (process_data, summarize_url, generate_image):
+        meta = func._b2a_mcp_metadata
+        on_registration(
+            meta["service_id"],
+            func,
+            meta.get("input_schema"),
+            meta.get("output_schema"),
+        )
 
     print("Tools registered:")
     print(f"  - {process_data._b2a_mcp_metadata}")
@@ -190,9 +203,11 @@ async def main_generate():
 
 async def main_serve():
     """Run standalone MCP server."""
-    from b2a_sdk.mcp import serve
+    from b2a_sdk.mcp import serve_async
 
-    serve(
+    # main_serve already runs inside asyncio.run(), so await the async server.
+    # The sync serve() wrapper would start a second event loop and fail.
+    await serve_async(
         transport="stdio",
         api_url=os.getenv("B2A_API_URL", "http://localhost:8000"),
     )

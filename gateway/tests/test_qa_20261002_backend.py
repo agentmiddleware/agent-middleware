@@ -32,7 +32,7 @@ async def qa_client():
 
 
 @pytest.mark.parametrize(
-    "method,path",
+    ("method", "path"),
     [
         ("GET", "/v1/permits"),
         ("POST", "/v1/permits"),

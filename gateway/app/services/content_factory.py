@@ -1170,7 +1170,7 @@ class ContentFactory:
             )
             schedule_summary = {
                 "total_scheduled": len(recommendations),
-                "platforms": list(set(r.platform for r in recommendations)),
+                "platforms": list({r.platform for r in recommendations}),
                 "date_range": (
                     f"{recommendations[0].recommended_time.strftime('%Y-%m-%d')} to "
                     f"{recommendations[-1].recommended_time.strftime('%Y-%m-%d')}"

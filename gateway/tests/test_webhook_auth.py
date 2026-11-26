@@ -28,7 +28,7 @@ from app.main import app
 @pytest.fixture(autouse=True)
 async def _clean_shared_db(clean_database):
     """Webhook tests post through the shared app; start from an empty DB."""
-    yield
+    return
 
 
 # The Stripe webhook receivers are dormant trust surfaces: production mounts

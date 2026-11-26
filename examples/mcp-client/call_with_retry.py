@@ -31,7 +31,12 @@ import uuid
 from collections.abc import Mapping
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
+
+try:  # mcp 2.x ships its own httpx fork
+    import httpx2 as httpx
+except ImportError:  # mcp 1.x
+    import httpx
 
 URL = os.environ.get("AMW_MCP_URL", "http://127.0.0.1:8000/mcp")
 TOOL = os.environ.get("AMW_TOOL", "partner.notes.write")
@@ -192,7 +197,10 @@ async def call_once(api_key: str, idempotency_key: str) -> dict:
     checked_key = _validate_idempotency_key(idempotency_key)
     headers = {"X-API-Key": api_key, "Idempotency-Key": checked_key}
     async with (
-        streamablehttp_client(URL, headers=headers) as (read, write, _),
+        httpx.AsyncClient(
+            headers=headers, timeout=httpx.Timeout(30, read=300)
+        ) as http_client,
+        streamable_http_client(URL, http_client=http_client) as (read, write, *_),
         ClientSession(read, write) as session,
     ):
         await session.initialize()
@@ -215,4 +223,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

@@ -97,17 +97,17 @@ def _greedy_heuristic(
     total_risk = 0.0
     for action in scored:
         c = action.get("credit_cost", 0.0)
-        l = action.get("latency_ms", 0.0)
+        latency_ms = action.get("latency_ms", 0.0)
         r = action.get("risk_score", 0.0)
         if total_cost + c > state.remaining_budget:
             continue
-        if total_latency + l > state.slo_window_seconds * 1000:
+        if total_latency + latency_ms > state.slo_window_seconds * 1000:
             continue
         if total_risk + r > risk_budget:
             continue
         selected.append(action)
         total_cost += c
-        total_latency += l
+        total_latency += latency_ms
         total_risk += r
         if len(selected) >= max_actions:
             break

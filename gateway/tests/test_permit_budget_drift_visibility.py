@@ -215,9 +215,13 @@ async def test_a_lost_drift_alert_never_fails_the_call_it_reports_on(
         )
 
     assert runs["count"] == 1
-    # The caller's real answer survived, receipt and all.
+    # The caller's real answer survived, receipt and all. The
+    # tool's own error stays server-side; the client gets the
+    # classified message.
     detail = resp.json()["detail"]
-    assert "tool blew up" in detail["error"], detail
+    # The tool exception text stays in the server log, keyed by X-Request-ID.
+    assert "tool blew up" not in resp.text, detail
+    assert detail["error"] == "tool_execution_failed", detail
     assert detail["receipt"]["outcome"] == "failed_refunded", detail
 
     factory = get_session_factory()

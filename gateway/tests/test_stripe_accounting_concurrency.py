@@ -53,7 +53,7 @@ async def test_distinct_settled_topups_must_preserve_both_credits(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "outer_refunded, expected_refund",
+    ("outer_refunded", "expected_refund"),
     [(1000, "10000"), (2000, "20000"), (500, "10000")],
 )
 async def test_concurrent_cumulative_refunds_must_apply_only_new_delta(

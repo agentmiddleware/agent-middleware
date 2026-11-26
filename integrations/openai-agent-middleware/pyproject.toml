@@ -14,7 +14,7 @@ requires-python = ">=3.11"
 # items) as plain attributes or dicts, so it works with any SDK version and is
 # testable without one.
 dependencies = [
-    "b2a-sdk>=0.4.0",
+    "amw-sdk>=0.4.0",
     "httpx>=0.25.0",
 ]
 
@@ -37,4 +37,4 @@ asyncio_mode = "auto"
 pythonpath = ["src", "../../sdk/python/src"]
 
 [tool.uv.sources]
-b2a-sdk = { path = "../../sdk/python", editable = true }
+amw-sdk = { path = "../../sdk/python", editable = true }

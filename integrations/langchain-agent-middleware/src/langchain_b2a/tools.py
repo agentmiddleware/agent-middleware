@@ -44,6 +44,7 @@ def get_mcp_tools(
             result = await t.ainvoke({
                 "tool_name": "my_tool",
                 "idempotency_key": "unique-key-123",
+                "permit_idempotency_key": "permit-key-123",
                 "arguments": {...}
             })
     """

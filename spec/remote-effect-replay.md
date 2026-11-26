@@ -1,7 +1,7 @@
 # Remote Effect Replay (draft RFC)
 
-**Author:** C.Lee  
-**Status:** Draft  
+**Author:** C.Lee
+**Status:** Draft
 **Created:** 2026-11-18
 
 ## Abstract
@@ -17,7 +17,7 @@ This is an R&D design note, not a product roadmap. No claims about future featur
 The gateway computes a SHA-256 hash over `{tool_name, arguments, wallet_id, permit_id}`, not the wire request bytes.
 
 **Code references:**
-- `gateway/app/routers/mcp.py:1572-1581` — constructs `effective_request_payload` from these four fields, then `effective_request_hash = sha256_hex(effective_request_payload)`
+- `gateway/app/routers/mcp.py:1590-1599` — constructs `effective_request_payload` from these four fields, then `effective_request_hash = sha256_hex(effective_request_payload)`
 - `gateway/app/services/receipts.py:171` — `receipt_model_to_response` assigns `request_hash=model.request_hash`
 - `gateway/app/services/receipts.py:207` — signed payload includes `"request_hash": model.request_hash`
 - `spec/receipt-v0.1.md:38` — "Lowercase hex SHA-256 of the request and response values"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -47,6 +47,18 @@ def _datetime(value: Any, key: str) -> datetime:
     if not isinstance(value, str):
         raise ValueError(f"response field {key!r} must be an ISO-8601 string")
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _utc_instant(value: datetime) -> datetime:
+    """Return an aware datetime so naive and offset forms of one instant compare equal.
+
+    The gateway signs ``created_at`` with an explicit offset, but some storage
+    backends (SQLite) return the stored receipt without one. Every gateway
+    timestamp is UTC, so a naive value is read as UTC.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _decimal(value: Any, key: str) -> Decimal:
@@ -258,9 +270,9 @@ class Receipt:
                 Decimal(str(result.claims.get("credits_authorized"))) == self.credits_authorized
                 and Decimal(str(result.claims.get("credits_charged"))) == self.credits_charged
             )
-            date_matches = (
-                _datetime(result.claims.get("created_at"), "created_at") == self.created_at
-            )
+            date_matches = _utc_instant(
+                _datetime(result.claims.get("created_at"), "created_at")
+            ) == _utc_instant(self.created_at)
         except (InvalidOperation, ValueError):
             return mismatch()
         if not amounts_match or not date_matches:
@@ -278,7 +290,9 @@ class Receipt:
                     return mismatch()
             elif name == "created_at":
                 try:
-                    if _datetime(value, name) != _datetime(signed_value, name):
+                    if _utc_instant(_datetime(value, name)) != _utc_instant(
+                        _datetime(signed_value, name)
+                    ):
                         return mismatch()
                 except ValueError:
                     return mismatch()

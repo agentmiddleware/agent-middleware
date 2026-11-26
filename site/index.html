@@ -163,14 +163,14 @@
          first paint. Kept in a file rather than inline so the Content-Security-
          Policy can be script-src 'self' with no 'unsafe-inline'. -->
     <script src="/a11y-preload.js?v=home-light-1"></script>
-    @@VERCEL_ANALYTICS_SCRIPTS@@
+    @@POSTHOG_CONFIG@@
     <script defer src="/wave.js?v=home-light-2"></script>
     <!-- The arcade is fetched on demand by this bootstrap (on PRESS START,
          on hover/focus, or on a ?arcade= deep link); /arcade.js and
          /arcade.css are named on the launcher below, not loaded here. -->
     <script defer src="/arcade-boot.js?v=home-light-2"></script>
-    <script defer src="/analytics.js?v=home-light-1"></script>
-    <script defer src="/utm-capture.js?v=home-light-1"></script>
+    <script defer src="/analytics.js?v=posthog-2"></script>
+    <script defer src="/utm-capture.js?v=utm-2"></script>
     <script defer src="/home-key.js?v=home-light-3"></script>
     <script defer src="/a11y.js?v=home-light-1"></script>
   </head>
@@ -200,7 +200,7 @@
             <p>Each action runs once and leaves a receipt.</p>
             <p class="hero-v2-boundary">One accepted request key permits at most one gateway dispatch to the configured upstream tool and at most one debit. Each finalized or reconciled path has a receipt.</p>
             <div class="hero-v2-actions">
-              <button class="hero-v2-action hero-v2-action-primary" id="home-key-trigger" type="button" aria-controls="home-key-panel" data-analytics-event="demo_key_click" hidden>Get a demo key</button>
+              <button class="hero-v2-action hero-v2-action-primary" id="home-key-trigger" type="button" aria-controls="home-key-panel" data-analytics-event="demo_key_click" data-cta-id="home-key-trigger" hidden>Get a demo key</button>
               <noscript><a class="hero-v2-action hero-v2-action-primary" href="/demo-key/">Get a demo key</a></noscript>
               <a class="hero-v2-action hero-v2-action-secondary" href="https://github.com/agentmiddleware/amw-demo" rel="noopener noreferrer">Run the quickstart: amw-demo <span aria-hidden="true">→</span></a>
             </div>

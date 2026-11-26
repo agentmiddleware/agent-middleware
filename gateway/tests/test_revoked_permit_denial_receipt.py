@@ -1267,20 +1267,9 @@ async def test_revoked_permit_denied_before_upstream_dispatch(client, clean_data
         get_service_registry().unregister_local(tool_name)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="KNOWN ISSUE: camelCase mcpContext in REST invoke body is silently dropped; should reject (400/422) or honor permit",
-)
 @pytest.mark.anyio
-async def test_camelcase_mcp_context_is_ignored_regression(client, clean_database):
-    """KNOWN ISSUE: camelCase 'mcpContext' in REST invoke body is silently dropped.
-
-    ToolCallRequest schema (mcp.py:633-640) only accepts snake_case 'mcp_context',
-    not camelCase 'mcpContext'. The DESIRED behavior is: reject with 400/422 or
-    honor the permit with permit_revoked denial. Current behavior: field is dropped
-    and call proceeds, ignoring the revoked permit.
-    """
+async def test_camelcase_mcp_context_honors_revoked_permit(client, clean_database):
+    """REST camelCase mcpContext honors the revoked permit without a charge."""
     provisioned = await provision_agent_wallet(client)
     tool_name = "camelcase-test-tool"
     _register_test_tool(tool_name)
@@ -1291,7 +1280,7 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
             wallet_id=provisioned["agent_wallet_id"],
             key_id=provisioned["key_id"],
             tool_name=tool_name,
-            idem_key="test_camelcase_mcp_context_is_ignored_regression-1",
+            idem_key="test_camelcase_mcp_context_honors_revoked_permit-1",
         )
 
         # Revoke permit
@@ -1324,38 +1313,8 @@ async def test_camelcase_mcp_context_is_ignored_regression(client, clean_databas
             headers=provisioned["agent_headers"],
         )
 
-        # DESIRED: EITHER request-validation rejection OR permit_revoked denial
-        if call_resp.status_code in (400, 422):
-            # Request validation rejected camelCase field
-            pass
-        elif call_resp.status_code == 403:
-            # HTTP 403 governed denial - must be permit_revoked
-            error = call_resp.json()
-            assert error["detail"]["error"] == "permit_revoked", (
-                f"403 must be permit_revoked, got {error.get('detail', {}).get('error')}"
-            )
-        else:
-            # HTTP 200 with denial response
-            assert call_resp.status_code == 200
-            response = call_resp.json()
-            assert response.get("isError") is True, "Expected isError=True for denial"
-            # Must have explicit permit_revoked code/reason
-            if "error" in response:
-                error_obj = response["error"]
-                # Check for permit_revoked in message, code, or data.receipt.reason_code
-                has_permit_revoked = (
-                    error_obj.get("message") == "permit_revoked"
-                    or error_obj.get("code") == "permit_revoked"
-                    or (
-                        "data" in error_obj
-                        and "receipt" in error_obj["data"]
-                        and error_obj["data"]["receipt"].get("reason_code")
-                        == "permit_revoked"
-                    )
-                )
-                assert has_permit_revoked, (
-                    f"Expected permit_revoked denial, got {error_obj}"
-                )
+        assert call_resp.status_code == 403
+        assert call_resp.json()["detail"]["error"] == "permit_revoked"
 
         # Verify wallet balance unchanged
         balance_resp = await client.get(

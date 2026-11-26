@@ -26,6 +26,8 @@ from typing import Any, cast
 
 from sqlalchemy import select, delete, func, text
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
 
@@ -472,12 +474,21 @@ class AnomalyDetector:
             yield True
             return
 
-        async with get_session_factory()() as session, session.begin():
-            acquired = await session.scalar(
-                text("SELECT pg_try_advisory_xact_lock(:key)"),
-                {"key": _ANALYSIS_LOCK_KEY},
-            )
-            yield bool(acquired)
+        # Hold the lock on a connection outside the shared session pool.
+        # Keeping it on a pooled session starves EventStore queries when
+        # DB_POOL_SIZE=1 and DB_MAX_OVERFLOW=0: every pass times out before
+        # detection, and other requests waiting on the same pool stall too.
+        lock_engine = create_async_engine(engine.url, poolclass=NullPool)
+        try:
+            async with lock_engine.connect() as conn:
+                async with conn.begin():
+                    acquired = await conn.scalar(
+                        text("SELECT pg_try_advisory_xact_lock(:key)"),
+                        {"key": _ANALYSIS_LOCK_KEY},
+                    )
+                    yield bool(acquired)
+        finally:
+            await lock_engine.dispose()
 
     async def _persist_locked(self):
         if not self._state.enabled:
@@ -498,8 +509,8 @@ class AnomalyDetector:
         errors, so one tenant's events never feed another tenant's anomaly.
 
         Call this periodically (e.g., every 60 seconds). Safe to call from
-        every gateway worker: passes are serialized across workers and each
-        one starts from the shared durable anomalies.
+        every gateway worker: on PostgreSQL, passes are serialized across
+        workers and each one starts from the shared durable anomalies.
         """
         async with self._analysis_turn() as acquired:
             if not acquired:

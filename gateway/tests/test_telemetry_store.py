@@ -472,3 +472,76 @@ async def test_analysis_turn_is_open_without_postgresql():
     assert engine.dialect.name != "postgresql"
     async with AnomalyDetector(EventStore())._analysis_turn() as acquired:
         assert acquired is True
+
+
+@pytest.mark.anyio
+async def test_analyze_fits_in_a_single_connection_pool(monkeypatch):
+    """The analysis turn must not hold the shared pool's only connection
+    across EventStore queries. With DB_POOL_SIZE=1 and DB_MAX_OVERFLOW=0,
+    that nested checkout times out and detection never runs."""
+    import os
+
+    from sqlalchemy.ext.asyncio import (
+        AsyncConnection,
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from app.db import database
+
+    store = EventStore()
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-pool", OWNER_A)
+
+    pool_engine = create_async_engine(
+        os.environ["DATABASE_URL"],
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.05,
+    )
+    pool_factory = async_sessionmaker(
+        pool_engine, expire_on_commit=False, autoflush=False
+    )
+
+    class _PgEngine:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+        url = pool_engine.url
+
+    def _lock_sql(statement) -> bool:
+        return "pg_try_advisory_xact_lock" in str(statement)
+
+    original_session_scalar = AsyncSession.scalar
+    original_conn_scalar = AsyncConnection.scalar
+
+    async def _session_scalar(self, statement, params=None, **kwargs):
+        if _lock_sql(statement):
+            # Keep the checkout for the open transaction; returning without
+            # binding would not reproduce the pool exhaustion defect.
+            await self.connection()
+            return True
+        return await original_session_scalar(self, statement, params, **kwargs)
+
+    async def _conn_scalar(self, statement, params=None, **kwargs):
+        if _lock_sql(statement):
+            return True
+        return await original_conn_scalar(self, statement, params, **kwargs)
+
+    try:
+        monkeypatch.setattr(database, "_session_factory", pool_factory)
+        monkeypatch.setattr(
+            "app.services.telemetry_pm.get_session_factory",
+            lambda: pool_factory,
+        )
+        monkeypatch.setattr(
+            "app.services.telemetry_pm.get_engine",
+            lambda: _PgEngine(),
+        )
+        monkeypatch.setattr(AsyncSession, "scalar", _session_scalar)
+        monkeypatch.setattr(AsyncConnection, "scalar", _conn_scalar)
+
+        detector = _detector(store, _FakeDurableState())
+        reports = await detector.analyze()
+        assert len(reports) == 1
+        assert reports[0].category == "source_concentration"
+    finally:
+        await pool_engine.dispose()

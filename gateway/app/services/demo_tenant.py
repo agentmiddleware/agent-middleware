@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -34,6 +34,7 @@ ISSUE_SCOPE_GLOBAL_DAY = "global_day"
 ISSUE_SCOPE_LIVE_KEYS = "live_keys"
 ISSUANCE_UNAVAILABLE = "demo_issuance_unavailable"
 ISSUANCE_RATE_LIMITED = "demo_issuance_rate_limited"
+DEMO_TOOL = "partner.echo"
 
 _memory_counters: dict[str, tuple[int, float]] = {}
 _memory_counters_lock = asyncio.Lock()
@@ -276,3 +277,71 @@ async def mint_demo_keypair(
         "max_uses": key["max_uses"],
         "budget_credits": settings.DEMO_WALLET_CREDITS,
     }
+
+
+async def mint_demo_issue_permit(minted: dict[str, Any]) -> dict[str, Any] | None:
+    """Mint the bounded partner.echo permit for a freshly issued demo key.
+
+    Reuses the demo auto-permit TTL and credit caps, bounded by the minted
+    wallet budget, and goes through
+    ``create_permit`` so ``enforce_permit_bounds`` applies the demo tenant,
+    key allowlist, and cap checks. Returns None when partner.echo is not in
+    the demo allowlist, so no permit is minted outside demo scope.
+    """
+    from ..core.auth import AuthContext
+    from ..routers.mcp_standard import _auto_permit_ttl_seconds
+    from ..schemas.trust import PermitCreateRequest
+    from .permits import get_permit_service
+
+    settings = get_settings()
+    allowed_tools = minted["allowed_tools"]
+    if DEMO_TOOL not in settings.demo_allowed_tools_list or (
+        allowed_tools is not None and DEMO_TOOL not in allowed_tools
+    ):
+        return None
+    credit_cap = settings.DEMO_AUTO_PERMIT_MAX_CREDITS
+    if settings.DEMO_MAX_PERMIT_CREDITS is not None:
+        credit_cap = min(credit_cap, settings.DEMO_MAX_PERMIT_CREDITS)
+    # create_permit rejects max_credits above the subject wallet balance, so
+    # never ask for more than the wallet this issuance just funded.
+    credit_cap = min(credit_cap, minted["budget_credits"])
+    ttl_seconds = _auto_permit_ttl_seconds(
+        tenant=DEMO_TENANT_LABEL, requires_human_approval=False
+    )
+    auth = AuthContext(
+        source="db",
+        raw_key=minted["api_key"],
+        key_id=minted["key_id"],
+        wallet_id=minted["wallet_id"],
+        allowed_tools=tuple(allowed_tools) if allowed_tools is not None else None,
+        tenant=DEMO_TENANT_LABEL,
+    )
+    permit = await get_permit_service().create_permit(
+        PermitCreateRequest(
+            issuer_wallet_id=minted["wallet_id"],
+            subject_wallet_id=minted["wallet_id"],
+            subject_key_id=minted["key_id"],
+            allowed_tools=[DEMO_TOOL],
+            max_credits=credit_cap,
+            expires_at=utc_now() + timedelta(seconds=ttl_seconds),
+        ),
+        subject_key_id=minted["key_id"],
+        auth=auth,
+    )
+    return {"permit_id": permit.permit_id, "expires_at": permit.expires_at}
+
+
+async def revoke_demo_issue(minted: dict[str, Any], reason: str) -> bool:
+    """Revoke a just-minted demo key whose issuance could not complete.
+
+    The caller never receives the key, so leaving it active would only count
+    toward DEMO_MAX_LIVE_KEYS. Returns False when the revoke itself fails.
+    """
+    try:
+        await get_api_key_service().revoke_key(
+            minted["wallet_id"], minted["key_id"], reason=reason
+        )
+    except Exception:  # noqa: BLE001 - the caller still answers 503
+        logger.warning("demo_issue_revoke_failed key_id=%s", minted["key_id"])
+        return False
+    return True

@@ -17,14 +17,17 @@ operator path.
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 import json
+import logging
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.database import get_session_factory
 from app.db.models import (
@@ -36,6 +39,7 @@ from app.db.models import (
 from app.main import app
 from app.routers.mcp import INTERNAL_ERROR_MESSAGE
 from app.schemas.billing import ServiceCategory
+from app.services.receipts import ReceiptError
 from app.services.refund_reconciliation import (
     UNSIGNED_RECEIPT_KEY,
     get_refund_reconciliation_service,
@@ -529,3 +533,119 @@ async def test_an_item_that_can_never_be_signed_does_not_block_newer_items(
     assert UNSIGNED_RECEIPT_KEY not in json.loads(signed.response_json or "{}")
     # The blocked item is still counted on every later pass, never signed.
     assert await service.sign_unsigned_pending(limit=1) == (0, 1)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("limit", [1, 50])
+@pytest.mark.parametrize("failure", ["receipt", "refund_lookup", "missing_payload"])
+async def test_an_unexpected_item_error_does_not_block_newer_items(
+    client: AsyncClient,
+    clean_database: None,
+    key_lost_mid_call_tool,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
+    limit: int,
+) -> None:
+    await _run_call_that_loses_its_key(
+        client, key_lost_mid_call_tool, key="refund-unsigned-error-old"
+    )
+    old = await _record_for("refund-unsigned-error-old")
+    await _set_key_status(key_lost_mid_call_tool["key_id"], "active")
+    await _run_call_that_loses_its_key(
+        client, key_lost_mid_call_tool, key="refund-unsigned-error-new"
+    )
+    new = await _record_for("refund-unsigned-error-new")
+    assert (old.created_at, old.record_id) < (new.created_at, new.record_id)
+    await _set_key_status(key_lost_mid_call_tool["key_id"], "active")
+    service = get_refund_reconciliation_service()
+
+    if failure == "receipt":
+        create_pending = service.create_pending
+
+        async def fail_old_receipt(**kwargs: Any):
+            if kwargs["idempotency_key"] == old.idempotency_key:
+                raise ReceiptError("receipt_idempotency_conflict")
+            return await create_pending(**kwargs)
+
+        monkeypatch.setattr(service, "create_pending", fail_old_receipt)
+        error_type = "ReceiptError"
+    elif failure == "refund_lookup":
+        refund_landed = service._refund_landed_and_budget_released
+
+        async def fail_old_lookup(inputs: dict[str, Any]) -> bool:
+            if inputs["idempotency_key"] == old.idempotency_key:
+                raise SQLAlchemyError("injected refund lookup failure")
+            return await refund_landed(inputs)
+
+        monkeypatch.setattr(
+            service, "_refund_landed_and_budget_released", fail_old_lookup
+        )
+        error_type = "SQLAlchemyError"
+    else:
+        # Corrupt a product-created record without replacing its recorded data.
+        stored = json.loads(old.response_json or "{}")
+        del stored[UNSIGNED_RECEIPT_KEY]["inputs"]["response_payload"]
+        async with get_session_factory()() as session:
+            row = await session.get(IdempotencyRecordModel, old.record_id)
+            assert row is not None
+            row.response_json = json.dumps(stored)
+            session.add(row)
+            await session.commit()
+        old = await _record_for("refund-unsigned-error-old")
+        error_type = "KeyError"
+
+    receipts_before = await _count(ReceiptModel)
+    ledger_entries_before = await _count(LedgerEntryModel)
+    with caplog.at_level(logging.ERROR, logger="app.services.refund_reconciliation"):
+        assert await service.sign_unsigned_pending(limit=limit) == (1, 1)
+        # A persistent failure stays isolated on later passes too.
+        assert await service.sign_unsigned_pending(limit=limit) == (0, 1)
+
+    after = await _record_for("refund-unsigned-error-old")
+    assert after.response_reference is None
+    assert after.response_json == old.response_json
+    signed = await _record_for("refund-unsigned-error-new")
+    assert signed.response_reference is not None
+    assert UNSIGNED_RECEIPT_KEY not in json.loads(signed.response_json or "{}")
+    assert await get_receipt_service_verifies(signed.response_reference)
+    assert await _count(ReceiptModel) == receipts_before + 1
+    assert await _count(LedgerEntryModel) == ledger_entries_before
+    errors = [
+        entry
+        for entry in caplog.records
+        if entry.message == "refund_reconciliation_unsigned_error"
+    ]
+    assert len(errors) == 2
+    assert all(entry.record_id == old.record_id for entry in errors)
+    assert all(entry.error_type == error_type for entry in errors)
+    assert all(entry.exc_info is None for entry in errors)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "stage", ["_refund_landed_and_budget_released", "create_pending"]
+)
+async def test_unsigned_signing_does_not_swallow_cancellation(
+    client: AsyncClient,
+    clean_database: None,
+    key_lost_mid_call_tool,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    await _run_call_that_loses_its_key(
+        client, key_lost_mid_call_tool, key="refund-unsigned-cancelled"
+    )
+    await _set_key_status(key_lost_mid_call_tool["key_id"], "active")
+    service = get_refund_reconciliation_service()
+
+    async def cancelled(*_args: Any, **_kwargs: Any):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(service, stage, cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await service.sign_unsigned_pending()
+
+    record = await _record_for("refund-unsigned-cancelled")
+    assert record.response_reference is None
+    assert UNSIGNED_RECEIPT_KEY in json.loads(record.response_json or "{}")

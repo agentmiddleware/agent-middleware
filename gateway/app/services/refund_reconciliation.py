@@ -642,39 +642,39 @@ class RefundReconciliationService:
                 break
             after = (records[-1].created_at, records[-1].record_id)
             for record in records:
-                marker = _unsigned_marker(record)
-                if marker is None:
-                    continue
-                inputs = dict(marker["inputs"])
-                if await self._refund_landed_and_budget_released(inputs):
-                    # The money already came back and the permit reservation was
-                    # already given back, by another path (for example a dispatch
-                    # reconciler pass that ran before it learned to leave these
-                    # items alone). A failed_unrefunded receipt would then claim a
-                    # debt that no longer exists, and the operator retry would
-                    # release the permit budget a second time. Leave it for an
-                    # operator, loudly.
-                    logger.error(
-                        "refund_reconciliation_unsigned_already_refunded",
-                        extra={
-                            "record_id": record.record_id,
-                            "ledger_entry_id": inputs["ledger_entry_id"],
-                        },
-                    )
-                    still_unsigned += 1
-                    continue
-                if sha256_hex(inputs["response_payload"]) != marker.get(
-                    "response_hash"
-                ):
-                    # The stored payload no longer hashes to what the caller's
-                    # response was; signing it would sign a different response.
-                    logger.error(
-                        "refund_reconciliation_unsigned_payload_mismatch",
-                        extra={"record_id": record.record_id},
-                    )
-                    still_unsigned += 1
-                    continue
                 try:
+                    marker = _unsigned_marker(record)
+                    if marker is None:
+                        continue
+                    inputs = dict(marker["inputs"])
+                    if await self._refund_landed_and_budget_released(inputs):
+                        # The money already came back and the permit reservation was
+                        # already given back, by another path (for example a dispatch
+                        # reconciler pass that ran before it learned to leave these
+                        # items alone). A failed_unrefunded receipt would then claim a
+                        # debt that no longer exists, and the operator retry would
+                        # release the permit budget a second time. Leave it for an
+                        # operator, loudly.
+                        logger.error(
+                            "refund_reconciliation_unsigned_already_refunded",
+                            extra={
+                                "record_id": record.record_id,
+                                "ledger_entry_id": inputs["ledger_entry_id"],
+                            },
+                        )
+                        still_unsigned += 1
+                        continue
+                    if sha256_hex(inputs["response_payload"]) != marker.get(
+                        "response_hash"
+                    ):
+                        # The stored payload no longer hashes to what the caller's
+                        # response was; signing it would sign a different response.
+                        logger.error(
+                            "refund_reconciliation_unsigned_payload_mismatch",
+                            extra={"record_id": record.record_id},
+                        )
+                        still_unsigned += 1
+                        continue
                     await self.create_pending(
                         wallet_id=inputs["wallet_id"],
                         endpoint=inputs["endpoint"],
@@ -706,6 +706,18 @@ class RefundReconciliationService:
                         "refund_reconciliation_unsigned_skipped",
                         extra={"record_id": record.record_id},
                         exc_info=True,
+                    )
+                    still_unsigned += 1
+                    continue
+                except Exception as exc:
+                    # One broken item must not block newer refunds. Exception
+                    # text may contain stored inputs, so log only its type.
+                    logger.error(
+                        "refund_reconciliation_unsigned_error",
+                        extra={
+                            "record_id": record.record_id,
+                            "error_type": type(exc).__name__,
+                        },
                     )
                     still_unsigned += 1
                     continue

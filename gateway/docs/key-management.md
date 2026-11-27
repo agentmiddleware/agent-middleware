@@ -280,7 +280,7 @@ signing key per attempt and restarts after a concurrent rotation, and the
 restart currently succeeds because `ensure_active_key` reactivates the key. A
 refusal there would escape as an internal error and lose both the receipt and
 the refund work item for a charge that already happened. That path has to
-record the refund without a signed receipt first. The plan and its status are
+record the refund without a receipt ID first. The plan and its status are
 in [issue 280](https://github.com/agentmiddleware/agent-middleware/issues/280).
 
 This is documented as a known limitation in `SECURITY_LIMITATIONS.md` and

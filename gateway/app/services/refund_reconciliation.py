@@ -581,16 +581,30 @@ class RefundReconciliationService:
         Keyset order on ``(created_at, record_id)``, so a caller that advances
         past every record it has seen never reads the same one twice in a pass,
         whether or not that record could be signed.
+
+        An unsigned pending refund is only ever recorded on a charged record
+        with no receipt reference (``create_pending`` validates that checkpoint
+        first), so the page asks for exactly that before it looks at the stored
+        text. The text alone is not enough: a caller chooses text that other
+        stored responses repeat, for example the tool name in a ``Tool not
+        found`` denial, which the shipped trust flags record at no charge. The
+        match is escaped because ``_`` is a LIKE wildcard.
+
+        The lower bound on ``created_at`` repeats what the keyset condition
+        already implies. It lets the database seek into the ``created_at``
+        index instead of reading it from the oldest record on every page.
         """
         created = cast(Any, IdempotencyRecordModel.created_at)
         record_id = cast(Any, IdempotencyRecordModel.record_id)
         conditions = [
             cast(Any, IdempotencyRecordModel.response_reference).is_(None),
+            cast(Any, IdempotencyRecordModel.ledger_entry_id).is_not(None),
             cast(Any, IdempotencyRecordModel.response_json).contains(
-                f'"{UNSIGNED_RECEIPT_KEY}"'
+                f'"{UNSIGNED_RECEIPT_KEY}"', autoescape=True
             ),
         ]
         if after is not None:
+            conditions.append(created >= after[0])
             conditions.append(
                 or_(
                     created > after[0],

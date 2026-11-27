@@ -372,8 +372,10 @@ If the receipt cannot be signed at that moment (the signing key became
 unusable after the call was admitted, for example it was disabled), the work
 item is still recorded, without a receipt: the caller gets the same 500 /
 `-32603` answer with `refund_reconciliation.status` `pending`, `receipt_id`
-`null` and `receipt_status` `unsigned`, and a replay of the same key returns
-the same answer without running the tool. The stored record keeps the receipt
+`null` and `receipt_status` `unsigned`, and a replay of the same key never
+runs the tool again; it is refused or given the stored answer, and it is
+always refused while the signing key that signed the call's permit is
+`disabled`. The stored record keeps the receipt
 inputs server side. The periodic cleanup on every replica runs
 `RefundReconciliationService.sign_unsigned_pending`: a replica whose key can
 sign writes the `failed_unrefunded` receipt and turns the item into an
@@ -385,7 +387,9 @@ item does not appear in the operator list
 (`tests/test_refund_reconciliation_unsigned.py`). The unsigned item is the
 only owner of that debt: the dispatch reconciler skips an upstream attempt
 whose record carries it, as it skips one with a signed `failed_unrefunded`
-receipt, so the money is refunded once, through the operator retry. If a
+receipt, so the money is refunded once, through the operator retry, and a
+retry of the pending item refuses while the signing key that signed the
+call's permit is `disabled`. If a
 refund for the charge is already in the ledger and its permit reservation is
 still held (the live path refunded, then failed to record the refund on the
 dispatch attempt), the signer signs as usual and logs

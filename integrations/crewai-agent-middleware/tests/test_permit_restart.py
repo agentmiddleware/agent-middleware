@@ -132,3 +132,35 @@ def test_permit_store_is_not_serialized(tmp_path):
         permit_store=JsonFilePermitStore(tmp_path / "permits.json"),
     )
     assert "permit_store" not in tool.model_dump()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        ("[]", "permit store must be a JSON object"),
+        (
+            json.dumps({PERMIT_KEY: "not-a-record"}),
+            "permit record must be a JSON object",
+        ),
+        (json.dumps({PERMIT_KEY: {}}), "stored permit record has no request body"),
+        ("{", "Expecting property name"),
+    ],
+)
+async def test_damaged_store_is_refused_before_a_new_permit_is_sent(
+    tmp_path, contents, message
+):
+    """A damaged file is not an empty store.
+
+    Treating it as empty would mint a new permit body under the same
+    idempotency key.
+    """
+    wire = DroppedConnection()
+    path = tmp_path / "permits.json"
+    path.write_text(contents, encoding="utf-8")
+
+    result = await _call(_tool(wire, permit_store=JsonFilePermitStore(path)))
+    assert result.startswith("Error:")
+    assert message in result
+    assert wire.permit_bodies == []
+    assert path.read_text(encoding="utf-8") == contents

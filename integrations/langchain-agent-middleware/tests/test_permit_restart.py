@@ -136,3 +136,33 @@ async def test_restart_with_a_different_lifetime_replays_the_stored_body(tmp_pat
 
     assert len(wire.permit_bodies) == 2
     assert wire.permit_bodies[0] == wire.permit_bodies[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        ("[]", "permit store must be a JSON object"),
+        (
+            json.dumps({PERMIT_KEY: "not-a-record"}),
+            "permit record must be a JSON object",
+        ),
+        (json.dumps({PERMIT_KEY: {}}), "stored permit record has no request body"),
+        ("{", "Expecting property name"),
+    ],
+)
+async def test_damaged_store_is_refused_before_a_new_permit_is_sent(tmp_path, contents, message):
+    """A damaged file is not an empty store.
+
+    Treating it as empty would mint a new permit body under the same
+    idempotency key.
+    """
+    wire = DroppedConnection()
+    path = tmp_path / "permits.json"
+    path.write_text(contents, encoding="utf-8")
+
+    with pytest.raises((TypeError, json.JSONDecodeError), match=message):
+        await _call(_tool(wire, permit_store=JsonFilePermitStore(path)))
+
+    assert wire.permit_bodies == []
+    assert path.read_text(encoding="utf-8") == contents

@@ -17,8 +17,8 @@ Read the JSON-RPC `error.code`, `error.message`, and any `error.data.receipt` fr
 | `-32003` | Varies by route | Permit, wallet, or policy denial. |
 | `-32004` | Varies by route | Insufficient funds. |
 | `-32005` | 504 for `delivery_uncertain` | Also used for `idempotency_in_progress`. Read the message and Receipt outcome. |
-| `-32006` | 502 | Upstream `response_rejected` (charged) or upstream `failed_refunded` (refunded). Read the Receipt outcome. |
-| `-32603` | 500 | `failed_unrefunded`: execution failed and the refund failed. Reconcile the Receipt before any retry. A failing local tool also uses this code and status, but carries a `failed_refunded` Receipt at this commit. |
+| `-32006` | 502 | Upstream `response_rejected` (charged) or upstream `failed_refunded` (refunded). A failing local tool also uses this JSON-RPC code (REST stays 500) and carries a `failed_refunded` receipt ID. Read the receipt ID outcome. |
+| `-32603` | 500 | `failed_unrefunded`: execution failed and the refund failed. Reconcile the receipt ID before any retry. |
 | `-32007` | 500 | Effects were committed but a terminal record could not be written. Manual review is required. |
 
 A changed payload under the same Request key is a terminal `idempotency_key_reused` error. `POST /mcp/messages` returns JSON-RPC `-32603` with message `idempotency_key_reused`; match the message, not the code. `POST /mcp` returns JSON-RPC `-32003`. REST `POST /mcp/tools/{id}/invoke` returns HTTP 409 with `{"detail":{"error":"idempotency_key_reused"}}`. Never retry with a new key; fix the caller.

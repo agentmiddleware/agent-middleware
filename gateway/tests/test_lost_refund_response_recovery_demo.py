@@ -1,7 +1,7 @@
 """Lost refund response recovery demo.
 
 At 75278a8 there is no API or CLI that calls append_resolution, and the
-reconciler never revisits a signed delivery_uncertain receipt; this test
+reconciler never revisits a delivery_uncertain receipt ID; this test
 exercises the service primitive directly.
 """
 

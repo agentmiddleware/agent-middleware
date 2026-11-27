@@ -17,6 +17,7 @@ const HEAD = 'abcdef01'.repeat(5);
 const NO_PASS = 'Engine Review Pass failed: No passing review from a non-author engine for current head SHA. A marker counts only in a pull request review, not in a comment.';
 const INVALID_AUTHOR = 'Invalid author engine. Please use an engine branch prefix such as gemini/ or claude/.';
 const blockedBy = (engine) => `Engine Review Pass blocked: Blocked by ${engine}`;
+const changesRequestedBy = (login) => `Engine Review Pass blocked: Changes requested by ${login}`;
 
 function review(engine = 'deepseek', overrides = {}) {
   return {
@@ -30,7 +31,15 @@ function review(engine = 'deepseek', overrides = {}) {
   };
 }
 
-async function evaluate({ branch = 'cursor/fix', reviews = [], comments = [] } = {}) {
+async function evaluate({
+  branch = 'cursor/fix',
+  reviews = [],
+  comments = [],
+  createCommitStatus,
+  allowWarnings = false,
+  allowErrors = false,
+  expectStatuses = 1,
+} = {}) {
   const statuses = [];
   const failures = [];
   const calls = [];
@@ -45,7 +54,10 @@ async function evaluate({ branch = 'cursor/fix', reviews = [], comments = [] } =
   };
   const github = {
     rest: {
-      repos: { createCommitStatus: async (status) => statuses.push(status) },
+      repos: {
+        createCommitStatus: createCommitStatus
+          ?? (async (status) => { statuses.push(status); }),
+      },
       pulls: {
         get: async () => ({ data: pr }),
         listReviews: 'reviews',
@@ -69,12 +81,14 @@ async function evaluate({ branch = 'cursor/fix', reviews = [], comments = [] } =
     setFailed: (message) => failures.push(message),
   };
   await runGate(github, context, core);
-  assert.deepEqual(errors, [], 'The script must reach a gate verdict, not throw');
-  assert.deepEqual(warnings, [], 'All expected GitHub calls must be mocked');
-  assert.equal(statuses.length, 1);
-  assert.equal(statuses[0].sha, HEAD);
-  assert.equal(statuses[0].context, 'Engine Review Pass');
-  return { status: statuses[0], failures, calls };
+  if (!allowErrors) assert.deepEqual(errors, [], 'The script must reach a gate verdict, not throw');
+  if (!allowWarnings) assert.deepEqual(warnings, [], 'All expected GitHub calls must be mocked');
+  assert.equal(statuses.length, expectStatuses);
+  if (expectStatuses >= 1) {
+    assert.equal(statuses[0].sha, HEAD);
+    assert.equal(statuses[0].context, 'Engine Review Pass');
+  }
+  return { status: statuses[0], statuses, failures, calls, warnings, errors };
 }
 
 function expectVerdict(result, failure = null) {
@@ -82,17 +96,20 @@ function expectVerdict(result, failure = null) {
   assert.deepEqual(result.failures, failure ? [failure] : []);
 }
 
-const engines = [
+const reviewerEngines = [
   'claude', 'codex', 'cursor', 'gemini', 'grok', 'muse', 'kimi', 'pi',
   'deepseek', 'hermes', 'antigravity', 'visual-designer', 'product-designer',
-  'ci', 'dependabot',
 ];
-for (const engine of engines) {
+const branchPrefixes = [...reviewerEngines, 'ci', 'dependabot'];
+
+for (const engine of branchPrefixes) {
   test(`${engine}/ accepts a current-head PASS from another allowed engine`, async () => {
     const reviewer = engine === 'deepseek' ? 'codex' : 'deepseek';
     expectVerdict(await evaluate({ branch: `${engine}/fix`, reviews: [review(reviewer)] }));
   });
+}
 
+for (const engine of reviewerEngines) {
   test(`${engine}/ rejects its own engine's PASS`, async () => {
     expectVerdict(await evaluate({ branch: `${engine}/fix`, reviews: [review(engine)] }), NO_PASS);
   });
@@ -135,6 +152,37 @@ for (const association of ['CONTRIBUTOR', 'NONE', '']) {
 
 test('unknown reviewer engine cannot supply a PASS', async () => {
   expectVerdict(await evaluate({ reviews: [review('unknown')] }), NO_PASS);
+});
+
+for (const name of ['ci', 'dependabot']) {
+  test(`${name}/ treats a ${name} marker as an invalid reviewer engine`, async () => {
+    expectVerdict(await evaluate({ branch: `${name}/fix`, reviews: [review(name)] }), NO_PASS);
+  });
+
+  test(`cursor/ does not accept a PASS from ${name}`, async () => {
+    expectVerdict(await evaluate({ reviews: [review(name)] }), NO_PASS);
+  });
+}
+
+test('ci and dependabot markers cannot block a valid non-author PASS', async () => {
+  expectVerdict(await evaluate({
+    reviews: [
+      review('ci', {
+        id: 1,
+        submitted_at: '2026-11-18T12:00:00Z',
+        body: `REVIEW: BLOCKED ci ${HEAD}`,
+      }),
+      review('dependabot', {
+        id: 2,
+        submitted_at: '2026-11-18T12:30:00Z',
+        body: `REVIEW: FAIL dependabot ${HEAD}`,
+      }),
+      review('deepseek', {
+        id: 3,
+        submitted_at: '2026-11-18T13:00:00Z',
+      }),
+    ],
+  }));
 });
 
 test('dismissed and unsubmitted reviews cannot supply a PASS', async () => {
@@ -192,4 +240,67 @@ test('later marker on current head supersedes an earlier one from the same engin
       }),
     ],
   }), blockedBy('deepseek'));
+});
+
+test('native CHANGES_REQUESTED blocks even when a valid PASS marker is present', async () => {
+  expectVerdict(
+    await evaluate({ reviews: [review('deepseek', { state: 'CHANGES_REQUESTED' })] }),
+    changesRequestedBy('trusted-reviewer'),
+  );
+});
+
+test('a later APPROVED from the same user clears native CHANGES_REQUESTED', async () => {
+  expectVerdict(await evaluate({
+    reviews: [
+      review('deepseek', {
+        id: 1,
+        state: 'CHANGES_REQUESTED',
+        submitted_at: '2026-11-18T12:00:00Z',
+        body: '',
+      }),
+      review('deepseek', {
+        id: 2,
+        state: 'APPROVED',
+        submitted_at: '2026-11-18T13:00:00Z',
+      }),
+    ],
+  }));
+});
+
+test('untrusted CHANGES_REQUESTED does not block a valid PASS', async () => {
+  expectVerdict(await evaluate({
+    reviews: [
+      review('deepseek', { id: 1 }),
+      review('deepseek', {
+        id: 2,
+        state: 'CHANGES_REQUESTED',
+        author_association: 'CONTRIBUTOR',
+        user: { login: 'outsider' },
+        body: '',
+      }),
+    ],
+  }));
+});
+
+test('a failed success status publication fails the job', async () => {
+  const result = await evaluate({
+    reviews: [review()],
+    createCommitStatus: async () => {
+      throw new Error('status API down');
+    },
+    allowWarnings: true,
+    allowErrors: true,
+    expectStatuses: 0,
+  });
+  assert.equal(result.status, undefined);
+  assert.deepEqual(result.failures, ['status API down']);
+  assert.ok(result.warnings.some((message) => message.includes('Failed to create commit status') && message.includes('status API down')));
+  assert.deepEqual(result.errors, ['Unexpected error: status API down']);
+});
+
+test('concurrency group includes the pull request head SHA', () => {
+  assert.match(
+    workflow,
+    /group: \$\{\{ github\.workflow \}\}-engine-review-pass-\$\{\{ github\.event\.pull_request\.number \}\}-\$\{\{ github\.event\.pull_request\.head\.sha \}\}/,
+  );
 });

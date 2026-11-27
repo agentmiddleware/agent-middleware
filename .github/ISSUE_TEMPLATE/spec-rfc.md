@@ -2,6 +2,7 @@
 name: Spec RFC
 about: Propose a change to the AMW protocol or other normative specification
 labels: spec, RFC
+assignees: PetrefiedThunder
 ---
 
 ## Problem statement

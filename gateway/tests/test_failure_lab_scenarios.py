@@ -208,3 +208,32 @@ async def test_a_scenario_runs_end_to_end_and_matches_its_documentation(
         assert entry.crossings, "the fault layer observed no request crossing it"
         assert entry.counters.downstream_executions == 1
         assert entry.counters.gateway_dispatches == 1
+
+
+@pytest.mark.anyio
+async def test_t02_gateway_arms_carry_no_target_safety_fuse_record(
+    tmp_path, clean_database, strict_trust_mode
+):
+    """C and D are deliberately unfused, so their evidence must not claim a fuse.
+
+    On these arms the gateway's own refusal before dispatch is what T02
+    measures. A fuse record here would say a check ran that did not.
+    """
+    from app.main import app
+
+    scenario = get_scenario("T02")
+    env = LabEnvironment(run_dir=tmp_path, app=app, admin_api_key="test-key")
+    gateway_configurations = [
+        configuration
+        for configuration in ALL_CONFIGURATIONS
+        if configuration.uses_gateway
+    ]
+    assert gateway_configurations
+
+    result = await scenario.run(env, configurations=gateway_configurations)
+
+    assert len(result.configurations) == len(gateway_configurations)
+    for entry in result.configurations:
+        assert entry.verdict is not Verdict.ERROR, entry.error
+        assert entry.verdict.value == scenario.expected[entry.configuration]
+        assert "target_safety_fuse" not in entry.as_dict()["extra"]

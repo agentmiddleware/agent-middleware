@@ -2,6 +2,7 @@
 name: Bug report
 about: Report a reproducible problem in the public repository
 labels: bug
+assignees: PetrefiedThunder
 ---
 
 ## Summary

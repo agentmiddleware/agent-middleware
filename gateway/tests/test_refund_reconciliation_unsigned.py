@@ -17,16 +17,25 @@ operator path.
 
 from __future__ import annotations
 
+import base64
+from collections.abc import Iterator
+from contextlib import contextmanager
 from decimal import Decimal
 import json
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+)
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
-from app.db.database import get_session_factory
+from app.db.database import get_engine, get_session_factory
 from app.db.models import (
     IdempotencyRecordModel,
     LedgerEntryModel,
@@ -34,10 +43,13 @@ from app.db.models import (
     SigningKeyModel,
 )
 from app.main import app
+from app.routers import mcp as mcp_router
 from app.routers.mcp import INTERNAL_ERROR_MESSAGE
 from app.schemas.billing import ServiceCategory
+from app.services.mcp_dispatch_attempts import get_mcp_dispatch_attempt_service
 from app.services.refund_reconciliation import (
     UNSIGNED_RECEIPT_KEY,
+    RefundReconciliationService,
     get_refund_reconciliation_service,
 )
 from app.services.service_registry import get_service_registry
@@ -451,7 +463,6 @@ async def test_the_periodic_cleanup_runs_the_unsigned_signer(
     import asyncio
 
     import app.main as main_module
-    from app.services.refund_reconciliation import RefundReconciliationService
 
     called = asyncio.Event()
     real_sleep = asyncio.sleep
@@ -529,3 +540,259 @@ async def test_an_item_that_can_never_be_signed_does_not_block_newer_items(
     assert UNSIGNED_RECEIPT_KEY not in json.loads(signed.response_json or "{}")
     # The blocked item is still counted on every later pass, never signed.
     assert await service.sign_unsigned_pending(limit=1) == (0, 1)
+
+
+@contextmanager
+def _statements_sent() -> Iterator[list[str]]:
+    """Collect the text of every statement the engine is sent while open."""
+    engine = get_engine()
+    assert engine is not None
+    sent: list[str] = []
+
+    def note(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        sent.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", note)
+    try:
+        yield sent
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", note)
+
+
+@pytest.fixture
+def strict_trust_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shipped trust flags, which the suite's conftest relaxes.
+
+    Under the relaxed flags the denial of a call without a permit is not
+    stored. A deployment in trust mode has a configured signing key, so one is
+    generated here, as ``strict_trust_mode`` in test_mcp_trust_mode does. The
+    signing service drops the key it had loaded and takes the configured id.
+    """
+    raw_private_key = Ed25519PrivateKey.generate().private_bytes(
+        Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+    )
+    monkeypatch.setattr(mcp_router.settings, "TRUST_MODE_ENABLED", True)
+    monkeypatch.setattr(mcp_router.settings, "ALLOW_LEGACY_UNPERMITTED_MCP", False)
+    monkeypatch.setattr(
+        mcp_router.settings,
+        "TRUST_SIGNING_PRIVATE_KEY_B64",
+        base64.b64encode(raw_private_key).decode(),
+    )
+    signing_keys = get_signing_key_service()
+    monkeypatch.setattr(signing_keys, "_private_key", None)
+    monkeypatch.setattr(
+        signing_keys, "_key_id", mcp_router.settings.TRUST_SIGNING_KEY_ID
+    )
+
+
+async def _record_of_a_call_to_an_unregistered_tool(
+    client: AsyncClient, ctx: dict[str, Any], *, tool_name: str, key: str
+) -> IdempotencyRecordModel:
+    """Call a tool nobody registered and return the record of the denial.
+
+    The call carries an idempotency key and no permit. It needs
+    ``strict_trust_mode``: under the suite's relaxed flags nothing is stored.
+    """
+    resp = await client.post(
+        "/mcp/messages",
+        json={
+            "jsonrpc": "2.0",
+            "id": f"call-{key}",
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": {},
+                "mcpContext": {
+                    "wallet_id": ctx["agent_wallet_id"],
+                    "idempotency_key": key,
+                },
+            },
+        },
+        headers=ctx["agent_headers"],
+    )
+    assert resp.json()["error"]["message"] == "Tool not found", resp.text
+    record = await _record_for(key)
+    # What the gateway stored: a completed denial that repeats the caller's
+    # tool name, with no charge and no receipt.
+    assert json.loads(record.response_json or "{}")["error"] == (
+        f"Tool not found: {tool_name}"
+    )
+    assert record.ledger_entry_id is None
+    assert record.response_reference is None
+    return record
+
+
+@pytest.mark.anyio
+async def test_a_denial_that_repeats_the_marker_name_is_not_an_unsigned_item(
+    client: AsyncClient,
+    clean_database: None,
+    strict_trust_mode: None,
+    key_lost_mid_call_tool,
+) -> None:
+    """Only a charged record can be an unsigned pending refund.
+
+    A call to a tool that is not registered, made with an idempotency key and
+    no permit, is completed with ``Tool not found: <name>`` and is not charged.
+    The caller picks the name, so the stored text can contain the marker's
+    name in quotes, which is the text the signer's page looks for. Such a
+    record used to be on a page of every pass on every replica, to be read,
+    parsed and dropped, so one wallet key could grow the cost of every pass at
+    no charge. ``_`` is a LIKE wildcard, so a name with any other character in
+    its place was returned as well.
+
+    Under the shipped trust flags, one denial of each kind is stored on either
+    side of a real unsigned item. The page holds the real item alone, the pass
+    signs it, and the denials are left as they were.
+
+    Both denials are uncharged, so the charge test alone keeps them off the
+    page, and neither has a dispatch attempt for the reconciler to look at. No
+    record the gateway writes can tell the escaped match from the plain one,
+    or the reconciler's three tests from the single one it had, so the two
+    statements are checked as well: the page escapes its match, and the
+    reconciler leaves an attempt out only on the same three tests, each a
+    separate alternative.
+    """
+    state = key_lost_mid_call_tool
+    caller = await provision_agent_wallet(client)
+
+    # The name ends the stored JSON string, so that string's closing quote
+    # completes the marker's name in quotes.
+    exact = await _record_of_a_call_to_an_unregistered_tool(
+        client,
+        caller,
+        tool_name=f'x"{UNSIGNED_RECEIPT_KEY}',
+        key="refund-unsigned-denied-exact",
+    )
+    assert f'"{UNSIGNED_RECEIPT_KEY}"' in (exact.response_json or "")
+
+    await _run_call_that_loses_its_key(
+        client, state, key="refund-unsigned-among-denials"
+    )
+    real = await _record_for("refund-unsigned-among-denials")
+    assert real.ledger_entry_id is not None
+    assert UNSIGNED_RECEIPT_KEY in json.loads(real.response_json or "{}")
+    # That call disabled the key; the rest of the test needs it usable again.
+    await _set_key_status(state["key_id"], "active")
+
+    one_character_off = UNSIGNED_RECEIPT_KEY.replace("_", "X")
+    wildcard = await _record_of_a_call_to_an_unregistered_tool(
+        client,
+        caller,
+        tool_name=f'x"{one_character_off}',
+        key="refund-unsigned-denied-wildcard",
+    )
+    assert f'"{one_character_off}"' in (wildcard.response_json or "")
+    assert f'"{UNSIGNED_RECEIPT_KEY}"' not in (wildcard.response_json or "")
+
+    in_scan_order = [
+        (record.created_at, record.record_id) for record in (exact, real, wildcard)
+    ]
+    assert in_scan_order == sorted(in_scan_order)
+
+    with _statements_sent() as sent:
+        page = await RefundReconciliationService._unsigned_page(after=None, limit=50)
+        await get_mcp_dispatch_attempt_service().list_unfinalized_terminal_contexts(
+            idle_seconds=0
+        )
+    assert [record.record_id for record in page] == [real.record_id]
+    matching = [statement for statement in sent if " LIKE " in statement]
+    assert len(matching) == 2, sent
+    page_statement, reconciler_statement = matching
+    assert " NOT LIKE " not in page_statement
+    assert " ESCAPE " in page_statement
+    for alternative in (
+        "response_json IS NULL OR ",
+        "response_reference IS NOT NULL OR ",
+        "ledger_entry_id IS NULL OR ",
+    ):
+        assert alternative in reconciler_statement, reconciler_statement
+    assert " NOT LIKE " in reconciler_statement
+    assert " ESCAPE " in reconciler_statement
+
+    service = get_refund_reconciliation_service()
+    assert await service.sign_unsigned_pending(limit=1) == (1, 0)
+    signed = await _record_for("refund-unsigned-among-denials")
+    assert signed.response_reference is not None
+    for denial in (exact, wildcard):
+        unchanged = await _record_for(denial.idempotency_key)
+        assert unchanged.response_json == denial.response_json
+        assert unchanged.response_reference is None
+    assert await service.sign_unsigned_pending(limit=1) == (0, 0)
+
+
+@pytest.mark.anyio
+async def test_a_pass_reads_items_recorded_at_the_same_instant_once_each(
+    client: AsyncClient, clean_database: None, key_lost_mid_call_tool
+) -> None:
+    """Paging stays exact when unsigned items share a ``created_at``.
+
+    Each page after the first is bounded below by the last ``created_at`` the
+    scan has read, so the database can seek into the ``created_at`` index, and
+    a tie on that instant is broken on ``record_id``. A bound that left the
+    instant itself out would skip the items that share it. Five unsigned items
+    are recorded and the middle three are given the same ``created_at``. Pages
+    of one, two and fifty then read every item exactly once, in order, and one
+    pass signs them all. The bound changes no result, so the statements are
+    checked for it as well.
+    """
+    state = key_lost_mid_call_tool
+    keys = [f"refund-unsigned-tied-{index}" for index in range(5)]
+    for key in keys:
+        await _run_call_that_loses_its_key(client, state, key=key)
+        # Each call disabled the key; the next call and the signing pass need it.
+        await _set_key_status(state["key_id"], "active")
+
+    recorded = [await _record_for(key) for key in keys]
+    # The injected condition: three records written in the same instant.
+    tied_at = recorded[2].created_at
+    async with get_session_factory()() as session:
+        for record in (recorded[1], recorded[3]):
+            row = await session.get(IdempotencyRecordModel, record.record_id)
+            assert row is not None
+            row.created_at = tied_at
+            session.add(row)
+        await session.commit()
+    recorded = [await _record_for(key) for key in keys]
+    assert [record.created_at for record in recorded[1:4]] == [tied_at] * 3
+    assert recorded[0].created_at < tied_at < recorded[4].created_at
+    expected = [
+        record.record_id
+        for record in sorted(
+            recorded, key=lambda record: (record.created_at, record.record_id)
+        )
+    ]
+
+    async def read_every_page(limit: int) -> list[str]:
+        seen: list[str] = []
+        after: tuple[Any, str] | None = None
+        while True:
+            page = await RefundReconciliationService._unsigned_page(
+                after=after, limit=limit
+            )
+            if not page:
+                return seen
+            assert len(page) <= limit
+            seen.extend(record.record_id for record in page)
+            # A page that stops advancing fails here; it does not hang.
+            assert len(seen) <= len(expected), limit
+            after = (page[-1].created_at, page[-1].record_id)
+
+    for limit in (2, 50):
+        assert await read_every_page(limit) == expected, limit
+    with _statements_sent() as sent:
+        assert await read_every_page(1) == expected
+    pages = [statement for statement in sent if " LIKE " in statement]
+    assert len(pages) == len(expected) + 1, sent
+    assert "created_at >= " not in pages[0]
+    assert all("created_at >= " in statement for statement in pages[1:]), pages
+
+    service = get_refund_reconciliation_service()
+    assert await service.sign_unsigned_pending(limit=2) == (5, 0)
+    assert await service.sign_unsigned_pending(limit=2) == (0, 0)

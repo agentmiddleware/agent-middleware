@@ -2149,13 +2149,22 @@ class McpDispatchAttemptService:
                         # owned by sign_unsigned_pending and the operator
                         # retry, exactly as a signed failed_unrefunded receipt
                         # is: compensating it here as well could refund money
-                        # that the unsigned item still lists as owed.
+                        # that the unsigned item still lists as owed. Only a
+                        # charged record with no receipt reference can be such
+                        # an item, so no other attempt is left out, whatever
+                        # text its stored response contains. Each test stands
+                        # alone so that a NULL response_json keeps the attempt
+                        # listed.
                         or_(
                             cast(Any, IdempotencyRecordModel.response_json).is_(None),
+                            cast(Any, IdempotencyRecordModel.response_reference).is_not(
+                                None
+                            ),
+                            cast(Any, IdempotencyRecordModel.ledger_entry_id).is_(None),
                             not_(
                                 cast(
                                     Any, IdempotencyRecordModel.response_json
-                                ).contains(f'"{UNSIGNED_RECEIPT_KEY}"')
+                                ).contains(f'"{UNSIGNED_RECEIPT_KEY}"', autoescape=True)
                             ),
                         ),
                     )

@@ -35,6 +35,9 @@ async function evaluate({
   branch = 'cursor/fix',
   reviews = [],
   comments = [],
+  commits = [],
+  body = '',
+  labels = [],
   createCommitStatus,
   allowWarnings = false,
   allowErrors = false,
@@ -45,7 +48,7 @@ async function evaluate({
   const calls = [];
   const warnings = [];
   const errors = [];
-  const pr = { number: 1, head: { ref: branch, sha: HEAD } };
+  const pr = { number: 1, head: { ref: branch, sha: HEAD }, body, labels };
   const context = {
     repo: { owner: 'example', repo: 'example' },
     payload: { pull_request: pr },
@@ -62,6 +65,7 @@ async function evaluate({
         get: async () => ({ data: pr }),
         listReviews: 'reviews',
         listReviewComments: 'reviewComments',
+        listCommits: 'commits',
       },
       issues: { listComments: 'issueComments' },
       actions: { listWorkflowRunsForRepo: 'runs' },
@@ -70,6 +74,7 @@ async function evaluate({
       calls.push(endpoint);
       if (endpoint === 'reviews') return reviews;
       if (endpoint === 'issueComments' || endpoint === 'reviewComments') return comments;
+      if (endpoint === 'commits') return commits;
       assert.equal(endpoint, 'runs', 'Unexpected GitHub endpoint');
       return [];
     },
@@ -130,13 +135,22 @@ test('cursor is also an allowed non-author reviewer', async () => {
   expectVerdict(await evaluate({ branch: 'codex/fix', reviews: [review('cursor')] }));
 });
 
-for (const branch of ['unknown/fix', 'cursor', '/cursor', '']) {
+const MISSING_AUTHOR_DECLARATION = 'Invalid author engine. For a branch without an engine prefix such as fix/, declare Author-Engine: <engine> as a commit trailer, a standalone PR body line, or an author-engine:<engine> label.';
+
+for (const branch of ['cursor', '/cursor', '']) {
   test(`invalid author branch ${JSON.stringify(branch)} fails before reading reviews`, async () => {
     const result = await evaluate({ branch, reviews: [review()] });
     expectVerdict(result, INVALID_AUTHOR);
     assert.deepEqual(result.calls, []);
   });
 }
+
+test('unknown/fix without an Author-Engine declaration fails before reading reviews', async () => {
+  const result = await evaluate({ branch: 'unknown/fix', reviews: [review()] });
+  expectVerdict(result, MISSING_AUTHOR_DECLARATION);
+  assert.deepEqual(result.calls, ['commits']);
+  assert.ok(!result.calls.includes('reviews'));
+});
 
 for (const sha of ['0'.repeat(40), HEAD.slice(0, 39), `${HEAD}0`, `g${HEAD.slice(1)}`]) {
   test(`cursor/ rejects stale or malformed SHA ${sha}`, async () => {
@@ -303,4 +317,172 @@ test('concurrency group includes the pull request head SHA', () => {
     workflow,
     /group: \$\{\{ github\.workflow \}\}-engine-review-pass-\$\{\{ github\.event\.pull_request\.number \}\}-\$\{\{ github\.event\.pull_request\.head\.sha \}\}/,
   );
+});
+
+function commitWithTrailer(engine, { merge = false, extra = '' } = {}) {
+  const message = extra || (engine
+    ? `fix a bug\n\nAuthor-Engine: ${engine}\n`
+    : 'fix a bug\n');
+  return {
+    parents: merge ? [{ sha: '1' }, { sha: '2' }] : [{ sha: '1' }],
+    commit: { message },
+  };
+}
+
+test('fix/ accepts a non-author PASS when a commit trailer declares the author engine', async () => {
+  const result = await evaluate({
+    branch: 'fix/uniform-404',
+    commits: [commitWithTrailer('claude')],
+    reviews: [review('grok')],
+  });
+  expectVerdict(result);
+  assert.deepEqual(result.calls.filter((c) => c === 'reviews' || c === 'commits').sort(), ['commits', 'reviews']);
+});
+
+test('fix/ ignores a PASS from the trailer-declared author engine', async () => {
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    commits: [commitWithTrailer('claude')],
+    reviews: [review('claude')],
+  }), NO_PASS);
+});
+
+for (const prefix of ['feat', 'chore', 'docs', 'test', 'agent', 'metacode']) {
+  test(`${prefix}/ accepts a non-author PASS with an Author-Engine trailer`, async () => {
+    expectVerdict(await evaluate({
+      branch: `${prefix}/topic`,
+      commits: [commitWithTrailer('claude')],
+      reviews: [review('grok')],
+    }));
+  });
+}
+
+test('fix/ accepts a non-author PASS from a standalone PR body Author-Engine line', async () => {
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    body: 'Summary of the change.\n\nAuthor-Engine: claude\n',
+    reviews: [review('grok')],
+  }));
+});
+
+test('fix/ accepts a non-author PASS from an author-engine label', async () => {
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    labels: [{ name: 'author-engine:claude' }],
+    reviews: [review('grok')],
+  }));
+});
+
+test('fix/ body and label declarations are case-insensitive', async () => {
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    body: 'Author-Engine: ClAuDe\n',
+    reviews: [review('GROK')],
+  }));
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    labels: [{ name: 'Author-Engine:Claude' }],
+    reviews: [review('grok')],
+  }));
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    body: 'Author-Engine: ClAuDe\n',
+    reviews: [review('CLAUDE')],
+  }), NO_PASS);
+});
+
+test('fix/ ignores an Author-Engine mention that is not alone on its own line', async () => {
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    body: 'Please set Author-Engine: claude in a later commit.\n',
+    reviews: [review('grok')],
+  }), MISSING_AUTHOR_DECLARATION);
+});
+
+test('fix/ ignores Author-Engine trailers on merge commits', async () => {
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    commits: [commitWithTrailer('claude', { merge: true })],
+    reviews: [review('grok')],
+  }), MISSING_AUTHOR_DECLARATION);
+});
+
+test('fix/ fails when trailer and body declare different engines', async () => {
+  const msg = 'Author-Engine sources disagree (commit trailer=claude; PR body=grok). They must name the same engine set.';
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    commits: [commitWithTrailer('claude')],
+    body: 'Author-Engine: grok\n',
+    reviews: [review('cursor')],
+  }), msg);
+});
+
+test('fix/ fails when body and label declare different engines', async () => {
+  const msg = 'Author-Engine sources disagree (PR body=claude; label=grok). They must name the same engine set.';
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    body: 'Author-Engine: claude\n',
+    labels: [{ name: 'author-engine:grok' }],
+    reviews: [review('cursor')],
+  }), msg);
+});
+
+test('fix/ accepts agreeing trailer, body, and label declarations', async () => {
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    commits: [commitWithTrailer('claude')],
+    body: 'Author-Engine: claude\n',
+    labels: [{ name: 'author-engine:claude' }],
+    reviews: [review('grok')],
+  }));
+});
+
+test('fix/ with two different trailer engines ignores a PASS from either author', async () => {
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    commits: [commitWithTrailer('claude'), commitWithTrailer('cursor')],
+    reviews: [review('claude')],
+  }), NO_PASS);
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    commits: [commitWithTrailer('claude'), commitWithTrailer('cursor')],
+    reviews: [review('cursor')],
+  }), NO_PASS);
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    commits: [commitWithTrailer('claude'), commitWithTrailer('cursor')],
+    reviews: [review('grok')],
+  }));
+});
+
+test('fix/ rejects a declaration that is not an allowed reviewer engine', async () => {
+  expectVerdict(await evaluate({
+    branch: 'fix/uniform-404',
+    commits: [commitWithTrailer('dependabot')],
+    reviews: [review('grok')],
+  }), "Invalid author engine 'dependabot' in the commit trailer declaration. Use an allowed reviewer engine such as claude or grok.");
+});
+
+test('an engine-prefixed branch still uses the prefix, not a conflicting body declaration', async () => {
+  expectVerdict(await evaluate({
+    branch: 'claude/sdk-billable-factory-none',
+    body: 'Author-Engine: grok\n',
+    reviews: [review('claude')],
+  }), NO_PASS);
+  expectVerdict(await evaluate({
+    branch: 'claude/sdk-billable-factory-none',
+    body: 'Author-Engine: grok\n',
+    reviews: [review('cursor')],
+  }));
+});
+
+test('ci/ and dependabot/ still do not require an Author-Engine declaration', async () => {
+  expectVerdict(await evaluate({
+    branch: 'ci/site-tests',
+    reviews: [review('grok')],
+  }));
+  expectVerdict(await evaluate({
+    branch: 'dependabot/github_actions/actions-1e6697da21',
+    reviews: [review('claude')],
+  }));
 });

@@ -1,6 +1,9 @@
 # Ported from regengine/RegEngine .github/workflows/pr-guards.yml (job engine-review-pass).
-# The job logic is unchanged except that "ci" and "dependabot" are allowed branch
-# prefixes here. Those names are not valid reviewer engines in REVIEW: markers.
+# "ci" and "dependabot" are allowed branch prefixes here. Those names are not
+# valid reviewer engines in REVIEW: markers.
+# Branches without an engine prefix (for example fix/) may declare the author
+# engine with an Author-Engine commit trailer, a standalone Author-Engine line
+# in the PR body, or an author-engine:<engine> label. See the script below.
 # The workflow keeps the name "PR Guards" so the check reads "PR Guards / Engine Review Pass",
 # the same as on RegEngine. The stale rerun step matches runs by this workflow name.
 name: PR Guards
@@ -160,16 +163,128 @@ jobs:
               const headRef = pr.head?.ref || '';
               const slashIndex = headRef.indexOf('/');
               const rawPrefix = slashIndex > 0 ? headRef.slice(0, slashIndex).trim() : '';
-              const authorEngine = rawPrefix.toLowerCase();
+              const branchPrefix = rawPrefix.toLowerCase();
 
-              if (!ALLOWED_BRANCH_PREFIXES.has(authorEngine)) {
+              // The marker must be alone on its own line. The same rule applies
+              // to Author-Engine declarations in commit messages and the PR body.
+              const authorEngineLine = /^Author-Engine:\s*([A-Za-z0-9._-]+)\s*$/i;
+              const authorEngineLabel = /^author-engine:([A-Za-z0-9._-]+)$/i;
+
+              function enginesFromLines(text) {
+                const found = [];
+                for (const line of (text || '').replace(/\r\n/g, '\n').split('\n')) {
+                  const match = line.match(authorEngineLine);
+                  if (match) {
+                    found.push(match[1].toLowerCase());
+                  }
+                }
+                return found;
+              }
+
+              function uniqueEngines(list) {
+                return [...new Set(list)];
+              }
+
+              function sameEngineSet(a, b) {
+                return a.size === b.size && [...a].every((engine) => b.has(engine));
+              }
+
+              let authorEngines;
+              let authorSource;
+
+              if (ALLOWED_BRANCH_PREFIXES.has(branchPrefix)) {
+                authorEngines = new Set([branchPrefix]);
+                authorSource = `branch ${headRef}`;
+              } else if (!branchPrefix) {
                 const msg = 'Invalid author engine. Please use an engine branch prefix such as gemini/ or claude/.';
                 await setCommitStatus('failure', msg);
                 core.setFailed(msg);
                 return;
+              } else {
+                // Conventional prefixes such as fix/ have no engine in the
+                // branch name. Resolve the real author engine from stronger
+                // signals first: commit trailers, then a standalone PR body
+                // line, then an author-engine:<engine> label. Trailers are
+                // preferred because changing them requires a new head SHA,
+                // which invalidates existing PASS markers. Body and label
+                // exist so an already-open fix/ PR can declare its author
+                // without rewriting history. If more than one of those
+                // sources is present, they must name the same engine set.
+                const prData = (await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: pr.number,
+                })).data;
+                const bodyEngines = uniqueEngines(enginesFromLines(prData.body || ''));
+                const labelEngines = uniqueEngines(
+                  (prData.labels || [])
+                    .map((label) => {
+                      const match = String(label.name || '').trim().match(authorEngineLabel);
+                      return match ? match[1].toLowerCase() : null;
+                    })
+                    .filter(Boolean),
+                );
+                const commits = await github.paginate(github.rest.pulls.listCommits, {
+                  owner,
+                  repo,
+                  pull_number: pr.number,
+                  per_page: 100,
+                });
+                const trailerEngines = uniqueEngines(
+                  commits.flatMap((commit) => {
+                    const parents = commit.parents || [];
+                    if (parents.length > 1) {
+                      return [];
+                    }
+                    return enginesFromLines(commit.commit?.message || '');
+                  }),
+                );
+
+                const sources = [];
+                if (trailerEngines.length > 0) {
+                  sources.push(['commit trailer', new Set(trailerEngines)]);
+                }
+                if (bodyEngines.length > 0) {
+                  sources.push(['PR body', new Set(bodyEngines)]);
+                }
+                if (labelEngines.length > 0) {
+                  sources.push(['label', new Set(labelEngines)]);
+                }
+
+                if (sources.length === 0) {
+                  const msg = 'Invalid author engine. For a branch without an engine prefix such as fix/, declare Author-Engine: <engine> as a commit trailer, a standalone PR body line, or an author-engine:<engine> label.';
+                  await setCommitStatus('failure', msg);
+                  core.setFailed(msg);
+                  return;
+                }
+
+                const agreed = sources[0][1];
+                for (const [name, engines] of sources.slice(1)) {
+                  if (!sameEngineSet(engines, agreed)) {
+                    const detail = sources
+                      .map(([sourceName, engines]) => `${sourceName}=${[...engines].sort().join(',')}`)
+                      .join('; ');
+                    const msg = `Author-Engine sources disagree (${detail}). They must name the same engine set.`;
+                    await setCommitStatus('failure', msg);
+                    core.setFailed(msg);
+                    return;
+                  }
+                }
+
+                for (const engine of agreed) {
+                  if (!ALLOWED_REVIEWER_ENGINES.has(engine)) {
+                    const msg = `Invalid author engine '${engine}' in the ${sources[0][0]} declaration. Use an allowed reviewer engine such as claude or grok.`;
+                    await setCommitStatus('failure', msg);
+                    core.setFailed(msg);
+                    return;
+                  }
+                }
+
+                authorEngines = agreed;
+                authorSource = sources.map(([name]) => name).join(', ');
               }
 
-              core.info(`Author engine: ${authorEngine} (from branch ${headRef})`);
+              core.info(`Author engine: ${[...authorEngines].sort().join(', ')} (from ${authorSource})`);
               core.info(`Head SHA: ${headSha}`);
 
               const prNumber = pr.number;
@@ -210,7 +325,7 @@ jobs:
               // The marker must be alone on its own line.
               const markerRegex = /^REVIEW: (PASS|BLOCKED|FAIL) ([A-Za-z0-9._-]+) ([0-9A-Fa-f]{40})\s*$/;
               const headShaLower = headSha.toLowerCase();
-              const authorEngineLower = authorEngine.toLowerCase();
+              const authorEngineLower = authorEngines;
 
               const latestMarkers = new Map();
 
@@ -236,7 +351,7 @@ jobs:
                     continue;
                   }
 
-                  const isAuthorEngine = reviewerEngine.toLowerCase() === authorEngineLower;
+                  const isAuthorEngine = authorEngineLower.has(reviewerEngine.toLowerCase());
                   if (action === 'PASS' && isAuthorEngine) {
                     core.info(`Ignoring PASS from author engine '${reviewerEngine}'`);
                     continue;
@@ -256,7 +371,7 @@ jobs:
               const markers = Array.from(latestMarkers.values());
               const blockedMarkers = markers.filter((m) => m.action === 'BLOCKED' || m.action === 'FAIL');
               const nonAuthorPassMarkers = markers.filter((m) => {
-                return m.action === 'PASS' && m.engine.toLowerCase() !== authorEngineLower;
+                return m.action === 'PASS' && !authorEngineLower.has(m.engine.toLowerCase());
               });
 
               // Native reviews follow GitHub's rule: a member's latest decision stands, and

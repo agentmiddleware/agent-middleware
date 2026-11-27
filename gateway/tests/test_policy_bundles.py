@@ -739,6 +739,79 @@ async def test_policy_refuses_unknown_risk_tier_and_overlong_name(
     assert stored.json()["name"] == "Tiered"
 
 
+@pytest.mark.anyio
+async def test_policy_create_for_unknown_wallet_is_404(client, clean_database):
+    """The wallet foreign key used to surface as a 500 on insert."""
+    resp = await client.post(
+        "/v1/policies",
+        json={"wallet_id": "agt-doesnotexist", "name": "Orphan"},
+        headers=ADMIN,
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"]["error"] == "wallet_not_found"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "field",
+    [
+        "name",
+        "risk_tier",
+        "is_active",
+        "require_real_effects",
+        "human_approval_required",
+    ],
+)
+async def test_policy_patch_refuses_null_for_required_fields(
+    client, clean_database, field
+):
+    """These columns are NOT NULL. An explicit null used to pass validation
+    and fail the UPDATE with a 500; it is now a 422 and nothing changes."""
+    wallet_id = await _wallet(client, f"policy-null-{field}"[:40])
+    created = await client.post(
+        "/v1/policies",
+        json={"wallet_id": wallet_id, "name": "Kept", "risk_tier": "low"},
+        headers=ADMIN,
+    )
+    assert created.status_code == 201
+    before = created.json()
+    policy_id = before["policy_id"]
+
+    patched = await client.patch(
+        f"/v1/policies/{policy_id}", json={field: None}, headers=ADMIN
+    )
+    assert patched.status_code == 422, patched.text
+
+    stored = (await client.get(f"/v1/policies/{policy_id}", headers=ADMIN)).json()
+    assert stored[field] == before[field]
+    assert stored["updated_at"] == before["updated_at"]
+
+
+@pytest.mark.anyio
+async def test_policy_patch_null_still_clears_optional_limits(client, clean_database):
+    """Null keeps meaning "no restriction" on the nullable columns."""
+    wallet_id = await _wallet(client, "policy-null-optional")
+    created = await client.post(
+        "/v1/policies",
+        json={
+            "wallet_id": wallet_id,
+            "name": "Limits",
+            "allowed_tools": ["policy-echo"],
+            "max_cost_per_action": 3,
+        },
+        headers=ADMIN,
+    )
+    assert created.status_code == 201
+    patched = await client.patch(
+        f"/v1/policies/{created.json()['policy_id']}",
+        json={"allowed_tools": None, "max_cost_per_action": None},
+        headers=ADMIN,
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["allowed_tools"] is None
+    assert patched.json()["max_cost_per_action"] is None
+
+
 # --- Risk-tier ceiling and unknown-spend fail-closed ---------------------------
 #
 # The bundle's risk_tier used to be recorded on the evaluation without ever

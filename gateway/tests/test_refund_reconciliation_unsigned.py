@@ -267,7 +267,7 @@ async def test_a_replica_that_can_sign_completes_the_item_and_it_can_be_refunded
     assert [item.receipt_id for item in items] == [record.response_reference]
     assert await get_receipt_service_verifies(record.response_reference)
 
-    # And the operator retry refunds it exactly once.
+    # And the operator retry refunds that charged row and no additional row.
     item, already = await service.retry(record.response_reference)
     assert item.status == "resolved"
     assert already is False
@@ -738,7 +738,7 @@ async def test_a_pass_reads_items_recorded_at_the_same_instant_once_each(
     a tie on that instant is broken on ``record_id``. A bound that left the
     instant itself out would skip the items that share it. Five unsigned items
     are recorded and the middle three are given the same ``created_at``. Pages
-    of one, two and fifty then read every item exactly once, in order, and one
+    of one, two and fifty then read each item one time, in order, and one
     pass signs them all. The bound changes no result, so the statements are
     checked for it as well.
     """

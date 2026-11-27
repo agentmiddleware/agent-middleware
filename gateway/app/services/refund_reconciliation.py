@@ -213,7 +213,7 @@ class RefundReconciliationService:
         request_hash: str | None = None,
         _from_unsigned: bool = False,
     ) -> tuple[ReceiptResponse | None, dict[str, Any]]:
-        """Atomically insert the signed receipt and durable pending work item.
+        """Atomically insert the receipt ID and durable pending work item.
 
         When the receipt cannot be signed (any ``SigningKeyError`` that is not
         the one restart reason, for example a key retired or disabled after

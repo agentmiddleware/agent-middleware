@@ -6,8 +6,8 @@ This repository starts with a fresh history. Releases are listed here once tagge
 
 ### Operator receipt resolution (SEL-351 follow-up)
 
-- Add a bootstrap-admin-only resolution endpoint and operator CLI for signed
-  delivery_uncertain receipts, with bounded evidence and explicit refunds.
+- Add a bootstrap-admin-only resolution endpoint and operator CLI for
+  delivery_uncertain receipt IDs, with bounded evidence and explicit refunds.
 - Add schema 058 evidence columns and resolution-v0.2 evidence-hash signatures;
   preserve offline verification of resolution-v0.1 and original receipt bytes.
 - Keep original replays unchanged; repeat requests finish interrupted refunds

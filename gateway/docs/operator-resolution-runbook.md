@@ -1,6 +1,6 @@
 # Operator receipt resolution
 
-Use this path only for an existing, signed `delivery_uncertain` receipt after
+Use this path only for an existing `delivery_uncertain` receipt ID after
 checking authoritative upstream state. It never dispatches a tool, changes the
 original receipt, or changes the original idempotency replay. The charge stands
 unless the operator records `confirmed_not_delivered` with evidence and

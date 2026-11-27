@@ -282,7 +282,7 @@ where the schema sets `additionalProperties: false`, a string over
 and `reason_code` `invalid_tool_arguments`, with `argument` naming the
 argument and `violation` naming the failed schema keyword. The value itself is
 never echoed. The check runs after the permit decision, so a permit denial
-keeps its signed receipt, and before the wallet policy, the approval gate and
+keeps its receipt ID, and before the wallet policy, the approval gate and
 the charge, so nothing is charged, no receipt is written, and the same key can
 carry the corrected call. `POST /mcp` checks before it mints its permit
 (`test_mcp_tool_argument_validation`). Upstream tools are not checked here:

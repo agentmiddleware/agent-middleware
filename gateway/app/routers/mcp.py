@@ -2144,7 +2144,7 @@ async def _execute_registered_tool_inner(
     if action_binding is None:
         # Local tool arguments are checked against the advertised inputSchema
         # here (#348): after the permit decision, so a permit denial keeps its
-        # signed receipt, and before the IGA use, the wallet policy, the
+        # receipt ID, and before the IGA use, the wallet policy, the
         # approval gate, the quote consume and the charge, so a client input
         # error moves no money. Nothing has run, so the claim begun above is
         # released and the corrected call can reuse the same key. Action tools

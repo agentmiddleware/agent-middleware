@@ -1,7 +1,7 @@
 """Issue 354: /dom/sync signs a stable reason_code, never bridge free text.
 
 The bridge's "No page available for session <uuid>" used to become the
-signed receipt's reason_code verbatim (sanitized), session id included, and
+receipt ID's reason_code verbatim (sanitized), session id included, and
 the call kept its charge as delivery_uncertain although no command ran.
 """
 

@@ -2,6 +2,7 @@
 name: Feature request
 about: Propose an improvement to the public repository
 labels: enhancement
+assignees: PetrefiedThunder
 ---
 
 ## Problem

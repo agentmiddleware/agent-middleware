@@ -2144,7 +2144,7 @@ class McpDispatchAttemptService:
                             ColumnElement[bool],
                             cast(Any, ReceiptModel.receipt_id).is_(None),
                         ),
-                        # A pending refund recorded without a signed receipt
+                        # A pending refund recorded without a receipt ID
                         # (RefundReconciliationService.create_pending) is
                         # owned by sign_unsigned_pending and the operator
                         # retry, exactly as a signed failed_unrefunded receipt

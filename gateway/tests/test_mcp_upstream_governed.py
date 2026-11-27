@@ -3491,7 +3491,7 @@ async def test_dispatch_reconciler_leaves_an_unsigned_pending_refund_to_its_owne
     retry either failed forever (budget conflict) or, with an earlier paid
     call on the same permit, released that call's budget too, so the permit
     under-counted. Now the reconciler skips the attempt like it skips a signed
-    failed_unrefunded receipt, and the refund happens exactly once, through
+    failed_unrefunded receipt, and the refund is recorded as one ledger entry, through
     the operator retry.
     """
     case = await _upstream_refund_failure_with_key_lost(
@@ -3595,7 +3595,7 @@ async def test_unsigned_item_whose_refund_landed_unacknowledged_is_signed_and_re
     dispatch sweep skips an attempt whose refund was never checkpointed while
     its debit stands. The signer must therefore not refuse this item just
     because a refund row exists. Signed, the operator retry finds the refund
-    row, refunds nothing more, and releases the reservation exactly once.
+    row, refunds nothing more, and releases the reservation in that retry.
     """
     case = await _upstream_refund_failure_with_key_lost(
         client,

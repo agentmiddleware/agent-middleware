@@ -1,7 +1,7 @@
 """A replica whose signing key cannot sign refuses before it charges.
 
-Every governed outcome past the charge needs a signed audit event and a signed
-receipt. When the configured key cannot sign (its row is disabled, retired or
+Every governed outcome past the charge needs a signed audit event and a
+receipt ID. When the configured key cannot sign (its row is disabled, retired or
 bound to other key material) the old order was: reserve, charge, run the tool,
 then fail to sign. The wallet was debited and the tool had run, but nothing
 recorded either, and the idempotency record stayed in progress for manual

@@ -486,3 +486,12 @@ test('ci/ and dependabot/ still do not require an Author-Engine declaration', as
     reviews: [review('claude')],
   }));
 });
+
+test('pull_request edited, labeled, and unlabeled re-run the gate', () => {
+  const types = workflow.match(/on:\s*\n  pull_request:\s*\n(?:\s*#[^\n]*\n)*\s*types:\s*\[([^\]]+)\]/);
+  assert.ok(types, 'pull_request types must be present');
+  const parsed = types[1].split(',').map((item) => item.trim());
+  for (const required of ['edited', 'labeled', 'unlabeled']) {
+    assert.ok(parsed.includes(required), `pull_request types must include ${required}`);
+  }
+});

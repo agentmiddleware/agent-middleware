@@ -10,7 +10,10 @@ name: PR Guards
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # edited, labeled, and unlabeled are required because fix/ branches may
+    # declare the author engine in the PR body or a label. A later body or
+    # label change must re-run the gate so a stale pass or fail cannot stick.
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
   pull_request_review:
     types: [submitted, edited, dismissed]
 

@@ -810,6 +810,14 @@ async def _wallet_debits(wallet_id: str) -> int:
         )
 
 
+async def _permit_spent_credits(permit_id: str) -> Decimal:
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            select(PermitModel.spent_credits).where(PermitModel.permit_id == permit_id)
+        )
+    return result.scalar_one()
+
+
 @pytest.mark.anyio
 async def test_rag_query_refuses_before_reserving_when_the_key_cannot_sign(
     client, clean_database
@@ -846,6 +854,7 @@ async def test_rag_query_refuses_before_reserving_when_the_key_cannot_sign(
         "Idempotency-Key": "awi-http-signing-precharge-1",
     }
     debits_before = await _wallet_debits(wallet_id)
+    spent_before = await _permit_spent_credits(permit["permit_id"])
     with pytest.MonkeyPatch.context() as patched:
         patched.setattr(signing_keys_module, "_signing_key_service", misconfigured)
         refused = await client.post(
@@ -855,6 +864,7 @@ async def test_rag_query_refuses_before_reserving_when_the_key_cannot_sign(
     assert refused.status_code == 503, refused.text
     assert refused.json()["detail"]["error"] == "signing_key_unavailable"
     assert await _wallet_debits(wallet_id) == debits_before
+    assert await _permit_spent_credits(permit["permit_id"]) == spent_before
 
     # The module's own service is back in place: the key can sign again.
     again = await client.post(
@@ -863,3 +873,57 @@ async def test_rag_query_refuses_before_reserving_when_the_key_cannot_sign(
     assert again.status_code == 200, again.text
     assert again.json()["receipt"]["outcome"] == "success"
     assert await _wallet_debits(wallet_id) == debits_before + 1
+    assert await _permit_spent_credits(permit["permit_id"]) == spent_before + Decimal(
+        "3"
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("clean_database")
+async def test_rag_query_releases_key_when_signing_preflight_raises(client):
+    """An unexpected preflight error propagates without holding the retry key."""
+    provisioned = await provision_agent_wallet(client)
+    wallet_id = provisioned["agent_wallet_id"]
+    permit = await create_tool_permit(
+        client,
+        wallet_id=wallet_id,
+        key_id=provisioned["key_id"],
+        tool_name="awi_rag_query",
+        max_credits=50,
+        idem_key="permit-awi-signing-storage-failure",
+    )
+    headers = {
+        **provisioned["agent_headers"],
+        "X-Wallet-Id": wallet_id,
+        "X-Permit-Id": permit["permit_id"],
+        "Idempotency-Key": "awi-http-signing-storage-failure",
+    }
+    debits_before = await _wallet_debits(wallet_id)
+    spent_before = await _permit_spent_credits(permit["permit_id"])
+    failure = RuntimeError("signing key storage unavailable")
+
+    async def fail_key_lookup():
+        raise failure
+
+    failing_service = SigningKeyService()
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(failing_service, "ensure_active_key", fail_key_lookup)
+        patched.setattr(signing_keys_module, "_signing_key_service", failing_service)
+        with pytest.raises(RuntimeError) as raised:
+            await client.post(
+                "/v1/awi/rag/query", json=RAG_QUERY_PAYLOAD, headers=headers
+            )
+
+    assert raised.value is failure
+    assert await _wallet_debits(wallet_id) == debits_before
+    assert await _permit_spent_credits(permit["permit_id"]) == spent_before
+
+    again = await client.post(
+        "/v1/awi/rag/query", json=RAG_QUERY_PAYLOAD, headers=headers
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["receipt"]["outcome"] == "success"
+    assert await _wallet_debits(wallet_id) == debits_before + 1
+    assert await _permit_spent_credits(permit["permit_id"]) == spent_before + Decimal(
+        "3"
+    )

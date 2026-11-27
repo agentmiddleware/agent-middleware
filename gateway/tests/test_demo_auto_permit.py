@@ -15,12 +15,12 @@ from cryptography.hazmat.primitives.serialization import (
     PrivateFormat,
 )
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.core.config import get_settings
 from app.core.time import utc_now
 from app.db.database import get_session_factory
-from app.db.models import PermitModel
+from app.db.models import PermitModel, SigningKeyModel
 from app.main import app
 from app.routers import mcp as mcp_router
 from app.schemas.billing import ServiceCategory
@@ -251,6 +251,62 @@ async def test_demo_call_auto_mints_bounded_permit_and_replays_once(
     replay = _result(await _call(client, **call), transport)
     assert replay["receipt"]["receipt_id"] == receipt["receipt_id"]
     assert replay["permit_id"] == permit_id
+    assert len(await _permits_for(demo["wallet_id"])) == 1
+    assert echo_tools == ["partner.echo"]
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("clean_database", "demo_settings")
+@pytest.mark.parametrize("transport", ["rest", "jsonrpc"])
+async def test_demo_call_refuses_before_auto_mint_when_signing_key_is_disabled(
+    client: AsyncClient, echo_tools, transport: str
+) -> None:
+    demo = await _demo_key(client)
+    signing_key = await get_signing_key_service().ensure_active_key()
+    async with get_session_factory()() as session:
+        await session.execute(
+            update(SigningKeyModel)
+            .where(SigningKeyModel.key_id == signing_key.key_id)
+            .values(status="disabled")
+        )
+        await session.commit()
+    call = dict(
+        transport=transport,
+        tool="partner.echo",
+        wallet_id=demo["wallet_id"],
+        api_key=demo["api_key"],
+        request_key="demo-auto-signing-unavailable",
+    )
+
+    refused = await _call(client, **call)
+
+    if transport == "rest":
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"]["error"] == "signing_key_unavailable"
+    else:
+        assert refused.status_code == 200, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == -32005, error
+        assert error["message"] == "signing_key_unavailable", error
+    assert await _permits_for(demo["wallet_id"]) == []
+    assert echo_tools == []
+
+    async with get_session_factory()() as session:
+        await session.execute(
+            update(SigningKeyModel)
+            .where(SigningKeyModel.key_id == signing_key.key_id)
+            .values(status="active")
+        )
+        await session.commit()
+
+    retry = _result(await _call(client, **call), transport)
+    assert retry["isError"] is False
+    assert retry["permit_id"] == retry["receipt"]["permit_id"]
+    assert len(await _permits_for(demo["wallet_id"])) == 1
+    assert echo_tools == ["partner.echo"]
+
+    replay = _result(await _call(client, **call), transport)
+    assert replay["receipt"]["receipt_id"] == retry["receipt"]["receipt_id"]
     assert len(await _permits_for(demo["wallet_id"])) == 1
     assert echo_tools == ["partner.echo"]
 

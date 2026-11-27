@@ -5188,6 +5188,8 @@ async def _handle_tools_call(
         request_payload=request_payload,
     )
     governed_request.wallet_id = governed_request.wallet_id or auth.wallet_id
+    if auth.tenant == "demo" and governed_request.permit_id is None:
+        await get_signing_key_service().assert_ready_to_sign()
     auto_permit_id = await _maybe_mint_demo_permit(governed_request)
     result = await _mcp_adapter.invoke(governed_request)
     response = await _mcp_adapter.normalize_response(result)
@@ -5416,6 +5418,8 @@ async def invoke_tool(
             idempotency_key=client_idempotency_key,
             request_payload=request.model_dump(mode="json"),
         )
+        if auth.tenant == "demo" and governed_request.permit_id is None:
+            await get_signing_key_service().assert_ready_to_sign()
         auto_permit_id = await _maybe_mint_demo_permit(governed_request)
         result = await _mcp_adapter.invoke(governed_request)
         response = await _mcp_adapter.normalize_response(result)

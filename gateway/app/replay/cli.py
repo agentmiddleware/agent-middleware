@@ -133,7 +133,7 @@ def _write_outputs_atomically(out: Path, files: dict[str, str]) -> None:
 
 _SIGNING_ENV_HELP = """\
 environment:
-  Replay receipts are signed with the gateway trust signing key:
+  Replay uses the gateway trust signing key:
     TRUST_SIGNING_PRIVATE_KEY_B64  base64 Ed25519 private key
     TRUST_SIGNING_KEY_ID           key id published in keys.json
                                    (default local-dev-ed25519)

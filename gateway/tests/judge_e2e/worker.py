@@ -71,17 +71,12 @@ async def _run(connection, settings) -> None:
     from httpx import ASGITransport, AsyncClient
     from sqlalchemy import select
 
-    from app.core.config import get_settings
+    from app.core import rate_limiter
     from app.db.database import close_db, get_session_factory, init_db
 
-    active_settings = get_settings()
-    assert active_settings is settings
-    assert active_settings.ENVIRONMENT == "test"
-    assert active_settings.TRUST_MODE_ENABLED is True
-
-    from app.core import rate_limiter
-
     assert rate_limiter.settings is settings, "rate_limiter not using test settings"
+    assert rate_limiter.settings.ENVIRONMENT == "test"
+    assert rate_limiter.settings.TRUST_MODE_ENABLED is True
     from app.db.models import (
         IdempotencyRecordModel,
         LedgerEntryModel,

@@ -668,6 +668,56 @@ async def test_x402_settle_unknown_permit_is_404(client, clean_database):
 
 
 @pytest.mark.anyio
+async def test_x402_settle_unknown_wallet_is_404_and_leaves_no_record(
+    client, clean_database
+):
+    """An unknown wallet is refused before the idempotency row is opened.
+
+    The row's wallet_id references wallets, so opening it first failed the
+    foreign key and answered 500 (#344). The refusal is a plain 404, the
+    permit is untouched, and no idempotency row is left behind.
+    """
+    from sqlalchemy import func, select
+
+    from app.db.database import get_session_factory
+    from app.db.models import IdempotencyRecordModel
+
+    provisioned = await provision_agent_wallet(client)
+    permit = await create_tool_permit(
+        client,
+        wallet_id=provisioned["agent_wallet_id"],
+        key_id=provisioned["key_id"],
+        tool_name="x402.payment",
+        max_credits=50,
+        idem_key="x402-unknown-wallet-permit",
+    )
+    body = _settle_body(
+        permit_id=permit["permit_id"],
+        wallet_id="agt-does-not-exist",
+        amount="0.01",
+    )
+    headers = {**BOOTSTRAP_HEADERS, "Idempotency-Key": "x402-unknown-wallet-1"}
+
+    resp = await client.post("/v1/x402/settle", json=body, headers=headers)
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == "wallet_not_found"
+
+    # A retry with the same key gets the same answer, not a stuck owner.
+    retry = await client.post("/v1/x402/settle", json=body, headers=headers)
+    assert retry.status_code == 404
+    assert retry.json()["detail"] == "wallet_not_found"
+
+    async with get_session_factory()() as session:
+        records = await session.scalar(
+            select(func.count())
+            .select_from(IdempotencyRecordModel)
+            .where(IdempotencyRecordModel.idempotency_key == "x402-unknown-wallet-1")
+        )
+    assert records == 0
+    assert await _permit_spent(client, permit["permit_id"]) == Decimal("0")
+
+
+@pytest.mark.anyio
 async def test_x402_settle_rejects_malformed_requirement(client, clean_database):
     provisioned = await provision_agent_wallet(client)
     base = _settle_body(

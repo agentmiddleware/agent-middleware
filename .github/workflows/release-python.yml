@@ -42,6 +42,7 @@ jobs:
         with:
           name: python-distributions
           path: sdk/python/dist/*
+          retention-days: 7
 
   publish:
     needs: build

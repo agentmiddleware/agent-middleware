@@ -245,6 +245,17 @@ class DOMStateRequest(BaseModel):
     include_elements: bool = Field(default=True, description="Include element list")
 
 
+class DOMStateToolArguments(DOMStateRequest):
+    """Arguments for the ``awi_dom_state`` MCP tool.
+
+    The REST route takes the session from its path, so ``DOMStateRequest``
+    has no ``session_id``. The MCP tool has no path, and its handler requires
+    one, so the advertised ``inputSchema`` must name it.
+    """
+
+    session_id: str = Field(..., description="DOM bridge session to read")
+
+
 class DOMStateResponse(BaseModel):
     """DOM state as AWI representation."""
 

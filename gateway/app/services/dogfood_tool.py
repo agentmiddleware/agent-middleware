@@ -23,6 +23,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from ..schemas.billing import ServiceCategory
 from .service_registry import get_service_registry
 
@@ -39,6 +41,19 @@ DOGFOOD_NOTES_PATH = Path(
 DOGFOOD_CREDITS_PER_UNIT = 2.0
 DOGFOOD_MAX_TEXT_CHARS = 2_000
 DOGFOOD_MAX_NOTES = 1_000
+
+
+class _WriteNoteArguments(BaseModel):
+    """Advertised ``inputSchema`` for ``partner.notes.write``.
+
+    Declares the length limit ``_write_note`` enforces, so the gateway refuses
+    an oversized note before charging for it instead of after (#348).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(default="hello", max_length=DOGFOOD_MAX_TEXT_CHARS)
+
 
 _registered = False
 _second_registered = False
@@ -130,6 +145,7 @@ def register_dogfood_tool() -> None:
             ),
             category=ServiceCategory.AGENT_COMMS,
             func=_write_note,
+            input_model=_WriteNoteArguments,
             credits_per_unit=DOGFOOD_CREDITS_PER_UNIT,
             unit_name="call",
             require_permit=True,

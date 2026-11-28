@@ -150,24 +150,38 @@ def extract_schema_from_callable(
 
         properties = {}
         required = []
+        accepts_extra = False
 
         for param_name, param in sig.parameters.items():
             if param_name in ("self", "cls"):
                 continue
+            # *args cannot be passed by name and **kwargs is not an argument
+            # called "kwargs": advertising either as a property made the
+            # schema demand a "kwargs" key that no caller sends. Now that
+            # local arguments are validated against this schema before the
+            # charge (#348), **kwargs opens the schema instead.
+            if param.kind is inspect.Parameter.VAR_KEYWORD:
+                accepts_extra = True
+                continue
+            if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                continue
 
-            if param_name in type_hints:
-                hint = type_hints[param_name]
-                properties[param_name] = _annotation_to_json_schema(hint) or {}
-
-                if param.default is inspect.Parameter.empty:
-                    required.append(param_name)
+            # An unannotated parameter is still an argument the handler takes:
+            # leaving it out of a closed schema refused calls that pass it and
+            # let calls that omit a required one reach the handler.
+            hint = type_hints.get(param_name)
+            properties[param_name] = (
+                _annotation_to_json_schema(hint) or {} if hint is not None else {}
+            )
+            if param.default is inspect.Parameter.empty:
+                required.append(param_name)
 
         input_schema = (
             {
                 "type": "object",
                 "properties": properties,
                 "required": required,
-                "additionalProperties": False,
+                "additionalProperties": accepts_extra,
             }
             if properties
             else None

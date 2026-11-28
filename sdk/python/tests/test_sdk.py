@@ -5,6 +5,7 @@ Tests for B2A SDK.
 import asyncio
 import json
 import warnings
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -668,6 +669,90 @@ class TestDecorators:
 
         assert seen == []
         assert ran is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("decorator", ["billable", "combined"])
+    async def test_factory_returning_none_fails_before_charge_or_execution(self, decorator):
+        """A configured factory that yields None must not fall back to a minted key."""
+        client, seen = _recording_client(_CHARGE_OK)
+        ran = False
+        options: dict[str, Any] = {
+            "wallet_id": "wallet-123",
+            "service_category": "iot_bridge",
+            "idempotency_key_factory": lambda job_id: None,
+        }
+        wrap = (
+            billable(client, **options)
+            if decorator == "billable"
+            else combined(client, service_name="svc", **options)
+        )
+
+        @wrap
+        async def run_job(job_id):
+            nonlocal ran
+            ran = True
+
+        async with client:
+            with pytest.raises(ValueError, match="must return a non-blank string, got None"):
+                await run_job("7")
+
+        assert seen == []
+        assert ran is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("decorator", ["billable", "combined"])
+    @pytest.mark.parametrize(
+        ("bad_key", "message"),
+        [
+            ("", "must not be blank"),
+            ("   ", "must not be blank"),
+            (42, "must be a string"),
+        ],
+    )
+    async def test_factory_blank_or_non_str_key_fails_before_charge_or_execution(
+        self, decorator, bad_key, message
+    ):
+        """Regression pin: client.charge() already rejects these (PR #86)."""
+        client, seen = _recording_client(_CHARGE_OK)
+        ran = False
+        options: dict[str, Any] = {
+            "wallet_id": "wallet-123",
+            "service_category": "iot_bridge",
+            "idempotency_key_factory": lambda job_id: bad_key,
+        }
+        wrap = (
+            billable(client, **options)
+            if decorator == "billable"
+            else combined(client, service_name="svc", **options)
+        )
+
+        @wrap
+        async def run_job(job_id):
+            nonlocal ran
+            ran = True
+
+        async with client:
+            with pytest.raises(ValueError, match=message):
+                await run_job("7")
+
+        assert seen == []
+        assert ran is False
+
+    @pytest.mark.asyncio
+    async def test_charge_without_factory_still_mints_a_key_and_warns(self):
+        """Only a configured factory returning None is an error; charge() is unchanged."""
+        client, seen = _recording_client(_CHARGE_OK)
+
+        @billable(client, wallet_id="wallet-123", service_category="iot_bridge")
+        async def run_job():
+            return "ok"
+
+        async with client:
+            with pytest.warns(UserWarning, match="not replay-safe"):
+                assert await run_job() == "ok"
+
+        assert len(seen) == 1
+        assert seen[0].headers["idempotency-key"]
 
     @pytest.mark.asyncio
     async def test_combined_passes_idempotency_key_factory_through(self, mock_client):

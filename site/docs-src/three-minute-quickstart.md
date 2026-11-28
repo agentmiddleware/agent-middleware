@@ -14,7 +14,7 @@ Use the hosted AMW sandbox to make one `partner.echo` Call, retry it with the sa
 Get a free demo key with the button on [the demo key page](https://www.agentmiddleware.dev/demo-key/) or run:
 
 ```bash
-curl -s -X POST https://api.thisisatest.tech/v1/demo/keys
+curl -s -X POST https://api.agentmiddleware.dev/v1/demo/keys
 ```
 
 Save `api_key` and `wallet_id` from the response. Never paste the key into an issue or chat.

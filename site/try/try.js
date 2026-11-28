@@ -138,7 +138,7 @@
 
     let response;
     try {
-      response = await fetch("https://api.thisisatest.tech/v1/demo/keys", request);
+      response = await fetch("https://api.agentmiddleware.dev/v1/demo/keys", request);
     } catch {
       status.textContent = "Could not reach the demo API. Check your connection and try again.";
       issueButton.disabled = false;

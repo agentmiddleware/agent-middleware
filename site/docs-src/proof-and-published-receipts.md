@@ -22,7 +22,7 @@ python3 -m pip install cryptography
 python3 verify_receipt.py \
   --bundle receipt.json \
   --keys trust-keys.json \
-  --expect-issuer https://api.thisisatest.tech
+  --expect-issuer https://api.agentmiddleware.dev
 ```
 
 The verifier makes no network request. Exit 0 means the Receipt matches the supplied key snapshot. Exit 1 means verification rejected it; exit 2 means the verifier could not determine a result. The command does not independently authenticate who supplied the snapshot. Pin the key through a trusted channel before relying on issuer identity.

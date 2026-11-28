@@ -2,7 +2,7 @@
 
 Static, human-buyer-first marketing and proof surface for the governed MCP
 trust-plane wedge. The public site is `https://www.agentmiddleware.dev/`; the
-canonical API is `https://api.thisisatest.tech/`.
+canonical API is `https://api.agentmiddleware.dev/`.
 
 The intended buyer is a platform engineering, AI infrastructure, or security
 team operating internal MCP tools. Machine discovery remains available below

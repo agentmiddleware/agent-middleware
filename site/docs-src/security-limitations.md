@@ -16,7 +16,7 @@ A timeout after the dispatch checkpoint can leave a charged `delivery_uncertain`
 Offline verification checks the signature against a trusted key set. The issuing origin serves its public key document without an API key:
 
 ```bash
-curl -fsS https://api.thisisatest.tech/.well-known/trust-keys.json
+curl -fsS https://api.agentmiddleware.dev/.well-known/trust-keys.json
 ```
 
 Fetching that document does not independently authenticate who supplied the keys. AMW has no external transparency log or implemented out of band key pinning. An absent Receipt does not prove that no action occurred. The portable bundle does not independently verify the named ledger record.

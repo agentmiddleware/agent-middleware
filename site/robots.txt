@@ -3,7 +3,7 @@ Allow: /
 
 # AI crawlers are welcome on this origin. This site has public marketing,
 # proof, and free sandbox demo keys at /demo-key/ with no account needed.
-# Protected tool calls use api.thisisatest.tech with a key and scoped permit.
+# Protected tool calls use api.agentmiddleware.dev with a key and scoped permit.
 # Production keys are issued to design partners.
 User-agent: GPTBot
 Allow: /

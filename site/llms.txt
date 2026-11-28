@@ -28,16 +28,16 @@ logical action -> authorize -> reserve allowance -> debit -> claim dispatch
 
 ## Canonical API
 
-https://api.thisisatest.tech
+https://api.agentmiddleware.dev
 
 ## Bootstrap
 
 Fetch in this order:
 
-1. GET https://api.thisisatest.tech/.well-known/agent.json
-2. GET https://api.thisisatest.tech/llms.txt
-3. GET https://api.thisisatest.tech/mcp/tools.json
-4. GET https://api.thisisatest.tech/openapi.json
+1. GET https://api.agentmiddleware.dev/.well-known/agent.json
+2. GET https://api.agentmiddleware.dev/llms.txt
+3. GET https://api.agentmiddleware.dev/mcp/tools.json
+4. GET https://api.agentmiddleware.dev/openapi.json
 
 On production-like API deployments, GET /mcp/tools.json requires a key and
 returns 401 without one. The other bootstrap GETs are
@@ -45,7 +45,7 @@ unauthenticated. The local quickstart exposes the catalog without a key.
 
 Before assuming real side effects, fetch:
 
-GET https://api.thisisatest.tech/health/dependencies
+GET https://api.agentmiddleware.dev/health/dependencies
 
 Inspect the JSON body: HTTP 200 alone does not mean every dependency is ready.
 Check `status` and the selected tool's dependencies. Health never replaces
@@ -88,11 +88,11 @@ Verify the published receipt offline, as on /proof/:
     curl -fsSLO https://www.agentmiddleware.dev/proof/jcs.py
     python3 -m pip install cryptography
     python3 verify_receipt.py --bundle receipt.json --keys trust-keys.json \
-      --expect-issuer https://api.thisisatest.tech
+      --expect-issuer https://api.agentmiddleware.dev
 
-Keyless live calls: curl -sS https://api.thisisatest.tech/health and
-https://api.thisisatest.tech/.well-known/trust-keys.json. Public API contract:
-https://api.thisisatest.tech/openapi.json and https://api.thisisatest.tech/docs.
+Keyless live calls: curl -sS https://api.agentmiddleware.dev/health and
+https://api.agentmiddleware.dev/.well-known/trust-keys.json. Public API contract:
+https://api.agentmiddleware.dev/openapi.json and https://api.agentmiddleware.dev/docs.
 The free sandbox demo key can run the demo tool. Production tool calls need a
 design partner key (Preview).
 

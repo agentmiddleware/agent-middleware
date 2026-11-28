@@ -11,7 +11,9 @@ from app.core.config import get_settings
 
 class DemoKeyCORSMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
-        if request.url.path != "/v1/demo/keys":
+        # A disabled demo tenant has no route here; answer like any other
+        # unknown path rather than with this route's CORS policy.
+        if request.url.path != "/v1/demo/keys" or not get_settings().ENABLE_DEMO_TENANT:
             return await call_next(request)
 
         origin = request.headers.get("origin")

@@ -412,10 +412,18 @@ async def test_global_and_live_key_limits_stop_additional_issuance(
 
 
 @pytest.mark.anyio
-async def test_get_keys_returns_json_post_instructions_with_issuance_disabled(
+async def test_get_keys_returns_json_post_instructions_only_while_enabled(
     client: AsyncClient, demo_enabled
 ) -> None:
+    # Disabled, the help route would advertise a POST that answers 404, so it
+    # answers 404 itself, like any unknown path (#357).
     demo_enabled.ENABLE_DEMO_TENANT = False
+    disabled = await client.get(_KEYS_PATH)
+    unknown = await client.get("/v1/demo/route-that-never-existed")
+    assert disabled.status_code == 404
+    assert disabled.json() == unknown.json()
+
+    demo_enabled.ENABLE_DEMO_TENANT = True
     response = await client.get(_KEYS_PATH)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/json")

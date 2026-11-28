@@ -166,12 +166,15 @@ def extract_schema_from_callable(
             if param.kind is inspect.Parameter.VAR_POSITIONAL:
                 continue
 
-            if param_name in type_hints:
-                hint = type_hints[param_name]
-                properties[param_name] = _annotation_to_json_schema(hint) or {}
-
-                if param.default is inspect.Parameter.empty:
-                    required.append(param_name)
+            # An unannotated parameter is still an argument the handler takes:
+            # leaving it out of a closed schema refused calls that pass it and
+            # let calls that omit a required one reach the handler.
+            hint = type_hints.get(param_name)
+            properties[param_name] = (
+                _annotation_to_json_schema(hint) or {} if hint is not None else {}
+            )
+            if param.default is inspect.Parameter.empty:
+                required.append(param_name)
 
         input_schema = (
             {

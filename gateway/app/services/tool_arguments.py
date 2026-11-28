@@ -19,6 +19,7 @@ those.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from jsonschema import exceptions as jsonschema_exceptions
@@ -79,7 +80,15 @@ def _argument_name(error: jsonschema_exceptions.ValidationError) -> str | None:
     instance = error.instance
     if error.validator == "additionalProperties" and isinstance(instance, dict):
         properties = error.schema.get("properties", {})
-        extras = sorted(str(key) for key in instance if key not in properties)
+        patterns = error.schema.get("patternProperties", {})
+        # JSON Schema does not count a key matched by patternProperties as an
+        # additional property, so it is not the one to name.
+        extras = sorted(
+            str(key)
+            for key in instance
+            if key not in properties
+            and not any(re.search(pattern, str(key)) for pattern in patterns)
+        )
         if extras:
             path.append(extras[0])
     elif error.validator == "required" and isinstance(instance, dict):

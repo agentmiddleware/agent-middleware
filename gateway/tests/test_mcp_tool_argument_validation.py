@@ -513,3 +513,64 @@ def test_awi_dom_state_accepts_its_session_id() -> None:
         validate_local_tool_arguments(service, {"representation_type": "summary"})
     assert refused.value.argument == "session_id"
     assert refused.value.violation == "required"
+
+
+def test_unannotated_named_parameters_are_advertised() -> None:
+    """A parameter without an annotation is still an argument the handler takes."""
+    from app.services.service_registry import extract_schema_from_callable
+
+    def handler(text: str, count, limit=1) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+        return {}
+
+    schema, _ = extract_schema_from_callable(handler)
+    assert schema == {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "count": {}, "limit": {}},
+        "required": ["text", "count"],
+        "additionalProperties": False,
+    }
+
+
+def test_unannotated_parameters_validate_like_the_handler() -> None:
+    from app.services.service_registry import extract_schema_from_callable
+    from app.services.tool_arguments import (
+        ToolArgumentsInvalid,
+        validate_local_tool_arguments,
+    )
+
+    def handler(text: str, count, limit=1) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+        return {}
+
+    schema, _ = extract_schema_from_callable(handler)
+    service = {
+        "service_id": "unannotated",
+        "execution_backend": "local",
+        "input_schema": schema,
+    }
+    validate_local_tool_arguments(service, {"text": "ok", "count": 2, "limit": 3})
+    with pytest.raises(ToolArgumentsInvalid) as refused:
+        validate_local_tool_arguments(service, {"text": "ok"})
+    assert refused.value.argument == "count"
+    assert refused.value.violation == "required"
+
+
+def test_pattern_matched_keys_are_not_named_as_extra() -> None:
+    from app.services.tool_arguments import (
+        ToolArgumentsInvalid,
+        validate_local_tool_arguments,
+    )
+
+    service = {
+        "service_id": "pattern-properties",
+        "execution_backend": "local",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "patternProperties": {"^a": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    }
+    with pytest.raises(ToolArgumentsInvalid) as refused:
+        validate_local_tool_arguments(service, {"allowed": "ok", "wrong": "bad"})
+    assert refused.value.argument == "wrong"
+    assert refused.value.violation == "additionalProperties"

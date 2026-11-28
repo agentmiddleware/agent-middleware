@@ -13,9 +13,14 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: release-python
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

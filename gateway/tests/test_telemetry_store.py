@@ -349,3 +349,199 @@ async def test_persisted_anomaly_without_owner_is_admin_only():
         assert await detector.get_anomaly(anomaly_id) is not None
     assert (await detector.get_anomalies(owner=OWNER_A))[1] == 0
     assert (await detector.get_anomalies())[1] == 2
+
+
+@pytest.mark.anyio
+async def test_repeated_analysis_updates_an_ongoing_anomaly_instead_of_duplicating():
+    """The background loop calls analyze() every interval. A condition that
+    persists across passes is one anomaly, updated in place, not a new
+    anomaly per pass (#356)."""
+    store = EventStore()
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-1", OWNER_A)
+
+    state = _FakeDurableState()
+    detector = _detector(store, state)
+    [first] = await detector.analyze()
+    # Nothing changed: no new or updated report.
+    assert await detector.analyze() == []
+
+    await store.ingest([_event(source="a-svc") for _ in range(3)], "b-2", OWNER_A)
+    [updated] = await detector.analyze()
+    assert updated.anomaly_id == first.anomaly_id
+    assert updated.event_count == 15
+    assert updated.summary.startswith("15/15 errors")
+    assert updated.first_seen == first.first_seen
+    assert updated.last_seen >= first.last_seen
+
+    reports, total = await detector.get_anomalies(owner=OWNER_A)
+    assert total == 1
+    assert reports[0].event_count == 15
+    # The update is what got persisted.
+    assert len(state.payload) == 1
+    assert state.payload[first.anomaly_id]["event_count"] == 15
+
+
+@pytest.mark.anyio
+async def test_two_workers_sharing_a_store_keep_one_anomaly_under_one_id():
+    """Every gateway worker runs its own detector over the same durable
+    store. A worker that loaded the store while it was empty must still
+    continue the anomaly another worker recorded, not add a second one under
+    a new id and overwrite the first (#356)."""
+    store = EventStore()
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-1", OWNER_A)
+
+    state = _FakeDurableState()
+    worker_a = _detector(store, state)
+    worker_b = _detector(store, state)
+    # Both workers read the store before any anomaly exists.
+    assert (await worker_a.get_anomalies(owner=OWNER_A))[1] == 0
+    assert (await worker_b.get_anomalies(owner=OWNER_A))[1] == 0
+
+    [first] = await worker_a.analyze()
+    # The same condition, seen by the other worker, is not a new anomaly.
+    assert await worker_b.analyze() == []
+    assert list(state.payload) == [first.anomaly_id]
+
+    # An id handed out by one worker resolves on the other.
+    seen_by_b = await worker_b.get_anomaly(first.anomaly_id, owner=OWNER_A)
+    assert seen_by_b == first
+
+    # The other worker's update lands on the same report, and the first
+    # worker reads it back.
+    await store.ingest([_event(source="a-svc") for _ in range(3)], "b-2", OWNER_A)
+    [updated] = await worker_b.analyze()
+    assert updated.anomaly_id == first.anomaly_id
+    assert list(state.payload) == [first.anomaly_id]
+    reports, total = await worker_a.get_anomalies(owner=OWNER_A)
+    assert total == 1
+    assert reports[0].event_count == 15
+
+
+@pytest.mark.anyio
+async def test_one_worker_keeps_the_anomalies_another_worker_recorded():
+    """A worker's write carries the other workers' anomalies with it: it
+    starts from the shared store, not from what it loaded at startup."""
+    store = EventStore()
+    state = _FakeDurableState()
+    worker_a = _detector(store, state)
+    worker_b = _detector(store, state)
+    assert (await worker_a.get_anomalies())[1] == 0
+    assert (await worker_b.get_anomalies())[1] == 0
+
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-a", OWNER_A)
+    [report_a] = await worker_a.analyze()
+
+    await store.ingest([_event(source="b-svc") for _ in range(12)], "b-b", OWNER_B)
+    [report_b] = await worker_b.analyze()
+
+    assert set(state.payload) == {report_a.anomaly_id, report_b.anomaly_id}
+    assert await worker_b.get_anomaly(report_a.anomaly_id, owner=OWNER_A) == report_a
+    assert await worker_a.get_anomaly(report_b.anomaly_id, owner=OWNER_B) == report_b
+
+
+@pytest.mark.anyio
+async def test_analysis_pass_is_skipped_while_another_worker_holds_the_turn():
+    """A worker that does not get the cross-worker turn detects nothing and
+    writes nothing; the worker holding the turn covers the same events."""
+    from contextlib import asynccontextmanager
+
+    store = EventStore()
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-1", OWNER_A)
+
+    state = _FakeDurableState()
+    detector = _detector(store, state)
+
+    @asynccontextmanager
+    async def _turn_taken():
+        yield False
+
+    detector._analysis_turn = _turn_taken  # type: ignore[method-assign]
+    assert await detector.analyze() == []
+    assert state.payload is None
+    assert (await detector.get_anomalies(owner=OWNER_A))[1] == 0
+
+
+@pytest.mark.anyio
+async def test_analysis_turn_is_open_without_postgresql():
+    """The cross-worker lock is PostgreSQL-only. The suite's SQLite engine
+    has no advisory lock, so the pass runs unguarded."""
+    from app.db.database import get_engine
+
+    engine = get_engine()
+    assert engine is not None
+    assert engine.dialect.name != "postgresql"
+    async with AnomalyDetector(EventStore())._analysis_turn() as acquired:
+        assert acquired is True
+
+
+@pytest.mark.anyio
+async def test_analyze_fits_in_a_single_connection_pool(monkeypatch):
+    """The analysis turn must not hold the shared pool's only connection
+    across EventStore queries. With DB_POOL_SIZE=1 and DB_MAX_OVERFLOW=0,
+    that nested checkout times out and detection never runs."""
+    import os
+
+    from sqlalchemy.ext.asyncio import (
+        AsyncConnection,
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from app.db import database
+
+    store = EventStore()
+    await store.ingest([_event(source="a-svc") for _ in range(12)], "b-pool", OWNER_A)
+
+    pool_engine = create_async_engine(
+        os.environ["DATABASE_URL"],
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.05,
+    )
+    pool_factory = async_sessionmaker(
+        pool_engine, expire_on_commit=False, autoflush=False
+    )
+
+    class _PgEngine:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+        url = pool_engine.url
+
+    def _lock_sql(statement) -> bool:
+        return "pg_try_advisory_xact_lock" in str(statement)
+
+    original_session_scalar = AsyncSession.scalar
+    original_conn_scalar = AsyncConnection.scalar
+
+    async def _session_scalar(self, statement, params=None, **kwargs):
+        if _lock_sql(statement):
+            # Keep the checkout for the open transaction; returning without
+            # binding would not reproduce the pool exhaustion defect.
+            await self.connection()
+            return True
+        return await original_session_scalar(self, statement, params, **kwargs)
+
+    async def _conn_scalar(self, statement, params=None, **kwargs):
+        if _lock_sql(statement):
+            return True
+        return await original_conn_scalar(self, statement, params, **kwargs)
+
+    try:
+        monkeypatch.setattr(database, "_session_factory", pool_factory)
+        monkeypatch.setattr(
+            "app.services.telemetry_pm.get_session_factory",
+            lambda: pool_factory,
+        )
+        monkeypatch.setattr(
+            "app.services.telemetry_pm.get_engine",
+            lambda: _PgEngine(),
+        )
+        monkeypatch.setattr(AsyncSession, "scalar", _session_scalar)
+        monkeypatch.setattr(AsyncConnection, "scalar", _conn_scalar)
+
+        detector = _detector(store, _FakeDurableState())
+        reports = await detector.analyze()
+        assert len(reports) == 1
+        assert reports[0].category == "source_concentration"
+    finally:
+        await pool_engine.dispose()

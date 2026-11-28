@@ -11451,5 +11451,13 @@
         "scheme": "bearer"
       }
     }
-  }
+  },
+  "security": [
+    {
+      "APIKeyHeader": []
+    },
+    {
+      "HTTPBearer": []
+    }
+  ]
 }

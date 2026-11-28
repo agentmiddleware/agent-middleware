@@ -401,6 +401,38 @@ async def test_hs256_token_rejected_when_only_rs256_allowed(iga_config, rsa_key)
     assert excinfo.value.reason == "iga_algorithm_not_allowed"
 
 
+async def test_alg_none_token_rejected(iga_config, rsa_key):
+    """Alg-none attack: unsigned token must be rejected even when config is RS256."""
+    iga_config(_okta_issuers(rsa_key))
+    now = datetime.now(timezone.utc)
+    # PyJWT library prevents creating actual alg=none tokens in encode(),
+    # so construct one manually by base64-encoding header and payload.
+    header = (
+        base64.urlsafe_b64encode(json.dumps({"alg": "none", "kid": KID}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    payload = (
+        base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "iss": OKTA_ISS,
+                    "aud": AUDIENCE,
+                    "sub": "user-1",
+                    "iat": int(now.timestamp()),
+                    "exp": int((now + timedelta(seconds=300)).timestamp()),
+                }
+            ).encode()
+        )
+        .rstrip(b"=")
+        .decode()
+    )
+    token = f"{header}.{payload}."
+    with pytest.raises(IGAError) as excinfo:
+        parse_enterprise_token(token)
+    assert excinfo.value.reason == "iga_algorithm_not_allowed"
+
+
 async def test_malformed_token_rejected(iga_config, rsa_key):
     iga_config(_okta_issuers(rsa_key))
     with pytest.raises(IGAError) as excinfo:

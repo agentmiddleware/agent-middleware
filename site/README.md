@@ -82,7 +82,7 @@ The checked-in Node suites cover site JavaScript behavior:
 node --test site/test_*.mjs
 ```
 
-Run this command from the repository root.
+Run this command from the repository root. CI runs the same command on Node 22 and 24 in the `Site tests` job of [ci.yml](../.github/workflows/ci.yml), and `CI result` waits for it.
 
 ```bash
 cd site

@@ -130,8 +130,8 @@ This is the property that closes the gap in `SECURITY_LIMITATIONS.md` between
 > the only signing-key routes today are the read-only
 > `GET /v1/signing-keys/active` and `GET /v1/signing-keys/{key_id}`
 > (`app/routers/keys.py`). For what rotation means now, see [Status](#status).
-> This design also assumes a retired row stays retired. That is not true of
-> the code today: see [Retirement is not durable today](#retirement-is-not-durable-today).
+> A retired row stays retired: a signer never reactivates it. See
+> [Retired keys refuse to sign](#retired-keys-refuse-to-sign).
 
 Rotation under KMS is metadata + key-version change, not a redeploy:
 
@@ -196,10 +196,10 @@ Until the KMS integration ships, the production posture is:
   `retire_key_metadata` and `rotate_active_key_metadata` are service methods
   only, and no `POST /v1/admin/signing-keys/rotate` route exists. The
   post-rotation steps are in the hosted-service deploy runbook (not in this repository).
-- Retirement is not durable while any replica still runs the old key id. Use
-  the rollout order in the next section.
+- A replica still configured with a retired key id refuses to sign. Use the
+  rollout order in the next section so that no replica is left on it.
 
-### Retirement is not durable today
+### Retired keys refuse to sign
 
 What the code does, checked against `app/services/signing_keys.py`:
 
@@ -209,26 +209,32 @@ What the code does, checked against `app/services/signing_keys.py`:
 - `ensure_active_key` runs before receipt, audit event, permit and quote
   signing. It is also reached without any signing: trust-mode startup calls
   it (`app/main.py`), and `GET /v1/signing-keys/active` calls it through
-  `get_active_key` (`app/routers/keys.py`). When the row for the process's configured `TRUST_SIGNING_KEY_ID`
-  is `retired`, it sets the row back to `active`, resets `activated_at` and
-  clears `retired_at`, then signs. Only `disabled` is terminal: that row
-  refuses with `signing_key_disabled`.
-- The prepared-key path does not reactivate. `validate_prepared_signing_key`
+  `get_active_key` (`app/routers/keys.py`). It never rewrites an existing row.
+  When the row for the process's configured `TRUST_SIGNING_KEY_ID` is
+  `retired` (or `active` with `retired_at` set) it refuses with
+  `signing_key_retired`; a `disabled` row refuses with `signing_key_disabled`;
+  any other status refuses with `signing_key_status_invalid`.
+  A key id with no row yet is inserted as `active` (first bootstrap). This is
+  what the spec wording (`spec/key-set-v0.1.md`) means by a retired key no
+  longer signing new objects.
+- The prepared-key path refuses the same keys. `validate_prepared_signing_key`
   (used when a caller signs under a key it resolved earlier, such as the
   receipt write in the pending-refund path) refuses a key that is not
   `active` or has `retired_at` set, with `signing_key_not_active`. That is the
   existing behavior when a rotation lands in the middle of a call.
-- So a replica that still runs the old key id and key material silently
-  un-retires the old row when it starts in trust mode, when it answers a
-  request to `GET /v1/signing-keys/active`, or when it signs anything.
-  Retirement holds only while no process configured with the old id does any
-  of these, even an idle one. The spec wording
-  (`spec/key-set-v0.1.md`) says a retired key no longer signs new objects; the
-  runtime does not enforce that.
-- `rotate_active_key_metadata` changes the configured id only on the instance
-  that calls it. Other replicas keep their startup id.
+- `rotate_active_key_metadata` is the only call that sets a row `active`
+  again, and only the explicit target of a rotation. It changes the
+  configured id only on the instance that calls it; other replicas keep their
+  startup id.
 
-Rollout order that avoids the problem:
+Operator impact: after a rotation, every replica must be redeployed with the
+new `TRUST_SIGNING_KEY_ID` and the matching new
+`TRUST_SIGNING_PRIVATE_KEY_B64`. A replica left on the old id refuses to sign
+with `signing_key_retired`: in trust mode it fails at startup
+(`trust_signing_key_failed`), and if it was already running it reports not
+ready and refuses governed calls, as described below.
+
+Rollout order:
 
 1. Deploy every replica with the new `TRUST_SIGNING_KEY_ID` and the matching
    new `TRUST_SIGNING_PRIVATE_KEY_B64`. The new row is created `active` at
@@ -238,29 +244,61 @@ Rollout order that avoids the problem:
 2. Confirm no replica or scheduled job still runs the old id.
 3. Only then retire the old row with `retire_key_metadata`. It is a manual
    service call; no route calls it.
-4. Check `GET /.well-known/trust-keys.json`: the old `kid` should show
-   `retired` and the new `kid` `active`. Check again after normal traffic, since
-   a stale replica un-retires the old row on its next restart, signature or
-   `GET /v1/signing-keys/active` request.
+4. Check `GET /.well-known/trust-keys.json`: the old `kid` shows `retired` and
+   the new `kid` `active`.
 
-How an operator can and cannot tell a replica is stale:
+How an operator can tell a replica is stale:
 
-- Health does not show it. The signing-key health check
-  (`validate_signing_key_configuration`) validates configuration only and
-  never reads the key row status, so a stale replica reports `up`.
-- The reactivation is silent. It writes no log line and returns no error.
-- The only visible sign is the published key set: the old `kid` flipping from
-  `retired` back to `active`.
+- `GET /health/ready` and `GET /health/dependencies` read the configured key's
+  row without writing it, by the same rule signing uses. A row that is
+  `retired` (or `active` with `retired_at` set), `disabled`, in a status the
+  gateway does not know, or bound to other key material reports `signing_key`
+  as `down` with `signing_key_retired`, `signing_key_disabled`,
+  `signing_key_status_invalid` or `signing_key_id_public_key_mismatch`, and
+  readiness answers 503. A load
+  balancer that gates on readiness stops sending traffic to that replica.
+- Its governed calls are refused with `signing_key_unavailable`, and so is
+  `GET /v1/signing-keys/active` (HTTP 503); the server log carries the
+  underlying reason. `GET /v1/signing-keys/{key_id}` and
+  `/.well-known/trust-keys.json` keep serving the published keys.
 
-Why the code is not changed: making a retired key refuse to sign
-(`signing_key_retired`) would stop the reactivation, but the pending-refund
-path relies on it. `RefundReconciliationService.create_pending` resolves the
-signing key per attempt and restarts after a concurrent rotation, and the
-restart currently succeeds because `ensure_active_key` reactivates the key. A
-refusal there would escape as an internal error and lose both the receipt and
-the refund work item for a charge that already happened. The maintainer chose
-documentation only for now. The analysis and the parked follow-up changes are
-in [issue 280](https://github.com/agentmiddleware/agent-middleware/issues/280).
+What a governed call does when the key cannot sign: the governed MCP
+transports (`/mcp/messages`, `/mcp/tools/{tool}/invoke` and `/mcp`), the AWI
+HTTP routes and `POST /v1/billing/charge` run
+`SigningKeyService.assert_ready_to_sign` before they reserve budget or charge.
+If the configured key is retired, disabled, bound to other key material, or
+otherwise cannot sign, the call is refused with `signing_key_unavailable`
+(JSON-RPC `-32005`, HTTP 409 on the REST invoke route, HTTP 503 on the AWI
+routes and on the billing charge route) and nothing is recorded, so the caller
+can retry the same idempotency key on a replica whose key can sign. On the
+billing charge route the check also runs before an idempotent replay, so a key
+whose charge already completed gets the same 503 from this replica and its
+recorded answer from a replica whose key can sign. The underlying reason is
+logged once, as a `signing_key_unavailable cause=...` warning from
+`app.services.signing_keys`.
+
+A key retired (or disabled) after that check and before the call finishes is
+only partly covered:
+
+- Success path: the tool ran and the wallet was charged, but the audit event
+  or receipt cannot be signed. The caller gets `-32603` `internal_error`, the
+  debit stands with no receipt, and a retry of the same key answers
+  `idempotency_in_progress` until `reconcile_stuck_records` flags the record
+  for manual review. A disabled key already behaves this way; a retired one
+  now does too. The rollout order above (retire the old row only after no
+  replica runs the old id) is what keeps this from happening.
+- Refund-failed path, local tools: if the `failed_unrefunded` receipt cannot
+  be signed, the pending refund is recorded without a receipt and a replica
+  whose key can sign signs it later (see "Refunds are written at most once"
+  in [failure semantics](failure-semantics.md)).
+- Refund-failed path, upstream (remote MCP) tools: the same holds when the
+  terminal audit event was written before the key was lost. If the key was
+  lost before that audit event, nothing is recorded by the call; the dispatch
+  attempt row remains and the dispatch reconciler rebuilds the evidence from
+  a replica whose key can sign.
+
+The analysis is in
+[issue 280](https://github.com/agentmiddleware/agent-middleware/issues/280).
 
 This is documented as a known limitation in `SECURITY_LIMITATIONS.md` and
 should be the default answer to "where do the private keys live?" until the

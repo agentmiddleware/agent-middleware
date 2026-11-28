@@ -37,11 +37,66 @@ async def test_unmatched_http_error_has_envelope(clean_database):
     assert response.status_code == 404
     payload = response.json()
     assert payload["code"] == "not_found"
-    assert payload["message"]
-    assert payload["fix"]
+    assert payload["message"] == "No route matches this path."
+    assert "/docs" in payload["fix"] and "/openapi.json" in payload["fix"]
     assert (
         payload["docs_url"] == "https://www.agentmiddleware.dev/docs/errors#not_found"
     )
+
+
+@pytest.mark.anyio
+async def test_short_api_key_points_to_try(clean_database):
+    """BUG-AMA-003: a too short key must name the demo key page."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/v1/me/authority", headers={"X-API-Key": "short"})
+
+    assert response.status_code == 401
+    payload = response.json()
+    assert payload["detail"]["error"] == "invalid_api_key"
+    assert payload["code"] == "invalid_api_key"
+    assert "https://www.agentmiddleware.dev/try" in payload["fix"]
+
+
+@pytest.mark.anyio
+async def test_bogus_bearer_has_plain_next_step(clean_database):
+    """BUG-AMA-003: a junk bearer must get plain copy, not only JWT jargon."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/v1/me/authority", headers={"Authorization": "Bearer not-a-jwt"}
+        )
+
+    assert response.status_code == 401
+    payload = response.json()
+    assert payload["detail"]["error"] == "invalid_token"
+    assert payload["code"] == "invalid_token"
+    assert payload["message"] == "That bearer token was not accepted."
+    assert "X-API-Key" in payload["fix"] or "Bearer" in payload["fix"]
+
+
+@pytest.mark.anyio
+async def test_malformed_json_has_plain_message(clean_database):
+    """BUG-AMA-003: a json_invalid 422 must carry a plain next step."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/mcp/tools/anything/invoke",
+            content=b"{not-json",
+            headers={
+                "Content-Type": "application/json",
+                **BOOTSTRAP_HEADERS,
+            },
+        )
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["code"] == "invalid_request"
+    assert payload["message"] == "This request was not valid."
+    assert "/docs" in payload["fix"] or "/openapi.json" in payload["fix"]
 
 
 @pytest.mark.anyio
@@ -95,7 +150,22 @@ def test_error_copy_has_no_dashes():
         (
             "invalid_api_key",
             "Your key was not accepted.",
-            "Check the X-API-Key header, or get a new demo key.",
+            "Check the X-API-Key header, or get a demo key at https://www.agentmiddleware.dev/try.",
+        ),
+        (
+            "invalid_token",
+            "That bearer token was not accepted.",
+            "Send a valid Authorization Bearer token, or use an X-API-Key instead.",
+        ),
+        (
+            "invalid_request",
+            "This request was not valid.",
+            "Check the body against /docs or /openapi.json, then send valid JSON.",
+        ),
+        (
+            "not_found",
+            "No route matches this path.",
+            "Open /docs or /openapi.json for the published API.",
         ),
         (
             "permit_not_found",

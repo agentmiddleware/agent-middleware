@@ -18,7 +18,19 @@ ERROR_COPY: dict[str, tuple[str, str]] = {
     ),
     "invalid_api_key": (
         "Your key was not accepted.",
-        "Check the X-API-Key header, or get a new demo key.",
+        "Check the X-API-Key header, or get a demo key at https://www.agentmiddleware.dev/try.",
+    ),
+    "invalid_token": (
+        "That bearer token was not accepted.",
+        "Send a valid Authorization Bearer token, or use an X-API-Key instead.",
+    ),
+    "invalid_request": (
+        "This request was not valid.",
+        "Check the body against /docs or /openapi.json, then send valid JSON.",
+    ),
+    "not_found": (
+        "No route matches this path.",
+        "Open /docs or /openapi.json for the published API.",
     ),
     "wallet_scoped_key_required": (
         "This call needs a key for one wallet.",

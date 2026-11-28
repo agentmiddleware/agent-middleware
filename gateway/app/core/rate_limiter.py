@@ -11,7 +11,7 @@ import ipaddress
 import logging
 import os
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from typing import Any
 
 import redis.asyncio as redis
@@ -33,6 +33,9 @@ from .trust_mode import is_production_like_environment
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
+
+# Max concurrent delayed requests for rejected credentials ceiling
+MAX_CONCURRENT_DELAYED_REQUESTS = 100
 
 # Bound every Redis round trip. Without these, a connection left half-open by a
 # Redis restart blocks commands indefinitely, and the cached client is never
@@ -98,6 +101,13 @@ _ANONYMOUS_BUCKET_PREFIX = "anonymous"
 _PREAUTH_BUCKET_PREFIX = "preauth:rejected-credentials"
 _PREAUTH_LIMIT_MULTIPLIER = 10
 
+# Deployment-wide counter for rejected credentials per client address. Once
+# the ceiling is exceeded, further rejected-key attempts are delayed before
+# the response instead of answered immediately. This bounds invalid-key
+# rotation without locking out valid database keys. Shared only when Redis
+# is available; otherwise each process counts its own.
+_REJECTED_CREDENTIALS_COUNTER_PREFIX = "rejected-credentials-counter"
+
 # Prefix hashed with a presented X-API-Key to name its bucket; see
 # _api_key_bucket.
 _API_KEY_BUCKET_DOMAIN = b"agent-middleware-api:rate-limit-bucket:v1\x00"
@@ -146,6 +156,14 @@ def rate_limit_discovery() -> dict[str, Any]:
     bucket (``rejected_credentials_scope``); see
     ``RateLimitMiddleware.dispatch``. An authenticated caller denied on scope
     is not: in a trust plane, denials are ordinary traffic.
+
+    Requests with rejected credentials are also counted against a deployment-wide
+    per-client-address ceiling (``rejected_credentials_ceiling``). Once that
+    ceiling is exceeded, further rejected-key attempts from the same address are
+    delayed before the response (``rejected_credentials_delay_seconds``) instead
+    of answered immediately. This bounds invalid-key rotation without locking out
+    valid database keys, which are never delayed. The counter is shared only when
+    Redis is available; otherwise each process counts its own.
     """
     cfg = get_settings()
     return {
@@ -160,6 +178,14 @@ def rate_limit_discovery() -> dict[str, Any]:
         ),
         "rejected_credentials_scope": "shared_per_client_bucket",
         "rejected_credentials_multiplier": _PREAUTH_LIMIT_MULTIPLIER,
+        "rejected_credentials_ceiling": cfg.RATE_LIMIT_REJECTED_CREDENTIALS_CEILING,
+        "rejected_credentials_delay_seconds": (
+            cfg.RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS
+        ),
+        "rejected_credentials_concurrent_delay_cap": MAX_CONCURRENT_DELAYED_REQUESTS,
+        "rejected_credentials_counter_scope": (
+            "shared_redis" if cfg.REDIS_URL.strip() else "per_process"
+        ),
         "burst_allowance": 0,
         "per_partner_override": False,
         "headers": [
@@ -332,10 +358,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app, requests_per_minute: int | None = None):
         super().__init__(app)
-        self.limit = requests_per_minute or settings.RATE_LIMIT_PER_MINUTE
+        cfg = get_settings()
+        self.limit = requests_per_minute or cfg.RATE_LIMIT_PER_MINUTE
         self.preauth_limit = self.limit * _PREAUTH_LIMIT_MULTIPLIER
         self.window = 60.0  # seconds
-        self._redis_url = settings.REDIS_URL.strip()
+        self._redis_url = cfg.REDIS_URL.strip()
         self._redis: redis.Redis | None = None
         self._redis_lock = asyncio.Lock()
         self._redis_warned = False
@@ -344,6 +371,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._requests: dict[str, list[float]] = defaultdict(list)
         self._lock = asyncio.Lock()
         self._last_sweep = 0.0
+
+        # Rejected credentials counter: client -> (count, window_start) (in-memory fallback)
+        # Fixed 62-second windows matching Redis behavior. OrderedDict for O(1) LRU.
+        self._rejected_credentials_count: OrderedDict[str, tuple[int, float]] = (
+            OrderedDict()
+        )
+        self._rejected_credentials_max_entries = 10000
+        self._rejected_credentials_last_sweep = 0.0
+        self.rejected_credentials_ceiling = cfg.RATE_LIMIT_REJECTED_CREDENTIALS_CEILING
+        self.rejected_credentials_delay = (
+            cfg.RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS
+        )
+        # Cap on concurrent delayed requests to avoid resource exhaustion
+        self._concurrent_delayed_requests = 0
+        self._max_concurrent_delayed_requests = MAX_CONCURRENT_DELAYED_REQUESTS
+        self._delayed_requests_lock = asyncio.Lock()
 
     def _fail_closed_on_redis_outage(self) -> bool:
         """Production-like + REDIS_URL configured → no silent memory fallback."""
@@ -666,6 +709,123 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             reset_in = max(1, int(oldest + self.window - now) + 1)
             return False, remaining, reset_in
 
+    def _rejected_credentials_counter_key(self, client_id: str) -> str:
+        """Name the deployment-wide counter for rejected credentials."""
+        namespace = _limiter_namespace()
+        return f"{namespace}:{_REJECTED_CREDENTIALS_COUNTER_PREFIX}:client:{client_id}"
+
+    def _sweep_expired_rejected_credentials(self, now: float) -> None:
+        """Remove expired entries from the in-memory rejected credentials counter.
+
+        Fixed 62-second windows: entry expires when now >= window_start + window + 2.
+        Called with self._lock held. Amortized: runs at most once per second.
+        Incremental: scans at most 100 entries from the front to avoid long lock hold.
+        """
+        if now - self._rejected_credentials_last_sweep < 1.0:
+            return
+        self._rejected_credentials_last_sweep = now
+
+        # Incremental sweep: check at most 100 oldest entries
+        checked = 0
+        expired_keys = []
+        for k, (_, window_start) in self._rejected_credentials_count.items():
+            if now >= window_start + self.window + 2.0:
+                expired_keys.append(k)
+            checked += 1
+            if checked >= 100:
+                break
+        for k in expired_keys:
+            del self._rejected_credentials_count[k]
+
+    async def _check_and_increment_rejected_credentials(
+        self, client_id: str
+    ) -> tuple[int, bool]:
+        """Check ceiling and increment the rejected credentials counter atomically.
+
+        Returns (new_count, over_ceiling). Uses INCR return value to avoid GET+INCR race.
+        For in-memory fallback, uses fixed 62-second windows with OrderedDict LRU.
+        """
+        counter_key = self._rejected_credentials_counter_key(client_id)
+        client = await self._get_redis()
+        if client is None:
+            now = time.time()
+            async with self._lock:
+                self._sweep_expired_rejected_credentials(now)
+                # Only evict if we're adding a NEW entry and at cap
+                if (
+                    client_id not in self._rejected_credentials_count
+                    and len(self._rejected_credentials_count)
+                    >= self._rejected_credentials_max_entries
+                ):
+                    self._rejected_credentials_count.popitem(last=False)
+                if client_id in self._rejected_credentials_count:
+                    count, window_start = self._rejected_credentials_count[client_id]
+                    # Check if window expired
+                    if now >= window_start + self.window + 2.0:
+                        # Start new window
+                        new_count = 1
+                        self._rejected_credentials_count[client_id] = (new_count, now)
+                    else:
+                        # Increment in current window
+                        new_count = count + 1
+                        self._rejected_credentials_count[client_id] = (
+                            new_count,
+                            window_start,
+                        )
+                    # Move to end for LRU
+                    self._rejected_credentials_count.move_to_end(client_id)
+                else:
+                    # New entry, start window
+                    new_count = 1
+                    self._rejected_credentials_count[client_id] = (new_count, now)
+                over_ceiling = new_count > self.rejected_credentials_ceiling
+                return (new_count, over_ceiling)
+        try:
+            count = await self._incr_window(client, f"rate_limit:{counter_key}")
+            over_ceiling = count > self.rejected_credentials_ceiling
+            return (count, over_ceiling)
+        except Exception:
+            logger.warning(
+                "Failed to check/increment rejected credentials counter; "
+                "falling back to in-memory count.",
+                exc_info=True,
+            )
+            from .runtime_degradation import mark_rejected_credentials_counter_fallback
+
+            mark_rejected_credentials_counter_fallback()
+            now = time.time()
+            async with self._lock:
+                self._sweep_expired_rejected_credentials(now)
+                # Only evict if we're adding a NEW entry and at cap
+                if (
+                    client_id not in self._rejected_credentials_count
+                    and len(self._rejected_credentials_count)
+                    >= self._rejected_credentials_max_entries
+                ):
+                    self._rejected_credentials_count.popitem(last=False)
+                if client_id in self._rejected_credentials_count:
+                    count, window_start = self._rejected_credentials_count[client_id]
+                    # Check if window expired
+                    if now >= window_start + self.window + 2.0:
+                        # Start new window
+                        new_count = 1
+                        self._rejected_credentials_count[client_id] = (new_count, now)
+                    else:
+                        # Increment in current window
+                        new_count = count + 1
+                        self._rejected_credentials_count[client_id] = (
+                            new_count,
+                            window_start,
+                        )
+                    # Move to end for LRU
+                    self._rejected_credentials_count.move_to_end(client_id)
+                else:
+                    # New entry, start window
+                    new_count = 1
+                    self._rejected_credentials_count[client_id] = (new_count, now)
+                over_ceiling = new_count > self.rejected_credentials_ceiling
+                return (new_count, over_ceiling)
+
     async def dispatch(self, request: Request, call_next) -> Response:
         # Public MCP is intentionally unauthenticated. Ignore caller-supplied
         # API-key headers there so rotating bogus values cannot mint fresh
@@ -895,8 +1055,36 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # on the request was accepted. An authenticated caller denied on
             # scope hands its reservation back: in a trust plane, denials are
             # ordinary traffic, not abuse.
-            if _credentials_were_rejected(response):
+            credentials_rejected = _credentials_were_rejected(response)
+            if credentials_rejected and not acceptance.accepted:
                 keep_reservation = True
+                # Atomically check and increment the deployment-wide rejected
+                # credentials counter. If over the ceiling, defer the rejection
+                # response. Valid keys are never delayed, even from a throttled
+                # address.
+                client_id = _client_id(request)
+                (
+                    count,
+                    over_ceiling,
+                ) = await self._check_and_increment_rejected_credentials(client_id)
+                if over_ceiling:
+                    # Cap concurrent delayed requests to avoid resource exhaustion.
+                    # Past the cap, reject immediately without delay.
+                    async with self._delayed_requests_lock:
+                        if (
+                            self._concurrent_delayed_requests
+                            < self._max_concurrent_delayed_requests
+                        ):
+                            self._concurrent_delayed_requests += 1
+                            apply_delay = True
+                        else:
+                            apply_delay = False
+                    if apply_delay:
+                        try:
+                            await asyncio.sleep(self.rejected_credentials_delay)
+                        finally:
+                            async with self._delayed_requests_lock:
+                                self._concurrent_delayed_requests -= 1
 
             response.headers["X-RateLimit-Limit"] = str(self.limit)
             response.headers["X-RateLimit-Remaining"] = str(header_remaining)

@@ -468,6 +468,16 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 120
     # Deployment-wide anonymous ceiling, as a multiple of RATE_LIMIT_PER_MINUTE.
     RATE_LIMIT_ANONYMOUS_GLOBAL_MULTIPLIER: int = Field(default=20, ge=1)
+    # Deployment-wide ceiling on requests whose credentials were not accepted,
+    # per client address. Once exceeded, further rejected-key attempts from that
+    # address are delayed before the response instead of answered immediately.
+    # This bounds invalid-key rotation without locking out valid database keys.
+    RATE_LIMIT_REJECTED_CREDENTIALS_CEILING: int = Field(default=100, ge=1)
+    # Delay in seconds before answering a rejected-key request once the ceiling
+    # is exceeded. Applied per request, not per window. Capped at 10 seconds.
+    RATE_LIMIT_REJECTED_CREDENTIALS_DELAY_SECONDS: float = Field(
+        default=2.0, ge=0.0, le=10.0
+    )
 
     # --- LLM / AI Agent Intelligence ---
     # Provider: openai, azure, anthropic, ollama

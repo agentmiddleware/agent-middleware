@@ -323,3 +323,28 @@ def test_unknown_key_is_not_reported_as_tampering(signer):
 
     assert result.status is VerificationStatus.UNKNOWN_KEY
     assert not result.is_rejected
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_v02_evidence_hash(signer, tamper):
+    import json
+
+    receipt = _receipt(signer)
+    resolution = _resolution(signer, receipt)
+    claims = json.loads(resolution["signing_input"])
+    claims.pop("payload_hash")
+    claims["version"] = "resolution-v0.2"
+    evidence = {"source": "operator", "note": "Reviewed upstream state"}
+    claims["evidence_hash"] = _hash(canonical_json(evidence))
+    claims["payload_hash"] = _hash(canonical_json(claims))
+    signing_input = canonical_json(claims)
+    resolution.update(claims)
+    resolution.update(
+        signing_input=signing_input,
+        signature=signer[2](signing_input),
+        resolution_hash=_hash(signing_input),
+        evidence=evidence,
+    )
+    if tamper:
+        resolution["evidence"]["note"] += " changed"
+    assert verify_resolution(resolution, receipt, signer[1]).ok is not tamper

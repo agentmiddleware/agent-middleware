@@ -10,6 +10,7 @@ from app.core.config import public_api_origin
 from app.core.wallet_resolution import resolve_wallet_id
 from app.schemas.resolutions import (
     ResolutionListResponse,
+    ResolutionRequest,
     ResolutionResponse,
     resolution_to_response,
 )
@@ -382,3 +383,48 @@ async def verify_receipt(
     else:
         auth.require_bootstrap_admin()
     return ReceiptVerifyResponse(valid=valid, reason=reason, receipt=receipt)
+
+
+admin_router = APIRouter(prefix="/v1/admin/receipts", tags=["Operator Receipts"])
+
+
+@admin_router.post("/{receipt_id}/resolution", response_model=ResolutionResponse)
+async def resolve_uncertain_receipt(
+    receipt_id: str,
+    request: ResolutionRequest,
+    auth: AuthContext = Depends(get_auth_context),
+) -> ResolutionResponse:
+    from app.services.operator_resolution import resolve_receipt
+    from app.trust import sha256_hex
+
+    error = None
+    try:
+        auth.require_bootstrap_admin()
+        model = await resolve_receipt(receipt_id, request)
+        return resolution_to_response(model)
+    except ReceiptResolutionError as exc:
+        error = exc.reason
+        raise HTTPException(
+            status_code=404 if error == "receipt_not_found" else 409, detail=error
+        ) from exc
+    except HTTPException:
+        error = "admin_access_denied"
+        raise
+    except Exception:
+        error = "resolution_failed"
+        raise HTTPException(status_code=503, detail=error) from None
+    finally:
+        await record_audit_event(
+            event="receipt.resolution.attempt",
+            endpoint=f"/v1/admin/receipts/{receipt_id}/resolution",
+            auth_source=auth.source,
+            key_id=auth.key_id,
+            ok=error is None,
+            error=error,
+            metadata={
+                "receipt_id": receipt_id,
+                "outcome": request.outcome,
+                "operator_id": auth.key_id or sha256_hex(auth.raw_key.encode("utf-8")),
+                "refund_credits": request.refund_credits,
+            },
+        )

@@ -5781,6 +5781,82 @@
         }
       }
     },
+    "/v1/admin/receipts/{receipt_id}/resolution": {
+      "post": {
+        "tags": [
+          "Operator Receipts"
+        ],
+        "summary": "Resolve Uncertain Receipt",
+        "operationId": "resolve_uncertain_receipt_v1_admin_receipts__receipt_id__resolution_post",
+        "security": [
+          {
+            "APIKeyHeader": []
+          },
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "receipt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Receipt Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolutionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolutionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/demo/keys": {
       "get": {
         "tags": [
@@ -10569,6 +10645,55 @@
         ],
         "title": "RefundReconciliationRetryResponse"
       },
+      "ResolutionEvidence": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Source"
+          },
+          "upstream_reference_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 64,
+            "title": "Upstream Reference Ids"
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Observed At"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Note"
+          },
+          "raw_lookup_answer": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Lookup Answer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source",
+          "observed_at",
+          "note"
+        ],
+        "title": "ResolutionEvidence"
+      },
       "ResolutionListResponse": {
         "properties": {
           "records": {
@@ -10617,12 +10742,70 @@
         ],
         "title": "ResolutionListResponse"
       },
+      "ResolutionRequest": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "confirmed_success",
+              "confirmed_not_delivered"
+            ],
+            "title": "Outcome"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/ResolutionEvidence"
+          },
+          "use_lookup": {
+            "type": "boolean",
+            "title": "Use Lookup",
+            "default": false
+          },
+          "refund_credits": {
+            "type": "boolean",
+            "title": "Refund Credits",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "outcome",
+          "evidence"
+        ],
+        "title": "ResolutionRequest"
+      },
       "ResolutionResponse": {
         "properties": {
           "version": {
             "type": "string",
-            "const": "resolution-v0.1",
+            "enum": [
+              "resolution-v0.1",
+              "resolution-v0.2"
+            ],
             "title": "Version"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "evidence_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Hash"
           },
           "issuer": {
             "type": "string",

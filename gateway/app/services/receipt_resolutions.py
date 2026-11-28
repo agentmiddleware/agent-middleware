@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import json
 import uuid
 from typing import Any, NoReturn, cast
 
@@ -18,6 +19,7 @@ from app.core.time import utc_now
 from app.db.database import get_session_factory
 from app.db.models import (
     ReceiptModel,
+    McpDispatchAttemptModel,
     ReceiptResolutionModel,
     ResolutionChainHeadModel,
 )
@@ -28,7 +30,8 @@ from app.services.signing_keys import (
     sha256_hex,
 )
 
-RESOLUTION_VERSION = "resolution-v0.1"
+RESOLUTION_VERSION = "resolution-v0.2"
+MAX_EVIDENCE_BYTES = 16384
 RESOLUTION_OUTCOMES = frozenset({"confirmed_success", "confirmed_not_delivered"})
 
 
@@ -43,8 +46,8 @@ class _HeadConflict(Exception):
 
 
 def _signed_fields(model: ReceiptResolutionModel) -> dict[str, Any]:
-    return {
-        "version": RESOLUTION_VERSION,
+    fields = {
+        "version": RESOLUTION_VERSION if model.evidence_hash else "resolution-v0.1",
         "resolution_id": model.resolution_id,
         "receipt_id": model.receipt_id,
         "wallet_id": model.wallet_id,
@@ -54,6 +57,24 @@ def _signed_fields(model: ReceiptResolutionModel) -> dict[str, Any]:
         "outcome": model.outcome,
         "created_at": model.created_at,
     }
+
+    if model.evidence_hash is not None:
+        fields["evidence_hash"] = model.evidence_hash
+    return fields
+
+
+def canonical_evidence(evidence: dict[str, Any]) -> tuple[str, str]:
+    try:
+        encoded = canonical_json(evidence)
+        if (
+            not isinstance(evidence, dict)
+            or not evidence
+            or len(encoded.encode("utf-8")) > MAX_EVIDENCE_BYTES
+        ):
+            raise ValueError("evidence size")
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise ReceiptResolutionError("resolution_evidence_invalid") from exc
+    return encoded, sha256_hex(encoded.encode("utf-8"))
 
 
 def resolution_signing_input(
@@ -88,6 +109,15 @@ async def _assert_valid_resolution(
     *,
     expected_outcome: str | None = None,
 ) -> None:
+    if model.evidence_hash is not None:
+        try:
+            encoded, digest = canonical_evidence(json.loads(model.evidence or "null"))
+        except (ValueError, TypeError) as exc:
+            raise ReceiptResolutionError("resolution_integrity_invalid") from exc
+        if encoded != model.evidence or digest != model.evidence_hash:
+            raise ReceiptResolutionError("resolution_integrity_invalid")
+    elif model.evidence is not None:
+        raise ReceiptResolutionError("resolution_integrity_invalid")
     receipt, receipt_input = await _receipt_input(session, model.receipt_id)
     if expected_outcome is not None and model.outcome != expected_outcome:
         raise ReceiptResolutionError("resolution_outcome_conflict")
@@ -272,14 +302,17 @@ async def _assert_head_matches(
             await reject_or_retry()
 
 
-async def append_resolution(receipt_id: str, outcome: str) -> ReceiptResolutionModel:
-    """Sign and append one final outcome; exact webhook replays return its row."""
-    # TODO(SEL-351, PR #187, claude/sel-351): After #187 merges, hook
-    # append_resolution into gateway/app/services/mcp_dispatch_reconciliation.py.
-    # _lookup_status decides the provider outcome; _reconcile_active records it
-    # once via its guarded self._dispatch.complete() call. Append the matching
-    # resolution there after completion; not-delivered uses
-    # STATUS_NOT_DELIVERED_ERROR_CODE. Migration 044 may need renumbering.
+async def append_resolution(
+    receipt_id: str, outcome: str, evidence: dict[str, Any] | None = None
+) -> ReceiptResolutionModel:
+    """Append immutable evidence; replay only an identical outcome and digest.
+
+    Evidence-free calls retain the historical v0.1 format for compatibility.
+    The operator boundary always supplies evidence.
+    """
+    encoded, digest = (
+        canonical_evidence(evidence) if evidence is not None else (None, None)
+    )
     if outcome not in RESOLUTION_OUTCOMES:
         raise ReceiptResolutionError("resolution_outcome_invalid")
 
@@ -287,6 +320,8 @@ async def append_resolution(receipt_id: str, outcome: str) -> ReceiptResolutionM
     if existing is not None:
         if existing.outcome != outcome:
             raise ReceiptResolutionError("resolution_outcome_conflict")
+        if existing.evidence_hash != digest:
+            raise ReceiptResolutionError("resolution_evidence_conflict")
         return existing
 
     # Refuse invalid source receipts before provisioning a new signing key.
@@ -316,6 +351,8 @@ async def append_resolution(receipt_id: str, outcome: str) -> ReceiptResolutionM
                     await _assert_valid_resolution(
                         session, existing, expected_outcome=outcome
                     )
+                    if existing.evidence_hash != digest:
+                        raise ReceiptResolutionError("resolution_evidence_conflict")
                     return existing
 
                 await signing_keys.validate_prepared_signing_key(
@@ -333,6 +370,8 @@ async def append_resolution(receipt_id: str, outcome: str) -> ReceiptResolutionM
                     prev_hash=prev_hash,
                     receipt_hash=sha256_hex(receipt_input.encode("utf-8")),
                     outcome=outcome,
+                    evidence=encoded,
+                    evidence_hash=digest,
                     created_at=utc_now(),
                     payload_hash="",
                     resolution_hash="",
@@ -403,3 +442,39 @@ async def append_resolution(receipt_id: str, outcome: str) -> ReceiptResolutionM
         finally:
             await session.close()
     raise AssertionError("resolution_retry_budget_invalid")
+
+
+async def operator_refund_authorized(session: AsyncSession, attempt_id: str) -> bool:
+    """Validate signed refund intent before releasing a reservation/checkpoint."""
+    attempt = await session.get(McpDispatchAttemptModel, attempt_id)
+    if attempt is None:
+        return False
+    result = (
+        await session.execute(
+            select(ReceiptResolutionModel, ReceiptModel)
+            .join(
+                ReceiptModel,
+                cast(
+                    ColumnElement[bool],
+                    ReceiptModel.receipt_id == ReceiptResolutionModel.receipt_id,
+                ),
+            )
+            .where(
+                cast(
+                    ColumnElement[bool],
+                    ReceiptModel.idempotency_record_id == attempt.idempotency_record_id,
+                )
+            )
+        )
+    ).one_or_none()
+    if result is None:
+        return False
+    resolution, receipt = result
+    await _assert_valid_resolution(session, resolution)
+    evidence = json.loads(resolution.evidence or "{}")
+    return (
+        resolution.outcome == "confirmed_not_delivered"
+        and bool(resolution.evidence_hash)
+        and receipt.ledger_entry_id is not None
+        and evidence.get("refund_entry_id") == f"refund-{receipt.ledger_entry_id}"
+    )

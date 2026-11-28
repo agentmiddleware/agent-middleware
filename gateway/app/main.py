@@ -838,6 +838,7 @@ for router_module in CORE_TRUST_ROUTERS:
         ),
     )
 app.include_router(api_keys.admin_router)
+app.include_router(receipts.admin_router)
 
 # Self-serve dev keys: the handler is triple-gated at runtime (its own
 # ENABLE_DEV_KEY_SELF_PROVISION flag answers 404, production-like environments

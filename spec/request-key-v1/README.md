@@ -3,6 +3,9 @@
 A request key names one intended action. The Python helper derives it from the
 tool name, selected arguments, optional business ID, and optional scope.
 
+The caller mints and owns the key; the helper is an optional client-side
+derivation. Use one key per logical operation and keep it across retries.
+
 The exact input to SHA-256 is the UTF-8 encoding of this JSON object:
 
 ```json
@@ -40,5 +43,10 @@ causes `idempotency_key_reused`; the first result is not replayed. The billing
 REST and MCP REST invoke routes return HTTP 409 for that code. JSON-RPC
 surfaces report it inside their protocol error envelope. Keep the arguments
 sent on a retry the same as the first try.
+
+If an agent regenerates arguments for a retry, a key derived from those
+arguments changes with them, and the retry becomes a new request that can
+dispatch and charge again. A hash of the arguments is therefore a poor
+identity for a retry; persist the key from the first attempt.
 
 Apache 2.0 (gateway is Fair Source, FSL-1.1)

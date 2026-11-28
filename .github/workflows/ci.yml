@@ -625,6 +625,12 @@ jobs:
           package-manager-cache: false
       - name: Test site
         run: node --test site/test_*.mjs
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Test homepage quickstart
+        run: uv run --no-project --isolated --python 3.12 --with "pytest==${PYTEST_VERSION}" --with-editable './sdk/python[verify]' python -m pytest site/test_home_quickstart.py -q -rs
 
   typescript:
     name: Node ${{ matrix.node-version }} / ${{ matrix.project }}

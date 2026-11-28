@@ -542,49 +542,47 @@ async def _check_sentinel(simulation_modes: dict[str, bool]) -> dict[str, Any]:
     return {"status": "up"}
 
 
-async def gather_dependency_report() -> dict[str, Any]:
+async def gather_dependency_report(
+    only: frozenset[str] | None = None,
+) -> dict[str, Any]:
     """
-    Run every dependency check in parallel and return a consolidated report.
+    Run the dependency checks in parallel and return a consolidated report.
 
     Overall status degrades to ``degraded`` if any required dependency
     returns ``down``. ``not_configured`` and ``not_used`` are both
     considered healthy.
+
+    ``only`` limits the probes that are started to the named dependencies and
+    the report to their entries. A probe that is not named is never started,
+    so it makes no outbound call. The unauthenticated route passes
+    ``PUBLIC_DEPENDENCY_KEYS`` when proof surfaces are unmounted: it would
+    discard the other verdicts, so probing Stripe, the LLM provider, the MQTT
+    broker or Sentinel there is outbound work and latency that an anonymous
+    caller could trigger for nothing. ``None`` runs every probe.
     """
     settings = get_settings()
     sim_modes = get_simulation_modes()
 
-    (
-        postgres,
-        redis_res,
-        mqtt,
-        stripe_res,
-        llm,
-        upstream_mcp,
-        signing_key,
-        sentinel,
-    ) = await asyncio.gather(
-        _run_check("postgres", _check_postgres),
-        _run_check("redis", _check_redis),
-        _run_check("mqtt", lambda: _check_mqtt(sim_modes)),
-        _run_check("stripe", _check_stripe),
-        _run_check("llm", lambda: _check_llm(sim_modes)),
-        _run_check("upstream_mcp", _check_upstream_mcp),
-        _run_check("signing_key", _check_signing_key),
-        _run_check("sentinel", lambda: _check_sentinel(sim_modes)),
+    # Declaration order is the order of the keys in the report.
+    probes: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
+        "postgres": _check_postgres,
+        "redis": _check_redis,
+        "mqtt": lambda: _check_mqtt(sim_modes),
+        "stripe": _check_stripe,
+        "llm": lambda: _check_llm(sim_modes),
+        "upstream_mcp": _check_upstream_mcp,
+        "signing_key": _check_signing_key,
+        "sentinel": lambda: _check_sentinel(sim_modes),
+    }
+    selected = [name for name in probes if only is None or name in only]
+    results = await asyncio.gather(
+        *(_run_check(name, probes[name]) for name in selected)
     )
-
-    dependencies = {
-        "postgres": postgres,
-        "redis": redis_res,
+    dependencies = dict(zip(selected, results, strict=True))
+    if "mqtt" in dependencies:
         # The full report is served unauthenticated wherever proof surfaces
         # are mounted, so the broker address is projected out here too.
-        "mqtt": _public_mqtt_probe(mqtt),
-        "stripe": stripe_res,
-        "llm": llm,
-        "upstream_mcp": upstream_mcp,
-        "signing_key": signing_key,
-        "sentinel": sentinel,
-    }
+        dependencies["mqtt"] = _public_mqtt_probe(dependencies["mqtt"])
 
     unhealthy = [
         name for name, r in dependencies.items() if r.get("status") not in _OK_STATUSES

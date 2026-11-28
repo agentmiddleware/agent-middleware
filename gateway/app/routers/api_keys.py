@@ -556,7 +556,7 @@ async def emergency_revoke(
 )
 async def get_rotation_logs(
     wallet_id: str,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=200),
     auth: AuthContext = Depends(get_auth_context),
 ):
     """Get rotation audit logs for a wallet."""

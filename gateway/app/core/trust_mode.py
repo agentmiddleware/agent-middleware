@@ -147,6 +147,7 @@ def validate_trust_mode_config(
     allow_unsafe_host_python_sandbox: bool = False,
     behavioral_sandbox_python_backend: str = "",
     redis_url: str = "",
+    allow_in_memory_store: bool = False,
     public_url: str = "",
     database_url: str = "",
     cors_origins: str = "",
@@ -219,6 +220,15 @@ def validate_trust_mode_config(
             violations.append(
                 "REDIS_URL is required when ENABLE_DEMO_TENANT is true in "
                 "production-like environments (issuance limits must be shared)"
+            )
+        if not (redis_url or "").strip() and not allow_in_memory_store:
+            violations.append(
+                "REDIS_URL is required in production-like environments for "
+                "shared rate limiting and state. The in-memory store is per "
+                "process and multiplies rate limits by the worker count. Set "
+                "REDIS_URL to a shared Redis instance, or set "
+                "ALLOW_IN_MEMORY_STORE=true to use the in-memory store "
+                "(reported as degraded)"
             )
         if enable_public_mcp_endpoint:
             violations.append(
@@ -327,6 +337,7 @@ def validate_trust_mode_guardrails(settings: Settings) -> None:
         allow_unsafe_host_python_sandbox=settings.ALLOW_UNSAFE_HOST_PYTHON_SANDBOX,
         behavioral_sandbox_python_backend=settings.BEHAVIORAL_SANDBOX_PYTHON_BACKEND,
         redis_url=settings.REDIS_URL,
+        allow_in_memory_store=settings.ALLOW_IN_MEMORY_STORE,
         public_url=settings.PUBLIC_URL,
         database_url=settings.DATABASE_URL,
         enable_dogfood_tool=settings.ENABLE_DOGFOOD_TOOL,

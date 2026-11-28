@@ -318,6 +318,13 @@ async def verify_passkey(
         return replayed
 
     try:
+        # Rejections that need no assertion work and change no challenge
+        # state are known failures with nothing done, so they run before
+        # dispatch: raise_awi_http_error then refunds the debit and receipts
+        # failed_refunded instead of keeping it as delivery_uncertain. They
+        # run after the replay check so a same-key retry of a success still
+        # gets its stored receipt, not "Challenge already verified".
+        webauthn.precheck_response(request.challenge_id, request.credential)
         gov.dispatch_started = True
         result = await webauthn.verify_response(
             challenge_id=request.challenge_id,

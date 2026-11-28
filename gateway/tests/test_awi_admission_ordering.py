@@ -59,6 +59,7 @@ async def prepare(client, monkeypatch, tool="awi_execute", *, max_credits=50):
     monkeypatch.setattr(
         webauthn, "get_challenge", lambda _: SimpleNamespace(session_id=sid)
     )
+    monkeypatch.setattr(webauthn, "precheck_response", lambda *_: None)
     monkeypatch.setitem(_DOM_SESSION_WALLETS, sid, wallet)
     monkeypatch.setattr(
         bridge, "get_session", AsyncMock(return_value=SimpleNamespace(session_id=sid))

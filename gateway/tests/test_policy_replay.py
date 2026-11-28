@@ -254,14 +254,14 @@ def test_only_targeted_calls_flip_allow_to_deny(tmp_path):
             assert claims["change"] == "unchanged", source
             assert claims["new_decision"] == "deny"
         else:
-            # Approval-holding successes satisfy the new approval rule, but the
-            # goldens record no tier and the bundle's default medium ceiling
-            # still applies, so replay fails closed on the unknown tier.
+            # Approval-holding successes satisfy the new approval rule. The
+            # goldens record no tier, like every real receipt, and the bundle
+            # states none, so the default ceiling is not an unknown input.
             assert claims["old_decision"] == "allow"
-            assert claims["new_decision"] == "deny"
-            assert claims["new_reason"] == "replay_input_unknown:risk_tier"
-            assert claims["unevaluated_constraints"] == ["risk_tier"]
-            assert claims["change"] == "allow_to_deny"
+            assert claims["new_decision"] == "allow"
+            assert claims["new_reason"] == "allowed"
+            assert claims["unevaluated_constraints"] == []
+            assert claims["change"] == "unchanged"
 
 
 def test_only_targeted_calls_flip_untargeted_rules_change_nothing(tmp_path):
@@ -314,11 +314,10 @@ def test_summary_counts_match_receipts(tmp_path):
     ]
     changes = [_claims(r)["change"] for r in receipts]
     assert summary["total"] == len(receipts) == GOLDEN_COUNT
-    assert (
-        summary["allow_to_deny"] == changes.count("allow_to_deny") == GOLDEN_COUNT - 1
-    )
+    targeted = len(NO_APPROVAL_SUCCESSES)
+    assert summary["allow_to_deny"] == changes.count("allow_to_deny") == targeted
     assert summary["deny_to_allow"] == changes.count("deny_to_allow") == 0
-    assert summary["unchanged"] == changes.count("unchanged") == 1
+    assert summary["unchanged"] == changes.count("unchanged") == GOLDEN_COUNT - targeted
     assert (
         summary["allow_to_deny"] + summary["deny_to_allow"] + summary["unchanged"]
         == summary["total"]
@@ -489,16 +488,25 @@ def test_replay_recorded_risk_tier_reaches_policy(tmp_path):
     assert _claims(result.receipts[0])["new_reason"] == "risk_tier_not_allowed"
 
 
-def test_replay_default_risk_ceiling_denies_unknown_tier(tmp_path):
-    # A bundle that omits risk_tier still carries the default medium ceiling,
-    # so a recorded call with no tier fails closed like an explicit ceiling.
+def test_replay_default_risk_ceiling_with_unknown_tier(tmp_path):
+    # A bundle that omits risk_tier carries the default medium ceiling, but
+    # the gateway never records a tier and never compares that default on
+    # invoke (#365), so a recorded call with no tier is not an unknown input.
     for document in ({}, {"allowed_tools": ["golden-path-echo"]}):
         calls = load_recorded_calls(_record_file(tmp_path, _record_payload()))
         result = replay_calls(calls, load_policy_bundle(_bundle(tmp_path, document)))
         claims = _claims(result.receipts[0])
-        assert claims["new_decision"] == "deny"
-        assert claims["new_reason"] == "replay_input_unknown:risk_tier"
-        assert claims["unevaluated_constraints"] == ["risk_tier"]
+        assert claims["new_decision"] == "allow"
+        assert claims["unevaluated_constraints"] == []
+    # A stated ceiling, even the default value, still fails closed.
+    calls = load_recorded_calls(_record_file(tmp_path, _record_payload()))
+    result = replay_calls(
+        calls, load_policy_bundle(_bundle(tmp_path, {"risk_tier": "medium"}))
+    )
+    claims = _claims(result.receipts[0])
+    assert claims["new_reason"] == "replay_input_unknown:risk_tier"
+    assert claims["unevaluated_constraints"] == ["risk_tier"]
+    # The default ceiling is still enforced against a recorded tier.
     bundle_path = _bundle(tmp_path, {})
     calls = load_recorded_calls(
         _record_file(tmp_path, _record_payload(risk_tier="medium"), name="m.json")
@@ -1605,3 +1613,141 @@ def test_cli_rename_failure_in_fresh_out_dir_leaves_no_files(
     assert not out.exists() or list(out.iterdir()) == []
     if out.exists():
         assert list(out.glob("*.tmp")) == []
+
+
+# --- 25. real gateway receipts carry no risk_tier (#365) ----------------------
+
+
+@pytest.fixture
+def configured_signing_key(monkeypatch):
+    """The issue's posture: trust mode on, an operator-supplied signing key."""
+    import base64
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        NoEncryption,
+        PrivateFormat,
+    )
+
+    import app.services.signing_keys as signing_keys
+    from app.core.config import get_settings
+
+    raw = Ed25519PrivateKey.generate().private_bytes(
+        Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+    )
+    monkeypatch.setenv("TRUST_MODE_ENABLED", "true")
+    monkeypatch.setenv("TRUST_SIGNING_KEY_ID", "replay")
+    monkeypatch.setenv("TRUST_SIGNING_PRIVATE_KEY_B64", base64.b64encode(raw).decode())
+    get_settings.cache_clear()
+    monkeypatch.setattr(signing_keys, "_signing_key_service", None)
+    yield
+    get_settings.cache_clear()
+
+
+def test_real_receipts_carry_no_risk_tier():
+    """The corpus is shaped like what the gateway signs: no tier on record."""
+    for call in _calls():
+        assert "risk_tier" not in call.payload, call.source
+
+
+def test_real_receipts_replay_as_unchanged_allows(
+    tmp_path, capsys, configured_signing_key
+):
+    """#365: a bundle that allows the recorded tool and sets no risk_tier
+    must not flip every real recorded allow to replay_input_unknown."""
+    out = tmp_path / "out"
+    code = replay_main(
+        [
+            "--bundle",
+            str(
+                _bundle(
+                    tmp_path,
+                    {"policies": [{"allowed_tools": ["golden-path-echo"]}]},
+                )
+            ),
+            "--calls",
+            str(GOLDEN_DIR),
+            "--recorded-keys",
+            str(SPEC_KEYS),
+            "--require-verified",
+            "--out",
+            str(out),
+        ]
+    )
+    assert code == 0, capsys.readouterr().err
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["total"] == GOLDEN_COUNT
+    assert summary["allow_to_deny"] == 0
+    assert summary["deny_to_allow"] == 0
+    assert summary["unchanged"] == GOLDEN_COUNT
+    receipts = [
+        _claims(json.loads(line))
+        for line in (out / "receipts.jsonl").read_text().splitlines()
+    ]
+    allows = [c for c in receipts if c["old_decision"] == "allow"]
+    assert len(allows) == GOLDEN_COUNT - 1
+    for claims in allows:
+        assert claims["new_decision"] == "allow"
+        assert claims["new_reason"] == "allowed"
+        assert claims["unevaluated_constraints"] == []
+    (denial,) = [c for c in receipts if c["old_decision"] == "deny"]
+    assert denial["new_reason"] == "recorded_denial:permit_budget_exceeded"
+    keys = json.loads((out / "keys.json").read_text())
+    assert keys["keys"][0]["kid"] == "replay"
+
+
+def test_real_receipts_still_fail_closed_on_an_explicit_tier(tmp_path):
+    """A ceiling the bundle states cannot be shown to hold without a tier."""
+    for tier in ("low", "medium"):
+        result = replay_calls(
+            _calls(),
+            load_policy_bundle(
+                _bundle(
+                    tmp_path,
+                    {"allowed_tools": ["golden-path-echo"], "risk_tier": tier},
+                )
+            ),
+        )
+        for receipt in result.receipts:
+            claims = _claims(receipt)
+            if claims["old_decision"] == "allow":
+                assert claims["new_reason"] == "replay_input_unknown:risk_tier"
+                assert claims["unevaluated_constraints"] == ["risk_tier"]
+
+
+def test_stated_tier_counts_only_for_applicable_policies(tmp_path):
+    """Explicitness is per policy and applies after the wallet filter."""
+    from app.replay.policy_replay import PolicyBundle
+
+    calls = load_recorded_calls(_record_file(tmp_path, _record_payload()))
+    bundle = load_policy_bundle(
+        _bundle(
+            tmp_path,
+            {
+                "policies": [
+                    {"allowed_tools": ["golden-path-echo"]},
+                    {"wallet_id": "agt-other", "risk_tier": "low"},
+                ]
+            },
+        )
+    )
+    assert bundle.risk_tier_explicit == (False, True)
+    claims = _claims(replay_calls(calls, bundle).receipts[0])
+    assert claims["new_decision"] == "allow"
+    assert claims["unevaluated_constraints"] == []
+    # A bundle built without the explicitness record fails closed.
+    hand_built = PolicyBundle(document=bundle.document, models=bundle.models)
+    claims = _claims(replay_calls(calls, hand_built).receipts[0])
+    assert claims["new_reason"] == "replay_input_unknown:risk_tier"
+
+
+def test_cli_help_names_signing_env(capsys):
+    with pytest.raises(SystemExit) as exc:
+        replay_main(["--help"])
+    assert exc.value.code == 0
+    text = capsys.readouterr().out
+    assert "TRUST_SIGNING_PRIVATE_KEY_B64" in text
+    assert "TRUST_SIGNING_KEY_ID" in text
+    assert "TRUST_MODE_ENABLED" in text
+    assert "\u2014" not in text and "\u2013" not in text

@@ -1,0 +1,9 @@
+Illustrative output shape only. Placeholders stand for actual run values.
+First receipt: <receipt_id> outcome: success credits_charged: <credits_charged>
+Replay receipt: <same_receipt_id>
+Local denial: permit_tool_not_allowed; HTTP requests: 0
+No permit denial: -32003 permit_required
+Offline Ed25519 receipt verification: verified
+Tool executions: 1
+Receipt: examples/langgraph-permit/output/receipt-bundle.json
+Public keys: examples/langgraph-permit/output/trust-keys.json

@@ -24,6 +24,15 @@ not the supported design-partner deployment path.
 
 ## Available Examples
 
+### LangGraph agent with AMW permits
+
+[Run the local LangGraph example](langgraph-permit/README.md) to call a mock
+notes tool through a compiled graph with a permit and an explicit idempotency
+key. It verifies the signed receipt offline, replays the same call, and shows
+both gateway and local permit denials. Everything runs in process with memory
+storage for the tool and temporary database state. No model, external service
+or proof surfaces are needed.
+
 ### `one_tool_call.py`: Minimal permit for one tool call
 
 The smallest real example of a permit-governed tool invocation: start a local

@@ -5,10 +5,10 @@ scoped signed permit, governed MCP invoke, wallet charge, signed receipt,
 ledger entry, audit chain, replay safety, and out-of-scope denial.
 
 This guide proves technical fit. It does not by itself prove customer demand.
-Use the interview funnel, commercial evidence gate, and partner-owned pilot
-acceptance test in
-`docs/30-day-customer-validation.md` (not included in this repository; the
-in-repo pass/fail criteria are in [docs/partner-first-tool-runbook.md](docs/partner-first-tool-runbook.md)).
+Use the [pilot evaluation packet](docs/pilot-evaluation-packet.md) to record
+the partner's problem, agreed scope, baseline, test evidence, and buying
+decision. The technical and commercial pass/fail criteria remain in the
+[first-tool runbook](docs/partner-first-tool-runbook.md#pass--fail).
 
 For the concise route through local evaluation, integration, SDK, security, and
 pilot material, use the [documentation guide](docs/README.md).

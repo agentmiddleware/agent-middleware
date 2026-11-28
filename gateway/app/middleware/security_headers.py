@@ -103,6 +103,8 @@ _PUBLIC_DISCOVERY_PATHS = frozenset(
         "/DESIGN_PARTNER_GUIDE.md",
         "/docs/partner-api-key-bootstrap.md",
         "/docs/agent-accountability.md",
+        "/docs/static-dev-api-keys.md",
+        "/docs/awi-adoption-guide.md",
         "/dashboard",
     }
 )

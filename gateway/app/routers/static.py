@@ -33,6 +33,11 @@ _MARKDOWN_DOCS: dict[str, Path] = {
     "/docs/concepts/request-keys": (
         _REPO_ROOT / "docs" / "concepts" / "request-keys.md"
     ),
+    # Linked from authentication.dev_self_provision.docs.
+    "/docs/static-dev-api-keys.md": _REPO_ROOT / "docs" / "static-dev-api-keys.md",
+    # Linked from documentation.awi_guide and /v1/discover only while
+    # ENABLE_PROOF_SURFACES=true; the route answers 404 otherwise.
+    "/docs/awi-adoption-guide.md": _REPO_ROOT / "docs" / "awi-adoption-guide.md",
 }
 
 
@@ -171,6 +176,34 @@ async def get_agent_accountability_md():
 )
 async def get_request_keys_md():
     return _serve_markdown("/docs/concepts/request-keys")
+
+
+@router.get(
+    "/docs/static-dev-api-keys.md",
+    summary="Static dev API keys",
+    description="Local-only dev key class and the dev self-provision endpoint.",
+    response_class=_MarkdownResponse,
+)
+async def get_static_dev_api_keys_md():
+    return _serve_markdown("/docs/static-dev-api-keys.md")
+
+
+@router.get(
+    "/docs/awi-adoption-guide.md",
+    summary="AWI adoption guide",
+    description=(
+        "AWI proof surface guide. Served only when ENABLE_PROOF_SURFACES=true, "
+        "the only posture that links to it."
+    ),
+    response_class=_MarkdownResponse,
+    include_in_schema=get_settings().ENABLE_PROOF_SURFACES,
+)
+async def get_awi_adoption_guide_md():
+    if not get_settings().ENABLE_PROOF_SURFACES:
+        raise HTTPException(
+            status_code=404, detail="/docs/awi-adoption-guide.md not found"
+        )
+    return _serve_markdown("/docs/awi-adoption-guide.md")
 
 
 @router.get(

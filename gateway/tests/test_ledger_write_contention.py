@@ -40,12 +40,18 @@ from app.services.ownership import CallerIdentity
 from app.db.models import McpDispatchAttemptModel
 from app.main import app
 from app.schemas.billing import ServiceCategory
+from app.services.agent_money import AgentMoney
 from app.services.billing_engine import BillingEngine
-from app.services.idempotency import get_idempotency_service
+from app.services.idempotency import (
+    GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
+    IdempotencyService,
+    get_idempotency_service,
+)
 from app.services.mcp_dispatch_reconciliation import (
     get_mcp_dispatch_reconciliation_service,
 )
 from app.services.permits import get_permit_service
+from app.services.quotes import QuoteService
 from app.services.service_registry import get_service_registry
 from tests.test_mcp_upstream_governed import FakeUpstreamExecutor
 from tests.test_trust_helpers import (
@@ -688,3 +694,475 @@ async def test_a_capped_permit_can_still_spend_its_call_after_contention(
     body = retry.json()
     assert "error" not in body, body
     assert runs["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Pre-charge faults must release the quote, the reservation and the record.
+#
+# These faults are injected at the exact call that raises (the debit, the wallet
+# policy, the daily-spend read), one shot each, so the retry runs against the
+# state the first call left behind. Reservation counters are read from storage:
+# a status code alone cannot tell a release from a double release.
+# ---------------------------------------------------------------------------
+
+
+def _one_shot(error: BaseException, real: Any) -> tuple[Any, dict[str, int]]:
+    """Wrap ``real`` so its first call raises ``error`` and later calls pass."""
+    state = {"calls": 0}
+
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise error
+        return await real(*args, **kwargs)
+
+    return wrapper, state
+
+
+def _fail_once_on(
+    monkeypatch: Any, cls: type, name: str, error: BaseException
+) -> dict[str, int]:
+    """Make the first call to ``cls.name`` raise ``error``, then pass through.
+
+    Patched on the class, never on a singleton instance. ``monkeypatch`` puts an
+    instance attribute back by assigning the saved bound method, which on some
+    pytest releases leaves a shadow behind; a later test that patches the class
+    would then be bypassed on that instance. A class attribute restores exactly.
+    """
+    real = cls.__dict__[name]
+    state = {"calls": 0}
+
+    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise error
+        return await real(self, *args, **kwargs)
+
+    monkeypatch.setattr(cls, name, wrapper)
+    return state
+
+
+async def _capped_governed_call(
+    client: AsyncClient, tool_name: str, *, with_quote: bool, idem_key: str
+) -> tuple[dict[str, Any], dict[str, Any], str, str | None]:
+    from tests.test_permit_reservation_unwind import _create_capped_permit
+
+    ctx = await provision_agent_wallet(client)
+    permit_id = await _create_capped_permit(
+        client,
+        wallet_id=ctx["agent_wallet_id"],
+        key_id=ctx["key_id"],
+        tool_name=tool_name,
+        max_calls=1,
+        idem_key=f"{idem_key}-permit",
+    )
+    body = _call_body(
+        tool_name=tool_name,
+        wallet_id=ctx["agent_wallet_id"],
+        permit_id=permit_id,
+        idempotency_key=idem_key,
+    )
+    quote_id: str | None = None
+    if with_quote:
+        from app.services.quotes import get_quote_service
+
+        quote = await get_quote_service().create_quote(
+            wallet_id=ctx["agent_wallet_id"],
+            tool=tool_name,
+            quoted_credits=Decimal(str(TOOL_COST)),
+            category=ServiceCategory.AGENT_COMMS.value,
+        )
+        quote_id = quote.quote_id
+        body["params"]["mcpContext"]["quote_id"] = quote_id
+    return ctx, body, permit_id, quote_id
+
+
+async def _quote_status(quote_id: str) -> str:
+    from app.services.quotes import get_quote_service
+
+    quote = await get_quote_service().get_quote(quote_id)
+    assert quote is not None
+    return str(quote.status)
+
+
+async def _record(ctx: dict[str, Any], key: str) -> Any:
+    return await get_idempotency_service().get_record(
+        wallet_id=ctx["agent_wallet_id"],
+        endpoint=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
+        idempotency_key=key,
+    )
+
+
+@pytest.mark.anyio
+async def test_quote_is_released_when_the_debit_is_contended_once(
+    client: AsyncClient, clean_database: None, governed_tool, monkeypatch
+) -> None:
+    """The retry the contention answer advises must keep its locked price."""
+    from app.services.billing_engine import LedgerWriteContendedError
+    from tests.test_permit_reservation_unwind import _calls_made
+
+    tool_name, runs = governed_tool
+    ctx, body, permit_id, quote_id = await _capped_governed_call(
+        client, tool_name, with_quote=True, idem_key="prefault-quote-1"
+    )
+    assert quote_id is not None
+    state = _fail_once_on(
+        monkeypatch, AgentMoney, "charge", LedgerWriteContendedError()
+    )
+
+    first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert first.json()["error"]["message"] == "ledger_write_contended", first.text
+    assert state["calls"] == 1
+    # Nothing moved, and everything the call held is back: the quote, the
+    # credits, the per-tool use and the key.
+    assert await _quote_status(quote_id) == "active"
+    assert await _spent_credits(permit_id) == Decimal("0")
+    assert await _calls_made(permit_id, tool_name) == 0
+    assert await _record(ctx, "prefault-quote-1") is None
+    assert runs["count"] == 0
+
+    second = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert second.status_code == 200, second.text
+    assert "error" not in second.json(), second.text
+    assert second.json()["result"]["receipt"]["outcome"] == "success"
+    assert await _quote_status(quote_id) == "consumed"
+    assert (
+        await _debit_count(
+            client, ctx["agent_wallet_id"], ctx["agent_headers"], tool_name
+        )
+        == 1
+    )
+    assert await _spent_credits(permit_id) == Decimal(str(TOOL_COST))
+    assert await _calls_made(permit_id, tool_name) == 1
+    assert runs["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_the_reservation_goes_back_exactly_once_on_a_contended_debit(
+    client: AsyncClient, clean_database: None, governed_tool, monkeypatch
+) -> None:
+    """Adding the quote release must not add a second reservation release."""
+    from app.routers import mcp as mcp_router
+    from app.services.billing_engine import LedgerWriteContendedError
+
+    tool_name, _ = governed_tool
+    ctx, body, _permit_id, _quote_id = await _capped_governed_call(
+        client, tool_name, with_quote=True, idem_key="prefault-once-1"
+    )
+    _fail_once_on(monkeypatch, AgentMoney, "charge", LedgerWriteContendedError())
+    real_release = mcp_router._release_local_permit_reservation
+    releases: list[str] = []
+
+    async def counted(*args: Any, **kwargs: Any) -> None:
+        releases.append(str(kwargs.get("reason")))
+        await real_release(*args, **kwargs)
+
+    monkeypatch.setattr(mcp_router, "_release_local_permit_reservation", counted)
+    first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert first.json()["error"]["message"] == "ledger_write_contended", first.text
+    assert releases == ["ledger_write_contended"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failing", ["evaluate_wallet_policy", "get_daily_spend"])
+async def test_the_key_is_freed_when_the_wallet_policy_raises_once(
+    client: AsyncClient,
+    clean_database: None,
+    governed_tool,
+    monkeypatch,
+    failing: str,
+) -> None:
+    """A generic fault after the record begins and before any charge."""
+    from app.routers import mcp as mcp_router
+    from tests.test_permit_reservation_unwind import _calls_made
+
+    tool_name, runs = governed_tool
+    key = f"prefault-policy-{failing}"
+    ctx, body, permit_id, _ = await _capped_governed_call(
+        client, tool_name, with_quote=False, idem_key=key
+    )
+    if failing == "evaluate_wallet_policy":
+        wrapper, state = _one_shot(
+            RuntimeError("policy backend down"), mcp_router.evaluate_wallet_policy
+        )
+        monkeypatch.setattr(mcp_router, "evaluate_wallet_policy", wrapper)
+    else:
+        state = _fail_once_on(
+            monkeypatch,
+            AgentMoney,
+            "get_daily_spend",
+            RuntimeError("spend read failed"),
+        )
+
+    first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert first.json()["error"]["message"] == "internal_error", first.text
+    assert state["calls"] == 1
+    assert await _record(ctx, key) is None
+    # The reserve comes after the policy check, so nothing was ever held.
+    assert await _spent_credits(permit_id) == Decimal("0")
+    assert await _calls_made(permit_id, tool_name) == 0
+
+    second = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert second.status_code == 200, second.text
+    assert "error" not in second.json(), second.text
+    assert second.json()["result"]["receipt"]["outcome"] == "success"
+    assert await _spent_credits(permit_id) == Decimal(str(TOOL_COST))
+    assert await _calls_made(permit_id, tool_name) == 1
+    assert runs["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_a_fault_after_the_charge_keeps_the_record_and_the_quote(
+    client: AsyncClient, clean_database: None, governed_tool, monkeypatch
+) -> None:
+    """Negative: once the debit committed, nothing may be handed back."""
+    tool_name, runs = governed_tool
+    key = "postcharge-keep-1"
+    ctx, body, permit_id, quote_id = await _capped_governed_call(
+        client, tool_name, with_quote=True, idem_key=key
+    )
+    assert quote_id is not None
+    state = _fail_once_on(
+        monkeypatch, IdempotencyService, "mark_charged", RuntimeError("checkpoint lost")
+    )
+
+    first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert first.json()["error"]["message"] == "internal_error", first.text
+    assert state["calls"] == 1
+    monkeypatch.undo()
+
+    assert (
+        await _debit_count(
+            client, ctx["agent_wallet_id"], ctx["agent_headers"], tool_name
+        )
+        == 1
+    )
+    assert await _quote_status(quote_id) == "consumed"
+    assert await _record(ctx, key) is not None
+    assert await _spent_credits(permit_id) == Decimal(str(TOOL_COST))
+    assert runs["count"] == 0
+
+
+@pytest.mark.anyio
+async def test_abandon_never_deletes_a_record_with_a_response_or_a_ledger_entry(
+    client: AsyncClient, clean_database: None, governed_tool, monkeypatch
+) -> None:
+    """Negative: the backstop every pre-charge release relies on.
+
+    Both records come from the real governed path. The answered one is an
+    insufficient-funds denial: a stored response and no debit. The charged one
+    is a call whose debit committed and whose response then failed to persist:
+    a ledger entry and no response. Each is refused on its own evidence.
+    """
+    from tests.test_permit_reservation_unwind import _set_balance
+
+    tool_name, runs = governed_tool
+    idem = get_idempotency_service()
+    ctx = await provision_agent_wallet(client)
+    wallet = ctx["agent_wallet_id"]
+    permit = await create_tool_permit(
+        client,
+        wallet_id=wallet,
+        key_id=ctx["key_id"],
+        tool_name=tool_name,
+        max_credits=50,
+        idem_key="guard-permit",
+    )
+
+    await _set_balance(wallet, "1")
+    denied = await client.post(
+        "/mcp/messages",
+        json=_call_body(
+            tool_name=tool_name,
+            wallet_id=wallet,
+            permit_id=permit["permit_id"],
+            idempotency_key="guard-answered",
+        ),
+        headers=ctx["agent_headers"],
+    )
+    assert denied.json()["error"]["message"] == "insufficient_funds", denied.text
+    await _set_balance(wallet, "1000")
+
+    async def response_lost(self: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("checkpoint lost")
+
+    monkeypatch.setattr(IdempotencyService, "complete", response_lost)
+    charged_call = await client.post(
+        "/mcp/messages",
+        json=_call_body(
+            tool_name=tool_name,
+            wallet_id=wallet,
+            permit_id=permit["permit_id"],
+            idempotency_key="guard-charged",
+        ),
+        headers=ctx["agent_headers"],
+    )
+    monkeypatch.undo()
+    assert charged_call.json()["error"]["message"] == "internal_error"
+    assert runs["count"] == 1
+
+    answered = await _record(ctx, "guard-answered")
+    charged = await _record(ctx, "guard-charged")
+    assert answered is not None and charged is not None
+    # Each record carries exactly one of the two pieces of evidence.
+    assert answered.response_json is not None
+    assert not answered.ledger_entry_id
+    assert charged.response_json is None
+    assert charged.ledger_entry_id
+    for key, record in (("guard-answered", answered), ("guard-charged", charged)):
+        assert (
+            await idem.abandon(
+                wallet_id=wallet,
+                endpoint=GOVERNED_MCP_IDEMPOTENCY_ENDPOINT,
+                idempotency_key=key,
+                expected_record_id=record.record_id,
+            )
+            is False
+        )
+        assert await _record(ctx, key) is not None
+
+
+@pytest.mark.anyio
+async def test_a_fault_after_the_reserve_does_not_free_the_key_over_a_held_reservation(
+    client: AsyncClient, clean_database: None, governed_tool, monkeypatch
+) -> None:
+    """Negative: the generic abandon stops at the reserve.
+
+    Past the reserve the call holds a permit reservation that this wrapper cannot
+    hand back exactly once, so freeing the key there would let the retry reserve
+    a second time on top of the first. The record stays, as it did before.
+    """
+    from tests.test_permit_reservation_unwind import _calls_made
+
+    tool_name, runs = governed_tool
+    key = "afterreserve-keep-1"
+    ctx, body, permit_id, quote_id = await _capped_governed_call(
+        client, tool_name, with_quote=True, idem_key=key
+    )
+    state = _fail_once_on(
+        monkeypatch, QuoteService, "consume", RuntimeError("quote store down")
+    )
+
+    first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert first.json()["error"]["message"] == "internal_error", first.text
+    assert state["calls"] == 1
+    monkeypatch.undo()
+
+    assert await _record(ctx, key) is not None
+    assert await _spent_credits(permit_id) == Decimal(str(TOOL_COST))
+    assert await _calls_made(permit_id, tool_name) == 1
+    assert runs["count"] == 0
+
+
+def _unexpected_value_error(kind: str) -> ValueError:
+    """The unexpected ValueError shapes a library or driver can raise."""
+    if kind == "json_decode":
+        import json
+
+        return json.JSONDecodeError("Expecting value", "", 0)
+    return ValueError("stored value could not be read")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failing", ["evaluate_wallet_policy", "get_daily_spend"])
+@pytest.mark.parametrize("kind", ["value_error", "json_decode"])
+async def test_an_unexpected_value_error_before_the_reserve_frees_the_key(
+    client: AsyncClient,
+    clean_database: None,
+    governed_tool,
+    monkeypatch,
+    failing: str,
+    kind: str,
+) -> None:
+    """ValueError subclasses are not all deliberate outcomes.
+
+    A ``json.JSONDecodeError`` or a driver error is a ValueError too. Raised
+    after the record is granted and before the reserve, it must free the key
+    like any other pre-charge fault, with the quote untouched and nothing
+    debited, or the retry meets ``idempotency_in_progress`` forever.
+    """
+    from app.routers import mcp as mcp_router
+    from tests.test_permit_reservation_unwind import _calls_made
+
+    tool_name, runs = governed_tool
+    key = f"prefault-valueerror-{kind}-{failing}"
+    ctx, body, permit_id, quote_id = await _capped_governed_call(
+        client, tool_name, with_quote=True, idem_key=key
+    )
+    assert quote_id is not None
+    error = _unexpected_value_error(kind)
+    if failing == "evaluate_wallet_policy":
+        wrapper, state = _one_shot(error, mcp_router.evaluate_wallet_policy)
+        monkeypatch.setattr(mcp_router, "evaluate_wallet_policy", wrapper)
+    else:
+        state = _fail_once_on(monkeypatch, AgentMoney, "get_daily_spend", error)
+
+    first = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert first.json()["error"]["message"] == "internal_error", first.text
+    assert state["calls"] == 1
+    assert await _record(ctx, key) is None
+    assert await _quote_status(quote_id) == "active"
+    assert (
+        await _debit_count(
+            client, ctx["agent_wallet_id"], ctx["agent_headers"], tool_name
+        )
+        == 0
+    )
+    assert await _spent_credits(permit_id) == Decimal("0")
+    assert await _calls_made(permit_id, tool_name) == 0
+    assert runs["count"] == 0
+
+    second = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert second.status_code == 200, second.text
+    assert "error" not in second.json(), second.text
+    assert await _quote_status(quote_id) == "consumed"
+    assert (
+        await _debit_count(
+            client, ctx["agent_wallet_id"], ctx["agent_headers"], tool_name
+        )
+        == 1
+    )
+    assert runs["count"] == 1
+
+
+@pytest.mark.anyio
+async def test_a_deliberate_value_error_keeps_its_own_cleanup(
+    client: AsyncClient, clean_database: None, monkeypatch
+) -> None:
+    """A classified ValueError still takes the path it always took.
+
+    "Tool not found" on a permitted call releases its own record before it
+    raises; the wrapper must neither change that answer nor touch the record
+    again.
+    """
+    from tests.test_permit_reservation_unwind import _create_capped_permit
+
+    absent_tool = "contention-absent-tool"
+    ctx = await provision_agent_wallet(client)
+    permit_id = await _create_capped_permit(
+        client,
+        wallet_id=ctx["agent_wallet_id"],
+        key_id=ctx["key_id"],
+        tool_name=absent_tool,
+        max_calls=1,
+        idem_key="prefault-absent-permit",
+    )
+    body = _call_body(
+        tool_name=absent_tool,
+        wallet_id=ctx["agent_wallet_id"],
+        permit_id=permit_id,
+        idempotency_key="prefault-absent-1",
+    )
+    abandons: list[str] = []
+    real_abandon = IdempotencyService.abandon
+
+    async def counted_abandon(self: Any, **kwargs: Any) -> bool:
+        abandons.append(str(kwargs.get("idempotency_key")))
+        return await real_abandon(self, **kwargs)
+
+    monkeypatch.setattr(IdempotencyService, "abandon", counted_abandon)
+    resp = await client.post("/mcp/messages", json=body, headers=ctx["agent_headers"])
+    assert resp.json()["error"]["code"] == -32001, resp.text
+    # Released once by the branch that raised, never again by the wrapper.
+    assert abandons == ["prefault-absent-1"]
+    assert await _record(ctx, "prefault-absent-1") is None

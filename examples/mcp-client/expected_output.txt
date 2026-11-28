@@ -3,5 +3,6 @@
 # characters. Local gateway (make quickstart), tool partner.notes.write,
 # same idempotency key on both calls. The retry returns the original
 # signed receipt: both receipt ids match.
+idempotency key: mcp-example-...
 first receipt: rcpt-9f2c41a7b6e04d21 outcome: success
 retry receipt: rcpt-9f2c41a7b6e04d21 outcome: success

@@ -4,8 +4,7 @@
       "type": "http",
       "url": "http://127.0.0.1:8000/mcp",
       "headers": {
-        "X-API-Key": "${AGENT_API_KEY}",
-        "Idempotency-Key": "${AMW_IDEMPOTENCY_KEY}"
+        "X-API-Key": "${AGENT_API_KEY}"
       }
     }
   }

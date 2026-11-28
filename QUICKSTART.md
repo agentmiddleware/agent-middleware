@@ -91,9 +91,18 @@ Run the included client using the official MCP Python SDK:
 uv run --with "mcp>=1.29,<2" python ../examples/mcp-client/call_with_retry.py
 ```
 
-It prints `first receipt: rcpt-...` and `retry receipt: rcpt-...` with the
-same receipt ID. For an unchanged request,
-a retry with the same key returns the original receipt instead of dispatching again.
+```text
+idempotency key: mcp-example-...
+first receipt: rcpt-... outcome: success
+retry receipt: rcpt-... outcome: success   <- the same id: no second dispatch, no second debit
+```
+
+For an unchanged request, a retry with the same key returns the original
+receipt instead of dispatching again. If the script stops after printing the
+key, run it again with `AMW_IDEMPOTENCY_KEY` set to that value. A new key would
+be a second charge. The `mcp.json` config does not set an idempotency key: a
+connection header would pin one key onto every tool call.
+
 Check `wc -l data/dogfood_partner_notes.jsonl`: the note count increases by
 one for the pair of calls.
 
